@@ -20,76 +20,97 @@ The opening question is: **Our operations agent gives convincing answers. Can we
 
 Open on the Inventory access-denied incident. The S0 candidate investigates a genuine alarm read-only, then recommends increasing memory on INVENTORY. The presenter independently applies that configuration change and separately sends ordinary traffic; the denied read still fails because memory does not remove the Inventory table-policy Deny. Show the configuration readback and later request result as separate evidence. This is an application incident exposing an agent defect, not an agent-controlled remediation.
 
-The application story also includes inventory capacity overload under a positive reserved-concurrency cap. The correct proposal for that reviewed case is an increased Inventory reserved-concurrency cap. At S4, show this recommendation with evidence from an actual run; if the incident was not run live, label its matching saved run as recorded. A recovered incident with an old alert supplies a temporal control case, not another injected fault. The [scenario contracts](demo-scenarios.md) define incident behavior, and the [demo cue sheet](demo-script.md) holds the presenter sequence.
+The application story also includes inventory capacity overload under a positive reserved-concurrency cap. The correct proposal for that reviewed case is an increased Inventory reserved-concurrency cap. After the prompt repair, show this recommendation with evidence from an actual run; if the incident was not run live, label its matching saved run as recorded. The live sequence has two valid incidents: the opening access-denied incident and, after repair and deployment, a newly induced access-denied incident with a new alarm and run. A recovered/stale-alert condition remains a useful temporal control case: it may be represented by a qualifying later investigation or by offline regression over captured reference-time evidence. An old-alert replay concern is not a third live incident. The [scenario contracts](demo-scenarios.md) define incident behavior, and the [demo cue sheet](demo-script.md) holds the presenter sequence.
 
 The agent chooses relevant read-only queries, windows, and query order from available evidence; it is not given a preassembled packet. It proposes exactly one action from the approved menu: increase reserved concurrency on CHECKOUT or INVENTORY to a higher cap, increase memory on CHECKOUT or INVENTORY to a larger MB allocation, restore the expected Inventory table policy, or select Other with a reason, including no change or unknown. The presenter makes any controller action independently. Neither the proposal nor its configuration readback proves an application effect, and the controller action does not generate traffic.
 
 ## Code transformation
 
-S0 is one alarm-triggered investigation and report, with no chat loop, evaluation case, evaluator, score, or release gate. S1 reviews expectations but produces no verdict. S2 adds deterministic checks for behavior and action/target validity. In the opening example, INVENTORY is the correct target but Increase memory is the wrong action; separate wrong-target proposals fail target checks, and numeric checks accept any justified value within reviewed bounds. S3 adds semantic judgment about diagnosis and grounding and demonstrates a genuine AgentCore evaluation of the deployed trace. S4 explicitly repairs the candidate and compares both versions against identical reviewed cases before showing the release decision. The original candidate stays runnable and continues to fail the access-denied case.
+The project progresses through six capability stages, S0–S5. The core agent stays mostly stable while reviewed cases, evaluations, a developer experiment workflow, and a release gate are added around it. The agent's behavioral versions are **faulty → repaired → regressed**. The deliberate behavior changes are the prompt repair and the friend's later prompt regression.
 
-The transformation primarily adds evaluation capability around the agent. Code excerpts use Python for the agent and evaluation workflow, and TypeScript for the application and presenter controller. Their component behavior is specified in the [agent](components/operations-agent.md), [application](components/application.md), and [controller](components/failure-controller.md) documents; this talk plan describes the story and screen sequence.
+| Stage | Agent behavior | Difference introduced |
+| --- | --- | --- |
+| **S0 — Instrumented agent** | Investigates incidents and produces the faulty recommendation. | Starting point: the prompt, four read-only tools, structured report, tracing, and source capture already work. There are no evaluation cases, scores, or release gate. |
+| **S1 — Agent with reviewed cases** | Same faulty agent. | Add investigation inputs, captured evidence references and reference times, reviewed acceptable outcomes, and unacceptable behavior. Fully construct one case, then load the separately prepared dataset. |
+| **S2 — Evaluated agent** | Same faulty agent; evaluation exposes its defects. | Add deterministic recommendation checks, semantic diagnosis/grounding criteria, judge configuration, and AgentCore evaluation results. The memory action fails for the denied-read case even though INVENTORY is the correct target. Judge findings assess whether the diagnosis and recommendation follow from the available evidence. |
+| **S3 — Repaired candidate** | Uses the revised prompt, whose effectiveness must be established by fresh evaluation. | Change the prompt while keeping the model, tools, permissions, and report schema fixed. Execute the changed candidate and compare it with the original against the same reviewed cases and criteria. Retain the faulty candidate so the same checks can still reject it. |
+| **S4 — Agent with a developer experiment workflow** | Same repaired candidate. | Add the Strands in-code experiment entry point: load cases, execute the agent, evaluate results, inspect individual failures, and compare candidates locally. Apply the reviewed local release policy before the first repaired deployment. |
+| **S5 — Agent with a release gate** | Same repaired candidate remains deployed unless a replacement passes. | Run the same experiment and release policy in CI before deployment. Failed or incomplete required evaluations prevent release. |
 
-Strands represents the in-code experiment workflow; AgentCore demonstrates evaluation of a deployed agent trace. Local/CI regressions execute the identified candidates against versioned, queryable captures for all four investigation tools at an explicit case reference time. This preserves independent investigation after the live application has recovered. Rejudging a saved trace remains distinct from executing a changed candidate. At S4, the pre-deployment gate binds its result to the pending source and agent artifact identity. Evaluator placement remains open within that constraint, and the talk should not duplicate every evaluation in both systems. The [evaluation approach](evaluations.md) describes the roles.
+The transitions introduce the following changes:
 
-The detailed S0–S4 outcomes are in [Demo progression](demo-progression.md). The visible transition is: wrong executable remedy, reviewed expectation, deterministic failure, semantic explanation, explicit candidate repair, and two evidence-backed correct proposals.
+- **S0 -> S1:** Define acceptable behavior.
+- **S1 -> S2:** Make that behavior measurable.
+- **S2 -> S3:** Change the agent and test the repair.
+- **S3 -> S4:** Make evaluation a repeatable developer workflow.
+- **S4 -> S5:** Make the release policy automatic.
+
+A transition marks a capability being introduced; it does not imply that an asynchronous evaluation has already completed or passed. Keep pending, failed, and incomplete results visible as such.
+
+**Deployment is an action within the progression.** Deploy the candidate that passed the local release policy at S4, then induce the same failure anew and observe a new alarm, investigation, recommendation, presenter action, and fresh request outcome. The schedule introduces the automated CI gate during deployment, so that second live incident is shown at S5. Deployment itself creates no additional stage.
+
+**The friend's prompt change creates another candidate at S5.** Cases, evaluators, and the release policy stay fixed while the existing gate rejects the prepared regression. There is no S6: the repaired deployed version remains in place.
+
+### Code and data changes shown in the talk
+
+Show the initial agent constructor, prompt, tools, and structured report. Add one complete reviewed case, one recommendation check, and one semantic judge criterion before running the baseline evaluation. The prompt repair is a focused change to the agent's decision rule: select a recommendation that addresses the failure mechanism supported by evidence, and explain uncertainty or recovery when a configuration change is unwarranted. It must be tested across the reviewed cases rather than treated as an established fix merely because the prompt changed.
+
+The Strands segment connects the shared agent constructor, case loader, evaluation task, evaluators, result reporting, and candidate comparison. Runtime and evaluation executions use the same agent construction and tool contracts; live investigations read AWS, while regressions use the approved captured evidence providers. Each candidate chooses its own queries and their order. The CI edit invokes that experiment and applies the same release policy before deployment.
+
+The [instruction versions](components/operations-agent.md#instruction-versions) define the draft faulty, repaired, and regressed prompt edits. The [worked case](evaluations.md#worked-case-inventory-access-denied) connects the denied-read evidence to its checks and semantic criterion, while the [S3 execution path](evaluations.md#s3-fresh-candidate-before-deployment) explains how to score the changed candidate before deployment. Use the [calibration and holdout guidance](evaluations.md#calibration-holdouts-and-repeated-runs) for the five-minute explanation; final prompt wording and actual example results still require implementation and rehearsal.
+
+Prepare alarm delivery, Runtime deployment, tracing, source capture, captured evidence providers, permissions, controller/recovery behavior, and SDK integration before the session. Show the meaningful case, check, rubric, prompt, experiment, and CI changes without building that plumbing live. Calibration and holdouts are explained using prepared examples and reviewed results; they do not introduce another agent stage.
+
+Preserve the same reviewed case meaning and criteria across AgentCore and Strands. Show any required loading or mapping explicitly; automatic interchange between their artifacts is not established. Compare candidates within the same evaluation setup. Publishing Strands scores to a dashboard is distinct from the AgentCore service performing an evaluation, and the talk does not need every check implemented twice.
+
+Code excerpts use Python for the agent and evaluation workflow and TypeScript for the application and controller. The [agent](components/operations-agent.md), [application](components/application.md), and [controller](components/failure-controller.md) documents own component behavior. The [demo progression](demo-progression.md) describes the capability stages, and the [evaluation approach](evaluations.md) owns captured evidence, evaluators, and release-policy details.
 
 ## Run of show
 
-The full hour includes presentation, incident operation, code edits, evaluation results, transitions, questions, and buffer. This working schedule totals 60 minutes and reserves up to 12 minutes for the initial S0 incident and its independent memory-action and traffic observations. Rehearsal may shift the allocations; if time tightens, use prepared results for the capacity case without dropping any S0–S4 outcome.
+| Minutes | Section | Stage | Activity | Expected wait |
+| --- | --- | --- | --- | --- |
+| 0–5 | Does the recommendation actually fix the problem? | S0 | Introduction to evaluations |  |
+| 5–11 |  | S0 | Example and agent failure | Alarm and agent report: ~2–3 min; configuration change: ~1 min; telemetry ingestion: 2–5 min |
+| 11–15 |  | S0 | Code walkthrough and audience question | Application recovery: ~1–2 min |
+| 15–18 | What did the agent actually do? | S0 | Inspect the execution in AgentCore Observability |  |
+| 18–23 | From failure to test case | S0 -> S1 -> S2 | Construct one case, load the prepared dataset, and start baseline evaluation | Baseline evaluation: ~5 min |
+| 23–28 |  | S2 | Explain judges, calibration, holdouts, and repeated runs |  |
+| 28–30 |  | S2 | Inspect baseline evaluation failures |  |
+| 30–31 |  | S2 -> S3 | Change the prompt and run the changed agent | Execution and evaluation, including telemetry: ~8 min |
+| 31–36 | The developer experience of evals | S3 -> S4 | Show the Strands in-code experiment workflow |  |
+| 36–39 |  | S4 | Present prepared measurements and limitations |  |
+| 39–40 |  | S4 | Compare candidate results and push the repair | Deployment: ~4 min |
+| 40–44 |  | S4 -> S5 | Add the experiment to CI |  |
+| 44–48 |  | S5 | Repeat the incident with the deployed agent | Alarm and agent report: ~2–3 min; corrective action: ~1 min |
+| 48–54 |  | S5 | Introduce the prepared prompt regression and show CI rejection | CI evaluation: ~5 min |
+| 54–55 | Closing | S5 | Deliver the approved closing |  |
+| 55–60 |  | S5 | Questions and buffer |  |
 
-| Minutes | Activity | What the audience learns |
-| --- | --- | --- |
-| 0–5 | Introduce the incident, agent report, and shipping decision | Why a plausible report needs evidence |
-| 5–17 | S0: real access-denied alarm/run, wrong memory action, separate traffic result | A setting change can complete while the application failure persists |
-| 17–23 | S1: review the captured run and define expectations | A case is reviewed before it is scored |
-| 23–32 | S2: add and run deterministic action/target checks | A concrete mismatch can be detected and explained |
-| 32–42 | S3: add semantic judgment and show AgentCore trace evaluation | A groundedness question needs evidence and a clear rubric |
-| 42–49 | S4: repair explicitly; compare the same cases and release result | Evaluation can distinguish faulty and repaired candidates |
-| 49–52 | Show prepared measurements, limitations, and one missed defect | Evidence supports a bounded claim, not universal safety |
-| 52–60 | Questions and recovery buffer | Leave room for discussion and a safe close |
+Waits are provisional operation durations and can extend beyond the block that starts them. The changed-agent estimate includes telemetry. AWS documents the [2–5-minute telemetry ingestion wait](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ondemand-evaluations-prereqs.html); the other durations need measurement.
+
+The approved closing is:
+
+> “Your agent is non-deterministic, but you can still test whether its behavior is acceptable. First define what good looks like. Then check whether your evaluations recognize it. Finally, use them to improve the agent and stop regressions before they ship.
+> Evaluations passing doesn’t mean the agent can never fail. But at least your release decision now has evidence behind it.
+> Without that evidence, you’re hoping nothing goes wrong. Hope is not a strategy. Do evals.”
 
 ## Slide storyboard
 
-Use the AWS-supplied template and roughly 10–12 core slides, plus backup material. Slides explain the incident, decisions, and results; the editor, controller, application, and evaluation views carry the live sequence.
+Use the AWS-supplied template. The five section titles can become divider slides. Individual presentation blocks can use slides, code, the controller, or evaluation views; they do not each need a section divider.
 
-| Slide role | Content and transition |
+| Section | Supporting material |
 | --- | --- |
-| Title and outcome | State the title and what attendees will be able to implement |
-| Incident and shipping question | Show the denied Inventory read and ask whether the agent is safe to ship |
-| Application, controller, and agent | Show the system at a glance and keep incident, action, and investigation distinct |
-| S0 report and proposal | Put the access-denied evidence beside the wrong Inventory memory recommendation |
-| Independent action result | Show configuration readback, then separate ordinary traffic with the Deny still present |
-| S1 reviewed case | Show provenance and expected diagnosis, evidence, action, and target; no verdict yet |
-| S2 deterministic result | Show the wrong memory action failing and its reason; show that a separate wrong target fails target validation |
-| S3 evidence judgment | Show the rubric, evidence supplied, actual judgment, and a limitation |
-| Evaluation workflows | Explain the in-code Strands workflow and genuine AgentCore deployed-trace evaluation |
-| S4 repair and comparison | Show the explicit repair, the still-failing original, both evidence-backed correct proposals, and separate observed remedy outcomes |
-| Measurements, limits, and takeaways | Present actual prepared evidence, a missed defect, and resources |
+| Does the recommendation actually fix the problem? | Evaluation introduction, application and agent overview, output-only failure demonstration, and agent code walkthrough. |
+| What did the agent actually do? | AgentCore Observability execution, tool calls, returned evidence, and time windows. |
+| From failure to test case | One complete reviewed case, the separately prepared dataset, code checks and judge criteria, calibration and holdouts, baseline failures, and the prompt repair. |
+| The developer experience of evals | Strands experiment code, prepared measurements and limitations, candidate comparison, CI integration, deployment, corrected live incident, and rejected prompt regression. |
+| Closing | Approved closing and resources, followed by questions. |
 
-Speaker notes should specify screen transitions, code edits, expected observations, audience questions, and recovery cues. Use actual saved runs for slow calls, but label their original event and run identity. Do not fill slides with unmeasured latency claims or results from an execution that did not happen.
-
-## Preparation targets
-
-Only the event dates and slide deadline are externally fixed. These intermediate dates are working targets to organize preparation.
-
-| Dates in 2026 | Target |
-| --- | --- |
-| October 8–12 | Settle the incident story, selected application incidents, checkpoint outcomes, and storyboard |
-| October 13–18 | Prove one case through the selected evaluation paths and build the complete minimum demo |
-| October 19–25 | Finish scoped cases and evaluators, collect supported measurements, and time a full rehearsal |
-| October 26–November 1 | Complete the deck and demo script; rehearse with someone unfamiliar with the code |
-| November 2–5 | Repair confusing or slow sections and check deck/demo consistency |
-| November 6 | Submit slides |
-| November 7–20 | Rehearse and verify reliability, repository setup, recovery, and resets |
-| November 21–30 | Freeze the sequence, verify the event environment, and practice resets |
-| December 1 and 3 | Deliver the rehearsed sequence |
-
-The preparation outputs are the talk blueprint, runnable public reference, demo script, actual measured evidence, fresh deck, and rehearsal/reset procedure. Include only measurements that have been collected and whose method and scope can be explained.
+Speaker notes should identify screen changes, code edits, background operations and expected wait durations, audience questions, and recovery cues. Use actual recorded evidence when needed and keep its provenance visible. Numerical claims in the talk must come from collected measurements.
 
 ## Demonstration reliability
 
-Measure the live path before assigning its time budget. Evaluation workflows that collect CloudWatch telemetry can introduce ingestion waits. Prepare actual saved traces and results for delays; use a direct path over captured spans only if rehearsal confirms it. Do not claim a latency until it has been measured.
+Measure the live path before assigning its time budget. Evaluation workflows that collect CloudWatch telemetry can introduce ingestion waits. Prepare actual saved traces and results for delays; use a direct path over captured spans only if rehearsal confirms it. The schedule's non-telemetry numbers are provisional rehearsal estimates, not measurements. Do not claim a latency or service-level duration until it has been measured.
 
 Preprovision the selected environment and prepare saved traces and results from actual executions. Before each alarm-driven incident, observe the real alarm OK and confirm the integration is ready. Match the actual event to the corresponding agent run by alarm ARN and originating ALARM-transition timestamp; retain that identity through OK and discover actual recorded runs after missed polls. Dashboard polling does not invoke the agent, and a manual invocation is not evidence of alarm delivery. Preserve the incident source capture before recovery; review it into a case at S1. Recovery restores the current deployment generation's baseline memory/version, caps, policy, and healthy aliases; a full reset follows the scenario contract's business-data semantics. Both sessions start from a verified baseline.
 
@@ -101,4 +122,4 @@ Automatic deployment takes priority over controller work. If it intervenes, foll
 - [Earlier foundational talk preparation](https://docs.google.com/document/d/1KZf_LgzQtfXIiv_959uFFa0m9Mtt4yAKNV7Ya_WMJ8A/edit)
 - [Earlier slides for conceptual context](https://docs.google.com/presentation/d/1W5qtNF6cDbgg_M5gjDrroHUloKVNg-Vk/edit)
 
-The selected incidents, five-stage story, opening faulty recommendation, action menu, and language roles are settled for this plan. The direct CloudWatch alarm-to-Lambda-to-AgentCore Runtime path, durable run records and discovery, canonical originating transition identity, captured queryable regression evidence, and pending-candidate pre-deployment gate are also selected. Implementation details still to complete include event/record wire schemas and lookup mechanics, capture/provider format and coverage, exact case records and rubrics, evaluation settings and release thresholds, and checkpoint packaging. Exact workload and configuration values are owned by the scenario/controller implementation. Start dataset preparation from captured actual runs and reviewed expectations; slot the planned AgentCore observability experience into extraction when its capabilities are clear while retaining the evidence/time contract. The talk does not depend on CloudWatch Omni.
+The selected incidents, five-section talk, six capability stages, opening faulty recommendation, action menu, and language roles are settled for this plan. The direct CloudWatch alarm-to-Lambda-to-AgentCore Runtime path, durable run records and discovery, canonical originating transition identity, captured queryable regression evidence, and pending-candidate pre-deployment gate are also selected. Implementation details still to complete include event/record wire schemas and lookup mechanics, capture/provider format and coverage, exact case records and rubrics, evaluation settings and release thresholds, and checkpoint packaging. Exact workload and configuration values are owned by the scenario/controller implementation. Start dataset preparation from captured actual runs and reviewed expectations; slot the planned AgentCore observability experience into extraction when its capabilities are clear while retaining the evidence/time contract. The talk does not depend on CloudWatch Omni.

@@ -1,6 +1,6 @@
 # Demo cue sheet
 
-The complete talk is 60 minutes, including the slides, explanations, live operation and edits, results, transitions, questions, and buffer. The schedule below is a working allocation to rehearse; it totals 60 minutes and gives the opening S0 incident up to 12 minutes for the separate memory-action and traffic observations.
+The complete talk is 60 minutes, including presentation, live operation, code edits, questions, and buffer. S0–S5 remain internal capability checkpoints rather than the public section order.
 
 ## Before the room opens
 
@@ -9,55 +9,109 @@ The complete talk is 60 minutes, including the slides, explanations, live operat
 - [ ] Record the real business-data baseline after a fresh verification checkout, including its stock effect.
 - [ ] Observe the real alarm in **OK** with its alarm-to-agent path ready for a new incident.
 - [ ] Select S0 and the intentionally faulty candidate; verify no evaluation case, evaluator, score, or gate is active.
-- [ ] Open the application view, controller dashboard, matching agent trace/report, editor, and evaluation results.
+- [ ] Open the application view, controller dashboard, live agent report view, editor, evaluation results, and AgentCore Observability for later trace inspection.
 - [ ] Prepare actual saved runs and results for delays or the capacity case. Label each **recorded** and retain its event/run identity.
 
 ## Working run of show
 
-| Minutes | Stage | Presenter cue | Lesson |
-| --- | --- | --- | --- |
-| 0–5 | Introduction | Introduce the app, controller, and agent; ask, “Would you ship this agent?” | A plausible report needs evidence. |
-| 5–17 | S0 — One investigation | Open the Inventory access-denied incident, inspect the real alarm-triggered run, apply the candidate's memory recommendation independently, and make a separate ordinary traffic observation. | Configuration readback does not establish application effect; access-denied errors persist. |
-| 17–23 | S1 — Reviewed expectations | Review the captured run and add the case expectations for diagnosis, evidence, action, and target. | Review defines success; this stage has no verdict. |
-| 23–32 | S2 — Deterministic checks | Add and run the exact action/target check against the same case and faulty candidate. | The unsupported memory action fails for a concrete reason. |
-| 32–42 | S3 — Semantic judgment | Add the evidence/diagnosis criterion and show a genuine AgentCore evaluation of the captured trace alongside the Strands workflow. | The proposal is unsupported because memory cannot remove the policy Deny. Evaluation does not repair the agent. |
-| 42–49 | S4 — Repair and decision | Explicitly repair the candidate. Compare faulty and repaired versions on the same reviewed cases; show both correct recommendations, their separately observed remedy outcomes, and the release result. | The faulty version remains runnable; an evaluation result alone does not establish application recovery. |
-| 49–52 | Measurements and limits | Present prepared measurements and one known limitation or missed defect. Use recorded results and actual labels. | State only what the evidence supports; do not invent live latency or evaluation results. |
-| 52–60 | Questions and buffer | Take questions and recover the demo state if needed. | Leave room for discussion and safe closeout. |
+| Minutes | Section | Stage | Activity | Expected wait |
+| --- | --- | --- | --- | --- |
+| 0–5 | Does the recommendation actually fix the problem? | S0 | Introduction to evaluations |  |
+| 5–11 |  | S0 | Example and agent failure | Alarm and agent report: ~2–3 min; configuration change: ~1 min; telemetry ingestion: 2–5 min |
+| 11–15 |  | S0 | Code walkthrough and audience question | Application recovery: ~1–2 min |
+| 15–18 | What did the agent actually do? | S0 | Inspect the execution in AgentCore Observability |  |
+| 18–23 | From failure to test case | S0 -> S1 -> S2 | Construct one case, load the prepared dataset, and start baseline evaluation | Baseline evaluation: ~5 min |
+| 23–28 |  | S2 | Explain judges, calibration, holdouts, and repeated runs |  |
+| 28–30 |  | S2 | Inspect baseline evaluation failures |  |
+| 30–31 |  | S2 -> S3 | Change the prompt and run the changed agent | Execution and evaluation, including telemetry: ~8 min |
+| 31–36 | The developer experience of evals | S3 -> S4 | Show the Strands in-code experiment workflow |  |
+| 36–39 |  | S4 | Present prepared measurements and limitations |  |
+| 39–40 |  | S4 | Compare candidate results and push the repair | Deployment: ~4 min |
+| 40–44 |  | S4 -> S5 | Add the experiment to CI |  |
+| 44–48 |  | S5 | Repeat the incident with the deployed agent | Alarm and agent report: ~2–3 min; corrective action: ~1 min |
+| 48–54 |  | S5 | Introduce the prepared prompt regression and show CI rejection | CI evaluation: ~5 min |
+| 54–55 | Closing | S5 | Deliver the approved closing |  |
+| 55–60 |  | S5 | Questions and buffer |  |
 
-## S0 live incident — Inventory access denied
+Waits are provisional operation durations and can extend beyond the block that starts them. The changed-agent estimate includes telemetry. AWS documents the [2–5-minute telemetry ingestion wait](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ondemand-evaluations-prereqs.html); the other durations need measurement.
+
+The approved closing is:
+
+> “Your agent is non-deterministic, but you can still test whether its behavior is acceptable. First define what good looks like. Then check whether your evaluations recognize it. Finally, use them to improve the agent and stop regressions before they ship.
+> Evaluations passing doesn’t mean the agent can never fail. But at least your release decision now has evidence behind it.
+> Without that evidence, you’re hoping nothing goes wrong. Hope is not a strategy. Do evals.”
+
+## Presenter cues
+
+### Does the recommendation actually fix the problem?
+
+#### Opening live incident
 
 1. Verify the healthy starting state, expected Inventory table policy, and real alarm **OK**. Start the bounded ordinary catalog workload and, if useful, sparse fresh checkout probes within the controller's recorded budgets.
 2. Activate the **inventory-access-denied** scenario. The narrow policy Deny causes the Inventory read to fail while application code and aliases remain healthy.
-3. Observe the actual alarm and open only the agent run whose event identity matches it. The agent investigates through read-only tools, choosing its own relevant queries, time windows, and query order. It receives no preassembled incident packet or hidden scenario label.
+3. Observe the actual alarm and open only the live agent report whose event identity matches it. Show the controller observations and report output first. The agent investigates through read-only tools, choosing its own relevant queries, time windows, and query order; do not inspect its trace or tool execution yet. It receives no preassembled incident packet or hidden scenario label.
 4. Show the initial candidate's exactly one proposed action: **Increase memory — INVENTORY — larger MB**. Explain that an agent proposal does not authorize or execute the change.
 5. Independently apply that selected controller action. Show the configuration readback and the invoked-version memory allocation change, with application code and other settings preserved. The action does not generate requests or determine whether the incident is resolved.
 6. Separately start or continue ordinary traffic after the action. Show the access-denied failure persists because the table-policy Deny remains. Keep this request evidence distinct from the memory action's configuration result.
-7. Preserve the bounded, sanitized source capture needed to investigate the incident before restoring settings; this is data capture, with case review and verdicts reserved for later stages. Stop producers, settle outstanding work, and use **Recover** to restore the current deployment generation's baseline memory/version, capacity, policy, and healthy aliases. Recovery retains business data and ends the live fault. If a full reset is needed, use the scenario contract's new productVersion and order/stock reset semantics.
+7. Preserve the bounded, sanitized source capture needed to investigate the incident before restoring settings; this is data capture, with case review and verdicts reserved for later stages. Do not delay this source configuration capture until after **Recover**.
+8. After the opening request observation, stop producers and settle outstanding work, then request **Recover**. Verify recovery and observe the alarm returning to **OK** before the second live incident. **Recover** restores the current deployment generation's baseline memory/version, capacity, policy, and healthy aliases, retains business data, and ends the live fault. It is distinct from destructive **Reset**; if a full reset is needed, use the scenario contract's new `productVersion` and order/stock reset semantics.
 
-After Recover, do not query the recovered application as though the old incident were still active. Later regression executions use the reviewed case's versioned, queryable captured evidence for all four tools at its explicit investigation reference time, with no live fallback. Keep each execution's identity distinct from the original alarm identity. The recovered/stale-alert case needs a separately identified later reference time and captured post-recovery evidence; an earlier report did not know the future. Keep the originating ALARM identity selected when the current alarm returns to OK; discover the actual matching durable run after missed polls or restart. A fresh corrected live run requires a newly observed alarm **OK**, a new incident, and its own matching event/run. The memory action and Recover do not trigger an agent run.
+After Recover, do not query the recovered application as though the old incident were still active. Later regression executions use the reviewed case's versioned, queryable captured evidence for all four tools at its explicit investigation reference time, with no live fallback. Keep each execution's identity distinct from the original alarm identity. The recovered/stale-alert condition remains a useful temporal control case: it may be represented by a qualifying later investigation or by offline regression over captured reference-time evidence. When it is replayed offline after recovery, the old-alert concern requires a separately identified later reference time and captured post-recovery evidence because an earlier report did not know the future. It is not a third live incident. Keep the originating ALARM identity selected when the current alarm returns to OK; discover the actual matching durable run after missed polls or restart. A fresh corrected live run requires a newly observed alarm **OK**, the same failure induced anew, and its own new alarm/event/run. The memory action and Recover do not trigger an agent run.
 
-## S1–S4 editing and result cues
+#### Initial code walkthrough
+
+Walk through the initial agent, application, and controller code. Ask what should be code-checked and what needs a judge. Keep this walkthrough within the ten-minute opening example-and-code block.
+
+### What did the agent actually do?
+
+#### AgentCore Observability
+
+Open AgentCore Observability and inspect the matched execution, read-only tools, selected windows, query order, and evidence that led to the report. Keep the execution identity tied to the original alarm/run. This is the first trace inspection; the opening report and controller views intentionally came first.
+
+### From failure to test case
+
+#### Case construction
+
+Construct exactly one reviewed case completely from the preserved source capture: case identity and reference time, expected diagnosis, required evidence, expected action, and target. Then open the separately prepared dataset. Do not imply a fixed dataset size; any illustrative “50” is not a required case count. Show deterministic code checks for the action and target separately from judge assessment of evidence and diagnosis. Start the baseline AgentCore evaluation over already captured actual executions.
+
+### The developer experience of evals
+
+#### Prompt change and experiment workflow
+
+Keep the prompt repair and the development experiment visibly separate. The prompt edit is the candidate change. The Strands workflow then runs the cases, task, evaluator, and experiment, and CI automates that workflow. The fresh candidate has its own execution and result identity. An old trace cannot establish that the changed candidate was executed.
+
+#### Repaired live incident
+
+After the deployment handoff, use the controller to reconcile and verify the new generation's healthy baseline before starting another incident. Observe the real alarm **OK**, induce the same Inventory access failure anew, and observe the new alarm and its matching new agent run/report. Show the report and controller observations first. The repaired candidate recommends **Restore inventory access**; the presenter applies that action independently, reads back the policy state, and sends fresh Inventory requests after propagation. Show those requests succeeding. This is the second valid live incident, with its own alarm/event/run identity. The matching report and fresh request evidence establish this demonstration step without waiting for another trace-ingestion cycle.
+
+### Closing
+
+Use the approved closing above verbatim, then leave the final block for questions and operational buffer.
+
+## Backup capability checkpoints
+
+### S1–S5 editing and result cues
 
 - **S1:** Review the captured trace and queryable source evidence, identify the case version and reference time, and review expectations before evaluation. For access denied, the reviewed case expects the denied-read diagnosis grounded in the relevant evidence and **Restore inventory access** for the expected Inventory table policy. Show the provenance and expectations; do not show a pass/fail verdict yet.
-- **S2:** Add deterministic assertions for the action and target. For the opening example, INVENTORY is the correct target but **Increase memory** is the wrong action; show that failure reason. A separate wrong-target proposal must fail its target check, while multiple justified numeric targets within the reviewed bounds are accepted.
-- **S3:** Add semantic assessment of whether the diagnosis and proposed action follow from the evidence. Show the genuine AgentCore trace evaluation and its supplied evidence/result. Keep this distinct from the in-code Strands workflow; do not imply either system is limited to one evaluator type or run every check twice.
-- **S4:** Make and identify an explicit candidate repair. Execute both candidate versions against the same reviewed cases and captured evidence views, allowing each to choose its own queries. The repaired candidate recommends **Increase reserved concurrency — INVENTORY — higher cap** for capacity overload and **Restore inventory access** for the access-denied case. Keep the original faulty candidate available so it still fails the access-denied case.
+- **S2:** Add deterministic assertions for the action and target, semantic diagnosis and grounding criteria, judge configuration, and AgentCore evaluation results. For the opening example, INVENTORY is the correct target but **Increase memory** is the wrong action; show that failure reason. A separate wrong-target proposal must fail its target check, while multiple justified numeric targets within the reviewed bounds are accepted. Both evaluator types are introduced here; the candidate remains faulty through S2.
+- **S3:** Make and identify the prompt-only candidate repair. Keep the model, tools, permissions, and report behavior fixed. Execute the fresh candidate against the same reviewed cases and criteria, compare it with the original, and leave pending results visibly pending; introducing S3 does not imply a pass.
+- **S4:** Keep the repaired candidate and connect the local Strands experiment entrypoint across the case, task, evaluator, report, and comparison. Evaluate the existing reviewed local release policy before the first deployment; deployment is an action, not another stage.
+- **S5:** Keep the repaired candidate and run the same experiment and release policy in CI before deployment. Failed or incomplete required results block deployment. The prepared friend's prompt regression is another candidate evaluated at S5; there is no S6.
 - Show the actual remedy outcomes separately from evaluation: after increasing the inventory concurrency cap, repeat the same bounded workload and compare actual delivered demand and outcomes at the current raised cap; the presenter separately applies **Restore inventory access**, then runs ordinary reads and shows successful access after policy propagation. If success is not observed, report the effect as incomplete instead of inferring health. Do not infer application health from the proposal or configuration readback.
 - If either outcome cannot be demonstrated live, use a clearly labeled actual saved execution with its matching event/run and action/request evidence. For capacity, show that the repeated bounded workload used comparable delivered demand and the raised cap remained active; the repeat does not automatically reactivate the fault or restore the cap. A repeat may not create a new alarm or agent run. A fresh alarm-driven corrected run requires an observed **OK**, a new incident, and a matching event/run.
 - Show the release policy result and its reasons, including any incomplete evaluation, and the pending source/agent artifact identity it evaluated before deployment. Evaluations assess the proposal and investigation; they do not apply controller actions or claim that the application recovered.
 
-## Capacity overload and separate remedy observation
+### Capacity overload and separate remedy observation
 
 If time and rehearsal allow a live capacity case, verify a healthy baseline and observe the actual alarm **OK** first. Start the bounded catalog surge, inspect the actual alarm and matching agent run, and show the corrected candidate recommending increased reserved concurrency for INVENTORY. The presenter applies that cap increase independently; its readback is only configuration evidence. Stop or pause the first workload phase as needed, then explicitly repeat the same bounded workload at the current raised cap. Compare actual delivered demand, request outcomes, and throttling evidence across the phases. Do not reset the raised cap or reapply the incident between the action and comparison; the repeated workload does not promise a new alarm or agent run. Recover only after the remedy observation is complete.
 
 If the live sequence does not fit, show an actual saved capacity run with the matching event/run, action readback, and separate post-action traffic observations. Label it recorded. Do not claim a capacity remedy from the corrected recommendation or an evaluation score alone.
 
-## Recovered/stale alert cue
+### Recovered/stale alert cue
 
 Use a genuine originating event, retained incident evidence, and timestamped post-recovery requests. Assess only an actual investigation that queried the post-recovery evidence. If the saved S0 report predates recovery, do not score it as if it knew that later state. Use a reviewed replay with its original event and explicit reference time when there is no qualifying live run. When evidence supports no action, **Other** with a reason is acceptable; when it does not support a conclusion, **Other** should explain the uncertainty. Do not fabricate an alert or manually invoke the agent to create this case.
 
-## Fresh runs, saved evidence, and recovery
+### Fresh runs, saved evidence, and recovery
 
 - Before each new alarm-driven incident, observe the actual alarm **OK** and confirm the event-to-agent path is ready. Match a genuine event to its run ID. Dashboard polling does not invoke the agent; do not manually invoke it as a substitute.
 - A saved trace is evidence of that recorded execution. Label it as recorded; do not present rejudging it as a fresh execution of the repaired candidate. A new candidate execution against captured evidence is a labeled regression run with its own identity.
@@ -70,7 +124,7 @@ Detailed action, workload, and recovery behavior belongs to the [controller spec
 
 ## Remaining rehearsal preparation
 
-- [ ] Settle how S0–S4 checkpoints and candidate versions are selected and packaged.
+- [ ] Settle how S0–S5 checkpoints and candidate versions are selected and packaged.
 - [ ] Write the actual live edits and commands after implementation; do not use placeholder or invented commands on screen.
 - [ ] Make the initial Inventory memory defect reproduce reliably and prepare the explicit agent repair.
 - [ ] Calibrate supported numeric capacity and memory targets, bounded load settings, and comparable delivered demand. Exact values remain unselected until measured.
