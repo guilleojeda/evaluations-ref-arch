@@ -1,0 +1,923 @@
+<style>
+  #presenterDashboard {
+    color-scheme: light dark;
+    --pd-canvas: light-dark(#f2f6f6, #0d1519);
+    --pd-surface: light-dark(#ffffff, #151f24);
+    --pd-surface-soft: light-dark(#f7faf9, #1b282e);
+    --pd-text: light-dark(#18272c, #edf4f3);
+    --pd-muted: light-dark(#53656a, #acbabe);
+    --pd-border: light-dark(#d8e2e2, #334249);
+    --pd-accent: light-dark(#17695e, #79d8c8);
+    --pd-accent-ink: light-dark(#ffffff, #08201c);
+    --pd-good-bg: light-dark(#e4f4eb, #17392e);
+    --pd-good-ink: light-dark(#15533c, #afe8cb);
+    --pd-warn-bg: light-dark(#fff2d9, #46391b);
+    --pd-warn-ink: light-dark(#76520a, #f2d493);
+    --pd-bad-bg: light-dark(#fde9e6, #482520);
+    --pd-bad-ink: light-dark(#8a3026, #ffb7ad);
+    --pd-neutral-bg: light-dark(#e9eff0, #29373d);
+    --pd-focus: light-dark(#14786d, #8ce8d8);
+    box-sizing: border-box;
+    width: 100%;
+    max-width: 1240px;
+    margin: 0 auto;
+    padding: 18px 20px 28px;
+    background: var(--pd-canvas);
+    color: var(--pd-text);
+    font: 400 15px/1.4 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    border-radius: 18px;
+  }
+  #presenterDashboard *,
+  #presenterDashboard *::before,
+  #presenterDashboard *::after { box-sizing: border-box; }
+  #presenterDashboard button { font: inherit; }
+  #presenterDashboard button:focus-visible { outline: 3px solid var(--pd-focus); outline-offset: 2px; }
+  #presenterDashboard [hidden] { display: none !important; }
+  #presenterDashboard .pd-topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 18px;
+    margin-bottom: 18px;
+  }
+  #presenterDashboard .pd-brand { display: flex; align-items: center; gap: 12px; min-width: 0; }
+  #presenterDashboard .pd-mark {
+    display: grid;
+    place-items: center;
+    width: 40px;
+    height: 40px;
+    flex: 0 0 auto;
+    border-radius: 12px;
+    background: var(--pd-accent);
+    color: var(--pd-accent-ink);
+    font-weight: 500;
+    font-size: 17px;
+  }
+  #presenterDashboard .pd-brand-copy { min-width: 0; }
+  #presenterDashboard .pd-eyebrow,
+  #presenterDashboard .pd-section-label {
+    color: var(--pd-muted);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: .065em;
+    text-transform: uppercase;
+  }
+  #presenterDashboard h1 {
+    margin: 1px 0 0;
+    font-size: 22px;
+    line-height: 1.2;
+    font-weight: 500;
+    letter-spacing: -.025em;
+  }
+  #presenterDashboard .pd-top-controls {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 9px;
+  }
+  #presenterDashboard .pd-preview-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 34px;
+    padding: 6px 10px;
+    border: 1px solid var(--pd-border);
+    border-radius: 999px;
+    background: var(--pd-surface);
+    color: var(--pd-text);
+    font-size: 13px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  #presenterDashboard .pd-cycle { color: var(--pd-muted); font-size: 13px; white-space: nowrap; }
+  #presenterDashboard .pd-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 9px;
+    min-height: 38px;
+    padding: 8px 13px;
+    border: 1px solid var(--pd-border);
+    border-radius: 10px;
+    background: var(--pd-surface);
+    color: var(--pd-text);
+    font-weight: 500;
+  }
+  #presenterDashboard .pd-button:hover { background: var(--pd-surface-soft); }
+  #presenterDashboard .pd-button-primary {
+    border-color: var(--pd-accent);
+    background: var(--pd-accent);
+    color: var(--pd-accent-ink);
+  }
+  #presenterDashboard .pd-button-primary:hover { filter: brightness(.96); }
+  #presenterDashboard .pd-button-stop {
+    border-color: light-dark(#d88d80, #8e5149);
+    color: light-dark(#8a3026, #ffc1b8);
+  }
+  #presenterDashboard .pd-button:disabled,
+  #presenterDashboard .pd-menu-option:disabled {
+    opacity: .48;
+  }
+  #presenterDashboard .pd-chevron {
+    width: 8px;
+    height: 8px;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: translateY(-2px) rotate(45deg);
+  }
+  #presenterDashboard .pd-actions-wrap { position: relative; }
+  #presenterDashboard .pd-menu {
+    position: absolute;
+    z-index: 5;
+    top: calc(100% + 7px);
+    right: 0;
+    width: 250px;
+    padding: 6px;
+    border: 1px solid var(--pd-border);
+    border-radius: 13px;
+    background: var(--pd-surface);
+    box-shadow: 0 14px 34px light-dark(rgb(21 39 43 / 14%), rgb(0 0 0 / 42%));
+  }
+  #presenterDashboard .pd-menu-option {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    min-height: 42px;
+    padding: 9px 11px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--pd-text);
+    text-align: left;
+  }
+  #presenterDashboard .pd-menu-option:hover:not(:disabled) { background: var(--pd-surface-soft); }
+  #presenterDashboard .pd-menu-option.pd-destructive { color: var(--pd-bad-ink); }
+  #presenterDashboard .pd-menu-divider { height: 1px; margin: 5px 4px; background: var(--pd-border); }
+  #presenterDashboard .pd-status-section { margin-bottom: 15px; }
+  #presenterDashboard .pd-reset-review {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin: -4px 0 15px;
+    padding: 12px 14px;
+    border: 1px solid var(--pd-border);
+    border-radius: 12px;
+    background: var(--pd-warn-bg);
+    color: var(--pd-warn-ink);
+  }
+  #presenterDashboard .pd-reset-copy { min-width: 0; }
+  #presenterDashboard .pd-reset-title { font-size: 16px; font-weight: 500; }
+  #presenterDashboard .pd-reset-detail { margin-top: 2px; font-size: 13px; }
+  #presenterDashboard .pd-reset-actions { display: flex; align-items: center; gap: 8px; }
+  #presenterDashboard .pd-section-heading {
+    margin: 0 0 8px;
+    font-size: 15px;
+    font-weight: 500;
+    letter-spacing: -.005em;
+  }
+  #presenterDashboard .pd-status-grid {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 10px;
+  }
+  #presenterDashboard .pd-status-card {
+    min-width: 0;
+    min-height: 91px;
+    padding: 12px 14px;
+    border: 1px solid var(--pd-border);
+    border-radius: 13px;
+    background: var(--pd-surface);
+  }
+  #presenterDashboard .pd-card-label { color: var(--pd-muted); font-size: 16px; }
+  #presenterDashboard .pd-status-value {
+    display: block;
+    margin: 4px 0 2px;
+    overflow-wrap: anywhere;
+    font-size: 28px;
+    line-height: 1.2;
+    font-weight: 500;
+    letter-spacing: -.015em;
+  }
+  #presenterDashboard .pd-status-value.pd-text-bad { color: var(--pd-bad-ink); }
+  #presenterDashboard .pd-card-detail { color: var(--pd-muted); font-size: 12px; line-height: 1.35; }
+  #presenterDashboard .pd-status-word {
+    display: inline-flex;
+    align-items: center;
+    min-height: 35px;
+    margin-top: 5px;
+    padding: 2px 8px;
+    border-radius: 7px;
+    font-size: 28px;
+    font-weight: 500;
+    line-height: 1.1;
+    overflow-wrap: anywhere;
+  }
+  #presenterDashboard .pd-tone-good { background: var(--pd-good-bg); color: var(--pd-good-ink); }
+  #presenterDashboard .pd-tone-warn { background: var(--pd-warn-bg); color: var(--pd-warn-ink); }
+  #presenterDashboard .pd-tone-bad { background: var(--pd-bad-bg); color: var(--pd-bad-ink); }
+  #presenterDashboard .pd-tone-neutral { background: var(--pd-neutral-bg); color: var(--pd-text); }
+  #presenterDashboard .pd-action-panel {
+    padding: 14px 16px 13px;
+    border: 1px solid var(--pd-border);
+    border-radius: 14px;
+    background: var(--pd-surface);
+  }
+  #presenterDashboard .pd-action-main {
+    display: grid;
+    grid-template-columns: minmax(190px, .92fr) minmax(360px, 1.45fr);
+    align-items: center;
+    gap: 18px;
+  }
+  #presenterDashboard .pd-action-heading { min-width: 0; }
+  #presenterDashboard .pd-action-name {
+    margin: 2px 0 2px;
+    font-size: 17px;
+    line-height: 1.25;
+    font-weight: 500;
+    overflow-wrap: anywhere;
+  }
+  #presenterDashboard .pd-action-detail { color: var(--pd-muted); font-size: 13px; }
+  #presenterDashboard .pd-action-state {
+    display: inline-flex;
+    margin-top: 6px;
+    padding: 3px 8px;
+    border-radius: 7px;
+    background: var(--pd-neutral-bg);
+    color: var(--pd-text);
+    font-size: 16px;
+    font-weight: 500;
+  }
+  #presenterDashboard .pd-action-state.is-running { background: var(--pd-warn-bg); color: var(--pd-warn-ink); }
+  #presenterDashboard .pd-action-state.is-done { background: var(--pd-good-bg); color: var(--pd-good-ink); }
+  #presenterDashboard .pd-steps {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-items: start;
+    gap: 10px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+  #presenterDashboard .pd-step {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    color: var(--pd-muted);
+    font-size: 16px;
+  }
+  #presenterDashboard .pd-step:not(:last-child)::after {
+    position: absolute;
+    top: 8px;
+    left: 20px;
+    width: calc(100% - 8px);
+    height: 1px;
+    background: var(--pd-border);
+    content: "";
+  }
+  #presenterDashboard .pd-step > span:last-child { position: relative; z-index: 1; padding: 0 4px; background: var(--pd-surface); }
+  #presenterDashboard .pd-step-dot {
+    z-index: 1;
+    display: grid;
+    place-items: center;
+    width: 17px;
+    height: 17px;
+    flex: 0 0 auto;
+    border: 1px solid var(--pd-border);
+    border-radius: 50%;
+    background: var(--pd-surface);
+    font-size: 10px;
+    line-height: 1;
+  }
+  #presenterDashboard .pd-step.is-current { color: var(--pd-text); font-weight: 500; }
+  #presenterDashboard .pd-step.is-current .pd-step-dot,
+  #presenterDashboard .pd-step.is-complete .pd-step-dot {
+    border-color: var(--pd-accent);
+    background: var(--pd-accent);
+    color: var(--pd-accent-ink);
+  }
+  #presenterDashboard .pd-effects {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 4px 9px;
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--pd-border);
+    color: var(--pd-muted);
+    font-size: 13px;
+  }
+  #presenterDashboard .pd-effects strong { color: var(--pd-text); font-size: 16px; font-weight: 500; }
+  #presenterDashboard .pd-effects-label { color: var(--pd-muted); }
+  #presenterDashboard .pd-lower { margin-top: 18px; }
+  #presenterDashboard .pd-activity { max-width: 760px; }
+  #presenterDashboard .pd-activity-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 7px;
+  }
+  #presenterDashboard .pd-activity-heading .pd-section-heading { margin: 0; }
+  #presenterDashboard .pd-activity-list { margin: 0; padding: 0; list-style: none; }
+  #presenterDashboard .pd-activity-item {
+    display: grid;
+    grid-template-columns: 86px minmax(0, 1fr) auto;
+    align-items: baseline;
+    gap: 12px;
+    padding: 9px 0;
+    border-bottom: 1px solid var(--pd-border);
+  }
+  #presenterDashboard .pd-event-time,
+  #presenterDashboard .pd-event-kind { color: var(--pd-muted); font-size: 12px; }
+  #presenterDashboard .pd-event-time { white-space: nowrap; }
+  #presenterDashboard .pd-event-text { min-width: 0; overflow-wrap: anywhere; font-size: 14px; }
+  #presenterDashboard .pd-empty { padding: 9px 0; color: var(--pd-muted); font-size: 13px; }
+  #presenterDashboard .pd-footer {
+    margin-top: 16px;
+    color: var(--pd-muted);
+    font-size: 12px;
+  }
+  @media (max-width: 900px) {
+    #presenterDashboard { padding-top: 8px; padding-bottom: 20px; }
+    #presenterDashboard .pd-topbar { margin-bottom: 9px; }
+    #presenterDashboard .pd-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    #presenterDashboard .pd-status-section { margin-bottom: 9px; }
+    #presenterDashboard .pd-section-heading { margin-bottom: 3px; }
+    #presenterDashboard .pd-status-card { min-height: 0; padding: 8px 11px; }
+    #presenterDashboard .pd-status-value { margin-top: 2px; line-height: 1.1; }
+    #presenterDashboard .pd-status-word { margin-top: 3px; }
+    #presenterDashboard .pd-action-panel { margin-bottom: 10px; padding: 9px 12px; }
+    #presenterDashboard .pd-action-main { grid-template-columns: minmax(220px, .85fr) minmax(380px, 1.2fr); gap: 12px; }
+    #presenterDashboard .pd-action-heading { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 3px 8px; }
+    #presenterDashboard .pd-action-heading .pd-section-label { grid-column: 1 / -1; }
+    #presenterDashboard .pd-action-name { margin: 0; }
+    #presenterDashboard .pd-action-detail { display: none; }
+    #presenterDashboard .pd-action-state { margin: 0; padding: 3px 7px; }
+    #presenterDashboard .pd-effects { margin-top: 6px; padding-top: 5px; }
+    #presenterDashboard .pd-lower { margin-top: 14px; }
+  }
+  @media (max-width: 680px) {
+    #presenterDashboard { padding: 8px 14px 24px; border-radius: 14px; }
+    #presenterDashboard .pd-topbar { align-items: center; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
+    #presenterDashboard .pd-mark { width: 36px; height: 36px; }
+    #presenterDashboard .pd-brand { gap: 8px; }
+    #presenterDashboard .pd-top-controls { width: auto; justify-content: flex-end; gap: 6px; }
+    #presenterDashboard .pd-preview-badge { padding: 5px 8px; }
+    #presenterDashboard .pd-button { padding: 7px 9px; }
+    #presenterDashboard .pd-cycle { margin-left: 0; }
+    #presenterDashboard .pd-preview-badge { order: 0; }
+    #presenterDashboard .pd-cycle { order: 1; margin-left: auto; }
+    #presenterDashboard .pd-action-main { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+    #presenterDashboard .pd-steps { display: none; }
+    #presenterDashboard .pd-action-heading { grid-template-columns: minmax(0, 1fr); }
+    #presenterDashboard .pd-action-state { justify-self: start; }
+    #presenterDashboard .pd-action-panel { padding: 9px 11px; }
+  }
+  @media (max-width: 480px) {
+    #presenterDashboard { padding: 12px 12px 22px; }
+    #presenterDashboard .pd-status-grid { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+    #presenterDashboard .pd-status-card { min-height: 0; padding: 10px 12px; }
+    #presenterDashboard .pd-status-value { margin-top: 3px; }
+    #presenterDashboard .pd-top-controls { justify-content: flex-start; }
+    #presenterDashboard .pd-top-controls { width: 100%; gap: 8px; }
+    #presenterDashboard .pd-preview-badge { max-width: 100%; white-space: normal; }
+    #presenterDashboard .pd-cycle { margin-left: 0; }
+    #presenterDashboard .pd-button { min-height: 42px; }
+    #presenterDashboard .pd-actions-wrap { margin-left: auto; }
+    #presenterDashboard .pd-action-panel { padding: 12px; }
+    #presenterDashboard .pd-action-main { grid-template-columns: minmax(0, 1fr); gap: 9px; }
+    #presenterDashboard .pd-action-heading { grid-template-columns: minmax(0, 1fr); }
+    #presenterDashboard .pd-steps { gap: 5px; }
+    #presenterDashboard .pd-step { align-items: flex-start; flex-direction: column; gap: 4px; font-size: 16px; }
+    #presenterDashboard .pd-step:not(:last-child)::after { top: 8px; left: 20px; width: calc(100% - 12px); }
+    #presenterDashboard .pd-activity-item { grid-template-columns: 82px minmax(0, 1fr); gap: 7px 9px; }
+    #presenterDashboard .pd-event-kind { grid-column: 2; }
+    #presenterDashboard .pd-menu { width: min(250px, calc(100vw - 24px)); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    #presenterDashboard *, #presenterDashboard *::before, #presenterDashboard *::after { scroll-behavior: auto !important; transition-duration: .01ms !important; }
+  }
+</style>
+
+<div id="presenterDashboard" aria-label="Presenter operations dashboard">
+  <header class="pd-topbar">
+    <div class="pd-brand">
+      <div class="pd-mark" aria-hidden="true">P</div>
+      <div class="pd-brand-copy">
+        <div class="pd-eyebrow">Checkout demo · us-east-1</div>
+        <h1>Operations</h1>
+      </div>
+    </div>
+    <div class="pd-top-controls">
+      <span class="pd-preview-badge">UI preview · illustrative data</span>
+      <span class="pd-cycle">Refresh target · 5 sec</span>
+      <button id="pdStopTraffic" class="pd-button pd-button-stop cursor-interaction" type="button" hidden>Stop traffic</button>
+      <div class="pd-actions-wrap">
+        <button id="pdActionsButton" class="pd-button pd-button-primary cursor-interaction" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="pdActionMenu">
+          Actions <span class="pd-chevron" aria-hidden="true"></span>
+        </button>
+        <div id="pdActionMenu" class="pd-menu" role="menu" aria-label="Presenter actions" hidden>
+          <button class="pd-menu-option cursor-interaction" type="button" role="menuitem" data-action="readiness">Check readiness</button>
+          <button class="pd-menu-option cursor-interaction" type="button" role="menuitem" data-action="start-traffic">Start traffic</button>
+          <button class="pd-menu-option cursor-interaction" type="button" role="menuitem" data-action="stop-traffic">Stop traffic</button>
+          <button class="pd-menu-option cursor-interaction" type="button" role="menuitem" data-action="incident">Activate incident</button>
+          <button class="pd-menu-option cursor-interaction" type="button" role="menuitem" data-action="recover">Recover app</button>
+          <div class="pd-menu-divider" role="separator"></div>
+          <button class="pd-menu-option pd-destructive cursor-interaction" type="button" role="menuitem" data-action="reset">Reset demo</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div id="pdResetReview" class="pd-reset-review" role="group" aria-label="Confirm reset of preview data" aria-live="polite" hidden>
+    <div class="pd-reset-copy">
+      <div class="pd-reset-title">Reset the demo preview?</div>
+      <div class="pd-reset-detail">This resets local traffic and sample orders/stock, then starts a new run. The current alarm and agent history remain until new signals arrive.</div>
+    </div>
+    <div class="pd-reset-actions">
+      <button id="pdCancelReset" class="pd-button cursor-interaction" type="button">Cancel</button>
+      <button id="pdConfirmReset" class="pd-button pd-button-stop cursor-interaction" type="button">Reset demo</button>
+    </div>
+  </div>
+
+  <main>
+    <section class="pd-action-panel" id="pdActionPanel" aria-labelledby="pdActionName" aria-live="polite">
+      <div class="pd-action-main">
+        <div class="pd-action-heading">
+          <div class="pd-section-label">Latest action</div>
+          <h2 class="pd-action-name" id="pdActionName">No action yet</h2>
+          <div class="pd-action-detail" id="pdActionDetail">Choose an action to begin a local preview.</div>
+          <span class="pd-action-state" id="pdActionState">No action running</span>
+        </div>
+        <ol class="pd-steps" aria-label="Action progress">
+          <li class="pd-step" data-step="1"><span class="pd-step-dot">1</span><span>Requested</span></li>
+          <li class="pd-step" data-step="2"><span class="pd-step-dot">2</span><span>Change confirmed</span></li>
+          <li class="pd-step" data-step="3"><span class="pd-step-dot">3</span><span>Effects observed</span></li>
+        </ol>
+      </div>
+    </section>
+
+    <section class="pd-status-section" aria-labelledby="pdStatusHeading">
+      <h2 class="pd-section-heading" id="pdStatusHeading">Current status</h2>
+      <div class="pd-status-grid">
+        <article class="pd-status-card" aria-label="Checkout request outcome">
+          <div class="pd-card-label">Checkout requests</div>
+          <span class="pd-status-value" id="pdRequestValue" aria-live="polite">Success</span>
+          <div class="pd-card-detail" id="pdRequestDetail">30 of 30 sample requests</div>
+        </article>
+        <article class="pd-status-card" aria-label="Recent request latency">
+          <div class="pd-card-label">Request latency</div>
+          <span class="pd-status-value" id="pdLatencyValue">218 ms</span>
+          <div class="pd-card-detail">Recent sample window</div>
+        </article>
+        <article class="pd-status-card" aria-label="CloudWatch alarm state">
+          <div class="pd-card-label">CloudWatch alarm</div>
+          <span class="pd-status-word pd-tone-good" id="pdAlarmValue" aria-live="polite">OK</span>
+          <div class="pd-card-detail" id="pdAlarmDetail">Last read 4s ago · state age 12m</div>
+        </article>
+        <article class="pd-status-card" aria-label="Operations agent state">
+          <div class="pd-card-label">Operations agent</div>
+          <span class="pd-status-value" id="pdAgentValue" aria-live="polite">Waiting for alarm</span>
+          <div class="pd-card-detail" id="pdAgentDetail">Automatic run starts from the alarm</div>
+        </article>
+      </div>
+    </section>
+
+
+      <div class="pd-effects" aria-label="Illustrative request and order effects">
+        <span class="pd-effects-label">Current run</span>
+        <strong id="pdAttempts">Attempts 34</strong>
+        <span>·</span>
+        <strong id="pdOrders">confirmed orders 30</strong>
+        <span>·</span>
+        <strong id="pdRetries">retries 4</strong>
+      </div>
+
+    <section class="pd-lower pd-activity" aria-labelledby="pdActivityHeading">
+      <div class="pd-activity-heading">
+        <h2 class="pd-section-heading" id="pdActivityHeading">Recent activity</h2>
+        <span class="pd-card-detail">Latest 3 events</span>
+      </div>
+      <ol class="pd-activity-list" id="pdActivityList" aria-live="polite">
+        <li class="pd-empty" id="pdEmptyActivity">No recent changes. Action and status transitions will appear here.</li>
+      </ol>
+    </section>
+  </main>
+  <footer class="pd-footer">Actions update local illustrative state only. Preview timing is compressed; no AWS calls are made.</footer>
+</div>
+
+<script>
+(() => {
+  const root = document.getElementById("presenterDashboard");
+  if (!root) return;
+
+  const $ = (selector) => root.querySelector(selector);
+  const actionsButton = $("#pdActionsButton");
+  const actionMenu = $("#pdActionMenu");
+  const stopButton = $("#pdStopTraffic");
+  const resetReview = $("#pdResetReview");
+  const cancelResetButton = $("#pdCancelReset");
+  const confirmResetButton = $("#pdConfirmReset");
+  const menuOptions = Array.from(root.querySelectorAll("[data-action]"));
+  const initial = {
+    request: "success",
+    latency: 218,
+    alarm: "OK",
+    agent: "waiting",
+    agentPrevious: false,
+    agentDetail: "Automatic run starts from the alarm",
+    traffic: false,
+    incidentActive: false,
+    attempts: 34,
+    orders: 30,
+    retries: 4,
+    lastReadAt: Date.now() - 4000,
+    alarmChangedAt: Date.now() - 12 * 60 * 1000,
+    action: null,
+    events: []
+  };
+  let state = structuredClone(initial);
+  let actionTimers = [];
+  let scenarioTimers = [];
+  let actionToken = 0;
+  let scenarioToken = 0;
+  let ageInterval = null;
+  let ageStopTimer = null;
+  let inFlight = false;
+
+  const clearActionTimers = () => {
+    actionToken += 1;
+    actionTimers.forEach(clearTimeout);
+    actionTimers = [];
+    return actionToken;
+  };
+  const clearScenarioTimers = () => {
+    scenarioToken += 1;
+    scenarioTimers.forEach(clearTimeout);
+    scenarioTimers = [];
+    return scenarioToken;
+  };
+  const clearAgeClock = () => {
+    if (ageInterval !== null) clearInterval(ageInterval);
+    if (ageStopTimer !== null) clearTimeout(ageStopTimer);
+    ageInterval = null;
+    ageStopTimer = null;
+  };
+  const scheduleAction = (callback, delay, token) => {
+    const timer = setTimeout(() => {
+      actionTimers = actionTimers.filter((item) => item !== timer);
+      if (token === actionToken) callback();
+    }, delay);
+    actionTimers.push(timer);
+  };
+  const scheduleScenario = (callback, delay, token) => {
+    const timer = setTimeout(() => {
+      scenarioTimers = scenarioTimers.filter((item) => item !== timer);
+      if (token === scenarioToken) callback();
+    }, delay);
+    scenarioTimers.push(timer);
+  };
+  const formatAge = (date) => {
+    const seconds = Math.max(0, Math.floor((Date.now() - date) / 1000));
+    if (seconds < 5) return "just now";
+    if (seconds < 60) return `${seconds}s ago`;
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes}m ago`;
+    const hours = Math.floor(minutes / 60);
+    return `${hours}h ago`;
+  };
+  const renderAlarmAge = () => {
+    $("#pdAlarmDetail").textContent = `Last read ${formatAge(state.lastReadAt)} · state age ${formatAge(state.alarmChangedAt)}`;
+  };
+  const runAgeClock = () => {
+    clearAgeClock();
+    renderAlarmAge();
+    ageInterval = setInterval(renderAlarmAge, 1000);
+    ageStopTimer = setTimeout(clearAgeClock, 10000);
+  };
+  const addEvent = (kind, text) => {
+    const time = new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    state.events.unshift({ time, kind, text });
+    state.events = state.events.slice(0, 3);
+  };
+  const agentCopy = (agent) => ({
+    waiting: ["Waiting for alarm", "Automatic run starts from the alarm"],
+    noRun: ["Waiting for agent activity", "ALARM is visible · no agent run observed yet"],
+    investigating: ["Investigating", "Agent run observed · activity in progress"],
+    complete: ["Complete", "Agent run finished · result remains available"],
+    previous: ["Previous run", "Last observed result remains available after reset"],
+    unavailable: ["Unavailable", "No agent activity received after the alarm"]
+  })[agent] || ["Unknown", "Agent state unavailable"];
+  const renderEvents = () => {
+    const list = $("#pdActivityList");
+    list.replaceChildren();
+    if (!state.events.length) {
+      const empty = document.createElement("li");
+      empty.className = "pd-empty";
+      empty.textContent = "No recent changes. Action and status transitions will appear here.";
+      list.append(empty);
+      return;
+    }
+    for (const event of state.events) {
+      const item = document.createElement("li");
+      item.className = "pd-activity-item";
+      const time = document.createElement("time");
+      time.className = "pd-event-time";
+      time.textContent = event.time;
+      const text = document.createElement("span");
+      text.className = "pd-event-text";
+      text.textContent = event.text;
+      const kind = document.createElement("span");
+      kind.className = "pd-event-kind";
+      kind.textContent = event.kind;
+      item.append(time, text, kind);
+      list.append(item);
+    }
+  };
+  const renderAction = () => {
+    const action = state.action;
+    $("#pdActionName").textContent = action?.name || "No action yet";
+    $("#pdActionDetail").textContent = action?.detail || "Choose an action to begin a local preview.";
+    const stateTag = $("#pdActionState");
+    stateTag.textContent = action?.stateLabel || "No action running";
+    stateTag.className = "pd-action-state";
+    if (action?.phase === "running") stateTag.classList.add("is-running");
+    if (action?.phase === "done") stateTag.classList.add("is-done");
+    root.querySelectorAll(".pd-step").forEach((step) => {
+      const stepNumber = Number(step.dataset.step);
+      const dot = step.querySelector(".pd-step-dot");
+      step.classList.toggle("is-complete", Boolean(action) && (stepNumber < action.stage || (action.phase === "done" && stepNumber === action.stage)));
+      step.classList.toggle("is-current", Boolean(action) && stepNumber === action.stage && action.phase !== "done");
+      if (dot) dot.textContent = Boolean(action) && (stepNumber < action.stage || (action.phase === "done" && stepNumber === action.stage)) ? "✓" : String(stepNumber);
+    });
+    $("#pdAttempts").textContent = `Attempts ${state.attempts.toLocaleString()}`;
+    $("#pdOrders").textContent = `confirmed orders ${state.orders.toLocaleString()}`;
+    $("#pdRetries").textContent = `retries ${state.retries.toLocaleString()}`;
+    stopButton.hidden = !state.traffic;
+    renderEvents();
+    renderMenuAvailability();
+  };
+  const renderMenuAvailability = () => {
+    for (const option of menuOptions) {
+      const type = option.dataset.action;
+      let disabled = inFlight && type !== "stop-traffic";
+      if (type === "start-traffic") disabled ||= state.traffic;
+      if (type === "stop-traffic") disabled ||= !state.traffic || inFlight;
+      if (type === "incident") disabled ||= state.incidentActive || state.request === "errors" || state.alarm === "ALARM";
+      if (type === "recover") disabled ||= state.request !== "errors" && state.alarm !== "ALARM";
+      option.disabled = Boolean(disabled);
+    }
+  };
+  const render = () => {
+    const requestValue = $("#pdRequestValue");
+    const requestDetail = $("#pdRequestDetail");
+    requestValue.textContent = state.request === "errors" ? "Errors observed" : "Success";
+    requestDetail.textContent = state.request === "errors" ? "26 of 30 sample requests" : "30 of 30 sample requests";
+    requestValue.classList.toggle("pd-text-bad", state.request === "errors");
+    $("#pdLatencyValue").textContent = `${state.latency.toLocaleString()} ms`;
+    const alarmValue = $("#pdAlarmValue");
+    alarmValue.textContent = state.alarm;
+    alarmValue.className = "pd-status-word " + (state.alarm === "ALARM" ? "pd-tone-bad" : state.alarm === "OK" ? "pd-tone-good" : "pd-tone-warn");
+    const agent = agentCopy(state.agent);
+    const displayedAgent = state.agentPrevious && state.agent === "complete" ? agentCopy("previous") : agent;
+    $("#pdAgentValue").textContent = displayedAgent[0];
+    $("#pdAgentDetail").textContent = state.agentPrevious && state.agent === "complete" ? displayedAgent[1] : (state.agentDetail || displayedAgent[1]);
+    renderAlarmAge();
+    renderAction();
+  };
+  const setAction = (name, phase, stage, stateLabel, detail) => {
+    state.action = { name, phase, stage, stateLabel, detail };
+    renderAction();
+  };
+  const beginAction = (name, detail) => {
+    const token = clearActionTimers();
+    clearAgeClock();
+    inFlight = true;
+    setAction(name, "running", 1, "Running · applying", detail);
+    renderMenuAvailability();
+    return token;
+  };
+  const confirmAction = (name, detail) => setAction(name, "running", 2, "Change confirmed", detail);
+  const finishAction = (name, detail) => {
+    inFlight = false;
+    setAction(name, "done", 3, "Complete · effects observed", detail);
+    renderMenuAvailability();
+  };
+  const runReadiness = () => {
+    const token = beginAction("Check readiness", "Collecting preview readiness signals.");
+    addEvent("ACTION", "Readiness check started");
+    renderEvents();
+    scheduleAction(() => confirmAction("Check readiness", "Preview checks completed."), 500, token);
+    scheduleAction(() => {
+      addEvent("ACTION", "Preview readiness check completed");
+      finishAction("Check readiness", "Preview checks completed · current status remains visible.");
+    }, 1100, token);
+  };
+  const runStartTraffic = () => {
+    state.traffic = true;
+    renderAction();
+    const token = beginAction("Start traffic", "Starting the local sample traffic sequence.");
+    state.traffic = true;
+    renderAction();
+    addEvent("ACTION", "Sample traffic start requested");
+    renderEvents();
+    scheduleAction(() => confirmAction("Start traffic", "Traffic start confirmed in the preview."), 600, token);
+    scheduleAction(() => {
+      state.attempts += 24;
+      if (state.request === "success") state.orders += 24;
+      addEvent("EFFECT", "Sample traffic effects observed");
+      finishAction("Start traffic", "Traffic is active · use Stop traffic from the header at any time.");
+    }, 1450, token);
+  };
+  const runStopTraffic = () => {
+    const token = beginAction("Stop traffic", "Stopping sample traffic.");
+    state.traffic = false;
+    renderAction();
+    addEvent("ACTION", "Sample traffic stop requested");
+    renderEvents();
+    scheduleAction(() => {
+      addEvent("EFFECT", "Sample traffic stopped");
+      finishAction("Stop traffic", "Traffic stopped · request and alarm status remain visible.");
+    }, 700, token);
+  };
+  const runIncident = () => {
+    const token = beginAction("Activate incident", "Applying the selected preview change.");
+    const scenario = clearScenarioTimers();
+    state.incidentActive = true;
+    addEvent("ACTION", "Incident activation requested");
+    renderEvents();
+    scheduleAction(() => {
+      state.request = "errors";
+      state.latency = 1420;
+      $("#pdRequestValue").textContent = "Errors observed";
+      $("#pdRequestValue").classList.add("pd-text-bad");
+      $("#pdRequestDetail").textContent = "26 of 30 sample requests";
+      $("#pdLatencyValue").textContent = "1,420 ms";
+      addEvent("EFFECT", "Checkout request errors observed");
+      confirmAction("Activate incident", "Change confirmed · request errors are visible.");
+      renderEvents();
+      runAgeClock();
+    }, 650, token);
+    scheduleAction(() => {
+      state.attempts += 30;
+      state.orders += 4;
+      state.retries += 5;
+      addEvent("EFFECT", "Request and order effects observed");
+      finishAction("Activate incident", "Effects observed · alarm evaluation continues independently.");
+      render();
+      runAgeClock();
+    }, 1550, token);
+    scheduleScenario(() => {
+      state.alarm = "ALARM";
+      state.lastReadAt = Date.now();
+      state.alarmChangedAt = Date.now();
+      state.agent = "noRun";
+      state.agentDetail = agentCopy("noRun")[1];
+      addEvent("ALARM", "CloudWatch alarm entered ALARM");
+      render();
+      runAgeClock();
+      scheduleScenario(() => {
+        state.agent = "investigating";
+        state.agentDetail = agentCopy("investigating")[1];
+        addEvent("AGENT", "Agent run observed · investigation started");
+        render();
+      }, 950, scenario);
+      scheduleScenario(() => {
+        if (state.agent === "noRun") {
+          state.agent = "unavailable";
+          state.agentDetail = agentCopy("unavailable")[1];
+          addEvent("AGENT", "No agent activity observed after the alarm");
+          render();
+        }
+      }, 3000, scenario);
+      scheduleScenario(() => {
+        if (state.agent === "investigating") {
+          state.agent = "complete";
+          state.agentDetail = "Agent run finished · result remains available";
+          addEvent("AGENT", "Agent investigation completed");
+          render();
+        }
+      }, 2350, scenario);
+    }, 3200, scenario);
+  };
+  const runRecovery = () => {
+    const token = beginAction("Recover app", "Applying a local recovery preview.");
+    addEvent("ACTION", "Recovery requested");
+    renderEvents();
+    scheduleAction(() => {
+      state.request = "success";
+      state.latency = 224;
+      $("#pdRequestValue").textContent = "Success";
+      $("#pdRequestValue").classList.remove("pd-text-bad");
+      $("#pdRequestDetail").textContent = "Fresh sample requests succeeding";
+      $("#pdLatencyValue").textContent = "224 ms";
+      addEvent("EFFECT", "Fresh checkout requests succeeded");
+      confirmAction("Recover app", "Change confirmed · fresh requests are succeeding.");
+      renderEvents();
+      runAgeClock();
+    }, 650, token);
+    scheduleAction(() => {
+      state.attempts += 12;
+      state.orders += 12;
+      state.incidentActive = true;
+      addEvent("EFFECT", "Recovery effects observed");
+      finishAction("Recover app", "Fresh requests succeed · the alarm can remain ALARM while it reevaluates.");
+      render();
+      runAgeClock();
+    }, 1450, token);
+    const scenario = scenarioToken;
+    scheduleScenario(() => {
+      state.alarm = "OK";
+      state.lastReadAt = Date.now();
+      state.alarmChangedAt = Date.now();
+      state.incidentActive = false;
+      addEvent("ALARM", "CloudWatch alarm returned to OK");
+      render();
+      runAgeClock();
+    }, 4300, scenario);
+  };
+  const resetDemo = () => {
+    clearActionTimers();
+    clearAgeClock();
+    inFlight = false;
+    const preserved = {
+      alarm: state.alarm,
+      lastReadAt: state.lastReadAt,
+      alarmChangedAt: state.alarmChangedAt,
+      agent: state.agent,
+      agentDetail: state.agentDetail,
+      agentPrevious: state.agent === "complete" || state.agent === "investigating" || state.agentPrevious,
+      events: state.events.filter((event) => event.kind === "ALARM" || event.kind === "AGENT").slice(0, 2)
+    };
+    state = { ...structuredClone(initial), ...preserved, incidentActive: preserved.alarm === "ALARM" };
+    state.action = {
+      name: "Reset demo",
+      phase: "done",
+      stage: 3,
+      stateLabel: "Complete · new run started",
+      detail: "Traffic stopped · sample orders and stock restored. Alarm state and agent history remain until new signals arrive."
+    };
+    addEvent("ACTION", "Preview reset completed · new run started");
+    resetReview.hidden = true;
+    render();
+    runAgeClock();
+  };
+  const requestReset = () => {
+    resetReview.hidden = false;
+    cancelResetButton.focus();
+  };
+  const closeMenu = (restoreFocus) => {
+    actionMenu.hidden = true;
+    actionsButton.setAttribute("aria-expanded", "false");
+    if (restoreFocus) actionsButton.focus();
+  };
+  actionsButton.addEventListener("click", () => {
+    const shouldOpen = actionMenu.hidden;
+    actionMenu.hidden = !shouldOpen;
+    actionsButton.setAttribute("aria-expanded", String(shouldOpen));
+    if (shouldOpen) {
+      const firstEnabled = menuOptions.find((item) => !item.disabled);
+      if (firstEnabled) firstEnabled.focus();
+    }
+  });
+  actionMenu.addEventListener("keydown", (event) => {
+    const enabled = menuOptions.filter((item) => !item.disabled);
+    const index = enabled.indexOf(document.activeElement);
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeMenu(true);
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      const delta = event.key === "ArrowDown" ? 1 : -1;
+      enabled[(index + delta + enabled.length) % enabled.length]?.focus();
+    }
+  });
+  root.addEventListener("click", (event) => {
+    if (!event.target.closest(".pd-actions-wrap") && !actionMenu.hidden) closeMenu(false);
+  });
+  menuOptions.forEach((option) => option.addEventListener("click", () => {
+    const action = option.dataset.action;
+    closeMenu(false);
+    if (action === "readiness") runReadiness();
+    if (action === "start-traffic") runStartTraffic();
+    if (action === "stop-traffic") runStopTraffic();
+    if (action === "incident") runIncident();
+    if (action === "recover") runRecovery();
+    if (action === "reset") requestReset();
+  }));
+  stopButton.addEventListener("click", runStopTraffic);
+  cancelResetButton.addEventListener("click", () => {
+    resetReview.hidden = true;
+    actionsButton.focus();
+  });
+  confirmResetButton.addEventListener("click", resetDemo);
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !actionMenu.hidden) closeMenu(true);
+  });
+  render();
+})();
+</script>
