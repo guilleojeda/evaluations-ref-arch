@@ -163,6 +163,35 @@ Use prepared examples and actual reviewed results for the five-minute explanatio
 
 Do not report invented measurements, universal cutoffs, or production failure rates inferred from a small demo sample. Explain sample size, the tested cases, and remaining uncertainty. The talk should include checks that catch defects and at least one concrete limitation or missed defect.
 
+## Evaluation cost and judge model selection
+
+Keep this brief in the presentation: judge selection belongs in the existing calibration block, measured cost in the prepared measurements block, and recurring cost in the CI explanation. These notes also support questions; they add no stage or presentation time.
+
+### Cost of development and CI
+
+Report cost for one complete experiment and for the required CI run, with the case count, candidate versions, repetitions, evaluator configuration, pricing date, and included services. Separate these components:
+
+| Component | What drives it |
+| --- | --- |
+| Fresh agent executions | Model calls and tool activity for each case, candidate, and repetition. A longer investigation can cost more than a single answer. Rejudging a saved trace avoids this fresh execution cost but cannot establish that a changed candidate works. |
+| Scoring | The number and scope of criteria, scoring repetitions, trace/context length, and selected evaluator/model pricing. |
+| Supporting services | Applicable compute, telemetry ingestion/storage/queries, and CI runner charges. Record them for the selected path rather than assuming every possible service is used or free. |
+| Preparation and feedback time | Human time to review cases and calibrate judges, plus agent execution, scoring, ingestion waits, and CI feedback time. Keep this separate from the model/service bill. |
+
+Pricing depends on the evaluation path. [AgentCore built-in evaluator pricing](https://aws.amazon.com/bedrock/agentcore/pricing/) includes judge-model usage; do not count it again as separate inference. AWS lists custom-evaluator pricing with model usage billed separately. [Code evaluators](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-based-evaluators.html) execute through Lambda, so include applicable [Lambda charges](https://aws.amazon.com/lambda/pricing/); code checks need no judge inference unless their implementation calls a model. Strands model judges incur the chosen provider's inference charges. Include the selected path's [CloudWatch charges](https://aws.amazon.com/cloudwatch/pricing/) and CI runner costs separately, using current rates when preparing the measured example.
+
+For a fixed suite and configuration, the recurring estimate is the measured cost per run multiplied by the number of local experiments or gated CI runs. Record retries and repeated scoring as well. Cost does not have to scale exactly with case count because traces and investigations vary; distinguish actual billed usage from an estimate.
+
+Focused development runs provide quick feedback on relevant cases. The release gate still runs its reviewed required suite, and local subsets must not be presented as a complete release result. Explain the tradeoff in both dollars and feedback time; avoid claiming a universal savings or productivity improvement. No suite price or monthly budget has been measured for this project yet.
+
+### Choosing a judge model
+
+Select the judge independently from the agent, within the options supported by the chosen evaluation product and evaluator. Compare models using the same evidence, rubric, and human-reviewed examples, inspecting false passes, false failures, explanations, latency, and total scoring cost. Choose the least expensive supported model that meets the reviewed quality requirements for these decisions. Model size, price, or identity with the agent model does not establish judge quality.
+
+The configuration options differ: [AgentCore built-in evaluators](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/built-in-evaluators-overview.html) have fixed prompts and models. Its [custom LLM evaluators](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/create-evaluator.html) allow supported model/settings choices, and [Strands model evaluators](https://strandsagents.com/docs/user-guide/evals-sdk/evaluators/output_evaluator/) accept a model override. Explain that distinction when discussing judge selection; the talk does not promise that a built-in judge's model can be replaced.
+
+Check that the judge can handle the supplied evidence and context, then validate it on the separate judge holdout. Keep model/version, rubric, and settings fixed when comparing agent candidates. Changing the judge is a change to the measurement: recheck calibration and establish a comparable baseline before interpreting score differences as an agent improvement. Final judge selection remains open until those checks are performed.
+
 ## Open decisions
 
 The [scenario contracts](demo-scenarios.md) define the two incident families and the recovered/stale-alert condition. The [instruction versions](components/operations-agent.md#instruction-versions) specify the planned faulty, repaired, and regressed rules; the denied-read action check is the required regression's failure witness. The S3 section specifies local execution and AgentCore scoring before deployment; S4 reuses the execution function through Strands. Exact live-event/run wire formats and discovery indexes, concrete capture contents and their file/schema/provider, telemetry and evaluator adapters, the S4/S5 semantic evaluator backend, final rehearsed prompt wording, optional additional candidate variants, judge rubrics/models, numerical release thresholds, holdout selection, and measurement repetitions remain open. The [demo script](demo-script.md) records how these cases enter the S0–S5 teaching sequence.

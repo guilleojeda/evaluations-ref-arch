@@ -21,13 +21,13 @@ The complete talk is 60 minutes, including presentation, live operation, code ed
 | 11–15 |  | S0 | Code walkthrough and audience question | Application recovery: ~1–2 min |
 | 15–18 | What did the agent actually do? | S0 | Inspect the execution in AgentCore Observability |  |
 | 18–23 | From failure to test case | S0 -> S1 -> S2 | Construct one case, load the prepared dataset, and start baseline evaluation | Baseline evaluation: ~5 min |
-| 23–28 |  | S2 | Explain judges, calibration, holdouts, and repeated runs |  |
+| 23–28 |  | S2 | Explain judge model selection, calibration, holdouts, and repeated runs |  |
 | 28–30 |  | S2 | Inspect baseline evaluation failures |  |
 | 30–31 |  | S2 -> S3 | Change the prompt and run the changed agent | Execution and evaluation, including telemetry: ~8 min |
 | 31–36 | The developer experience of evals | S3 -> S4 | Show the Strands in-code experiment workflow |  |
-| 36–39 |  | S4 | Present prepared measurements and limitations |  |
+| 36–39 |  | S4 | Present prepared measurements, evaluation costs, and limitations |  |
 | 39–40 |  | S4 | Compare candidate results and push the repair | Deployment: ~4 min |
-| 40–44 |  | S4 -> S5 | Add the experiment to CI |  |
+| 40–44 |  | S4 -> S5 | Add the experiment to CI and explain cost per run |  |
 | 44–48 |  | S5 | Repeat the incident with the deployed agent | Alarm and agent report: ~2–3 min; corrective action: ~1 min |
 | 48–54 |  | S5 | Introduce the prepared prompt regression and show CI rejection | CI evaluation: ~5 min |
 | 54–55 | Closing | S5 | Deliver the approved closing |  |
@@ -74,11 +74,21 @@ Open AgentCore Observability and inspect the matched execution, read-only tools,
 
 Construct exactly one reviewed case completely from the preserved source capture: case identity and reference time, expected diagnosis, required evidence, expected action, and target. Then open the separately prepared dataset. Do not imply a fixed dataset size; any illustrative “50” is not a required case count. Show deterministic code checks for the action and target separately from judge assessment of evidence and diagnosis. Start the baseline AgentCore evaluation over already captured actual executions.
 
+#### Judge model selection
+
+During the existing calibration explanation, briefly describe choosing the judge separately from the agent where configuration is supported: AgentCore built-in judges have fixed models, while custom judges and Strands model evaluators offer choices. Test supported candidates against human-reviewed examples, then weigh false passes, false failures, cost, and latency. A larger model is a candidate to measure, not an automatic quality guarantee. Keep the judge and rubric fixed for the agent comparison; changing either requires checking calibration again.
+
 ### The developer experience of evals
 
 #### Prompt change and experiment workflow
 
 Keep the prompt repair and the development experiment visibly separate. The prompt edit is the candidate change. The Strands workflow then runs the cases, task, evaluator, and experiment, and CI automates that workflow. The fresh candidate has its own execution and result identity. An old trace cannot establish that the changed candidate was executed.
+
+#### Evaluation cost in development and CI
+
+In the 36–39 measurements block, show one measured complete experiment's cost, split between agent executions, scoring, and applicable service overhead, alongside its feedback time. State the case count, repetitions, judge configuration, pricing date, and what is included. Explain that repeated local experiments add cost; scoring a saved trace does not rerun the agent or test a changed candidate.
+
+During the 40–44 CI block, point out that this cost recurs each time the required workflow runs, with CI runner time and telemetry waits also affecting feedback. Focused local runs can shorten iteration, while the release gate retains its required suite. Use the [cost and judge-selection notes](evaluations.md#evaluation-cost-and-judge-model-selection) for questions; do not give an unmeasured dollar estimate.
 
 #### Repaired live incident
 

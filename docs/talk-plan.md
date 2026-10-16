@@ -65,6 +65,14 @@ Preserve the same reviewed case meaning and criteria across AgentCore and Strand
 
 Code excerpts use Python for the agent and evaluation workflow and TypeScript for the application and controller. The [agent](components/operations-agent.md), [application](components/application.md), and [controller](components/failure-controller.md) documents own component behavior. The [demo progression](demo-progression.md) describes the capability stages, and the [evaluation approach](evaluations.md) owns captured evidence, evaluators, and release-policy details.
 
+### Brief cost and judge-model discussion
+
+During the judges/calibration block, explain that the judge model is a separate choice from the agent model where the evaluator supports configuration. AgentCore built-in judges have fixed models; custom judges and Strands model evaluators provide model choices. Compare supported choices against human-reviewed examples for agreement, false passes, false failures, cost, and latency. Prefer the least expensive model that meets the reviewed quality requirements; size or price alone does not establish that it is a trustworthy judge. Keep its model and rubric fixed when comparing agent candidates, and recheck calibration when either changes.
+
+Use the prepared measurements block to show the cost of one complete experiment, separating fresh agent executions from scoring and applicable service costs. Then explain the development and CI effect: more local experiments and more gated CI runs increase spending, while evaluation and telemetry waits also increase feedback time. Rejudging an existing trace avoids a fresh agent execution but cannot test a changed prompt. Use measured usage and dated pricing, with the case count, repetitions, and evaluator configuration visible; no dollar figure is selected yet.
+
+When adding CI, briefly distinguish focused development runs from the required release suite. Developers can run relevant cases while iterating; the release gate still runs the required checks. Show the cost per required CI run and how often that workflow runs. The [cost and judge-selection notes](evaluations.md#evaluation-cost-and-judge-model-selection) support these points and anticipated questions.
+
 ## Run of show
 
 | Minutes | Section | Stage | Activity | Expected wait |
@@ -74,13 +82,13 @@ Code excerpts use Python for the agent and evaluation workflow and TypeScript fo
 | 11–15 |  | S0 | Code walkthrough and audience question | Application recovery: ~1–2 min |
 | 15–18 | What did the agent actually do? | S0 | Inspect the execution in AgentCore Observability |  |
 | 18–23 | From failure to test case | S0 -> S1 -> S2 | Construct one case, load the prepared dataset, and start baseline evaluation | Baseline evaluation: ~5 min |
-| 23–28 |  | S2 | Explain judges, calibration, holdouts, and repeated runs |  |
+| 23–28 |  | S2 | Explain judge model selection, calibration, holdouts, and repeated runs |  |
 | 28–30 |  | S2 | Inspect baseline evaluation failures |  |
 | 30–31 |  | S2 -> S3 | Change the prompt and run the changed agent | Execution and evaluation, including telemetry: ~8 min |
 | 31–36 | The developer experience of evals | S3 -> S4 | Show the Strands in-code experiment workflow |  |
-| 36–39 |  | S4 | Present prepared measurements and limitations |  |
+| 36–39 |  | S4 | Present prepared measurements, evaluation costs, and limitations |  |
 | 39–40 |  | S4 | Compare candidate results and push the repair | Deployment: ~4 min |
-| 40–44 |  | S4 -> S5 | Add the experiment to CI |  |
+| 40–44 |  | S4 -> S5 | Add the experiment to CI and explain cost per run |  |
 | 44–48 |  | S5 | Repeat the incident with the deployed agent | Alarm and agent report: ~2–3 min; corrective action: ~1 min |
 | 48–54 |  | S5 | Introduce the prepared prompt regression and show CI rejection | CI evaluation: ~5 min |
 | 54–55 | Closing | S5 | Deliver the approved closing |  |
@@ -102,8 +110,8 @@ Use the AWS-supplied template. The five section titles can become divider slides
 | --- | --- |
 | Does the recommendation actually fix the problem? | Evaluation introduction, application and agent overview, output-only failure demonstration, and agent code walkthrough. |
 | What did the agent actually do? | AgentCore Observability execution, tool calls, returned evidence, and time windows. |
-| From failure to test case | One complete reviewed case, the separately prepared dataset, code checks and judge criteria, calibration and holdouts, baseline failures, and the prompt repair. |
-| The developer experience of evals | Strands experiment code, prepared measurements and limitations, candidate comparison, CI integration, deployment, corrected live incident, and rejected prompt regression. |
+| From failure to test case | One complete reviewed case, the separately prepared dataset, code checks and judge criteria, judge model selection, calibration and holdouts, baseline failures, and the prompt repair. |
+| The developer experience of evals | Strands experiment code, prepared measurements including evaluation and development costs, limitations, candidate comparison, CI integration and cost per run, deployment, corrected live incident, and rejected prompt regression. |
 | Closing | Approved closing and resources, followed by questions. |
 
 Speaker notes should identify screen changes, code edits, background operations and expected wait durations, audience questions, and recovery cues. Use actual recorded evidence when needed and keep its provenance visible. Numerical claims in the talk must come from collected measurements.
