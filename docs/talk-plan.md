@@ -16,11 +16,11 @@ The three key lessons are:
 
 ## Incident story
 
-The opening question is: **Our operations agent gives convincing answers. Can we tell whether a change made it unsafe to ship?**
+Ask the opening question aloud on the title slide: “How would you know if your latest prompt change made your agent unsafe to ship?” Keep the five-minute introduction focused on the brief status-report example and preserve the ten-minute combined opening incident and code walkthrough.
 
 Open on the Inventory access-denied incident. The S0 candidate investigates a genuine alarm read-only, then recommends increasing memory on INVENTORY. The presenter independently applies that configuration change and separately sends ordinary traffic; the denied read still fails because memory does not remove the Inventory table-policy Deny. Show the configuration readback and later request result as separate evidence. This is an application incident exposing an agent defect, not an agent-controlled remediation.
 
-The application story also includes inventory capacity overload under a positive reserved-concurrency cap. The correct proposal for that reviewed case is an increased Inventory reserved-concurrency cap. After the prompt repair, show this recommendation with evidence from an actual run; if the incident was not run live, label its matching saved run as recorded. The live sequence has two valid incidents: the opening access-denied incident and, after repair and deployment, a newly induced access-denied incident with a new alarm and run. A recovered/stale-alert condition remains a useful temporal control case: it may be represented by a qualifying later investigation or by offline regression over captured reference-time evidence. An old-alert replay concern is not a third live incident. The [scenario contracts](demo-scenarios.md) define incident behavior, and the [demo cue sheet](demo-script.md) holds the presenter sequence.
+In the candidate comparison, pair the repaired agent's two findings. The denied-read evidence supports restoring the Inventory table policy. Throttling evidence under a positive reserved-concurrency cap supports increasing the Inventory cap. The pair tests whether the prompt repair selects an action that addresses the mechanism in each case. Show actual results and label any saved run recorded. The live sequence has two incidents: the opening access-denied incident and, after repair and deployment, a newly induced access-denied incident with a new alarm and run. A recovered/stale-alert condition remains a useful temporal control case: it may be represented by a qualifying later investigation or by offline regression over captured reference-time evidence. An old-alert replay concern is not a third live incident. The [scenario contracts](demo-scenarios.md) define incident behavior, and the [demo cue sheet](demo-script.md) holds the presenter sequence.
 
 The agent chooses relevant read-only queries, windows, and query order from available evidence; it is not given a preassembled packet. It proposes exactly one action from the approved menu: increase reserved concurrency on CHECKOUT or INVENTORY to a higher cap, increase memory on CHECKOUT or INVENTORY to a larger MB allocation, restore the expected Inventory table policy, or select Other with a reason, including no change or unknown. The presenter makes any controller action independently. Neither the proposal nor its configuration readback proves an application effect, and the controller action does not generate traffic.
 
@@ -55,7 +55,7 @@ A transition marks a capability being introduced; it does not imply that an asyn
 
 Show the initial agent constructor, prompt, tools, and structured report. Add one complete reviewed case, one recommendation check, and one semantic judge criterion before running the baseline evaluation. The prompt repair is a focused change to the agent's decision rule: select a recommendation that addresses the failure mechanism supported by evidence, and explain uncertainty or recovery when a configuration change is unwarranted. It must be tested across the reviewed cases rather than treated as an established fix merely because the prompt changed.
 
-The Strands segment connects the shared agent constructor, case loader, evaluation task, evaluators, result reporting, and candidate comparison. Runtime and evaluation executions use the same agent construction and tool contracts; live investigations read AWS, while regressions use the approved captured evidence providers. Each candidate chooses its own queries and their order. The CI edit invokes that experiment and applies the same release policy before deployment.
+Lead into Strands by asking how to run the same checks after the next edit. Show the actual local command and open one failed case and its evidence. The Strands segment connects the shared agent constructor, case loader, evaluation task, evaluators, result reporting, and candidate comparison. Runtime and evaluation executions use the same agent construction and tool contracts; live investigations read AWS, while regressions use the approved captured evidence providers. Each candidate chooses its own queries and their order. The CI edit invokes that experiment and applies the same release policy before deployment.
 
 The [instruction versions](components/operations-agent.md#instruction-versions) define the draft faulty, repaired, and regressed prompt edits. The [worked case](evaluations.md#worked-case-inventory-access-denied) connects the denied-read evidence to its checks and semantic criterion, while the [S3 execution path](evaluations.md#s3-fresh-candidate-before-deployment) explains how to score the changed candidate before deployment. Use the [calibration and holdout guidance](evaluations.md#calibration-holdouts-and-repeated-runs) for the five-minute explanation; final prompt wording and actual example results still require implementation and rehearsal.
 
@@ -67,11 +67,26 @@ Code excerpts use Python for the agent and evaluation workflow and TypeScript fo
 
 ### Brief cost and judge-model discussion
 
-During the judges/calibration block, explain that the judge model is a separate choice from the agent model where the evaluator supports configuration. AgentCore built-in judges have fixed models; custom judges and Strands model evaluators provide model choices. Compare supported choices against human-reviewed examples for agreement, false passes, false failures, cost, and latency. Prefer the least expensive model that meets the reviewed quality requirements; size or price alone does not establish that it is a trustworthy judge. Keep its model and rubric fixed when comparing agent candidates, and recheck calibration when either changes.
+Use one sentence for model selection during calibration. “AgentCore built-in judges have fixed models, and where you can choose a judge model separately from your agent, use the least expensive supported model that meets your quality requirements on human-reviewed examples.” Keep comparisons of false passes, false failures, cost, and latency available for questions. Keep the judge model and rubric fixed when comparing agent candidates, and recheck calibration when either changes.
 
-Use the prepared measurements block to show the cost of one complete experiment, separating fresh agent executions from scoring and applicable service costs. Then explain the development and CI effect: more local experiments and more gated CI runs increase spending, while evaluation and telemetry waits also increase feedback time. Rejudging an existing trace avoids a fresh agent execution but cannot test a changed prompt. Use measured usage and dated pricing, with the case count, repetitions, and evaluator configuration visible; no dollar figure is selected yet.
+Use the prepared measurements block to show the cost of one complete experiment, separating fresh agent executions from scoring and applicable service costs. As soon as the candidate comparison is ready, show it before continuing the cost discussion. Push the repair only after an actual passing S4 local Strands experiment and reviewed policy result for that candidate. Keep remaining cost detail for the CI block or questions. Explain how local and CI run frequency affects spending and how evaluation and telemetry waits affect feedback time. Rejudging an existing trace avoids a fresh agent execution but cannot test a changed prompt. Use measured usage and dated pricing, with the case count, repetitions, and evaluator configuration visible; no dollar figure is selected yet.
 
 When adding CI, briefly distinguish focused development runs from the required release suite. Developers can run relevant cases while iterating; the release gate still runs the required checks. Show the cost per required CI run and how often that workflow runs. The [cost and judge-selection notes](evaluations.md#evaluation-cost-and-judge-model-selection) support these points and anticipated questions.
+
+### Audience participation
+
+Use three core interactions: help define the first case, judge a report, and have the prepared audience participant change the prompt. The Observability choice is optional. Each fits its existing block and leads to the same key lesson; the five sections, capability stages, and operation waits stay fixed.
+
+| Block | Format | Interaction | Scope |
+| --- | --- | --- | --- |
+| 15–18: Observability | Optional bounded choice | Ask “Logs or configuration—which would you inspect first?” and open the chosen view first. | Prepare both routes through the matched execution. Both cover the same diagnostic evidence before moving on; the choice changes presentation order, not the agent's recorded tool order. |
+| 18–23: Case construction | Genuine audience input | Ask “What should an acceptable recommendation do here?” Use one short action/target or one-sentence expectation to help write the case. | Check the contribution against the denied-read evidence and translate it into the prepared case fields. Complete review before baseline evaluation; the accepted meaning is restoring Inventory access, not an answer chosen by popularity. |
+| 23–28: Judges and calibration | Genuine audience judgment | Show one prepared report with the right action and target but a plausible diagnosis unsupported by the displayed evidence. Ask “Would you accept this recommendation? Why?” Take a show of hands and one explanation. | Keep the criteria visible. Reveal the reviewed verdict and actual model-judge finding after the vote, then use their agreement or disagreement to explain calibration. The vote is discussion material; it does not change the rubric, case labels, holdouts, or release policy. |
+| 48–54: Regression and CI | Prepared audience interaction | A friend in the audience proposes and types the rehearsed regression. Ask the room “What happens if I push?”, then show the actual candidate evaluation and CI decision. | Use the prepared prompt edit with the same cases, evaluators, and policy. The interaction is staged; execution and rejection must be genuine. |
+
+Keep the audience-contributed expectation visible when CI rejects the regression: “This is the behavior you said we should require.” Review audience wording before entering it into the case; keep it out of executable code and judge instructions. Cases and criteria stay fixed through the candidate comparisons.
+
+Take one contribution or explanation at each core moment, then continue. If an answer is unsupported or unrelated, briefly explain why and use the prepared expectation. With no response, supply it yourself; default to the rehearsed view order when skipping the optional choice. If the friend is unavailable, type the same prepared regression yourself. Keep the 30–31 prompt repair rehearsed because that one-minute block starts the next asynchronous operation. Detailed prompts and transitions belong in the [presenter cues](demo-script.md#presenter-cues).
 
 ## Run of show
 
@@ -80,9 +95,9 @@ When adding CI, briefly distinguish focused development runs from the required r
 | 0–5 | Does the recommendation actually fix the problem? | S0 | Introduction to evaluations |  |
 | 5–11 |  | S0 | Example and agent failure | Alarm and agent report: ~2–3 min; configuration change: ~1 min; telemetry ingestion: 2–5 min |
 | 11–15 |  | S0 | Code walkthrough and audience question | Application recovery: ~1–2 min |
-| 15–18 | What did the agent actually do? | S0 | Inspect the execution in AgentCore Observability |  |
-| 18–23 | From failure to test case | S0 -> S1 -> S2 | Construct one case, load the prepared dataset, and start baseline evaluation | Baseline evaluation: ~5 min |
-| 23–28 |  | S2 | Explain judge model selection, calibration, holdouts, and repeated runs |  |
+| 15–18 | What did the agent actually do? | S0 | Inspect AgentCore Observability; optional audience choice of first view |  |
+| 18–23 | From failure to test case | S0 -> S1 -> S2 | Construct one case with audience input, load the prepared dataset, and start baseline evaluation | Baseline evaluation: ~5 min |
+| 23–28 |  | S2 | Audience judging exercise; explain judge model selection, calibration, holdouts, and repeated runs |  |
 | 28–30 |  | S2 | Inspect baseline evaluation failures |  |
 | 30–31 |  | S2 -> S3 | Change the prompt and run the changed agent | Execution and evaluation, including telemetry: ~8 min |
 | 31–36 | The developer experience of evals | S3 -> S4 | Show the Strands in-code experiment workflow |  |
@@ -90,7 +105,7 @@ When adding CI, briefly distinguish focused development runs from the required r
 | 39–40 |  | S4 | Compare candidate results and push the repair | Deployment: ~4 min |
 | 40–44 |  | S4 -> S5 | Add the experiment to CI and explain cost per run |  |
 | 44–48 |  | S5 | Repeat the incident with the deployed agent | Alarm and agent report: ~2–3 min; corrective action: ~1 min |
-| 48–54 |  | S5 | Introduce the prepared prompt regression and show CI rejection | CI evaluation: ~5 min |
+| 48–54 |  | S5 | Audience participant types the prepared prompt regression; show CI rejection | CI evaluation: ~5 min |
 | 54–55 | Closing | S5 | Deliver the approved closing |  |
 | 55–60 |  | S5 | Questions and buffer |  |
 
@@ -104,21 +119,17 @@ The approved closing is:
 
 ## Slide storyboard
 
-Use the AWS-supplied template. The five section titles can become divider slides. Individual presentation blocks can use slides, code, the controller, or evaluation views; they do not each need a section divider.
+The [slides plan](slides-plan.md) proposes the rebuilt audience sequence and interleaved hidden reference slides for review, with each slide's purpose, audience context, visible explanation, and next-screen transition. It also owns the appendix and recorded fallback guidance. This talk plan owns the schedule and narrative; the [demo cue sheet](demo-script.md) owns presenter actions and operating steps.
 
-| Section | Supporting material |
-| --- | --- |
-| Does the recommendation actually fix the problem? | Evaluation introduction, application and agent overview, output-only failure demonstration, and agent code walkthrough. |
-| What did the agent actually do? | AgentCore Observability execution, tool calls, returned evidence, and time windows. |
-| From failure to test case | One complete reviewed case, the separately prepared dataset, code checks and judge criteria, judge model selection, calibration and holdouts, baseline failures, and the prompt repair. |
-| The developer experience of evals | Strands experiment code, prepared measurements including evaluation and development costs, limitations, candidate comparison, CI integration and cost per run, deployment, corrected live incident, and rejected prompt regression. |
-| Closing | Approved closing and resources, followed by questions. |
+Use the AWS-supplied template. Section names organize the schedule; audience slides appear where they establish context, explain a concept, direct attention, or interpret evidence. Hidden reference slides explain the live/code segments for private review and are never projected to the audience. They occupy no additional stage time, and individual blocks do not each need an audience divider.
 
 Speaker notes should identify screen changes, code edits, background operations and expected wait durations, audience questions, and recovery cues. Use actual recorded evidence when needed and keep its provenance visible. Numerical claims in the talk must come from collected measurements.
 
 ## Demonstration reliability
 
 Measure the live path before assigning its time budget. Evaluation workflows that collect CloudWatch telemetry can introduce ingestion waits. Prepare actual saved traces and results for delays; use a direct path over captured spans only if rehearsal confirms it. The schedule's non-telemetry numbers are provisional rehearsal estimates, not measurements. Do not claim a latency or service-level duration until it has been measured.
+
+Rehearse the switch to actual matching recorded evidence for the repaired incident and CI rejection. Use rehearsal to decide when a pending live result would consume the time needed to explain the outcome and close. Keep the recorded status and provenance visible, and leave any unfinished live result pending.
 
 Preprovision the selected environment and prepare saved traces and results from actual executions. Before each alarm-driven incident, observe the real alarm OK and confirm the integration is ready. Match the actual event to the corresponding agent run by alarm ARN and originating ALARM-transition timestamp; retain that identity through OK and discover actual recorded runs after missed polls. Dashboard polling does not invoke the agent, and a manual invocation is not evidence of alarm delivery. Preserve the incident source capture before recovery; review it into a case at S1. Recovery restores the current deployment generation's baseline memory/version, caps, policy, and healthy aliases; a full reset follows the scenario contract's business-data semantics. Both sessions start from a verified baseline.
 
