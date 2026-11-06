@@ -303,7 +303,6 @@ export class AppStack extends DemoStack {
         httpStatus,
         ttl: Duration.seconds(0),
       })),
-      minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
     });
 
     // CI publishes hashed assets first, then index.html with revalidation
