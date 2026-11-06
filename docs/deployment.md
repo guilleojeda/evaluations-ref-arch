@@ -11,7 +11,7 @@ npm ci
 uv sync --project agent --locked
 ```
 
-Run `npm run dev --workspace app` or `npm run dev --workspace controller` and open the local URL Vite prints. Start the credential-free AgentCore entry with `uv run --project agent --locked python agent/main.py`. Its health endpoint is `http://127.0.0.1:8080/ping`. See the [agent runtime commands](../agent/README.md) for a sample invocation and the native ARM64 package check.
+Run `APP_API_URL=https://<api-id>.execute-api.us-east-1.amazonaws.com npm run dev --workspace app` with the direct API origin from the app stack outputs. Open the local URL Vite prints and enter the presenter credential on the page. Vite proxies the relative business routes to the deployed API. Start the controller separately with `npm run dev --workspace controller`. Start the credential-free AgentCore entry with `uv run --project agent --locked python agent/main.py`. Its health endpoint is `http://127.0.0.1:8080/ping`. See the [agent runtime commands](../agent/README.md) for a sample invocation and the native ARM64 package check.
 
 Build and synthesize the component you are changing.
 
@@ -21,7 +21,7 @@ npm run check -- controller
 npm run check -- agent
 ```
 
-The checks write browser builds and CDK assemblies under `.artifacts/<component>/`. The agent assembly publishes `.artifacts/agent/runtime.zip` as a CDK file asset. It packages the locked dependencies for ARM64 Linux. Check the three assemblies and deployment routing with `node --test tests/phase0*.mjs`.
+The checks write browser builds and CDK assemblies under `.artifacts/<component>/`. The agent assembly publishes `.artifacts/agent/runtime.zip` as a CDK file asset. It packages the locked dependencies for ARM64 Linux. Check the three assemblies, deployment routing, and local checkout cases with `node --test tests/phase0*.mjs tests/phase1-*.test.mjs` after building. The deployed API suite is opt-in and consumes stock from an explicitly prepared verification fixture.
 
 ## GitHub Actions
 
@@ -33,7 +33,7 @@ Use [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) for pull r
 | Failure controller | `IncidentTriageDemoController` |
 | Agent | `IncidentTriageDemoAgent` |
 
-Deploy jobs serialize within each stack. During groundwork they assume the deployment role and verify the bootstrap path. The agent job also publishes and checks the ZIP asset. The component stacks first change when their first features are delivered. Once a stack has a successful release, compare candidates with its deployed revision inside the serialized job and skip a superseded candidate.
+Deploy jobs serialize within each stack. The app job compares the candidate with the successful app stack revision, skips superseded or irrelevant candidates, and uses the checked CDK assembly. It inspects the prepared CloudFormation change set for table removal or possible replacement before executing that exact change set. It publishes immutable hashed assets before the revalidatable HTML. The controller and agent jobs verify their groundwork paths. The agent job also publishes and checks the ZIP asset.
 
 When a release depends on changes in another stack, merge and verify the dependency first. Record the checked assembly's source revision and deployed artifact or version identity with each release. Finish deployments before a demo run. If a deployment overlaps a run, abandon that run and verify the current release and settings before starting another.
 
@@ -47,7 +47,7 @@ aws sts get-caller-identity --profile reinvent-2026-talk --region us-east-1
 
 GitHub receives short-lived credentials through OIDC. The deployment role trusts the STS audience and the immutable identity of `guilleojeda/evaluations-ref-arch`, and pins the caller to `.github/workflows/deploy.yml` on `main`. It assumes the CDK deployment and file-publishing roles. Bootstrap administration, CloudFormation execution, and component runtime permissions use separate roles. [GitHub OIDC for AWS](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws) · [CDK bootstrapping](https://docs.aws.amazon.com/cdk/v2/guide/bootstrapping-env.html)
 
-Follow the [AWS bootstrap commands](../infrastructure/bootstrap/README.md) to provision the scoped execution policy, dedicated `evaltalk` toolkit, and GitHub IAM stack in that order. The groundwork role can verify the toolkit but cannot create CloudFormation change sets. Scope the deployment guard and CloudFormation execution grants to the feature resources when adding the first product change set.
+Follow the [AWS bootstrap commands](../infrastructure/bootstrap/README.md) to provision the scoped execution policy, dedicated `evaltalk` toolkit, and GitHub IAM stack in that order. The dedicated deploy role can prepare and execute change sets for the named app stack, and CloudFormation executes them using the scoped policy. Use the verified administrator for updates to the bootstrap IAM stacks. Keep the deploy guard and CloudFormation execution grants scoped to reviewed feature resources.
 
 Before setting the GitHub subject template, inspect existing Actions runs and OIDC consumers for the repository. Preserve immutable identity. A repository admin can set the template with GitHub CLI.
 
@@ -58,6 +58,32 @@ gh api --method PUT repos/guilleojeda/evaluations-ref-arch/actions/oidc/customiz
 JSON
 gh api repos/guilleojeda/evaluations-ref-arch/actions/oidc/customization/sub
 ```
+
+## First app release and presenter access
+
+Before the first app release, generate a high-entropy presenter bearer in private storage. Supply only its SHA-256 digest to the repository's `APP_PRESENTER_DIGEST` Actions secret. The app stack stores the digest as a required CloudFormation `NoEcho` parameter. Later releases use the stored value. Remove the repository secret after verifying the first successful release and sign-in with `gh secret delete APP_PRESENTER_DIGEST --repo guilleojeda/evaluations-ref-arch`.
+
+For example, the following creates a private temporary file for the bearer. Keep the bearer in a secure location available to the presenter before deleting that file.
+
+```sh
+umask 077
+presenter_file=$(mktemp)
+openssl rand -hex 32 > "$presenter_file"
+tr -d '\n' < "$presenter_file" | openssl dgst -sha256 -r | cut -d ' ' -f 1 \
+  | gh secret set APP_PRESENTER_DIGEST --repo guilleojeda/evaluations-ref-arch
+```
+
+After the deployment job succeeds, read the app stack outputs and seed the table with the verified AWS CLI v2 profile.
+
+```sh
+aws cloudformation describe-stacks --stack-name IncidentTriageDemoApp \
+  --profile reinvent-2026-talk --region us-east-1 --query 'Stacks[0].Outputs'
+node scripts/seed-app-inventory.mjs
+```
+
+The seed inserts the demo SKU with 1,000 units only when it is absent. Reruns report the existing version and quantity. Open the CloudFront site URL from the outputs, enter the bearer, and verify one normal order and its stock decrement. The direct API origin is available for the local Vite proxy. The outputs also identify the source revision, tables, function and alias targets, and logs used to check the release.
+
+Reloading the page requires the bearer again. If an order response is lost, use the saved attempt to check status or retry the original submission. A missing status may precede a commit. Check that the page shows a confirmed receipt before placing another order.
 
 ## Deployment and controller baseline
 

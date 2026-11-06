@@ -1,8 +1,29 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  Standalone, read-only Phase 0 policy for the CDK CloudFormation execution
-  role. Product-service permissions are deliberately absent until the first
-  reviewed feature change set extends this managed policy.
+  CloudFormation execution policy for the Incident Triage Demo app stack.
+  Product resources are named and scoped to the app; the only service APIs
+  without usable resource ARNs are constrained to this account and Region.
+
+Parameters:
+  AppHttpApiId:
+    Type: String
+    Default: '*'
+    AllowedPattern: '^(\*|[A-Za-z0-9_-]+)$'
+    Description: >-
+      Existing app HTTP API ID for post-create tightening; leave '*' only for
+      the first app stack create.
+  AppDistributionId:
+    Type: String
+    Default: '*'
+    AllowedPattern: '^(\*|[A-Za-z0-9_-]+)$'
+    Description: >-
+      Existing app CloudFront distribution ID for post-create tightening.
+  AppOriginAccessControlId:
+    Type: String
+    Default: '*'
+    AllowedPattern: '^(\*|[A-Za-z0-9_-]+)$'
+    Description: >-
+      Existing app CloudFront OAC ID for post-create tightening.
 
 Resources:
   IncidentTriageDemoBootstrapCfnExecution:
@@ -18,7 +39,7 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: InspectDemoBootstrapStacks
+          - Sid: InspectDemoStacks
             Effect: Allow
             Action:
               - cloudformation:DescribeChangeSet
@@ -28,12 +49,272 @@ Resources:
               - cloudformation:GetTemplateSummary
               - cloudformation:ListStackResources
             Resource:
-              - arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoBootstrap*/*
+              - arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoApp/*
+              - arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoBootstrap*
+
           - Sid: ReadBootstrapVersionMarker
             Effect: Allow
             Action:
               - ssm:GetParameter
+              - ssm:GetParameters
             Resource: arn:aws:ssm:us-east-1:027224425948:parameter/cdk-bootstrap/evaltalk/version
+
+          - Sid: ReadCdkLambdaAssets
+            Effect: Allow
+            Action:
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:GetObjectVersion
+            Resource:
+              - arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1
+              - arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*
+
+          - Sid: ManageAppTables
+            Effect: Allow
+            Action:
+              - dynamodb:CreateTable
+              - dynamodb:Describe*
+              - dynamodb:ListTagsOfResource
+              - dynamodb:TagResource
+              - dynamodb:UpdateTable
+            Resource:
+              - arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoOrders
+              - arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoInventory
+
+          - Sid: ManageAppLogGroups
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:DescribeLogGroups
+              - logs:ListTagsForResource
+              - logs:PutRetentionPolicy
+              - logs:TagResource
+              - logs:UntagResource
+            Resource:
+              - arn:aws:logs:us-east-1:027224425948:log-group:/aws/lambda/IncidentTriageDemoCheckout
+              - arn:aws:logs:us-east-1:027224425948:log-group:/aws/lambda/IncidentTriageDemoCheckout:*
+              - arn:aws:logs:us-east-1:027224425948:log-group:/aws/lambda/IncidentTriageDemoInventory
+              - arn:aws:logs:us-east-1:027224425948:log-group:/aws/lambda/IncidentTriageDemoInventory:*
+              - arn:aws:logs:us-east-1:027224425948:log-group:/aws/apigateway/IncidentTriageDemoApp
+              - arn:aws:logs:us-east-1:027224425948:log-group:/aws/apigateway/IncidentTriageDemoApp:*
+
+          # HTTP API access-log delivery uses the regional Logs delivery APIs;
+          # these APIs currently require Resource '*'.
+          - Sid: ConfigureHttpApiLogDelivery
+            Effect: Allow
+            Action:
+              - logs:*LogDelivery
+              - logs:DescribeLogGroups
+              - logs:DescribeResourcePolicies
+              - logs:PutResourcePolicy
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: us-east-1
+
+          - Sid: ManageAppFunctions
+            Effect: Allow
+            Action:
+              - lambda:AddPermission
+              - lambda:CreateAlias
+              - lambda:CreateFunction
+              - lambda:DeleteAlias
+              - lambda:DeleteFunction
+              - lambda:Get*
+              - lambda:List*
+              - lambda:PublishVersion
+              - lambda:RemovePermission
+              - lambda:TagResource
+              - lambda:Update*
+            Resource:
+              - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoCheckout
+              - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoCheckout:*
+              - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory
+              - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory:*
+
+          - Sid: ManageAppWebBucket
+            Effect: Allow
+            Action:
+              - s3:CreateBucket
+              - s3:DeleteBucketPolicy
+              - s3:GetBucket*
+              - s3:GetEncryptionConfiguration
+              - s3:ListBucket
+              - s3:PutBucket*
+              - s3:PutEncryptionConfiguration
+              - s3:TagResource
+            Resource: arn:aws:s3:::incident-triage-demo-web-027224425948-us-east-1
+
+          - Sid: ListAppBucketsForCloudFormation
+            Effect: Allow
+            Action: s3:ListAllMyBuckets
+            Resource: '*'
+
+          - Sid: ManageAppApi
+            Effect: Allow
+            Action:
+              - apigateway:DELETE
+              - apigateway:GET
+              - apigateway:PATCH
+              - apigateway:POST
+              - apigateway:PUT
+            Resource:
+              - !Sub arn:aws:apigateway:us-east-1::/apis/${AppHttpApiId}
+              - !Sub arn:aws:apigateway:us-east-1::/apis/${AppHttpApiId}/*
+
+          - Sid: CreateNamedAppHttpApi
+            Effect: Allow
+            Action:
+              - apigateway:POST
+              - apigateway:PUT
+            Resource: arn:aws:apigateway:us-east-1::/apis
+            Condition:
+              StringEquals:
+                aws:RequestTag/Name: IncidentTriageDemoApp
+
+          - Sid: TagAppApiResources
+            Effect: Allow
+            Action:
+              - apigateway:POST
+              - apigateway:DELETE
+            Resource: arn:aws:apigateway:us-east-1::/tags/*
+
+          - Sid: ManageAppCloudFront
+            Effect: Allow
+            Action:
+              - cloudfront:CreateOriginAccessControl
+              - cloudfront:ListOriginAccessControls
+            Resource: '*'
+
+          - Sid: CreateAppCloudFrontDistribution
+            Effect: Allow
+            Action: cloudfront:CreateDistribution
+            Resource: '*'
+
+          - Sid: UpdateAppCloudFrontResources
+            Effect: Allow
+            Action:
+              - cloudfront:DeleteDistribution
+              - cloudfront:DeleteOriginAccessControl
+              - cloudfront:Get*
+              - cloudfront:ListTagsForResource
+              - cloudfront:TagResource
+              - cloudfront:UpdateDistribution
+              - cloudfront:UpdateOriginAccessControl
+            Resource:
+              - !Sub arn:aws:cloudfront::027224425948:distribution/${AppDistributionId}
+              - !Sub arn:aws:cloudfront::027224425948:origin-access-control/${AppOriginAccessControlId}
+
+          - Sid: ListAppCloudFrontResources
+            Effect: Allow
+            Action: cloudfront:ListDistributions
+            Resource: '*'
+
+          - Sid: ManageAppRuntimeRoles
+            Effect: Allow
+            Action:
+              - iam:DeleteRole
+              - iam:DeleteRolePolicy
+              - iam:GetRole*
+              - iam:ListAttachedRolePolicies
+              - iam:ListRolePolicies
+              - iam:PutRolePolicy
+              - iam:TagRole
+              - iam:UntagRole
+              - iam:UpdateAssumeRolePolicy
+            Resource:
+              - arn:aws:iam::027224425948:role/IncidentTriageDemoAppCheckoutRole
+              - arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryRole
+
+          - Sid: CreateCheckoutRuntimeRoleWithBoundary
+            Effect: Allow
+            Action: iam:CreateRole
+            Resource: arn:aws:iam::027224425948:role/IncidentTriageDemoAppCheckoutRole
+            Condition:
+              StringEquals:
+                iam:PermissionsBoundary: arn:aws:iam::027224425948:policy/IncidentTriageDemoAppCheckoutRuntimeBoundary
+
+          - Sid: CreateInventoryRuntimeRoleWithBoundary
+            Effect: Allow
+            Action: iam:CreateRole
+            Resource: arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryRole
+            Condition:
+              StringEquals:
+                iam:PermissionsBoundary: arn:aws:iam::027224425948:policy/IncidentTriageDemoAppInventoryRuntimeBoundary
+
+          - Sid: PassAppRuntimeRolesToLambda
+            Effect: Allow
+            Action: iam:PassRole
+            Resource:
+              - arn:aws:iam::027224425948:role/IncidentTriageDemoAppCheckoutRole
+              - arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryRole
+            Condition:
+              StringEquals:
+                iam:PassedToService: lambda.amazonaws.com
+
+  IncidentTriageDemoAppCheckoutRuntimeBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ManagedPolicyName: IncidentTriageDemoAppCheckoutRuntimeBoundary
+      Description: >-
+        Administrator-owned maximum permissions for the named checkout Lambda
+        runtime role. This boundary is narrower than the app role policy.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: CheckoutLogDelivery
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: arn:aws:logs:us-east-1:027224425948:log-group:/aws/lambda/IncidentTriageDemoCheckout:*
+          - Sid: CheckoutOrderReads
+            Effect: Allow
+            Action: dynamodb:GetItem
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoOrders
+          - Sid: CheckoutOrderWrite
+            Effect: Allow
+            Action: dynamodb:PutItem
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoOrders
+            Condition:
+              StringEquals:
+                dynamodb:EnclosingOperation: TransactWriteItems
+          - Sid: CheckoutInventoryWrite
+            Effect: Allow
+            Action: dynamodb:UpdateItem
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoInventory
+            Condition:
+              StringEquals:
+                dynamodb:EnclosingOperation: TransactWriteItems
+          - Sid: CheckoutInventoryInvoke
+            Effect: Allow
+            Action: lambda:InvokeFunction
+            Resource: arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory:live
+
+  IncidentTriageDemoAppInventoryRuntimeBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ManagedPolicyName: IncidentTriageDemoAppInventoryRuntimeBoundary
+      Description: >-
+        Administrator-owned maximum permissions for the named read-only
+        inventory Lambda runtime role.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: InventoryLogDelivery
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: arn:aws:logs:us-east-1:027224425948:log-group:/aws/lambda/IncidentTriageDemoInventory:*
+          - Sid: InventoryProductRead
+            Effect: Allow
+            Action: dynamodb:GetItem
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoInventory
 
 Outputs:
   PolicyArn:
