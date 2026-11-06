@@ -1,5 +1,6 @@
 node_modules/
 agent/.venv/
+.devcontainer/ide-smoke/.venv/
 __pycache__/
 *.py[cod]
 .artifacts/

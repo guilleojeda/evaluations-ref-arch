@@ -1,0 +1,12 @@
+[project]
+name = "ide-smoke"
+version = "0.1.0"
+description = "One-case Strands Codespaces rehearsal fixture"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "strands-agents==1.64.0",
+  "strands-agents-evals==1.9.0",
+]
+
+[tool.uv]
+required-version = "==0.13.6"

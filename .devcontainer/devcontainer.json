@@ -1,0 +1,9 @@
+{
+  "name": "Incident triage talk",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "remoteUser": "vscode",
+  "postCreateCommand": "uv sync --locked --project agent && uv sync --locked --project .devcontainer/ide-smoke",
+  "waitFor": "postCreateCommand"
+}
