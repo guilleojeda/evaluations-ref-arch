@@ -36,14 +36,80 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: DenyNonPhase0ActionsUntilFeaturePhase
+          - Sid: DenyNonAppDeploymentActions
             Effect: Deny
             NotAction:
               - cloudformation:DescribeStacks
               - cloudformation:ListStackResources
+              - cloudformation:DescribeStackEvents
+              - cloudformation:GetTemplate
+              - cloudformation:DescribeChangeSet
+              - cloudformation:CreateChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DeleteChangeSet
+              - iam:PassRole
+              - s3:GetBucketLocation
+              - s3:ListBucket
+              - s3:GetObject
+              - s3:PutObject
+              - lambda:GetAlias
               - ssm:GetParameter
+              - ssm:GetParameters
               - sts:GetCallerIdentity
             Resource: '*'
+          - Sid: DenyAppActionsOutsideAppStack
+            Effect: Deny
+            Action:
+              - cloudformation:CreateChangeSet
+              - cloudformation:ExecuteChangeSet
+              - cloudformation:DeleteChangeSet
+            NotResource:
+              - Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/IncidentTriageDemoApp/*
+          - Sid: DenyAppReadsOutsideApprovedStacks
+            Effect: Deny
+            Action:
+              - cloudformation:DescribeStacks
+              - cloudformation:ListStackResources
+              - cloudformation:DescribeStackEvents
+              - cloudformation:GetTemplate
+              - cloudformation:DescribeChangeSet
+              - ssm:GetParameter
+              - ssm:GetParameters
+            NotResource:
+              - Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/IncidentTriageDemoBootstrap*/*
+              - Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/IncidentTriageDemoApp/*
+              - Fn::Sub: arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cdk-bootstrap/evaltalk/version
+          - Sid: DenyPassRoleOutsideCdkExecutionRole
+            Effect: Deny
+            Action: iam:PassRole
+            NotResource:
+              - Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-evaltalk-cfn-exec-role-${AWS::AccountId}-${AWS::Region}
+          - Sid: DenyPublishingOutsideAppWebObjects
+            Effect: Deny
+            Action: s3:PutObject
+            NotResource:
+              - arn:aws:s3:::incident-triage-demo-web-027224425948-us-east-1/assets/*
+              - arn:aws:s3:::incident-triage-demo-web-027224425948-us-east-1/index.html
+          - Sid: PublishPhase1AppWebBucket
+            Effect: Allow
+            Action:
+              - s3:GetBucketLocation
+              - s3:ListBucket
+            Resource: arn:aws:s3:::incident-triage-demo-web-027224425948-us-east-1
+          - Sid: PublishPhase1AppWebObjects
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+            Resource:
+              - arn:aws:s3:::incident-triage-demo-web-027224425948-us-east-1/assets/*
+              - arn:aws:s3:::incident-triage-demo-web-027224425948-us-east-1/index.html
+          - Sid: ReadPhase1AppLiveAliases
+            Effect: Allow
+            Action: lambda:GetAlias
+            Resource:
+              - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoCheckout
+              - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory
           - Sid: AllowPhase0BootstrapProbeReads
             Effect: Allow
             Action:
@@ -52,7 +118,9 @@ Resources:
             Resource: arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoBootstrap/*
           - Sid: ReadPhase0BootstrapVersion
             Effect: Allow
-            Action: ssm:GetParameter
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
             Resource: arn:aws:ssm:us-east-1:027224425948:parameter/cdk-bootstrap/evaltalk/version
           - Sid: IdentifyPhase0Caller
             Effect: Allow

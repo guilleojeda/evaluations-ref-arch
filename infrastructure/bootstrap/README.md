@@ -1,6 +1,6 @@
 # Incident Triage Demo bootstrap handoff
 
-These templates prepare the Phase 0 deployment path for account
+These templates set up the deployment path for account
 `027224425948` in `us-east-1`. They do not deploy an application, controller,
 or AgentCore resource.
 
@@ -8,10 +8,11 @@ The setup has three deliberately separate layers:
 
 1. `phase0-cfn-execution-policy.yaml` creates the managed policy
    `IncidentTriageDemoBootstrapCfnExecution` in stack
-   `IncidentTriageDemoBootstrapPolicy`. It only grants read-only inspection of
-   the named bootstrap stack and its version marker. Add reviewed,
-   resource-scoped product grants to this policy in the first feature phase
-   that needs them; do not replace it with `AdministratorAccess`.
+   `IncidentTriageDemoBootstrapPolicy`. It grants bootstrap inspection and
+   the scoped service actions CloudFormation needs for the app stack. Extend it
+   with reviewed, resource-scoped grants when a feature adds resources. The
+   same stack owns the two app runtime permissions boundaries. The app
+   CloudFormation execution role cannot edit either boundary.
 2. The standard CDK v2 bootstrap command creates stack
    `IncidentTriageDemoBootstrap` with qualifier `evaltalk`. Its CloudFormation
    execution role receives the policy above through
@@ -20,12 +21,10 @@ The setup has three deliberately separate layers:
    provider when one is absent, and role `IncidentTriageDemoGitHubDeploy`.
    The role trust accepts only the immutable main workflow subject. Its
    identity policy contains only `sts:AssumeRole` for the standard CDK deploy
-   and file-publishing roles. The same stack first attaches an explicit
-   Phase 0 deny policy to the existing `cdk-evaltalk-deploy-role-*`, so the
-   role is fail-closed to only the four identity/bootstrap probe actions
-   needed in Phase 0. This also blocks standard CloudFormation writes before a
-   reviewed feature phase extends the guard. This makes the order below
-   significant.
+   and file-publishing roles. The same stack attaches the deploy guard to
+   the existing `cdk-evaltalk-deploy-role-*`. It limits the standard role to
+   bootstrap inspection and the actions needed to release the named app stack
+   and publish its checked static assets. Keep the setup order below.
 
 ## Before any mutation
 
@@ -42,7 +41,7 @@ aws sts get-caller-identity --profile "$AWS_PROFILE" --region "$AWS_REGION"
 The returned account must be `027224425948`. Do not continue if the named
 profile is missing or the caller is different.
 
-## 1. Provision the scoped Phase 0 execution policy
+## 1. Provision the scoped execution policy
 
 Run this as the verified administrator. The explicit stack name and named IAM
 capability are intentional:
@@ -127,9 +126,9 @@ aws cloudformation deploy \
   --no-fail-on-empty-changeset
 ```
 
-For the absent-provider path, use the same command but omit
-`GitHubOidcProviderArn`. Never do that when an existing provider is already
-registered: CloudFormation cannot create a second provider for the same issuer.
+For the absent-provider path, use the same command and omit
+`GitHubOidcProviderArn` so the stack creates and owns the provider. On updates,
+keep the same provider ownership by reusing the previous parameter value.
 The provider resource is retained if this stack is later deleted.
 
 The role trust's exact subject is:
@@ -142,6 +141,18 @@ It also requires the separate `repository_id=1411023195`,
 `ref=refs/heads/main`, and `aud=sts.amazonaws.com` conditions. The role's
 identity policy does not grant S3, CloudFormation, IAM, or product-service
 access directly; GitHub first assumes the standard CDK roles.
+
+## Pin the first app release's resource IDs
+
+The first app stack create uses the defaults for `AppHttpApiId`, `AppDistributionId`, and `AppOriginAccessControlId`. AWS assigns those IDs during creation. Once the app stack succeeds, retrieve them from its owned resources.
+
+```sh
+aws cloudformation list-stack-resources --stack-name IncidentTriageDemoApp \
+  --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --query "StackResourceSummaries[?ResourceType=='AWS::ApiGatewayV2::Api' || ResourceType=='AWS::CloudFront::Distribution' || ResourceType=='AWS::CloudFront::OriginAccessControl'].[ResourceType,PhysicalResourceId]"
+```
+
+Reapply step 1 with `--parameter-overrides AppHttpApiId="$api_id" AppDistributionId="$distribution_id" AppOriginAccessControlId="$origin_access_control_id"`, using the three reported IDs. The named execution role then has resource-level access to the app's generated resources. Keep these values for routine releases. A reviewed replacement of one of those resources needs a corresponding bootstrap update.
 
 ## Offline checks
 

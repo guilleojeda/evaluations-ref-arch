@@ -20,6 +20,7 @@ env:
   PHASE0_APP_STACK: IncidentTriageDemoApp
   PHASE0_CONTROLLER_STACK: IncidentTriageDemoController
   PHASE0_AGENT_STACK: IncidentTriageDemoAgent
+  PHASE1_WEB_BUCKET: incident-triage-demo-web-027224425948-us-east-1
   CDK_DEPLOY_ROLE_ARN: arn:aws:iam::027224425948:role/cdk-evaltalk-deploy-role-027224425948-us-east-1
   CDK_FILE_PUBLISHING_ROLE_ARN: arn:aws:iam::027224425948:role/cdk-evaltalk-file-publishing-role-027224425948-us-east-1
   PHASE0_ASSET_BUCKET: cdk-evaltalk-assets-027224425948-us-east-1
@@ -98,6 +99,9 @@ jobs:
           fi
       - name: Run the selected check
         run: npm run check -- ${{ matrix.component }}
+      - name: Run app release acceptance checks
+        if: matrix.component == 'app'
+        run: node --test tests/phase1-deploy.test.mjs tests/phase1-checkout-handler.test.mjs
       - name: Run the locked native ARM64 smoke command
         if: matrix.component == 'agent'
         run: uv run --project agent --locked python agent/native_smoke.py .artifacts/agent/runtime.zip
@@ -113,7 +117,7 @@ jobs:
           compression-level: 0
 
   deploy:
-    name: Preflight ${{ matrix.component }} deployment
+    name: ${{ matrix.component == 'app' && 'Deploy app' || format('Preflight {0} deployment', matrix.component) }}
     needs: [route, check]
     if: >-
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
@@ -132,6 +136,8 @@ jobs:
     steps:
       - name: Check out workflow tests and helpers
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
       - name: Download the checked assembly
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -139,6 +145,15 @@ jobs:
           path: .artifacts/${{ matrix.component }}
       - name: Confirm checked assembly
         run: test -s .artifacts/${{ matrix.component }}/cdk/manifest.json
+      - name: Set up Node.js for the app deploy CLI
+        if: matrix.component == 'app'
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install the pinned app deploy CLI
+        if: matrix.component == 'app'
+        run: npm ci --ignore-scripts
       - name: Resolve the checked agent file asset
         if: matrix.component == 'agent'
         id: asset
@@ -163,7 +178,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ env.PHASE0_DEPLOY_ROLE_ARN }}
           role-session-name: phase0-github-${{ github.run_id }}
-          role-duration-seconds: 900
+          role-duration-seconds: ${{ matrix.component == 'app' && 3600 || 900 }}
       - name: Verify the GitHub deployment identity
         shell: bash
         run: |
@@ -257,3 +272,11 @@ jobs:
           test "$downloaded_sha" = "$ASSET_SHA256"
           size="$(jq -r .ContentLength <<<"$head_json")"
           echo "Verified agent asset bytes: bucket=$ASSET_BUCKET key=$ASSET_KEY sha256=$downloaded_sha bytes=$size version_id=$version_id uploaded=$uploaded"
+
+      - name: Deploy the checked app assembly
+        if: matrix.component == 'app'
+        shell: bash
+        env:
+          APP_PRESENTER_DIGEST: ${{ secrets.APP_PRESENTER_DIGEST }}
+          PUSH_BASE: ${{ github.event.before }}
+        run: bash scripts/deploy-app.sh
