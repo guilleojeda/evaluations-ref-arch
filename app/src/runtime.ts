@@ -191,7 +191,7 @@ export function canonicalRequestHash(input: CheckoutInput): string {
 }
 
 export function orderIdFor(checkoutId: string): string {
-  return `${PRINCIPAL_ID}#${checkoutId}`;
+  return `${PRINCIPAL_ID}#${checkoutId.toLowerCase()}`;
 }
 
 export function stringAttribute(value: unknown): AttributeValue {

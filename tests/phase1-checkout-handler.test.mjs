@@ -307,7 +307,7 @@ test("inventory deadline returns 504 before transaction", { timeout: 5_000 }, as
 
 test("saved uncertain order is returned by status and same-ID retry without new providers", async () => {
   fixture.reset({ transaction: "ack-timeout-commit" });
-  const id = "44444444-4444-4444-8444-444444444444";
+  const id = "aaaaaaaa-4444-4444-8444-444444444444";
   const input = { checkoutId: id, sku: SKU, quantity: 3 };
   const first = await handler(checkout(id, "phase1-ack-commit", input.quantity));
   assert.ok([200, 201].includes(first.statusCode), "a confirmed receipt must settle the POST");
@@ -324,6 +324,8 @@ test("saved uncertain order is returned by status and same-ID retry without new 
   const retryReceipt = receiptOf(retry, 200, "phase1-ack-retry", input);
   assert.deepEqual(statusReceipt.order, receipt.order);
   assert.deepEqual(retryReceipt.order, receipt.order);
+  const equivalentId = await handler(checkout(id.toUpperCase(), "phase1-ack-equivalent-id", input.quantity));
+  assert.deepEqual(receiptOf(equivalentId, 200, "phase1-ack-equivalent-id", input).order, receipt.order);
   assert.equal(fixture.callsFor("lambda", "Invoke").length, invokes, "saved retry must not invoke Inventory");
   assert.equal(fixture.callsFor("dynamodb", "TransactWriteItems").length, writes, "saved retry must not write again");
   assert.ok(fixture.callsFor("dynamodb", "GetItem").every((call) => call.body.ConsistentRead === true));
