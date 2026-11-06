@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, rmSync } from "node:fs";
+import { cpSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,6 +29,11 @@ if (component === "agent") {
   run("npm", ["run", "typecheck", "--workspace", component]);
   run("npm", ["run", "build", "--workspace", component]);
   run("npm", ["run", "build:backend", "--workspace", component]);
+  if (component === "controller") {
+    const packagedWeb = resolve(artifactRoot, "backend", "web");
+    rmSync(packagedWeb, { recursive: true, force: true });
+    cpSync(resolve(artifactRoot, "web"), packagedWeb, { recursive: true });
+  }
 }
 
 const cdkOutput = resolve(artifactRoot, "cdk");

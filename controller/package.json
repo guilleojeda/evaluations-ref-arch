@@ -7,9 +7,14 @@
     "dev": "vite --host 127.0.0.1",
     "typecheck": "tsc --noEmit",
     "build": "vite build --emptyOutDir --outDir ../.artifacts/controller/web",
-    "build:backend": "esbuild src/backend.ts --bundle --platform=node --target=node24 --format=esm --outfile=../.artifacts/controller/backend/index.mjs"
+    "build:backend": "esbuild src/backend.ts --bundle --platform=node --target=node24 --format=esm --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=../.artifacts/controller/backend/index.mjs && esbuild src/worker.ts --bundle --platform=node --target=node24 --format=esm --banner:js=\"import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);\" --outfile=../.artifacts/controller/backend/worker.mjs"
   },
   "dependencies": {
+    "@aws-sdk/client-cloudformation": "3.1163.0",
+    "@aws-sdk/client-dynamodb": "3.1163.0",
+    "@aws-sdk/client-lambda": "3.1163.0",
+    "@aws-sdk/client-secrets-manager": "3.1163.0",
+    "@aws-sdk/util-dynamodb": "3.996.9",
     "react": "19.1.0",
     "react-dom": "19.1.0"
   },

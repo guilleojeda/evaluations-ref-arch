@@ -1,8 +1,8 @@
 # Failure Controller
 
-The failure controller is a local presenter web application that generates bounded traffic, causes two selected operational incidents, and shows their real effects. It provides separate shortcuts for the presenter to apply a proposed remedy, recover the application, and reset business data. The presenter controls each transition.
+The failure controller is a cloud-hosted presenter dashboard. The current dashboard verifies the checkout baseline, runs bounded catalog and checkout traffic, and lets the presenter observe or stop the same run from another browser. The incident and remedy contracts below describe the full demo.
 
-This component is designed, not implemented. The [controller specification](failure-controller-behavior.md) owns action behavior, traffic bounds, observations, private records, and interruptions. The [scenario contracts](../demo-scenarios.md) own inventory capacity overload, denied inventory access, and the recovered/stale-alarm condition. The [demo script](../demo-script.md) places these controls in the talk. The [agent design](operations-agent.md) defines the alarm-to-Runtime path and durable run/report records; exact integration schemas remain to be implemented.
+The [controller specification](failure-controller-behavior.md) owns action behavior, traffic bounds, observations, private records, and interruptions. The [scenario contracts](../demo-scenarios.md) own inventory capacity overload, denied inventory access, and the recovered/stale-alarm condition. The [demo script](../demo-script.md) places these controls in the talk. The [agent design](operations-agent.md) defines the alarm-to-Runtime path and durable run/report records; exact integration schemas remain to be implemented.
 
 ## Selected incidents and fixes
 
@@ -65,13 +65,13 @@ Show separate timestamps for the alarm transition, observed agent run, and resul
 
 Run display distinguishes waiting, alarm active with no matching run, investigating, complete, failed, and unavailable. Regression/replay workflows remain separately identified; the dashboard provides no manual agent trigger as a substitute for the live alarm path.
 
-### Local hosting
+### Cloud hosting
 
-Host the React presenter interface with a local TypeScript backend. The backend binds to loopback, accepts intended same-origin controls, uses the operator's AWS profile, and holds the privately supplied application credential in process memory. Browser JavaScript receives no AWS credentials. The application credential grants business API access, not configuration or reset authority.
+A controller-owned HTTP API and Lambda serve the React dashboard and authenticated controls from the same HTTPS origin. The operator signs in with a separate bearer held in page memory. The background worker uses the checkout credential from AWS Secrets Manager to make normal app requests. The dashboard works from a clean browser with the operator credential.
 
-The backend owns accepted finite work across browser disconnects. AWS connectivity and established credentials remain necessary. Backend restart requires reconciliation before an explicit presenter continuation.
+The worker owns accepted finite work. Browser refresh or closure leaves it running within its original bounds. The controller stores the run and action records in DynamoDB. Check readiness before starting normal traffic. Use Stop to close new submissions and watch accepted requests drain. When an action outlives its deadline, the dashboard shows it as incomplete. Explicit discard retains its charged attempts and unresolved orders.
 
-Automatic deployment takes priority after its build/check/gate succeeds. Before deployment changes AWS, the controller stops producers, rejects new presenter mutations, and settles/reconciles accepted work; it does not cancel requests or run Recover/Reset as a handoff. The controller remains suspended through deployment. A successful new generation invalidates the old baseline, so actual settings must be reconciled against the new generation's trusted expectations and explicitly verified before normal actions resume. The [deployment contract](../deployment.md) defines handoff, failure, and post-deployment reconciliation; exact fencing/storage mechanics remain open.
+Schedule deployments outside demo runs and wait for both stacks to settle before checking readiness again. A new app release makes an old baseline stale. Preserve orders, remaining allowances and observation history across deployments. [Deployment and operator access](../deployment.md#first-controller-release-and-operator-access)
 
 ## Responsibilities and record
 
@@ -85,7 +85,7 @@ Automatic deployment takes priority after its build/check/gate succeeds. Before 
 | Recover application | Stop traffic, confirm the baseline generation is still current, restore expected policies/caps and baseline memory/alias versions, settle work, then verify fresh behavior | Confirmed restoration and fresh evidence, retaining prior effects and results |
 | Reset demo | Reconcile against trusted expected settings for the current successful generation, settle work, reset Orders/Inventory under a new productVersion, then verify the next baseline | Reset progress and the actual baseline including the verification order |
 
-Use the private append-only local journal defined in the [specification](failure-controller-behavior.md#backend-boundary-and-private-records). Capture absence of a policy or concurrency setting as absence, not zero. Policy restoration uses expected settings and current revision checks; unexpected external edits are conflicts, not permission to overwrite unrelated access. Recover is limited to a still-current baseline. After deployment, use guarded changes tied to the new trusted generation; Reset does not require restoring a stale baseline and may establish the next run only after safe reconciliation and quiescence. Preserve request budgets, unresolved outcomes, and agent/run history across deployment.
+The [private run and action records](failure-controller-behavior.md#backend-boundary-and-private-records) retain accepted inputs and observed results. Capture absence of a policy or concurrency setting as absence, not zero. Policy restoration uses expected settings and current revision checks; unexpected external edits are conflicts, not permission to overwrite unrelated access. Recover is limited to a still-current baseline. After deployment, use guarded changes tied to the new trusted generation; Reset does not require restoring a stale baseline and may establish the next run only after safe reconciliation and quiescence. Preserve request budgets, unresolved outcomes, and agent/run history across deployment.
 
 Private scenario labels, expected answers, controller baseline mappings, and intended causes are evaluator context, not agent inputs. Ordinary observed limits, policy statements, execution versions, errors, and management history may be agent evidence. Exclude credentials, authentication configuration, and raw SDK/configuration dumps.
 

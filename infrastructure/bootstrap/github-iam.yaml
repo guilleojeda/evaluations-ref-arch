@@ -58,7 +58,7 @@ Resources:
               - ssm:GetParameters
               - sts:GetCallerIdentity
             Resource: '*'
-          - Sid: DenyAppActionsOutsideAppStack
+          - Sid: DenyProductActionsOutsideNamedStacks
             Effect: Deny
             Action:
               - cloudformation:CreateChangeSet
@@ -66,6 +66,7 @@ Resources:
               - cloudformation:DeleteChangeSet
             NotResource:
               - Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/IncidentTriageDemoApp/*
+              - Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/IncidentTriageDemoController/*
           - Sid: DenyAppReadsOutsideApprovedStacks
             Effect: Deny
             Action:
@@ -79,6 +80,7 @@ Resources:
             NotResource:
               - Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/IncidentTriageDemoBootstrap*/*
               - Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/IncidentTriageDemoApp/*
+              - Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/IncidentTriageDemoController/*
               - Fn::Sub: arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cdk-bootstrap/evaltalk/version
           - Sid: DenyPassRoleOutsideCdkExecutionRole
             Effect: Deny
