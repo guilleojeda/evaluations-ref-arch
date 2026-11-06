@@ -40,7 +40,7 @@ const tickLength = 1_000;
 const ticks = 15;
 const slots = { catalog: 1, checkout: 2 };
 const profiles: Profile[] = ["catalog", "checkout"];
-const denialCatalogLimit = 6;
+const denialProbeOffsets = [0, 5_000, 10_000, 15_000, 20_000, 23_000];
 const denialPropagationWindow = 25_000;
 const policyPropagationGuard = 15_000;
 const providerTimeout = () => ({ abortSignal: AbortSignal.timeout(4_000) });
@@ -478,14 +478,17 @@ async function activateInventoryDenial(action: Action): Promise<void> {
   const startedAt = Date.now();
   const propagationDeadline = Math.min(action.deadlineAt, startedAt + denialPropagationWindow);
   let denied = false;
-  for (let attempt = 0; attempt < denialCatalogLimit && Date.now() + requestTimeout < propagationDeadline; attempt++) {
+  for (const offset of denialProbeOffsets) {
+    const wait = startedAt + offset - Date.now();
+    if (wait > 0) await delay(wait);
     const request = newRequest("catalog");
-    const reserved = await changeAction(action.id, (run, current) => reserve(run, current, request));
-    if (!reserved) throw new ActionFailure("The activation catalog allowance could not be reserved.");
-    const response = await send(action.id, context.app, bearer, request);
+    const reserved = await changeAction(action.id, (run, current) =>
+      Date.now() < propagationDeadline && reserve(run, current, request));
+    if (!reserved) break;
+    const remaining = Math.min(requestTimeout, Math.max(1, propagationDeadline - Date.now()));
+    const response = await send(action.id, context.app, bearer, request, undefined, remaining);
     denied = deniedResponse(response.response);
     if (denied) break;
-    if (attempt + 1 < denialCatalogLimit) await delay(Math.min(1_000, Math.max(0, action.deadlineAt - Date.now())));
   }
   if (!denied) throw new ActionFailure("The Inventory denial did not produce the specific dependency failure within the bounded window.");
 
@@ -659,7 +662,7 @@ async function restoreInventoryAccess(action: Action): Promise<void> {
   if (!done) throw new IncompleteActionFailure("The completed Inventory restore could not be recorded.");
 }
 
-async function appRequest(target: AppTarget, bearer: string, request: RequestRecord): Promise<AppResponse> {
+async function appRequest(target: AppTarget, bearer: string, request: RequestRecord, timeout = requestTimeout): Promise<AppResponse> {
   const path = request.kind === "catalog" ? "/api/products" : request.kind === "checkout" ? "/api/checkout" : `/api/orders/${request.checkoutId}`;
   const started = performance.now();
   try {
@@ -667,7 +670,7 @@ async function appRequest(target: AppTarget, bearer: string, request: RequestRec
       method: request.kind === "checkout" ? "POST" : "GET",
       headers: { authorization: `Bearer ${bearer}`, accept: "application/json", "content-type": "application/json" },
       body: request.checkout && JSON.stringify(request.checkout),
-      redirect: "error", signal: AbortSignal.timeout(requestTimeout),
+      redirect: "error", signal: AbortSignal.timeout(timeout),
     });
     const body = record(await response.json().catch(() => undefined));
     const requestId = body?.requestId ?? response.headers.get("x-amzn-requestid");
@@ -775,8 +778,8 @@ async function settle(actionId: string, request: RequestRecord, response: AppRes
   if (!result) throw new ActionFailure("A completed app request could not be recorded.");
 }
 
-async function send(actionId: string, target: AppTarget, bearer: string, request: RequestRecord, payload?: CheckoutPayload) {
-  const response = await appRequest(target, bearer, request);
+async function send(actionId: string, target: AppTarget, bearer: string, request: RequestRecord, payload?: CheckoutPayload, timeout?: number) {
+  const response = await appRequest(target, bearer, request, timeout);
   const observed = request.kind === "catalog" ? product(response, target.sku) : undefined;
   const saved = payload && (request.kind === "checkout" ? response.status === 201 || response.status === 200 : response.status === 200)
     ? receipt(response, payload) : undefined;
