@@ -173,8 +173,8 @@ Resources:
               - apigateway:POST
               - apigateway:DELETE
             Resource:
-              - !Sub arn:aws:apigateway:us-east-1::/tags/arn%3Aaws%3Aapigateway%3Aus-east-1%3A%3A%2Fapis%2F${AppHttpApiId}
-              - !Sub arn:aws:apigateway:us-east-1::/tags/arn%3Aaws%3Aapigateway%3Aus-east-1%3A%3A%2Fapis%2F${AppHttpApiId}%2Fstages%2F*
+              - !Sub arn:aws:apigateway:us-east-1::/tags/arn%3Aaws%3Aapigateway%3Aus-east-1%3A%3A%2Fv2%2Fapis%2F${AppHttpApiId}
+              - !Sub arn:aws:apigateway:us-east-1::/tags/arn%3Aaws%3Aapigateway%3Aus-east-1%3A%3A%2Fv2%2Fapis%2F${AppHttpApiId}%2Fstages%2F*
 
           - Sid: ManageAppCloudFront
             Effect: Allow
