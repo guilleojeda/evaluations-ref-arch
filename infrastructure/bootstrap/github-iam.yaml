@@ -1,0 +1,160 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Incident Triage Demo GitHub Actions OIDC provider and deployment role.
+  The role can only assume the CDK deploy and file-publishing roles created by
+  the dedicated evaltalk bootstrap stack.
+Metadata:
+  cfn-lint:
+    config:
+      # IAM retrieves the issuer certificate thumbprint when ThumbprintList is
+      # omitted. Older cfn-lint schemas still mark that property as required.
+      ignore_checks:
+        - E3003
+
+Parameters:
+  GitHubOidcProviderArn:
+    Type: String
+    Default: ''
+    Description: >-
+      Existing provider ARN to reuse after confirming its URL and
+      sts.amazonaws.com client ID. Leave empty only when creating the provider.
+    AllowedPattern: '^$|^arn:[A-Za-z0-9-]+:iam::[0-9]{12}:oidc-provider/token\.actions\.githubusercontent\.com$'
+
+Conditions:
+  CreateGitHubOidcProvider:
+    Fn::Equals:
+      - ''
+      - Ref: GitHubOidcProviderArn
+
+Resources:
+  DedicatedCdkDeployRolePhase0Guard:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: IncidentTriageDemoPhase0DeployProbeOnly
+      Roles:
+        - Fn::Sub: cdk-evaltalk-deploy-role-${AWS::AccountId}-${AWS::Region}
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyNonPhase0ActionsUntilFeaturePhase
+            Effect: Deny
+            NotAction:
+              - cloudformation:DescribeStacks
+              - cloudformation:ListStackResources
+              - ssm:GetParameter
+              - sts:GetCallerIdentity
+            Resource: '*'
+          - Sid: AllowPhase0BootstrapProbeReads
+            Effect: Allow
+            Action:
+              - cloudformation:DescribeStacks
+              - cloudformation:ListStackResources
+            Resource: arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoBootstrap/*
+          - Sid: ReadPhase0BootstrapVersion
+            Effect: Allow
+            Action: ssm:GetParameter
+            Resource: arn:aws:ssm:us-east-1:027224425948:parameter/cdk-bootstrap/evaltalk/version
+          - Sid: IdentifyPhase0Caller
+            Effect: Allow
+            Action: sts:GetCallerIdentity
+            Resource: '*'
+
+  GitHubOidcProvider:
+    Condition: CreateGitHubOidcProvider
+    Type: AWS::IAM::OIDCProvider
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      Tags:
+        - Key: Project
+          Value: IncidentTriageDemo
+        - Key: ManagedBy
+          Value: IncidentTriageDemoGitHub
+
+  GitHubDeployRole:
+    DependsOn: DedicatedCdkDeployRolePhase0Guard
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: IncidentTriageDemoGitHubDeploy
+      Description: >-
+        GitHub Actions deployment identity for the pinned main workflow of
+        guilleojeda/evaluations-ref-arch.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ExactMainWorkflow
+            Effect: Allow
+            Principal:
+              Federated:
+                Fn::If:
+                  - CreateGitHubOidcProvider
+                  - Fn::GetAtt:
+                      - GitHubOidcProvider
+                      - Arn
+                  - Ref: GitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: repo:guilleojeda@18320860/evaluations-ref-arch@1411023195:workflow_ref:guilleojeda/evaluations-ref-arch/.github/workflows/deploy.yml@refs/heads/main
+                token.actions.githubusercontent.com:repository_id:
+                  '1411023195'
+                token.actions.githubusercontent.com:ref:
+                  refs/heads/main
+      Policies:
+        - PolicyName: AssumeCdkDeploymentRoles
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AssumeDedicatedCdkDeployRole
+                Effect: Allow
+                Action: sts:AssumeRole
+                Resource:
+                  Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-evaltalk-deploy-role-${AWS::AccountId}-${AWS::Region}
+              - Sid: AssumeDedicatedCdkFilePublishingRole
+                Effect: Allow
+                Action: sts:AssumeRole
+                Resource:
+                  Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-evaltalk-file-publishing-role-${AWS::AccountId}-${AWS::Region}
+      Tags:
+        - Key: Project
+          Value: IncidentTriageDemo
+        - Key: ManagedBy
+          Value: IncidentTriageDemoGitHub
+        - Key: GitHubRepositoryId
+          Value: '1411023195'
+        - Key: GitHubWorkflow
+          Value: .github/workflows/deploy.yml
+
+Outputs:
+  GitHubDeployRoleArn:
+    Description: Role assumed by the pinned GitHub Actions workflow.
+    Value:
+      Fn::GetAtt:
+        - GitHubDeployRole
+        - Arn
+  GitHubOidcProviderArn:
+    Description: GitHub OIDC provider used by the role trust policy.
+    Value:
+      Fn::If:
+        - CreateGitHubOidcProvider
+        - Fn::GetAtt:
+            - GitHubOidcProvider
+            - Arn
+        - Ref: GitHubOidcProviderArn
+  GitHubOidcSubject:
+    Description: Exact immutable subject accepted by the role trust policy.
+    Value:
+      repo:guilleojeda@18320860/evaluations-ref-arch@1411023195:workflow_ref:guilleojeda/evaluations-ref-arch/.github/workflows/deploy.yml@refs/heads/main
+  CdkDeployRoleArn:
+    Description: Dedicated CDK deployment role the GitHub role may assume.
+    Value:
+      Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-evaltalk-deploy-role-${AWS::AccountId}-${AWS::Region}
+  CdkFilePublishingRoleArn:
+    Description: Dedicated CDK file-publishing role the GitHub role may assume.
+    Value:
+      Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-evaltalk-file-publishing-role-${AWS::AccountId}-${AWS::Region}

@@ -36,14 +36,16 @@ test('the CI selector identifies component, shared, and documentation changes ac
 
   const baseline = commit('README.md');
   const docs = commit('docs/example.md');
-  const app = commit('app/web/example.tsx');
+  const componentDocs = commit('agent/README.md');
+  const app = commit('app/web/café.tsx');
   const controller = commit('controller/api/example.ts');
   const agent = commit('agent/example.py');
   const agentStack = commit('infrastructure/agent/example.ts');
   const shared = commit('package-lock.json');
 
   assert.deepEqual(affected(baseline, docs), []);
-  assert.deepEqual(affected(docs, app), ['app']);
+  assert.deepEqual(affected(docs, componentDocs), []);
+  assert.deepEqual(affected(componentDocs, app), ['app']);
   assert.deepEqual(affected(app, controller), ['controller']);
   assert.deepEqual(affected(controller, agent), ['agent']);
   assert.deepEqual(affected(agent, agentStack), ['agent']);

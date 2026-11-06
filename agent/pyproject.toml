@@ -1,0 +1,12 @@
+[project]
+name = "incident-triage-agent"
+version = "0.1.0"
+description = "Credential-free AgentCore runtime starter for the incident triage demo"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+  "bedrock-agentcore==1.25.3",
+  "strands-agents==1.64.0",
+]
+
+[tool.uv]
+required-version = "==0.13.6"

@@ -1,0 +1,42 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Standalone, read-only Phase 0 policy for the CDK CloudFormation execution
+  role. Product-service permissions are deliberately absent until the first
+  reviewed feature change set extends this managed policy.
+
+Resources:
+  IncidentTriageDemoBootstrapCfnExecution:
+    Type: AWS::IAM::ManagedPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ManagedPolicyName: IncidentTriageDemoBootstrapCfnExecution
+      Description: >-
+        Phase 0 inspection permissions for the Incident Triage Demo CDK
+        CloudFormation execution role. Extend this policy with reviewed,
+        resource-scoped service grants before deploying a product stack.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: InspectDemoBootstrapStacks
+            Effect: Allow
+            Action:
+              - cloudformation:DescribeChangeSet
+              - cloudformation:DescribeStackEvents
+              - cloudformation:DescribeStacks
+              - cloudformation:GetTemplate
+              - cloudformation:GetTemplateSummary
+              - cloudformation:ListStackResources
+            Resource:
+              - arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoBootstrap*/*
+          - Sid: ReadBootstrapVersionMarker
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+            Resource: arn:aws:ssm:us-east-1:027224425948:parameter/cdk-bootstrap/evaltalk/version
+
+Outputs:
+  PolicyArn:
+    Description: Managed policy ARN to pass as CloudFormationExecutionPolicies during bootstrap.
+    Value:
+      Ref: IncidentTriageDemoBootstrapCfnExecution
