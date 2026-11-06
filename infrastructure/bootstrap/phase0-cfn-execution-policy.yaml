@@ -85,7 +85,6 @@ Resources:
             Effect: Allow
             Action:
               - logs:CreateLogGroup
-              - logs:DescribeLogGroups
               - logs:ListTagsForResource
               - logs:PutRetentionPolicy
               - logs:TagResource
@@ -104,6 +103,7 @@ Resources:
             Effect: Allow
             Action:
               - logs:*LogDelivery
+              - logs:ListLogDeliveries
               - logs:DescribeLogGroups
               - logs:DescribeResourcePolicies
               - logs:PutResourcePolicy
@@ -145,11 +145,6 @@ Resources:
               - s3:TagResource
             Resource: arn:aws:s3:::incident-triage-demo-web-027224425948-us-east-1
 
-          - Sid: ListAppBucketsForCloudFormation
-            Effect: Allow
-            Action: s3:ListAllMyBuckets
-            Resource: '*'
-
           - Sid: ManageAppApi
             Effect: Allow
             Action:
@@ -177,7 +172,9 @@ Resources:
             Action:
               - apigateway:POST
               - apigateway:DELETE
-            Resource: arn:aws:apigateway:us-east-1::/tags/*
+            Resource:
+              - !Sub arn:aws:apigateway:us-east-1::/tags/arn%3Aaws%3Aapigateway%3Aus-east-1%3A%3A%2Fapis%2F${AppHttpApiId}
+              - !Sub arn:aws:apigateway:us-east-1::/tags/arn%3Aaws%3Aapigateway%3Aus-east-1%3A%3A%2Fapis%2F${AppHttpApiId}%2Fstages%2F*
 
           - Sid: ManageAppCloudFront
             Effect: Allow
