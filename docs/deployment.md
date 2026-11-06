@@ -39,7 +39,7 @@ When a release depends on changes in another stack, merge and verify the depende
 
 ## AWS access and initial setup
 
-Use AWS CLI v2 with the `reinvent-2026-talk` profile, account `027224425948`, and Region `us-east-1`. Check the caller before setup.
+Use AWS CLI v2 with the `reinvent-2026-talk` profile, account `027224425948`, and Region `us-east-1`. For an IAM Identity Center profile, renew an expired session with `aws sso login --profile reinvent-2026-talk`. Check the caller before setup.
 
 ```sh
 aws sts get-caller-identity --profile reinvent-2026-talk --region us-east-1
