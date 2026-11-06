@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Action, Command, DashboardState } from "./types";
 
 type Notice = { kind: "error" | "success"; message: string } | undefined;
@@ -144,7 +144,7 @@ export function App() {
   const stopTraffic = () => currentAction && void sendAction(crypto.randomUUID(), { kind: "stop", targetActionId: currentAction.id });
   const discardAction = () => currentAction && void sendAction(crypto.randomUUID(), { kind: "discard", targetActionId: currentAction.id });
   const retryPending = () => pendingCommand && void sendAction(pendingCommand.id, pendingCommand.command);
-  const actionLabel = useMemo(() => currentAction ? `${currentAction.kind} · ${currentAction.status}` : "No action running", [currentAction]);
+  const actionLabel = currentAction ? `${currentAction.kind} · ${currentAction.status}` : "No action running";
 
   if (!bearer) return (
     <main className="controller-shell controller-sign-in"><section className="sign-in-card" aria-labelledby="sign-in-title">
@@ -162,7 +162,9 @@ export function App() {
         <div className="hero-copy">
           <p className="eyebrow">Current action</p>
           <h2>{actionLabel}</h2>
+          {currentAction && <p className="mono muted compact">{currentAction.id}</p>}
           <p className="muted">Last observation {formatTime(lastObservedAt)}{pollFailure ? ` · ${pollFailure}` : ""}</p>
+          {currentAction?.startedAt && <p className="muted">Started {formatTime(currentAction.startedAt)}{currentAction.finishedAt ? ` · Ended ${formatTime(currentAction.finishedAt)}` : ""}</p>}
           {currentAction?.error && <p className="action-error" role="alert">{currentAction.error}</p>}
           {currentAction?.discardAfter && currentStatus === "incomplete" && <p className="muted">Discard available after {formatTime(new Date(currentAction.discardAfter).toISOString())}</p>}
           <label className="quiet-check"><input type="checkbox" checked={readinessConfirmed} onChange={(event) => setReadinessConfirmed(event.target.checked)} /> I confirm other checkout writers are paused.</label>
@@ -186,6 +188,23 @@ export function App() {
       {pollFailure && <p className="notice notice-error" role="alert">{pollFailure}. The last good cloud observation remains visible.</p>}
       <section className="summary-grid" aria-label="Run summary"><article className="card"><p className="eyebrow">Target baseline</p><dl className="facts"><div><dt>App revision</dt><dd className="mono">{display(baseline?.appRevision, "Not verified")}</dd></div><div><dt>Product</dt><dd>{display(baseline?.sku, "Not verified")}</dd></div><div><dt>Product version</dt><dd className="mono">{display(baseline?.productVersion, "Not verified")}</dd></div></dl></article><article className="card stock-card"><p className="eyebrow">Inventory</p><strong className="stock-value">{display(state?.latestStock ?? baseline?.stockAfter, "—")}</strong><p className="muted">units · observed {formatTime(state?.latestStockAt)}</p></article><article className="card"><p className="eyebrow">Readiness order</p><p className="mono compact">{display(baseline?.checkoutId, "No verification order")}</p><p className="muted">{baseline ? `${display(baseline.stockBefore)} → ${display(baseline.stockAfter)} units` : "A verified order will establish the baseline."}</p></article></section>
       <section className="traffic-grid" aria-label="Traffic progress">{(["catalog", "checkout"] as const).map((profile) => { const value = currentAction?.traffic?.[profile]; const remaining = profile === "catalog" ? budgets?.catalog?.remaining : budgets?.checkout?.generatorRemaining; return <article className="card traffic-card" key={profile}><div className="card-heading"><div><p className="eyebrow">{profile} traffic</p><h3>{profile === "catalog" ? "Catalog reads" : "Checkout posts"}</h3></div><span className="budget">{display(remaining)} remaining</span></div><div className="metric-row">{([["submitted", "sent"], ["completed", "settled"], ["succeeded", "succeeded"], ["skipped", "skipped"], ["inFlight", "in flight"]] as const).map(([field, label]) => <div key={field}><strong>{display(value?.[field], "0")}</strong><span>{label}</span></div>)}</div></article>; })}</section>
+      <p className="muted allowance-summary" aria-label="Verification allowances">
+        Verification checkouts {display(budgets?.checkout.verificationRemaining)} remaining · Order-status reads {display(budgets?.orderStatus.remaining)} remaining
+      </p>
+      {currentAction?.requests.length ? (
+        <details className="card request-details">
+          <summary>Recent requests for this action</summary>
+          <ul className="record-list">
+            {currentAction.requests.slice(-10).reverse().map((request) => (
+              <li key={request.id}>
+                <span>{request.kind.replace("_", " ")} · {request.outcome ?? "pending"}</span>
+                <strong>{request.durationMs === undefined ? "In progress" : `${request.durationMs} ms`}</strong>
+                <small className="mono">{request.requestId ?? "No app request ID"}</small>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ) : null}
       <section className="detail-grid"><article className="card"><div className="card-heading"><div><p className="eyebrow">Receipts</p><h3>Confirmed orders</h3></div><span className="source-time">Cloud state</span></div>{state?.receipts?.length ? <ul className="record-list">{state.receipts.map((receipt, index) => <li key={String(receipt.checkoutId ?? index)}><span className="mono">{display(receipt.checkoutId)}</span><strong>{display(receipt.quantity, "?")} units</strong><small>{formatTime(receipt.createdAt)}</small></li>)}</ul> : <p className="muted empty-state">No controller receipts recorded yet.</p>}</article><article className="card"><div className="card-heading"><div><p className="eyebrow">Follow-up</p><h3>Unresolved attempts</h3></div><span className="source-time">Cloud state</span></div>{state?.unresolved?.length ? <ul className="record-list">{state.unresolved.map((attempt, index) => <li key={String(attempt.checkoutId ?? index)}><span className="mono">{display(attempt.checkoutId)}</span><strong>{display(attempt.status, "unknown")}</strong><small>{formatTime(attempt.startedAt)}</small></li>)}</ul> : <p className="muted empty-state">No unresolved attempts.</p>}</article></section>
     </main>
   );
