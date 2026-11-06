@@ -48,6 +48,7 @@ Resources:
               - cloudformation:ExecuteChangeSet
               - cloudformation:DeleteChangeSet
               - iam:PassRole
+              - kms:Decrypt
               - s3:GetBucketLocation
               - s3:ListBucket
               - s3:GetObject
@@ -84,6 +85,19 @@ Resources:
             Action: iam:PassRole
             NotResource:
               - Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-evaltalk-cfn-exec-role-${AWS::AccountId}-${AWS::Region}
+          # CloudFormation retrieves the checked JSON template from the
+          # SSE-KMS bootstrap bucket using the deployment caller's authority.
+          - Sid: DenyDecryptOutsideBootstrapS3Key
+            Effect: Deny
+            Action: kms:Decrypt
+            NotResource: arn:aws:kms:us-east-1:027224425948:key/b292b95c-709f-42c6-aa42-b934ba2c6f07
+          - Sid: DenyDecryptOutsideBootstrapTemplates
+            Effect: Deny
+            Action: kms:Decrypt
+            Resource: '*'
+            Condition:
+              StringNotLike:
+                kms:EncryptionContext:aws:s3:arn: arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*.json
           - Sid: DenyPublishingOutsideAppWebObjects
             Effect: Deny
             Action: s3:PutObject
