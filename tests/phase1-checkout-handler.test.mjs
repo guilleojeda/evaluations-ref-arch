@@ -8,13 +8,18 @@ import { after, afterEach, before, test } from "node:test";
 
 const ROOT = resolve(join(fileURLToPath(new URL(".", import.meta.url)), ".."));
 const ARTIFACT = join(ROOT, ".artifacts", "app", "backend", "index.mjs");
+const INVENTORY_ARTIFACT = join(ROOT, ".artifacts", "app", "backend", "inventory.mjs");
 const PASSWORD = "phase1-presenter-secret";
 const SKU = "phase1-sku";
 const VERSION = "phase1-version-1";
 const ORDERS = "phase1-orders";
 const INVENTORY = "phase1-inventory";
 const INVENTORY_FUNCTION = "Phase1Inventory:live";
+const INVENTORY_EXECUTED_VERSION = "42";
+const INVENTORY_LAMBDA_REQUEST_ID = "phase3-inventory-lambda-request";
+const DYNAMO_DENIAL_REQUEST_ID = "phase3-dynamodb-denial-request";
 const REGION = "us-east-1";
+const INVENTORY_RESOURCE = `arn:aws:dynamodb:${REGION}:027224425948:table/${INVENTORY}`;
 const product = Object.freeze({
   sku: SKU, name: "Phase 1 Widget", unitPriceCents: 1299,
   currency: "USD", availableQuantity: 17, productVersion: VERSION,
@@ -58,9 +63,36 @@ function restoreEnv() {
   }
 }
 
+async function captureLogs(run) {
+  const logs = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (...values) => logs.push(values.map(String).join(" "));
+  console.error = (...values) => logs.push(values.map(String).join(" "));
+  try {
+    return { value: await run(), logs };
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+  }
+}
+
+function structuredLogs(logs) {
+  return logs.flatMap((line) => {
+    try {
+      const value = JSON.parse(line);
+      return typeof value === "object" && value !== null ? [value] : [];
+    } catch {
+      return [];
+    }
+  });
+}
+
 class AwsFixture {
   constructor() {
     this.calls = [];
+    this.childLogs = [];
+    this.lambdaResults = [];
     this.mode = { inventory: "lookup", transaction: "success" };
     this.orderItems = [];
     this.sockets = new Set();
@@ -96,6 +128,8 @@ class AwsFixture {
 
   reset({ inventory = "lookup", transaction = "success" } = {}) {
     this.calls = [];
+    this.childLogs = [];
+    this.lambdaResults = [];
     this.mode = { inventory, transaction };
     this.orderItems = [];
   }
@@ -118,6 +152,17 @@ class AwsFixture {
 
   getItem(body, response) {
     this.calls.push({ service: "dynamodb", operation: "GetItem", body });
+    if (body.TableName === INVENTORY && this.mode.inventory === "access-denied") {
+      assert.equal(body.ConsistentRead, true, "inventory reads must be strong");
+      assert.equal(body.Key?.sku?.S, SKU);
+      return this.json(response, {
+        __type: "com.amazonaws.dynamodb.v20120810#AccessDeniedException",
+        message: `User: arn:aws:sts::027224425948:assumed-role/phase3-denied/fixture is not authorized to perform dynamodb:GetItem on resource: ${INVENTORY_RESOURCE} because no identity-based policy allows the action`,
+      }, 400, {
+        "x-amzn-errortype": "AccessDeniedException",
+        "x-amzn-requestid": DYNAMO_DENIAL_REQUEST_ID,
+      });
+    }
     assert.equal(body.TableName, ORDERS);
     assert.equal(body.ConsistentRead, true, "order reads must be strong");
     const orderId = body.Key?.orderId?.S;
@@ -151,8 +196,43 @@ class AwsFixture {
       if (!response.destroyed && !response.writableEnded) response.destroy();
       return;
     }
-    if (this.mode.inventory === "function-error") return this.payload(response, JSON.stringify({ errorMessage: "simulated failure" }), { "x-amz-function-error": "Unhandled" });
+    if (this.mode.inventory === "function-error") {
+      const error = { errorType: "AccessDeniedException", errorMessage: "DynamoDB AccessDeniedException from a failed child invocation" };
+      this.lambdaResults.push({ functionError: "Unhandled", executedVersion: INVENTORY_EXECUTED_VERSION, ...error });
+      return this.payload(response, JSON.stringify(error), {
+        "x-amz-function-error": "Unhandled",
+        "x-amz-executed-version": INVENTORY_EXECUTED_VERSION,
+        "x-amzn-requestid": INVENTORY_LAMBDA_REQUEST_ID,
+      });
+    }
     if (this.mode.inventory === "invalid-payload") return this.payload(response, JSON.stringify({ products: [] }));
+    if (this.mode.inventory === "access-denied") {
+      const { value: error, logs } = await captureLogs(async () => {
+        try {
+          await this.inventoryHandler(body, {
+            awsRequestId: INVENTORY_LAMBDA_REQUEST_ID,
+            functionVersion: INVENTORY_EXECUTED_VERSION,
+            invokedFunctionArn: `arn:aws:lambda:${REGION}:027224425948:function:${INVENTORY_FUNCTION}`,
+          });
+          return undefined;
+        } catch (error) {
+          return error;
+        }
+      });
+      this.childLogs.push(...logs);
+      assert.ok(error instanceof Error, "the denied GetItem must fail inside the actual Inventory handler");
+      this.lambdaResults.push({
+        functionError: "Unhandled",
+        errorType: error.name,
+        errorMessage: error.message,
+        executedVersion: INVENTORY_EXECUTED_VERSION,
+      });
+      return this.payload(response, JSON.stringify({ errorType: error.name, errorMessage: error.message }), {
+        "x-amz-function-error": "Unhandled",
+        "x-amz-executed-version": INVENTORY_EXECUTED_VERSION,
+        "x-amzn-requestid": INVENTORY_LAMBDA_REQUEST_ID,
+      });
+    }
     const list = this.mode.inventory === "list" || body.action === "list" || body.operation === "list";
     this.payload(response, JSON.stringify(list ? { products: [product] } : { product }));
   }
@@ -169,9 +249,9 @@ class AwsFixture {
     response.end(bytes);
   }
 
-  json(response, value) {
+  json(response, value, statusCode = 200, headers = {}) {
     const bytes = Buffer.from(JSON.stringify(value));
-    response.writeHead(200, { "content-type": "application/x-amz-json-1.0", "content-length": bytes.length });
+    response.writeHead(statusCode, { "content-type": "application/x-amz-json-1.0", "content-length": bytes.length, ...headers });
     response.end(bytes);
   }
 }
@@ -203,9 +283,20 @@ function bodyOf(response) {
 async function captureEmf(run) {
   const writes = [];
   const originalWrite = process.stdout.write;
-  process.stdout.write = (chunk) => {
-    writes.push(String(chunk));
-    return true;
+  process.stdout.write = function (...args) {
+    const chunk = args[0];
+    try {
+      const value = JSON.parse(String(chunk));
+      if (value?._aws) {
+        writes.push(String(chunk));
+        const callback = typeof args[1] === "function" ? args[1] : args[2];
+        callback?.();
+        return true;
+      }
+    } catch {
+      // Forward non-EMF output, including the node:test reporter.
+    }
+    return Reflect.apply(originalWrite, process.stdout, args);
   };
   try {
     await run();
@@ -253,9 +344,13 @@ let handler;
 
 before(async () => {
   assert.ok(existsSync(ARTIFACT), `missing ${ARTIFACT}; run npm run check -- app first`);
+  assert.ok(existsSync(INVENTORY_ARTIFACT), `missing ${INVENTORY_ARTIFACT}; run npm run check -- app first`);
   configureEnv(await fixture.listen());
   const runtime = await import(pathToFileURL(ARTIFACT).href);
+  const inventory = await import(pathToFileURL(INVENTORY_ARTIFACT).href);
   assert.equal(typeof runtime.handler, "function");
+  assert.equal(typeof inventory.handler, "function");
+  fixture.inventoryHandler = inventory.handler;
   handler = (event) => runtime.handler(event, {
     awsRequestId: `lambda-${event.requestContext.requestId}`,
     functionVersion: "1",
@@ -342,6 +437,74 @@ test("confirmed inventory failures return 502 before transaction", async () => {
     assert.equal(fixture.callsFor("lambda", "Invoke").length, 1);
     assert.equal(fixture.callsFor("dynamodb", "TransactWriteItems").length, 0);
   }
+});
+
+test("DynamoDB AccessDenied from the real Inventory handler stays a correlated 502 for checkout and catalog", async (t) => {
+  const cases = [
+    {
+      event: checkout("44444444-4444-4444-8444-444444444444", "phase3-denied-checkout"),
+      requestId: "phase3-denied-checkout",
+      apiOperation: "checkout",
+      inventoryOperation: "lookup",
+      checkoutId: "44444444-4444-4444-8444-444444444444",
+    },
+    {
+      event: apiEvent("GET", "/api/products", "phase3-denied-catalog"),
+      requestId: "phase3-denied-catalog",
+      apiOperation: "products",
+      inventoryOperation: "list",
+    },
+  ];
+
+  for (const scenario of cases) {
+    await t.test(scenario.apiOperation, async () => {
+      fixture.reset({ inventory: "access-denied" });
+      const run = await captureLogs(() => handler(scenario.event));
+      const body = bodyOf(run.value);
+      const parent = structuredLogs(run.logs).find((log) =>
+        log.service === "checkout" && log.requestId === scenario.requestId && log.operation === scenario.apiOperation);
+      const child = structuredLogs(fixture.childLogs).find((log) =>
+        log.service === "inventory" && log.requestId === scenario.requestId && log.dependencyOperation === "GetItem");
+      assert.deepEqual({
+        response: [run.value.statusCode, body.code, body.message, body.requestId, body.checkoutId, body.dependencyReason],
+        invokeCount: fixture.callsFor("lambda", "Invoke").length,
+        transactionCount: fixture.callsFor("dynamodb", "TransactWriteItems").length,
+        lambda: [fixture.lambdaResults[0]?.functionError, fixture.lambdaResults[0]?.errorType,
+          !fixture.lambdaResults[0]?.errorMessage.includes("assumed-role/phase3-denied"), fixture.lambdaResults[0]?.executedVersion],
+        parent: [parent?.requestId, parent?.dependencyFailureReason, parent?.inventoryExecutedVersion],
+        child: child && [child.operation, child.requestId, child.functionVersion, child.dependencyOperation,
+          child.dependencyResource, child.dependencyErrorName, child.dependencyRequestId],
+        childLogsAreSanitized: !fixture.childLogs.join("\n").includes("assumed-role/phase3-denied"),
+      }, {
+        response: [502, "INVENTORY_LOOKUP_FAILED", "Inventory could not be read", scenario.requestId,
+          scenario.checkoutId, "inventory_access_denied"],
+        invokeCount: 1,
+        transactionCount: 0,
+        lambda: ["Unhandled", "InventoryReadAccessDenied", true, INVENTORY_EXECUTED_VERSION],
+        parent: [scenario.requestId, "inventory_access_denied", INVENTORY_EXECUTED_VERSION],
+        child: [scenario.inventoryOperation, scenario.requestId, INVENTORY_EXECUTED_VERSION, "GetItem",
+          INVENTORY_RESOURCE, "AccessDeniedException", DYNAMO_DENIAL_REQUEST_ID],
+        childLogsAreSanitized: true,
+      });
+    });
+  }
+});
+
+test("a generic FunctionError stays a generic 502 without an access-denied cause", async () => {
+  fixture.reset({ inventory: "function-error" });
+  const checkoutId = "55555555-5555-4555-8555-555555555555";
+  const requestId = "phase3-generic-function-error";
+  const run = await captureLogs(() => handler(checkout(checkoutId, requestId)));
+  const body = bodyOf(run.value);
+  const parent = structuredLogs(run.logs).find((log) =>
+    log.service === "checkout" && log.requestId === requestId && log.operation === "checkout");
+  assert.equal(run.value.statusCode, 502);
+  assert.equal(body.code, "INVENTORY_LOOKUP_FAILED");
+  assert.equal(body.dependencyReason, undefined);
+  assert.equal(fixture.lambdaResults[0]?.errorType, "AccessDeniedException", "a raw SDK exception name is not the sanitized sentinel");
+  assert.equal(parent?.dependencyFailureReason, "function_error");
+  assert.equal(parent?.inventoryExecutedVersion, INVENTORY_EXECUTED_VERSION);
+  assert.equal(fixture.callsFor("dynamodb", "TransactWriteItems").length, 0);
 });
 
 test("inventory deadline returns 504 before transaction", { timeout: 5_000 }, async () => {

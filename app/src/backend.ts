@@ -48,6 +48,7 @@ interface InventoryPayload {
   readonly product?: unknown;
   readonly products?: unknown;
   readonly invocationId?: unknown;
+  readonly errorType?: unknown;
 }
 
 interface InventoryCallSuccess {
@@ -62,7 +63,8 @@ interface InventoryCallFailure {
   readonly kind: "error" | "timeout";
   readonly error?: unknown;
   readonly errorName: string;
-  readonly reason: "configuration" | "function_error" | "invalid_payload" | "deadline" | "transport_error";
+  readonly reason: "configuration" | "function_error" | "invalid_payload" | "deadline" | "transport_error" | "inventory_access_denied";
+  readonly executedVersion?: string;
   readonly durationMs: number;
 }
 
@@ -96,6 +98,15 @@ function parseInventoryPayload(value: Uint8Array | string | undefined): Inventor
   } catch {
     return undefined;
   }
+}
+
+function isExecutedInventoryAccessDenied(result: {
+  readonly FunctionError?: string;
+  readonly ExecutedVersion?: string;
+  readonly Payload?: Uint8Array | string;
+}): boolean {
+  if (!result.FunctionError || typeof result.ExecutedVersion !== "string" || result.ExecutedVersion.length === 0) return false;
+  return parseInventoryPayload(result.Payload)?.errorType === "InventoryReadAccessDenied";
 }
 
 async function sendDynamo<T>(
@@ -173,7 +184,22 @@ async function invokeInventory(
     }), { abortSignal: abort.signal });
     const durationMs = Date.now() - started;
     if (result.FunctionError) {
-      return { kind: "error", errorName: "FunctionError", reason: "function_error", durationMs };
+      if (isExecutedInventoryAccessDenied(result)) {
+        return {
+          kind: "error",
+          errorName: "InventoryReadAccessDenied",
+          reason: "inventory_access_denied",
+          executedVersion: result.ExecutedVersion,
+          durationMs,
+        };
+      }
+      return {
+        kind: "error",
+        errorName: "FunctionError",
+        reason: "function_error",
+        executedVersion: result.ExecutedVersion,
+        durationMs,
+      };
     }
     const parsed = parseInventoryPayload(result.Payload);
     if (!parsed) return { kind: "error", errorName: "InvalidPayload", reason: "invalid_payload", durationMs };
@@ -217,8 +243,13 @@ function checkoutError(
   message: string,
   requestId: string,
   input: Pick<CheckoutInput, "checkoutId">,
+  dependencyReason?: string,
 ): ApiResponse {
-  return errorResponse(statusCode, code, message, requestId, input.checkoutId);
+  return errorResponse(statusCode, code, message, requestId, input.checkoutId, dependencyReason);
+}
+
+function inventoryDependencyReason(call: InventoryCallFailure): string | undefined {
+  return call.reason === "inventory_access_denied" ? "inventory_access_denied" : undefined;
 }
 
 function matchingSavedOrder(
@@ -359,7 +390,8 @@ async function checkout(
     return checkoutError(504, "INVENTORY_DEADLINE_EXCEEDED", "Inventory did not respond before the dependency deadline", requestId, input);
   }
   if (inventory.kind === "error") {
-    return checkoutError(502, "INVENTORY_LOOKUP_FAILED", "Inventory could not be read", requestId, input);
+    return checkoutError(502, "INVENTORY_LOOKUP_FAILED", "Inventory could not be read", requestId, input,
+      inventoryDependencyReason(inventory));
   }
   if (inventory.kind !== "success") {
     return checkoutError(502, "INVENTORY_LOOKUP_FAILED", "Inventory could not be read", requestId, input);
@@ -398,7 +430,10 @@ async function products(requestId: string, context: LambdaContext, observeInvent
   const inventory = await invokeInventory(requestId, { operation: "list" }, context);
   observeInventory(inventory);
   if (inventory.kind === "timeout") return errorResponse(504, "INVENTORY_DEADLINE_EXCEEDED", "Inventory did not respond before the dependency deadline", requestId);
-  if (inventory.kind === "error") return errorResponse(502, "INVENTORY_LOOKUP_FAILED", "Inventory could not be read", requestId);
+  if (inventory.kind === "error") {
+    return errorResponse(502, "INVENTORY_LOOKUP_FAILED", "Inventory could not be read", requestId, undefined,
+      inventoryDependencyReason(inventory));
+  }
   if (inventory.kind !== "success") return errorResponse(502, "INVENTORY_LOOKUP_FAILED", "Inventory could not be read", requestId);
   const values = inventoryProducts(inventory.payload);
   if (values === "invalid") return errorResponse(502, "INVENTORY_INVALID_PAYLOAD", "Inventory returned an invalid product list", requestId);
@@ -451,8 +486,8 @@ export async function handler(event: ApiEvent = {}, context: LambdaContext = EMP
   let requestErrorName: string | undefined;
   const observeInventory: ObserveInventory = (call) => {
     dependencyDurationMs = call.durationMs;
+    inventoryExecutedVersion = call.executedVersion;
     if (call.kind === "success") {
-      inventoryExecutedVersion = call.executedVersion;
       inventoryInvocationId = call.invocationId;
     } else {
       dependencyErrorName = call.errorName;

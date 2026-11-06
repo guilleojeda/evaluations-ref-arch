@@ -14,6 +14,7 @@ import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import { AccessLogField, AccessLogFormat } from "aws-cdk-lib/aws-apigateway";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
@@ -269,6 +270,23 @@ export class AppStack extends DemoStack {
         })),
       },
     });
+    const stageAlarm = new cloudwatch.CfnAlarm(this, "Stage5xxAlarm", {
+      alarmName: "IncidentTriageDemoAppStage5xx",
+      namespace: "AWS/ApiGateway",
+      metricName: "5xx",
+      dimensions: [
+        { name: "ApiId", value: api.apiId },
+        { name: "Stage", value: "$default" },
+      ],
+      statistic: "Sum",
+      period: 60,
+      threshold: 1,
+      comparisonOperator: "GreaterThanOrEqualToThreshold",
+      evaluationPeriods: 1,
+      datapointsToAlarm: 1,
+      treatMissingData: "notBreaching",
+      actionsEnabled: false,
+    });
 
     const webOrigin = origins.S3BucketOrigin.withOriginAccessControl(webBucket);
     const apiDomain = Fn.select(2, Fn.split("/", api.apiEndpoint));
@@ -347,6 +365,9 @@ export class AppStack extends DemoStack {
     new CfnOutput(this, "CheckoutReservedConcurrency", { value: "unreserved" });
     new CfnOutput(this, "InventoryReservedConcurrency", { value: "unreserved" });
     new CfnOutput(this, "InventoryResourcePolicy", { value: "absent" });
+    new CfnOutput(this, "StageAlarmName", { value: stageAlarm.ref });
+    new CfnOutput(this, "StageAlarmArn", { value: stageAlarm.attrArn });
+    new CfnOutput(this, "InventoryRoleArn", { value: inventoryRole.roleArn });
 
     distribution.node.addDependency(defaultStage);
   }

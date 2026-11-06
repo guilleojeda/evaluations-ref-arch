@@ -32,6 +32,15 @@ export interface InventoryResult {
 
 const dynamo = new DynamoDBClient({ maxAttempts: 1 });
 const INVENTORY_DYNAMO_DEADLINE_MS = 4_500;
+const INVENTORY_ACCESS_DENIED_ERROR = "InventoryReadAccessDenied";
+
+interface AwsErrorMetadata {
+  readonly requestId?: unknown;
+}
+
+interface AwsErrorLike {
+  readonly $metadata?: AwsErrorMetadata;
+}
 
 function tableName(): string | undefined {
   return env("INVENTORY_TABLE_NAME");
@@ -43,6 +52,27 @@ function configuredSku(): string | undefined {
 
 function eventRequestId(event: InventoryEvent): string {
   return typeof event.requestId === "string" && event.requestId.length > 0 ? event.requestId : requestIdFor({});
+}
+
+function metadataRequestId(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null) return undefined;
+  const metadata = (error as AwsErrorLike).$metadata;
+  return typeof metadata?.requestId === "string" && metadata.requestId.length > 0 ? metadata.requestId : undefined;
+}
+
+function accountFromFunctionArn(context: LambdaContext): string | undefined {
+  const arn = context.invokedFunctionArn;
+  if (typeof arn !== "string") return undefined;
+  const match = arn.match(/^arn:[^:]+:[^:]+:[^:]*:([0-9]{12}):/);
+  return match?.[1];
+}
+
+function tableResource(table: string, context: LambdaContext): string | undefined {
+  if (table.startsWith("arn:")) return table;
+  const region = env("AWS_REGION") ?? env("AWS_DEFAULT_REGION");
+  const account = accountFromFunctionArn(context);
+  if (region && account) return `arn:aws:dynamodb:${region}:${account}:table/${table}`;
+  return undefined;
 }
 
 async function readProduct(sku: string): Promise<Product | null> {
@@ -73,6 +103,9 @@ export async function handler(event: InventoryEvent = {}, context: LambdaContext
   let sku: string | undefined;
   let failureReason: string | undefined;
   let failureErrorName: string | undefined;
+  let dependencyOperation: string | undefined;
+  let dependencyResource: string | undefined;
+  let dependencyRequestId: string | undefined;
   try {
     const requestedSku = typeof event.sku === "string" && event.sku.length > 0 ? event.sku : configuredSku();
     sku = requestedSku;
@@ -100,6 +133,12 @@ export async function handler(event: InventoryEvent = {}, context: LambdaContext
     outcome = timedOut ? "timeout" : "server_error";
     statusCode = timedOut ? 504 : 500;
     failureReason = timedOut ? "deadline" : "dependency_error";
+    if (safe.name === "AccessDeniedException" && sku !== undefined) {
+      dependencyOperation = "GetItem";
+      dependencyResource = tableResource(tableName() ?? "", context);
+      dependencyRequestId = metadataRequestId(error);
+      failureReason = "access_denied";
+    }
     console.error(JSON.stringify({
       timestamp: new Date().toISOString(),
       environment: env("APP_ENVIRONMENT") ?? "development",
@@ -115,6 +154,9 @@ export async function handler(event: InventoryEvent = {}, context: LambdaContext
       error: safe.name,
       failureReason,
     }));
+    if (failureErrorName === "AccessDeniedException") {
+      throw Object.assign(new Error("Inventory read access denied"), { name: INVENTORY_ACCESS_DENIED_ERROR });
+    }
     throw error;
   } finally {
     const durationMs = Date.now() - started;
@@ -133,6 +175,9 @@ export async function handler(event: InventoryEvent = {}, context: LambdaContext
       sku,
       dependencyErrorName: failureErrorName,
       dependencyFailureReason: failureReason,
+      dependencyOperation,
+      dependencyResource,
+      dependencyRequestId,
     });
     emitMetric("inventory", operation, durationMs, outcome);
   }

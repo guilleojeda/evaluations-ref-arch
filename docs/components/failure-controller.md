@@ -1,6 +1,6 @@
 # Failure Controller
 
-The failure controller is a cloud-hosted presenter dashboard. The current dashboard verifies the checkout baseline, runs bounded catalog and checkout traffic, and lets the presenter observe or stop the same run from another browser. The incident and remedy contracts below describe the full demo.
+The failure controller is a cloud-hosted presenter dashboard. The current dashboard verifies the checkout baseline, runs bounded traffic, and lets the presenter observe or stop the same run from another browser. It also applies and restores the scoped Inventory access denial, records request evidence, and displays the actual app alarm separately. The remaining incident and remedy contracts describe the full demo.
 
 The [controller specification](failure-controller-behavior.md) owns action behavior, traffic bounds, observations, private records, and interruptions. The [scenario contracts](../demo-scenarios.md) own inventory capacity overload, denied inventory access, and the recovered/stale-alarm condition. The [demo script](../demo-script.md) places these controls in the talk. The [agent design](operations-agent.md) defines the alarm-to-Runtime path and durable run/report records; exact integration schemas remain to be implemented.
 
@@ -101,4 +101,4 @@ A single successful quiet checkout cannot certify overload resolution. First ver
 
 Reset preserves operational history, invalidates old productVersion payloads, and requires cleared browser attempts and settled checkout outcomes. The next baseline includes the verification order and stock decrement. An unresolved outcome or interrupted reset prevents claiming completion.
 
-The selected scope is these two operational incidents, their presenter-operated fixes, and recovered/stale-alert interpretation. Data corruption, general chaos tooling, and new infrastructure are not additional requirements. Exact traffic/cap values and propagation deadlines remain implementation/rehearsal settings; no controller or AWS behavior has been implemented or measured here.
+The selected scope is these two operational incidents, their presenter-operated fixes, and recovered/stale-alert interpretation. Data corruption, general chaos tooling, and new infrastructure are not additional requirements. Set rehearsal waits using observed request, policy and alarm timing.

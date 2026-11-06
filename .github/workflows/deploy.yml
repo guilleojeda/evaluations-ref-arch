@@ -101,10 +101,14 @@ jobs:
         run: npm run check -- ${{ matrix.component }}
       - name: Run app release acceptance checks
         if: matrix.component == 'app'
-        run: node --test tests/phase1-deploy.test.mjs tests/phase1-checkout-handler.test.mjs
+        run: |
+          node --test tests/phase1-deploy.test.mjs tests/phase1-checkout-handler.test.mjs
+          node --test --test-name-pattern="^app alarm" tests/phase3-inventory-denial-infrastructure.test.mjs
       - name: Run controller release acceptance checks
         if: matrix.component == 'controller'
-        run: node --test tests/phase2-controller-deploy.test.mjs tests/phase2-controller-handler.test.mjs
+        run: |
+          node --test tests/phase2-controller-deploy.test.mjs tests/phase2-controller-handler.test.mjs tests/phase3-inventory-denial-controller.test.mjs
+          node --test --test-name-pattern="^controller evidence" tests/phase3-inventory-denial-infrastructure.test.mjs
       - name: Run the locked native ARM64 smoke command
         if: matrix.component == 'agent'
         run: uv run --project agent --locked python agent/native_smoke.py .artifacts/agent/runtime.zip

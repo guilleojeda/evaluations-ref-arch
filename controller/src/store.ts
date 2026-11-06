@@ -99,12 +99,18 @@ export async function getAction(id: string): Promise<Action | undefined> {
 export async function getDashboard(): Promise<DashboardState> {
   const run = await getRun();
   const currentAction = run.currentActionId && await getAction(run.currentActionId);
-  return { ...run, currentAction: currentAction || undefined, observedAt: timestamp() };
+  const currentConfigurationAction = run.configurationActionId && await getAction(run.configurationActionId);
+  return { ...run, currentAction: currentAction || undefined, currentConfigurationAction: currentConfigurationAction || undefined, observedAt: timestamp() };
 }
 
 function sameCommand(a: Command, b: Command): boolean {
   if (a.kind !== b.kind) return false;
-  return !("targetActionId" in a) || ("targetActionId" in b && a.targetActionId === b.targetActionId);
+  if ("targetActionId" in a) return "targetActionId" in b && a.targetActionId === b.targetActionId;
+  if ("targetActionId" in b) return false;
+  if (a.kind === "restore_inventory_access" && b.kind === "restore_inventory_access") {
+    return Boolean(a.restoreWithoutEvidence) === Boolean(b.restoreWithoutEvidence);
+  }
+  return true;
 }
 
 function counters(): Counters {
@@ -115,20 +121,31 @@ function newAction(id: string, command: Command, now: number): Action {
   const time = new Date(now).toISOString();
   return {
     id, kind: command.kind, command, status: "queued", createdAt: time, updatedAt: time,
-    claimBy: now + 30_000,
-    deadlineAt: now + 75_000,
-    discardAfter: now + 105_000,
+    claimBy: now + 30_000, deadlineAt: now + 75_000, discardAfter: now + 105_000,
     requests: [],
     ...(command.kind === "traffic" ? { traffic: { catalog: counters(), checkout: counters() } } : {}),
   };
 }
 
-function canStart(run: RunState, action: Action | undefined, command: Command): void {
-  if (action && active.has(action.status)) {
+function inventoryDenialOutstanding(run: RunState): boolean {
+  const incident = run.incident;
+  return incident?.kind === "inventory_access_denied" &&
+    (!incident.policy || incident.policy.state !== "absent");
+}
+
+function canStart(run: RunState, action: Action | undefined, configuration: Action | undefined, command: Command): void {
+  const configurationCommand = command.kind === "restore_inventory_access";
+  if (action && active.has(action.status) && !(configurationCommand && action.kind === "traffic")) {
     throw new CommandError(409, "ACTION_IN_PROGRESS", "Wait for the current action or stop its traffic.");
   }
   if (action?.status === "incomplete") {
     throw new CommandError(409, "ACTION_INCOMPLETE", "Inspect and discard the incomplete action before starting another.");
+  }
+  if (configuration?.status === "incomplete") {
+    throw new CommandError(409, "ACTION_INCOMPLETE", "Inspect and discard the incomplete configuration action before continuing.");
+  }
+  if (configuration && active.has(configuration.status) && !configurationCommand) {
+    throw new CommandError(409, "CONFIGURATION_IN_PROGRESS", "Wait for the current configuration action to settle.");
   }
   if (command.kind === "traffic") {
     if (!run.baseline) throw new CommandError(409, "READINESS_REQUIRED", "Check readiness before starting traffic.");
@@ -136,10 +153,27 @@ function canStart(run: RunState, action: Action | undefined, command: Command): 
       throw new CommandError(409, "ALLOWANCE_EXHAUSTED", "Both traffic allowances are exhausted.");
     }
   }
-  if (command.kind === "readiness" && (
-    run.budgets.checkout.verificationRemaining < 1 || run.budgets.catalog.remaining < 2 || run.budgets.orderStatus.remaining < 1
-  )) {
+  if (command.kind === "activate_inventory_denial") {
+    if (!run.baseline) throw new CommandError(409, "READINESS_REQUIRED", "Check readiness before activating an Inventory denial.");
+    if (run.unresolved.length > 0) throw new CommandError(409, "UNRESOLVED_REQUESTS", "Settle unresolved checkout attempts before activating a denial.");
+    if (run.budgets.catalog.remaining < 1 || run.budgets.checkout.verificationRemaining < 1) {
+      throw new CommandError(409, "ALLOWANCE_EXHAUSTED", "Inventory denial activation requires one catalog and one verification checkout allowance.");
+    }
+    if (inventoryDenialOutstanding(run)) throw new CommandError(409, "INCIDENT_ALREADY_ACTIVE", "Restore the recorded Inventory access change before activating another denial.");
+    if (configuration && active.has(configuration.status)) throw new CommandError(409, "CONFIGURATION_IN_PROGRESS", "Wait for the current configuration action to settle.");
+    if (action?.kind === "traffic" && active.has(action.status)) throw new CommandError(409, "TRAFFIC_ACTIVE", "Stop traffic before activating an Inventory denial.");
+    if (action?.traffic && Object.values(action.traffic).some((value) => value.inFlight > 0)) throw new CommandError(409, "TRAFFIC_DRAINING", "Wait for accepted traffic to settle before activating an Inventory denial.");
+  }
+  if (command.kind === "restore_inventory_access") {
+    if (!run.incident?.kind || run.incident.kind !== "inventory_access_denied") throw new CommandError(409, "NO_INVENTORY_DENIAL", "There is no recorded Inventory denial to restore.");
+    if (configuration && active.has(configuration.status)) throw new CommandError(409, "CONFIGURATION_IN_PROGRESS", "Wait for the current configuration action to settle.");
+    if (action && active.has(action.status) && action.kind !== "traffic") throw new CommandError(409, "ACTION_IN_PROGRESS", "Wait for the current primary action to settle before restoring access.");
+  }
+  if (command.kind === "readiness" && (run.budgets.checkout.verificationRemaining < 1 || run.budgets.catalog.remaining < 2 || run.budgets.orderStatus.remaining < 1)) {
     throw new CommandError(409, "ALLOWANCE_EXHAUSTED", "Readiness requires a verification checkout, two catalog reads and an order-status read.");
+  }
+  if (command.kind === "readiness" && inventoryDenialOutstanding(run)) {
+    throw new CommandError(409, "INVENTORY_DENIAL_ACTIVE", "Restore the recorded Inventory access change before establishing a new readiness baseline.");
   }
 }
 
@@ -147,48 +181,48 @@ function controlled(target: Action, command: Extract<Command, { targetActionId: 
   const time = new Date(now).toISOString();
   const observed = visible(target, now);
   if (command.kind === "discard") {
-    if (observed.status !== "incomplete" || now < target.discardAfter) {
-      throw new CommandError(409, "ACTION_NOT_DISCARDABLE", "Wait for the action's execution and drain window to end.");
-    }
+    if (observed.status !== "incomplete" || now < target.discardAfter) throw new CommandError(409, "ACTION_NOT_DISCARDABLE", "Wait for the action's execution and drain window to end.");
     return { ...target, status: "discarded", finishedAt: time, updatedAt: time };
   }
-  if (target.kind !== "traffic" || !active.has(observed.status)) {
-    throw new CommandError(409, "TRAFFIC_NOT_ACTIVE", "The current action has no active traffic to stop.");
-  }
+  if (target.kind !== "traffic" || !active.has(observed.status)) throw new CommandError(409, "TRAFFIC_NOT_ACTIVE", "The current action has no active traffic to stop.");
   const neverStarted = target.status === "queued";
-  return {
-    ...target, status: neverStarted ? "stopped" : "draining", stopRequested: true, updatedAt: time,
-    ...(neverStarted ? { finishedAt: time } : {}),
-  };
+  return { ...target, status: neverStarted ? "stopped" : "draining", stopRequested: true, updatedAt: time, ...(neverStarted ? { finishedAt: time } : {}) };
+}
+
+function pointerFor(run: RunState, actionId: string): "currentActionId" | "configurationActionId" | undefined {
+  if (run.currentActionId === actionId) return "currentActionId";
+  if (run.configurationActionId === actionId) return "configurationActionId";
+  return undefined;
 }
 
 export async function applyCommand(id: string, command: Command): Promise<{ action: Action; created: boolean }> {
   for (let attempt = 0; attempt < 6; attempt++) {
     const [prior, runRow] = await Promise.all([read<Action>(actionKey(id)), read<RunState>(runKey)]);
     if (prior) {
-      if (!sameCommand(prior.data.command, command)) {
-        throw new CommandError(409, "ACTION_ID_CONFLICT", "This action ID is already used by a different command.");
-      }
+      if (!sameCommand(prior.data.command, command)) throw new CommandError(409, "ACTION_ID_CONFLICT", "This action ID is already used by a different command.");
       return { action: visible(prior.data), created: false };
     }
     const run = runRow?.data ?? initialRun();
-    const current = run.currentActionId ? await read<Action>(actionKey(run.currentActionId)) : undefined;
-    if (run.currentActionId && !current) throw new Error("The current action record is unavailable");
+    const [current, configuration] = await Promise.all([
+      run.currentActionId ? read<Action>(actionKey(run.currentActionId)) : Promise.resolve(undefined),
+      run.configurationActionId ? read<Action>(actionKey(run.configurationActionId)) : Promise.resolve(undefined),
+    ]);
+    if ((run.currentActionId && !current) || (run.configurationActionId && !configuration)) throw new Error("The current action record is unavailable");
 
     const now = Date.now();
     const action = newAction(id, command, now);
     let nextRun = run;
     const writes: TransactWriteItem[] = [];
     if ("targetActionId" in command) {
-      if (!current || current.data.id !== command.targetActionId) {
-        throw new CommandError(409, "ACTION_NOT_CURRENT", "This command must target the current action.");
-      }
-      writes.push(replace(current.pk, current, controlled(current.data, command, now)));
+      const target = (current?.data.id === command.targetActionId ? current : undefined) ?? (configuration?.data.id === command.targetActionId ? configuration : undefined);
+      if (!target || !pointerFor(run, command.targetActionId)) throw new CommandError(409, "ACTION_NOT_CURRENT", "This command must target the current action.");
+      writes.push(replace(target.pk, target, controlled(target.data, command, now)));
       action.status = "completed";
       action.finishedAt = action.createdAt;
     } else {
-      canStart(run, current && visible(current.data, now), command);
-      nextRun = { ...run, currentActionId: id, ...(command.kind === "readiness" ? { baseline: null } : {}) };
+      canStart(run, current && visible(current.data, now), configuration && visible(configuration.data, now), command);
+      if (command.kind === "restore_inventory_access") nextRun = { ...run, configurationActionId: id };
+      else nextRun = { ...run, currentActionId: id, ...(command.kind === "readiness" ? { baseline: null } : {}) };
     }
     writes.push(replace(runKey, runRow, nextRun), replace(actionKey(id), undefined, action));
     if (await commit(writes)) return { action, created: true };
@@ -197,13 +231,10 @@ export async function applyCommand(id: string, command: Command): Promise<{ acti
   throw new CommandError(409, "ACTION_CHANGED", "The run changed while accepting this command. Read its state and retry the same command.");
 }
 
-export async function changeAction(
-  actionId: string,
-  mutate: (run: RunState, action: Action) => boolean,
-): Promise<{ run: RunState; action: Action } | undefined> {
+export async function changeAction(actionId: string, mutate: (run: RunState, action: Action) => boolean): Promise<{ run: RunState; action: Action } | undefined> {
   for (let attempt = 0; attempt < 8; attempt++) {
     const [runRow, actionRow] = await Promise.all([read<RunState>(runKey), read<Action>(actionKey(actionId))]);
-    if (!runRow || runRow.data.currentActionId !== actionId || !actionRow || !active.has(actionRow.data.status)) return;
+    if (!runRow || !pointerFor(runRow.data, actionId) || !actionRow || !active.has(actionRow.data.status)) return;
     const run = structuredClone(runRow.data);
     const action = structuredClone(actionRow.data);
     if (!mutate(run, action)) return;

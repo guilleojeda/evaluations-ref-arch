@@ -6,16 +6,20 @@ or AgentCore resource.
 
 The setup has three deliberately separate layers:
 
-1. `phase0-cfn-execution-policy.yaml` creates the managed policy
-   `IncidentTriageDemoBootstrapCfnExecution` in stack
-   `IncidentTriageDemoBootstrapPolicy`. It grants bootstrap inspection and
-   the scoped service actions CloudFormation needs for the app stack. Extend it
-   with reviewed, resource-scoped grants when a feature adds resources. The
-   same stack owns the two app runtime permissions boundaries. The app
-   CloudFormation execution role cannot edit either boundary.
+1. `phase0-cfn-execution-policy.yaml` creates the managed policies
+   `IncidentTriageDemoBootstrapCfnExecution`,
+   `IncidentTriageDemoControllerCfnExecution`, and
+   `IncidentTriageDemoPhase3CfnExecution` in stack
+   `IncidentTriageDemoBootstrapPolicy`. The first policy grants bootstrap
+   inspection and the scoped service actions CloudFormation needs for the app;
+   the second covers the controller stack; and the third keeps the Phase 3
+   alarm and evidence-bucket provisioning grants separate from the near-limit
+   app policy. The same stack owns the four app/controller runtime permissions
+   boundaries. The app and controller CloudFormation execution role cannot edit
+   those boundaries.
 2. The standard CDK v2 bootstrap command creates stack
    `IncidentTriageDemoBootstrap` with qualifier `evaltalk`. Its CloudFormation
-   execution role receives both policies through
+   execution role receives all three policies through
    `--cloudformation-execution-policies`.
 3. `github-iam.yaml` creates stack `IncidentTriageDemoGitHub`, the GitHub OIDC
    provider when one is absent, and role `IncidentTriageDemoGitHubDeploy`.
@@ -61,6 +65,7 @@ The policy ARNs for the target account are:
 ```text
 arn:aws:iam::027224425948:policy/IncidentTriageDemoBootstrapCfnExecution
 arn:aws:iam::027224425948:policy/IncidentTriageDemoControllerCfnExecution
+arn:aws:iam::027224425948:policy/IncidentTriageDemoPhase3CfnExecution
 ```
 
 ## 2. Bootstrap CDK with the standard template
@@ -77,10 +82,10 @@ npm exec -- cdk bootstrap aws://027224425948/us-east-1 \
   --qualifier evaltalk \
   --toolkit-stack-name IncidentTriageDemoBootstrap \
   --cloudformation-execution-policies \
-    "arn:aws:iam::027224425948:policy/IncidentTriageDemoBootstrapCfnExecution,arn:aws:iam::027224425948:policy/IncidentTriageDemoControllerCfnExecution"
+    "arn:aws:iam::027224425948:policy/IncidentTriageDemoBootstrapCfnExecution,arn:aws:iam::027224425948:policy/IncidentTriageDemoControllerCfnExecution,arn:aws:iam::027224425948:policy/IncidentTriageDemoPhase3CfnExecution"
 ```
 
-Keep the three existing app resource ID parameters when updating the policy stack. Set `ControllerHttpApiId` to the controller's `ApiId` output as soon as the first release succeeds. The `*` setting is for first creation, while CloudFormation is assigning the ID.
+Keep the three existing app resource ID parameters when updating the policy stack. Set `ControllerHttpApiId` to the controller's `ApiId` output as soon as the first release succeeds. The `*` setting is for first creation, while CloudFormation is assigning the ID. Keep all three policy ARNs attached to the exact `cdk-evaltalk-cfn-exec-role-027224425948-us-east-1` role; do not replace them with a broad policy or unpinned role.
 
 The app and controller releases share the CloudFormation execution trust. Their running functions assume separate named roles with separate boundaries. Verify actual runtime grants for both credential ARNs before the first rehearsal. [CDK bootstrap policy inputs](https://docs.aws.amazon.com/cdk/v2/guide/ref-cli-cmd-bootstrap.html)
 

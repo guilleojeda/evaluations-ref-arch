@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Action, Command, DashboardState } from "./types";
+import type { Action, AlarmResponse, AlarmState, Command, DashboardState } from "./types";
 
 type Notice = { kind: "error" | "success"; message: string } | undefined;
 const activeStatuses = new Set(["queued", "running", "draining"]);
@@ -20,16 +20,36 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isDashboard(value: Record<string, unknown>): value is Record<string, unknown> & DashboardState {
   return typeof value.observedAt === "string" && isRecord(value.budgets) &&
-    isRecord(value.budgets.checkout) && isRecord(value.budgets.catalog) &&
+    isRecord(value.budgets.checkout) && isRecord(value.budgets.catalog) && isRecord(value.budgets.orderStatus) &&
     (value.baseline === null || isRecord(value.baseline)) &&
     (value.currentAction === undefined || isRecord(value.currentAction)) &&
+    (value.currentConfigurationAction === undefined || isRecord(value.currentConfigurationAction)) &&
     Array.isArray(value.receipts) && value.receipts.every(isRecord) &&
     Array.isArray(value.unresolved) && value.unresolved.every(isRecord);
+}
+
+function isAlarmResponse(value: Record<string, unknown>): value is Record<string, unknown> & AlarmResponse {
+  return typeof value.observedAt === "string" && (value.alarm === null || isRecord(value.alarm));
+}
+
+function alarmTone(state: AlarmState | undefined): string {
+  return state === "ALARM" ? "alarm-danger" : state === "OK" ? "alarm-ok" : "alarm-unknown";
+}
+function freshness(value: string | undefined): string {
+  if (!value) return "Unknown freshness";
+  const elapsed = Date.now() - Date.parse(value);
+  return Number.isFinite(elapsed) && elapsed < 10_000 ? "Fresh" : "Stale";
 }
 
 async function readDashboard(response: Response): Promise<DashboardState> {
   const data = await readJson(response);
   if (!isDashboard(data)) throw new Error("The controller returned an invalid dashboard");
+  return data;
+}
+
+async function readAlarm(response: Response): Promise<AlarmResponse> {
+  const data = await readJson(response);
+  if (!isAlarmResponse(data)) throw new Error("The controller returned an invalid alarm observation");
   return data;
 }
 
@@ -47,14 +67,18 @@ export function App() {
   const [bearer, setBearer] = useState("");
   const [credentialInput, setCredentialInput] = useState("");
   const [state, setState] = useState<DashboardState>();
+  const [alarm, setAlarm] = useState<AlarmResponse>();
+  const [alarmReadFailed, setAlarmReadFailed] = useState(false);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState<Notice>();
   const [lastObservedAt, setLastObservedAt] = useState<string>();
   const [pollFailure, setPollFailure] = useState<string>();
   const [menuOpen, setMenuOpen] = useState(false);
   const [readinessConfirmed, setReadinessConfirmed] = useState(false);
+  const [protectiveRestoreConfirmed, setProtectiveRestoreConfirmed] = useState(false);
   const [pendingCommand, setPendingCommand] = useState<{ id: string; command: Command }>();
   const polling = useRef<number | undefined>(undefined);
+  const alarmPolling = useRef<number | undefined>(undefined);
   const sessionEpoch = useRef(0);
   const requestEpoch = useRef(0);
 
@@ -68,7 +92,7 @@ export function App() {
       if (epoch === sessionEpoch.current) {
         setState(body);
         setLastObservedAt(body.observedAt);
-        setPendingCommand((pending) => pending?.id === body.currentAction?.id ? undefined : pending);
+        setPendingCommand((pending) => pending && [body.currentAction?.id, body.currentConfigurationAction?.id].includes(pending.id) ? undefined : pending);
         setPollFailure(undefined);
       }
     } catch (error) {
@@ -77,14 +101,42 @@ export function App() {
       if (polling.current === epoch) polling.current = undefined;
     }
   }, [bearer]);
-  useEffect(() => { if (!bearer) return undefined; void loadState(); const interval = window.setInterval(() => void loadState(), 5_000); return () => window.clearInterval(interval); }, [bearer, loadState]);
+
+  const loadAlarm = useCallback(async () => {
+    const epoch = sessionEpoch.current;
+    if (!bearer || alarmPolling.current === epoch) return;
+    alarmPolling.current = epoch;
+    try {
+      const response = await fetch("/api/alarm", { headers: { Authorization: `Bearer ${bearer}`, Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(8_000) });
+      const body = await readAlarm(response);
+      if (epoch === sessionEpoch.current) { setAlarm(body); setAlarmReadFailed(false); }
+    } catch {
+      if (epoch === sessionEpoch.current) setAlarmReadFailed(true);
+    } finally {
+      if (alarmPolling.current === epoch) alarmPolling.current = undefined;
+    }
+  }, [bearer]);
 
   const currentAction = state?.currentAction;
+  const configurationAction = state?.currentConfigurationAction;
   const currentStatus = currentAction?.status ?? "idle";
   const trafficActive = currentAction?.kind === "traffic" && activeStatuses.has(currentStatus);
   const actionBusy = loading || !state || Boolean(pendingCommand) || Boolean(currentAction && activeStatuses.has(currentStatus)) || currentStatus === "incomplete";
+  const configurationBusy = loading || Boolean(pendingCommand) || Boolean(configurationAction && activeStatuses.has(configurationAction.status)) || configurationAction?.status === "incomplete";
+  const restoreBusy = configurationBusy || Boolean(currentAction && activeStatuses.has(currentStatus) && currentAction.kind !== "traffic");
   const baseline = state?.baseline;
   const budgets = state?.budgets;
+  const incident = state?.incident;
+  const checkpoint = incident?.checkpoint;
+  const baselinePolicyAbsent = isRecord(baseline?.settings) && baseline.settings.inventoryPolicy === "absent";
+  const observedPolicy = incident?.policy?.state ?? (baselinePolicyAbsent ? "absent" : "unknown");
+  const incidentActive = Boolean(incident && observedPolicy !== "absent");
+  const needsProtectiveRestore = checkpoint?.status === "unavailable" || checkpoint?.status === "incomplete";
+  const alarmObservation = alarm?.alarm;
+  const retainedAlarm = checkpoint?.alarm;
+  const deniedCheckout = currentAction?.kind === "activate_inventory_denial"
+    ? currentAction.requests.find(({ kind, dependencyReason }) => kind === "checkout" && dependencyReason === "inventory_access_denied")
+    : undefined;
 
   const sendAction = useCallback(async (id: string, command: Command) => {
     const epoch = sessionEpoch.current;
@@ -98,28 +150,28 @@ export function App() {
       const action = body.action as Action | undefined;
       if (!action || action.id !== id) throw new Error("The controller did not acknowledge this command");
       if (epoch === sessionEpoch.current && response.status === 202 && activeStatuses.has(action.status)) {
-        setState((previous) => previous && { ...previous, currentAction: action });
+        setState((previous) => previous && (command.kind === "restore_inventory_access" ? { ...previous, currentConfigurationAction: action } : { ...previous, currentAction: action }));
       }
       if (epoch === sessionEpoch.current) {
         setPendingCommand(undefined);
         if (command.kind === "readiness") setReadinessConfirmed(false);
         setNotice({ kind: "success", message: `${String(command.kind)} accepted` });
         setMenuOpen(false);
-        await loadState();
+        await Promise.all([loadState(), loadAlarm()]);
       }
     } catch (error) {
       if (epoch === sessionEpoch.current) {
         if (error instanceof RequestError && error.status < 500) {
           setPendingCommand(undefined);
           setNotice({ kind: "error", message: error.message });
-        } else {
-          setNotice({ kind: "error", message: "The command outcome is unknown. Retry with the same ID." });
-        }
+        } else setNotice({ kind: "error", message: "The command outcome is unknown. Retry with the same ID." });
       }
     } finally {
       if (epoch === sessionEpoch.current && requestEpoch.current === callNumber) setLoading(false);
     }
-  }, [bearer, loadState]);
+  }, [bearer, loadAlarm, loadState]);
+
+  useEffect(() => { if (!bearer) return undefined; void loadState(); void loadAlarm(); const interval = window.setInterval(() => { void loadState(); void loadAlarm(); }, 5_000); return () => window.clearInterval(interval); }, [bearer, loadAlarm, loadState]);
 
   const signIn = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); const value = credentialInput.trim();
@@ -136,13 +188,13 @@ export function App() {
       if (sessionEpoch.current === epoch) setNotice({ kind: "error", message: error instanceof Error ? error.message : "The presenter credential was rejected." });
     } finally { if (sessionEpoch.current === epoch) setLoading(false); }
   };
-  const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setPendingCommand(undefined); setReadinessConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
-  const runReadiness = () => {
-    if (readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "readiness", confirmQuiet: true });
-  };
+  const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setPendingCommand(undefined); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
+  const runReadiness = () => { if (readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "readiness", confirmQuiet: true }); };
   const runTraffic = () => void sendAction(crypto.randomUUID(), { kind: "traffic" });
+  const runActivation = () => { if (readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "activate_inventory_denial" }); };
+  const runRestore = () => { if (incident && !restoreBusy && (!needsProtectiveRestore || protectiveRestoreConfirmed)) void sendAction(crypto.randomUUID(), needsProtectiveRestore ? { kind: "restore_inventory_access", restoreWithoutEvidence: true } : { kind: "restore_inventory_access" }); };
   const stopTraffic = () => currentAction && void sendAction(crypto.randomUUID(), { kind: "stop", targetActionId: currentAction.id });
-  const discardAction = () => currentAction && void sendAction(crypto.randomUUID(), { kind: "discard", targetActionId: currentAction.id });
+  const discardAction = () => { const target = currentAction?.status === "incomplete" ? currentAction : configurationAction?.status === "incomplete" ? configurationAction : undefined; if (target) void sendAction(crypto.randomUUID(), { kind: "discard", targetActionId: target.id }); };
   const retryPending = () => pendingCommand && void sendAction(pendingCommand.id, pendingCommand.command);
   const actionLabel = currentAction ? `${currentAction.kind} · ${currentAction.status}` : "No action running";
 
@@ -158,53 +210,73 @@ export function App() {
   return (
     <main className="controller-shell" aria-label="Incident triage failure controller">
       <header className="topbar"><div className="brand"><div className="brand-mark" aria-hidden="true">IT</div><div><p className="eyebrow">Incident triage demo</p><h1>Failure controller</h1></div></div><div className="top-actions"><span className="connection-pill"><span className="status-dot" aria-hidden="true" /> Cloud state</span><button className="button button-secondary" type="button" onClick={signOut}>Sign out</button></div></header>
-      <section className="hero-panel">
-        <div className="hero-copy">
-          <p className="eyebrow">Current action</p>
-          <h2>{actionLabel}</h2>
-          {currentAction && <p className="mono muted compact">{currentAction.id}</p>}
-          <p className="muted">Last observation {formatTime(lastObservedAt)}{pollFailure ? ` · ${pollFailure}` : ""}</p>
-          {currentAction?.startedAt && <p className="muted">Started {formatTime(currentAction.startedAt)}{currentAction.finishedAt ? ` · Ended ${formatTime(currentAction.finishedAt)}` : ""}</p>}
-          {currentAction?.error && <p className="action-error" role="alert">{currentAction.error}</p>}
-          {currentAction?.discardAfter && currentStatus === "incomplete" && <p className="muted">Discard available after {formatTime(new Date(currentAction.discardAfter).toISOString())}</p>}
-          <label className="quiet-check"><input type="checkbox" checked={readinessConfirmed} onChange={(event) => setReadinessConfirmed(event.target.checked)} /> I confirm other checkout writers are paused.</label>
-        </div>
-        <div className="action-controls">
-          <button className="button button-primary" type="button" onClick={runReadiness} disabled={actionBusy || !readinessConfirmed}>Check readiness</button>
-          <button className="button button-secondary" type="button" onClick={runTraffic} disabled={actionBusy || !baseline}>Start healthy traffic</button>
-          {trafficActive && <button className="button button-stop" type="button" onClick={stopTraffic} disabled={loading || Boolean(pendingCommand) || currentStatus === "draining"}>Stop traffic</button>}
-          {currentAction && currentStatus === "incomplete" && <button className="button button-secondary" type="button" onClick={discardAction} disabled={loading || Boolean(pendingCommand) || Date.now() < currentAction.discardAfter}>Discard action</button>}
-          <div className="menu-wrap">
-            <button className="button button-secondary" type="button" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>Actions <span className="chevron" aria-hidden="true" /></button>
-            {menuOpen && <div className="actions-menu" role="menu">
-              <button type="button" role="menuitem" onClick={runReadiness} disabled={actionBusy || !readinessConfirmed}>Check readiness</button>
-              <button type="button" role="menuitem" onClick={runTraffic} disabled={actionBusy || !baseline}>Start healthy traffic</button>
-              <button type="button" role="menuitem" onClick={stopTraffic} disabled={!trafficActive || loading || Boolean(pendingCommand) || currentStatus === "draining"}>Stop traffic</button>
-            </div>}
-          </div>
-        </div>
-      </section>
+      <section className="hero-panel"><div className="hero-copy"><p className="eyebrow">Current action</p><h2>{actionLabel}</h2>{currentAction && <p className="mono muted compact">{currentAction.id}</p>}<p className="muted">Last observation {formatTime(lastObservedAt)}{pollFailure ? ` · ${pollFailure}` : ""}</p>{currentAction?.startedAt && <p className="muted">Started {formatTime(currentAction.startedAt)}{currentAction.finishedAt ? ` · Ended ${formatTime(currentAction.finishedAt)}` : ""}</p>}{currentAction?.error && <p className="action-error" role="alert">{currentAction.error}</p>}{currentAction?.discardAfter && currentStatus === "incomplete" && <p className="muted">Discard available after {formatTime(new Date(currentAction.discardAfter).toISOString())}</p>}<label className="quiet-check"><input type="checkbox" checked={readinessConfirmed} onChange={(event) => setReadinessConfirmed(event.target.checked)} /> I confirm other checkout writers are paused.</label></div><div className="action-controls"><button className="button button-primary" type="button" onClick={runReadiness} disabled={actionBusy || configurationBusy || incidentActive || !readinessConfirmed}>Check readiness</button><button className="button button-secondary" type="button" onClick={runTraffic} disabled={actionBusy || !baseline}>Start healthy traffic</button>{trafficActive && <button className="button button-stop" type="button" onClick={stopTraffic} disabled={loading || Boolean(pendingCommand) || currentStatus === "draining"}>Stop traffic</button>}{(currentAction?.status === "incomplete" || configurationAction?.status === "incomplete") && <button className="button button-secondary" type="button" onClick={discardAction} disabled={loading || Boolean(pendingCommand) || Date.now() < (currentAction?.status === "incomplete" ? currentAction.discardAfter : configurationAction!.discardAfter)}>Discard action</button>}<div className="menu-wrap"><button className="button button-secondary" type="button" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>Actions <span className="chevron" aria-hidden="true" /></button>{menuOpen && <div className="actions-menu" role="menu"><button type="button" role="menuitem" onClick={runReadiness} disabled={actionBusy || configurationBusy || incidentActive || !readinessConfirmed}>Check readiness</button><button type="button" role="menuitem" onClick={runTraffic} disabled={actionBusy || !baseline}>Start healthy traffic</button><button type="button" role="menuitem" onClick={runActivation} disabled={actionBusy || configurationBusy || incidentActive || !baseline || !readinessConfirmed}>Activate Inventory denial</button><button type="button" role="menuitem" onClick={runRestore} disabled={!incident || restoreBusy || (needsProtectiveRestore && !protectiveRestoreConfirmed)}>Restore Inventory access</button><button type="button" role="menuitem" onClick={stopTraffic} disabled={!trafficActive || loading || Boolean(pendingCommand) || currentStatus === "draining"}>Stop traffic</button></div>}</div></div></section>
       {notice && <p className={`notice notice-${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}>{notice.message}{pendingCommand && <button className="inline-action" type="button" onClick={retryPending} disabled={loading}>Retry same command</button>}</p>}
       {pollFailure && <p className="notice notice-error" role="alert">{pollFailure}. The last good cloud observation remains visible.</p>}
+      <section className="incident-controls card" aria-label="Inventory denial controls">
+        <div className="card-heading">
+          <div><p className="eyebrow">Scoped incident control</p><h3>Inventory access</h3></div>
+          <span className={`incident-badge ${incidentActive ? "badge-warning" : "badge-neutral"}`}>
+            {incidentActive ? "Policy change recorded" : incident ? "Access restored" : "Readiness baseline"}
+          </span>
+        </div>
+        <div className="incident-grid">
+          <div>
+            <span className="fact-label">Policy</span>
+            <strong>{observedPolicy}</strong>
+            <small>
+              {incident?.policy?.revision ? `revision ${incident.policy.revision}` : "Last policy observation"}
+              {" · "}{formatTime(incident?.policy?.observedAt ?? baseline?.verifiedAt)}
+            </small>
+          </div>
+          <div>
+            <span className="fact-label">Checkpoint</span>
+            <strong>{display(checkpoint?.status, "Not captured")}</strong>
+            <small>{checkpoint?.key ?? "Configuration evidence is private"}</small>
+          </div>
+          <div>
+            <span className="fact-label">Restore</span>
+            <strong>{display(configurationAction?.configurationOutcome ?? configurationAction?.status, "Idle").replace("_", " ")}</strong>
+            <small>{configurationAction?.id ?? "No restoration action"}</small>
+          </div>
+        </div>
+        {incidentActive && needsProtectiveRestore && <label className="quiet-check protective-check">
+          <input type="checkbox" checked={protectiveRestoreConfirmed} onChange={(event) => setProtectiveRestoreConfirmed(event.target.checked)} />
+          Evidence capture is unavailable. Allow protective restore of the recorded policy.
+        </label>}
+        {configurationAction?.error && <p className="action-error" role="alert">{configurationAction.error}</p>}
+      </section>
       <section className="summary-grid" aria-label="Run summary"><article className="card"><p className="eyebrow">Target baseline</p><dl className="facts"><div><dt>App revision</dt><dd className="mono">{display(baseline?.appRevision, "Not verified")}</dd></div><div><dt>Product</dt><dd>{display(baseline?.sku, "Not verified")}</dd></div><div><dt>Product version</dt><dd className="mono">{display(baseline?.productVersion, "Not verified")}</dd></div></dl></article><article className="card stock-card"><p className="eyebrow">Inventory</p><strong className="stock-value">{display(state?.latestStock ?? baseline?.stockAfter, "—")}</strong><p className="muted">units · observed {formatTime(state?.latestStockAt)}</p></article><article className="card"><p className="eyebrow">Readiness order</p><p className="mono compact">{display(baseline?.checkoutId, "No verification order")}</p><p className="muted">{baseline ? `${display(baseline.stockBefore)} → ${display(baseline.stockAfter)} units` : "A verified order will establish the baseline."}</p></article></section>
-      <section className="traffic-grid" aria-label="Traffic progress">{(["catalog", "checkout"] as const).map((profile) => { const value = currentAction?.traffic?.[profile]; const remaining = profile === "catalog" ? budgets?.catalog?.remaining : budgets?.checkout?.generatorRemaining; return <article className="card traffic-card" key={profile}><div className="card-heading"><div><p className="eyebrow">{profile} traffic</p><h3>{profile === "catalog" ? "Catalog reads" : "Checkout posts"}</h3></div><span className="budget">{display(remaining)} remaining</span></div><div className="metric-row">{([["submitted", "sent"], ["completed", "settled"], ["succeeded", "succeeded"], ["skipped", "skipped"], ["inFlight", "in flight"]] as const).map(([field, label]) => <div key={field}><strong>{display(value?.[field], "0")}</strong><span>{label}</span></div>)}</div></article>; })}</section>
-      <p className="muted allowance-summary" aria-label="Verification allowances">
-        Verification checkouts {display(budgets?.checkout.verificationRemaining)} remaining · Order-status reads {display(budgets?.orderStatus.remaining)} remaining
-      </p>
-      {currentAction?.requests.length ? (
-        <details className="card request-details">
-          <summary>Recent requests for this action</summary>
-          <ul className="record-list">
-            {currentAction.requests.slice(-10).reverse().map((request) => (
-              <li key={request.id}>
-                <span>{request.kind.replace("_", " ")} · {request.outcome ?? "pending"}</span>
-                <strong>{request.durationMs === undefined ? "In progress" : `${request.durationMs} ms`}</strong>
-                <small className="mono">{request.requestId ?? "No app request ID"}</small>
-              </li>
-            ))}
-          </ul>
-        </details>
-      ) : null}
+      <section className="traffic-grid" aria-label="Traffic progress">{(["catalog", "checkout"] as const).map((profile) => { const value = currentAction?.traffic?.[profile]; const remaining = profile === "catalog" ? budgets?.catalog?.remaining : budgets?.checkout?.generatorRemaining; return <article className="card traffic-card" key={profile}><div className="card-heading"><div><p className="eyebrow">{profile} traffic</p><h3>{profile === "catalog" ? "Catalog reads" : "Checkout posts"}</h3></div><span className="budget">{display(remaining)} remaining</span></div><div className="metric-row">{([["submitted", "sent"], ["completed", "settled"], ["succeeded", "succeeded"], ["skipped", "skipped"], ["inFlight", "in flight"]] as const).map(([field, label]) => <div key={field}><strong>{display(value?.[field], "0")}</strong><span>{label}</span></div>)}</div></article>; })}</section><p className="muted allowance-summary" aria-label="Verification allowances">Verification checkouts {display(budgets?.checkout.verificationRemaining)} remaining · Order-status reads {display(budgets?.orderStatus.remaining)} remaining</p>
+      {currentAction?.requests.length ? <details className="card request-details"><summary>Recent requests for this action</summary><ul className="record-list">{currentAction.requests.slice(-10).reverse().map((request) => <li key={request.id}><span>{request.kind.replace("_", " ")} · {request.outcome ?? "pending"}</span><strong>{request.durationMs === undefined ? "In progress" : `${request.durationMs} ms`}</strong><small className="mono">{request.requestId ?? "No app request ID"}{request.errorCode ? ` · ${request.errorCode}` : ""}{request.dependencyReason ? ` · ${request.dependencyReason}` : ""}</small></li>)}</ul></details> : null}
+      <section className="monitor-grid" aria-label="Monitoring observations">
+        <article className="card alarm-card">
+          <div className="card-heading">
+            <div><p className="eyebrow">Native stage alarm</p><h3>{display(alarmObservation?.name, "IncidentTriageDemoAppStage5xx")}</h3></div>
+            <span className={`alarm-state ${alarmTone(alarmObservation?.state)}`}>{display(alarmObservation?.state, "UNKNOWN")}</span>
+          </div>
+          <p className="alarm-reason">{display(alarmObservation?.reason, "No alarm state observed")}</p>
+          <dl className="observation-facts">
+            <div><dt>Transition</dt><dd>{formatTime(alarmObservation?.stateTransitionedAt)}</dd></div>
+            <div><dt>State update</dt><dd>{formatTime(alarmObservation?.stateUpdatedAt)}</dd></div>
+            <div><dt>Observed</dt><dd>{formatTime(alarmObservation?.observedAt)} · {freshness(alarmObservation?.observedAt)}</dd></div>
+          </dl>
+          {alarmReadFailed && <p className="muted" role="status">Alarm refresh failed. Showing the last observation if available.</p>}
+          {retainedAlarm && <p className="retained-observation">
+            Retained checkpoint alarm <strong>{retainedAlarm.state}</strong>
+            {" · "}transition {formatTime(retainedAlarm.stateTransitionedAt)}
+            {" · "}observed {formatTime(retainedAlarm.observedAt)}
+          </p>}
+        </article>
+        <article className="card outcome-card">
+          <div className="card-heading"><div><p className="eyebrow">Incident outcome</p><h3>Request observations</h3></div></div>
+          {deniedCheckout && <p>Checkout returned HTTP {deniedCheckout.statusCode} · {deniedCheckout.dependencyReason}</p>}
+          {deniedCheckout?.requestId && <p className="mono compact">{deniedCheckout.requestId}</p>}
+          <p className="muted">{state?.unresolved?.length
+            ? `${state.unresolved.length} unresolved checkout attempts`
+            : "No unresolved checkout attempts"}</p>
+        </article>
+      </section>
       <section className="detail-grid"><article className="card"><div className="card-heading"><div><p className="eyebrow">Receipts</p><h3>Confirmed orders</h3></div><span className="source-time">Cloud state</span></div>{state?.receipts?.length ? <ul className="record-list">{state.receipts.map((receipt, index) => <li key={String(receipt.checkoutId ?? index)}><span className="mono">{display(receipt.checkoutId)}</span><strong>{display(receipt.quantity, "?")} units</strong><small>{formatTime(receipt.createdAt)}</small></li>)}</ul> : <p className="muted empty-state">No controller receipts recorded yet.</p>}</article><article className="card"><div className="card-heading"><div><p className="eyebrow">Follow-up</p><h3>Unresolved attempts</h3></div><span className="source-time">Cloud state</span></div>{state?.unresolved?.length ? <ul className="record-list">{state.unresolved.map((attempt, index) => <li key={String(attempt.checkoutId ?? index)}><span className="mono">{display(attempt.checkoutId)}</span><strong>{display(attempt.status, "unknown")}</strong><small>{formatTime(attempt.startedAt)}</small></li>)}</ul> : <p className="muted empty-state">No unresolved attempts.</p>}</article></section>
     </main>
   );
