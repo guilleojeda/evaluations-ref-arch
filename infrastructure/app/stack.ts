@@ -242,7 +242,9 @@ export class AppStack extends DemoStack {
       apiName: "IncidentTriageDemoApp",
       createDefaultStage: false,
     });
-    Tags.of(api).add("Name", "IncidentTriageDemoApp");
+    Tags.of(api).add("Name", "IncidentTriageDemoApp", {
+      includeResourceTypes: ["AWS::ApiGatewayV2::Api"],
+    });
     const checkoutIntegration = new integrations.HttpLambdaIntegration(
       "CheckoutIntegration",
       checkoutLive,
