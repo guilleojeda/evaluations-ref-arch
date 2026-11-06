@@ -40,7 +40,7 @@ def main() -> int:
     report.to_file(str(report_path))
     print(f"Report: {report_path}")
 
-    actual = report.cases[0]["actual_output"]
+    actual = report.cases[0].get("actual_output")
     if actual is None:
         print(f"Execution error: {report.reasons[0]}", file=sys.stderr)
         return 2
