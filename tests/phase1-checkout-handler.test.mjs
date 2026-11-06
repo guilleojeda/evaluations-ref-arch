@@ -200,6 +200,31 @@ function bodyOf(response) {
   return JSON.parse(response.body);
 }
 
+async function captureEmf(run) {
+  const writes = [];
+  const originalWrite = process.stdout.write;
+  process.stdout.write = (chunk) => {
+    writes.push(String(chunk));
+    return true;
+  };
+  try {
+    await run();
+  } finally {
+    process.stdout.write = originalWrite;
+  }
+  return writes
+    .flatMap((chunk) => chunk.split("\n"))
+    .filter(Boolean)
+    .flatMap((chunk) => {
+      try {
+        const value = JSON.parse(chunk);
+        return value?._aws ? [value] : [];
+      } catch {
+        return [];
+      }
+    });
+}
+
 function errorOf(response, statusCode, requestId, checkoutId) {
   assert.equal(response.statusCode, statusCode);
   const body = bodyOf(response);
@@ -253,8 +278,14 @@ after(async () => {
 test("healthy catalog and checkout return documented envelopes", async () => {
   fixture.reset({ inventory: "list" });
   const catalogId = "phase1-catalog";
-  const catalog = await handler(apiEvent("GET", "/api/products", catalogId));
+  let catalog;
+  const catalogMetrics = await captureEmf(async () => {
+    catalog = await handler(apiEvent("GET", "/api/products", catalogId));
+  });
   assert.equal(catalog.statusCode, 200);
+  assert.equal(catalogMetrics.length, 1);
+  assert.ok(Number.isFinite(catalogMetrics[0].InventoryLookupDurationMs));
+  assert.equal(catalogMetrics[0].InventoryLookupTimeout, 0);
   const catalogBody = bodyOf(catalog);
   assert.deepEqual(catalogBody.products, [product]);
   assert.equal(catalogBody.requestId, catalogId);
@@ -272,9 +303,25 @@ test("auth and validation reject before any provider call", async () => {
   for (const [index, authorization] of [undefined, "Basic phase1-presenter-secret", "Bearer wrong-secret"].entries()) {
     fixture.reset();
     const options = authorization === undefined ? { noAuth: true } : { authorization };
-    errorOf(await handler(apiEvent("GET", "/api/products", `phase1-auth-${index}`, options)), 401, `phase1-auth-${index}`);
+    const metrics = await captureEmf(async () => {
+      errorOf(await handler(apiEvent("GET", "/api/products", `phase1-auth-${index}`, options)), 401, `phase1-auth-${index}`);
+    });
+    assert.equal(metrics.length, 1);
+    assert.equal(metrics[0].InventoryLookupDurationMs, undefined, "auth rejection must not publish an inventory duration sample");
+    assert.equal(metrics[0].InventoryLookupTimeout, undefined, "auth rejection must not publish an inventory timeout sample");
     assert.equal(fixture.calls.length, 0);
   }
+  fixture.reset();
+  const statusMetrics = await captureEmf(async () => {
+    errorOf(await handler(apiEvent("GET", "/api/orders/66666666-6666-4666-8666-666666666666", "phase1-status-metric")), 404, "phase1-status-metric", "66666666-6666-4666-8666-666666666666");
+  });
+  assert.equal(statusMetrics[0].InventoryLookupDurationMs, undefined, "status reads must not publish an inventory duration sample");
+  assert.equal(statusMetrics[0].InventoryLookupTimeout, undefined, "status reads must not publish an inventory timeout sample");
+  const otherMetrics = await captureEmf(async () => {
+    errorOf(await handler(apiEvent("GET", "/api/other", "phase1-other-metric")), 404, "phase1-other-metric");
+  });
+  assert.equal(otherMetrics[0].InventoryLookupDurationMs, undefined, "other routes must not publish an inventory duration sample");
+  assert.equal(otherMetrics[0].InventoryLookupTimeout, undefined, "other routes must not publish an inventory timeout sample");
   fixture.reset();
   const unauthenticated = apiEvent("POST", "/api/checkout", "phase1-auth-before-parsing", { noAuth: true });
   unauthenticated.body = "{";

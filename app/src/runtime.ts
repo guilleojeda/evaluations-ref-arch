@@ -321,7 +321,7 @@ export function emitMetric(
   const serverError = outcome === "server_error" || outcome === "dependency_error" || outcome === "timeout";
   const dimensions = ["Environment", "Service"];
   const metricName = service === "inventory" ? "InventoryRequests" : "CheckoutRequests";
-  const inventoryLookupDurationMs = details.inventoryLookupDurationMs ?? (service === "inventory" ? durationMs : 0);
+  const inventoryLookupDurationMs = details.inventoryLookupDurationMs ?? (service === "inventory" ? durationMs : undefined);
   const inventoryLookupTimeout = details.inventoryLookupTimeout ?? (service === "inventory" && outcome === "timeout" ? 1 : 0);
   const checkoutSuccess = service === "checkout" && operation === "checkout" && outcome === "success" ? 1 : 0;
   const checkoutServerError = service === "checkout" && operation === "checkout" && serverError ? 1 : 0;
@@ -337,8 +337,10 @@ export function emitMetric(
           { Name: "ServerErrors", Unit: "Count" },
           { Name: "CheckoutSuccess", Unit: "Count" },
           { Name: "CheckoutServerError", Unit: "Count" },
-          { Name: "InventoryLookupDurationMs", Unit: "Milliseconds" },
-          { Name: "InventoryLookupTimeout", Unit: "Count" },
+          ...(inventoryLookupDurationMs !== undefined ? [
+            { Name: "InventoryLookupDurationMs", Unit: "Milliseconds" },
+            { Name: "InventoryLookupTimeout", Unit: "Count" },
+          ] : []),
         ],
       }],
     },
@@ -350,7 +352,9 @@ export function emitMetric(
     ServerErrors: serverError ? 1 : 0,
     CheckoutSuccess: checkoutSuccess,
     CheckoutServerError: checkoutServerError,
-    InventoryLookupDurationMs: inventoryLookupDurationMs,
-    InventoryLookupTimeout: inventoryLookupTimeout,
+    ...(inventoryLookupDurationMs !== undefined ? {
+      InventoryLookupDurationMs: inventoryLookupDurationMs,
+      InventoryLookupTimeout: inventoryLookupTimeout,
+    } : {}),
   }) + "\n");
 }
