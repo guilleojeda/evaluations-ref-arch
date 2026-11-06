@@ -42,15 +42,9 @@ Resources:
           - Sid: InspectDemoStacks
             Effect: Allow
             Action:
-              - cloudformation:DescribeChangeSet
-              - cloudformation:DescribeStackEvents
               - cloudformation:DescribeStacks
-              - cloudformation:GetTemplate
-              - cloudformation:GetTemplateSummary
               - cloudformation:ListStackResources
-            Resource:
-              - arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoApp/*
-              - arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoBootstrap*
+            Resource: arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoBootstrap*
 
           - Sid: ReadBootstrapVersionMarker
             Effect: Allow
@@ -175,6 +169,13 @@ Resources:
             Resource:
               - !Sub arn:aws:apigateway:us-east-1::/tags/arn%3Aaws%3Aapigateway%3Aus-east-1%3A%3A%2Fv2%2Fapis%2F${AppHttpApiId}
               - !Sub arn:aws:apigateway:us-east-1::/tags/arn%3Aaws%3Aapigateway%3Aus-east-1%3A%3A%2Fv2%2Fapis%2F${AppHttpApiId}%2Fstages%2F*
+
+          # CreateStage authorizes its system tags with this exact action
+          # and collection ARN, as declared by the CloudFormation provider.
+          - Sid: TagAppDefaultStage
+            Effect: Allow
+            Action: apigateway:TagResource
+            Resource: !Sub arn:aws:apigateway:us-east-1::/apis/${AppHttpApiId}/stages
 
           - Sid: ManageAppCloudFront
             Effect: Allow
