@@ -2,7 +2,7 @@
 
 The failure controller is a cloud-hosted presenter dashboard. The current dashboard verifies the checkout baseline, runs bounded catalog and checkout traffic, and lets the presenter observe or stop the same run from another browser. The incident and remedy contracts below describe the full demo.
 
-This component is designed, not implemented. The [controller specification](failure-controller-behavior.md) owns action behavior, traffic bounds, observations, private records, and interruptions. The [scenario contracts](../demo-scenarios.md) own inventory capacity overload, denied inventory access, and the recovered/stale-alarm condition. The [demo script](../demo-script.md) places these controls in the talk. The [agent design](operations-agent.md) defines the alarm-to-Runtime path and durable run/report records; exact integration schemas remain to be implemented.
+The [controller specification](failure-controller-behavior.md) owns action behavior, traffic bounds, observations, private records, and interruptions. The [scenario contracts](../demo-scenarios.md) own inventory capacity overload, denied inventory access, and the recovered/stale-alarm condition. The [demo script](../demo-script.md) places these controls in the talk. The [agent design](operations-agent.md) defines the alarm-to-Runtime path and durable run/report records; exact integration schemas remain to be implemented.
 
 ## Selected incidents and fixes
 
