@@ -95,7 +95,7 @@ Start with healthy versions, adequate capacity for the selected normal traffic, 
 
 Use DynamoDB policy revision checks, including the no-policy condition when appropriate. Stop on unexpected policy drift instead of overwriting unrelated changes. Policy application and readback are eventually consistent, and subsequent updates are blocked for 15 seconds; use bounded observation and respect that interval. API acknowledgement is not activation proof. See [PutResourcePolicy](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_PutResourcePolicy.html) and [policy constraints](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/rbac-considerations.html).
 
-Verify an actual denied inventory read, with its correlated error/operation and execution version, and a dependency-failure response through the normal API. Checkout returns 502 before its transaction for confirmed lookup failures. Separate overlapping successes or unrelated uncertain outcomes. Probe with bounded catalog reads before consuming a fresh checkout POST if needed.
+Activation requires a verified current release, settled controller traffic, and paused unrelated writers. The current app baseline expects no policy. The worker records an action-specific denial and installs it with `NO_POLICY`, then reads back its exact document and revision. It captures configuration before sending bounded catalog probes and one verification checkout. A specific denied-read response and a fresh checkout 502 establish the incident. Keep actual successes and unresolved checkout identities in the run if the request evidence differs.
 
 Neither incident activation nor its probes invoke the agent. A repeated command ID does not create another action. An explicit new workload phase records its own observations without promising a new incident, alarm transition, or agent run.
 
@@ -123,7 +123,7 @@ Use the existing action serialization, deduplication, conflict handling, and bou
 
 The presenter selects restoration of the expected Inventory table policy. Record current/expected state and use the applicable revision condition to restore the captured policy or its captured absence. Remove only the scenario's access change; unexpected external edits are conflicts requiring inspection. Do not add broad grants, change execution roles, move aliases, alter capacity, or silently stop traffic.
 
-Respect policy update/propagation constraints and report the configuration result/readback. Policy readback can precede effective access restoration. Do not issue inventory reads or checkout probes as part of this action, and do not classify the incident as resolved or persistent. The presenter separately generates requests or runs readiness to observe the effect.
+Capture the live incident configuration in the private evidence bucket before removing the recorded denial. If required capture fails, the presenter can explicitly confirm restoration without evidence for the same owned policy. Record the evidence gap. Both paths use the current app release and exact policy revision. Retain owned policy identity across interruption for reconciliation. Report policy readback independently of request health, then let the presenter run separate traffic or readiness to observe the effect.
 
 ### Observe after a targeted remedy
 

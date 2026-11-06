@@ -170,7 +170,7 @@ A caller abort does not establish that an invoked Lambda stopped. Alias movement
 
 ## Operational evidence
 
-Emit JSON logs with timestamp, environment, service, operation, requestId, Lambda request ID, actual function version/build revision, outcome, durationMs, status/error code, and relevant product/checkout identity. Log dependency start/completion, throttle rejection, or timeout with the originating request ID, requested alias, actual executed version when known, and dependency duration. Never claim a resolved child version when only the requested alias is known.
+Emit JSON logs with timestamp, environment, service, operation, requestId, Lambda request ID, actual function version/build revision, outcome, durationMs, status/error code, and relevant product/checkout identity. An executed Inventory `GetItem` denial adds `dependencyReason: inventory_access_denied` to the existing authenticated `502 INVENTORY_LOOKUP_FAILED`. The child log records the DynamoDB operation, table ARN, exception name, and the service request ID when available. Join it to the Checkout and Gateway logs by the Gateway request ID. The caller retains the executed child version from Lambda when available. The failed child still emits a Lambda function error. Log dependency start/completion, throttle rejection, or timeout with the originating request ID, requested alias, actual executed version when known, and dependency duration. Never claim a resolved child version when only the requested alias is known.
 
 Use separate log groups for HTTP API access, checkout, and inventory. Gateway access records include request ID, route, status, and integration latency. Application logs are the complete per-request investigation record. Do not log tokens, Authorization headers, or private fault-controller labels.
 
@@ -182,7 +182,7 @@ Retain application logs for 14 days during preparation and the two sessions. Exp
 
 ## Application alarm
 
-Use **one native CloudWatch metric alarm for API server errors**, shared by both incidents. This is the selected configuration, not a measured timing result. CDK provisions it with the application stack; setup records its actual name/ARN in the controller's private manifest. Keep its name/description neutral about the injected cause.
+The app stack provisions one native CloudWatch alarm for API server errors, `IncidentTriageDemoAppStage5xx`. The stack publishes its name and ARN for the controller. The alarm observes the same stage regardless of the cause.
 
 | Setting | Value |
 | --- | --- |
@@ -203,7 +203,7 @@ One breaching period fits the short bounded demonstration. Requiring multiple br
 
 `notBreaching` avoids alarming solely because traffic is idle. **OK does not prove health:** an active fault with no requests, or missing telemetry, can eventually show OK. Retain independent fresh-request readiness and observation freshness. Default sliding evaluation can reuse older actual datapoints when newer ones are missing, so failures may keep ALARM despite recovery. Success does not subtract errors from a breaching period. Wait for observed OK before the next fresh incident; do not promise detection or clearing within exactly 60 seconds. [Missing-data evaluation](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarms-and-missing-data.html)
 
-Verify metric dimensions, healthy readiness, each fault's real ALARM transition, and eventual OK after recovery within the finite traffic budget. Record actual request-to-alarm and recovery-to-OK times before assigning rehearsal waits. No live verification has been performed. The selected ALARM action invokes a Lambda adapter, which calls AgentCore Runtime; the [agent design](operations-agent.md) owns delivery and durable run/report tracking. Alarm observation can work independently; full alarm-to-agent readiness remains incomplete until that integration is implemented and verified. The controller never publishes replacement metrics or forces alarm state. [Alarm parameters](https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_PutMetricAlarm.html)
+Verify metric dimensions, healthy readiness, each fault's real ALARM transition, and eventual OK after recovery within the finite traffic budget. Record actual request-to-alarm and recovery-to-OK times before assigning rehearsal waits. The deployed alarm is available for independent observation. The [agent design](operations-agent.md) owns the subsequent adapter integration and durable investigation tracking. The controller never publishes replacement metrics or forces alarm state. [Alarm parameters](https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_PutMetricAlarm.html)
 
 Only a real CloudWatch transition to ALARM starts this path. Preserve the originating transition timestamp delivered to the adapter as event evidence; a later alarm read or dashboard poll is an observation, not a replacement event or invocation. The agent design owns the producer's canonical event identity, and the controller specification defines how that identity is found and displayed.
 

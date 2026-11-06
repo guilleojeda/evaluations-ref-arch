@@ -19,6 +19,8 @@ const appApi = 'https://fixtureapi.execute-api.us-east-1.amazonaws.com';
 const operatorBearer = 'fixture-operator';
 const appBearer = 'fixture-app';
 const runTable = 'ControllerRunFixture';
+const evidenceBucket = 'incident-triage-demo-evidence-027224425948-us-east-1';
+const evidencePrefix = 'configuration/';
 
 const records = new Map();
 const fixture = {
@@ -26,10 +28,20 @@ const fixture = {
   invocations: [],
   mutations: [],
   policyReads: [],
+  policyPuts: [],
+  policyDeletes: [],
+  checkpointObjects: [],
+  alarmReads: [],
   unhandled: [],
   revision: appRevision,
   policy: undefined,
+  policyRevision: undefined,
+  putMode: 'apply',
+  deleteMode: 'apply',
+  checkpointMode: 'store',
   aliasVersion: { Checkout: '2', Inventory: '2' },
+  appMode: 'denied',
+  heldRequests: new Set(),
 };
 
 function row(pk) {
@@ -40,15 +52,26 @@ function put(value) {
   records.set(value.pk, value);
 }
 
-function reset({ baselineRevision = appRevision, revision = appRevision, policy } = {}) {
+function reset({ baselineRevision = appRevision, revision = appRevision, policy, policyRevision } = {}) {
   records.clear();
   fixture.appRequests.length = 0;
   fixture.invocations.length = 0;
   fixture.mutations.length = 0;
   fixture.policyReads.length = 0;
+  fixture.policyPuts.length = 0;
+  fixture.policyDeletes.length = 0;
+  fixture.checkpointObjects.length = 0;
+  fixture.alarmReads.length = 0;
   fixture.unhandled.length = 0;
   fixture.revision = revision;
   fixture.policy = policy;
+  fixture.policyRevision = policy ? (policyRevision ?? 'revision-owned') : undefined;
+  fixture.putMode = 'apply';
+  fixture.deleteMode = 'apply';
+  fixture.checkpointMode = 'store';
+  fixture.appMode = 'denied';
+  fixture.beforeDelete = undefined;
+  fixture.heldRequests.clear();
   put({ pk: 'STATE', revision: 1, data: {
     baseline: {
       appRevision: baselineRevision,
@@ -105,8 +128,14 @@ async function requestBody(request) {
   for await (const chunk of request) chunks.push(chunk);
   if (!chunks.length) return {};
   const raw = Buffer.concat(chunks).toString('utf8');
-  return (request.headers['content-type'] ?? '').includes('form-urlencoded')
-    ? Object.fromEntries(new URLSearchParams(raw)) : JSON.parse(raw);
+  if ((request.headers['content-type'] ?? '').includes('form-urlencoded')) {
+    return Object.fromEntries(new URLSearchParams(raw));
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return Buffer.from(raw, 'utf8');
+  }
 }
 
 async function awsProtocol(request, body) {
@@ -133,11 +162,42 @@ async function awsProtocol(request, body) {
     for (const write of writes) put(unmarshall(write.Item));
     return {};
   }
+  if (target.endsWith('PutResourcePolicy')) {
+    assert.equal(body.ResourceArn, tableArn, 'denial must target only the named Inventory table');
+    assert.equal(body.ExpectedRevisionId, 'NO_POLICY', 'activation must use the no-policy revision guard');
+    fixture.policyPuts.push({ ...body });
+    fixture.mutations.push(`PutResourcePolicy ${body.ResourceArn}`);
+    if (fixture.putMode === 'conflict') return { __error: 'ResourceInUseException' };
+    fixture.policy = JSON.parse(body.Policy);
+    fixture.policyRevision = `revision-${fixture.policyPuts.length}`;
+    if (fixture.putMode === 'lost-ack') return { __error: 'InternalServerError' };
+    return { RevisionId: fixture.policyRevision };
+  }
+  if (target.endsWith('DeleteResourcePolicy')) {
+    assert.equal(body.ResourceArn, tableArn, 'restore must target only the named Inventory table');
+    fixture.policyDeletes.push({ ...body });
+    fixture.mutations.push(`DeleteResourcePolicy ${body.ResourceArn}`);
+    if (typeof fixture.beforeDelete === 'function') fixture.beforeDelete(body);
+    if (fixture.deleteMode === 'conflict' || body.ExpectedRevisionId !== fixture.policyRevision) {
+      return { __error: 'ConditionalCheckFailedException' };
+    }
+    fixture.policy = undefined;
+    fixture.policyRevision = undefined;
+    return {};
+  }
   if (target.endsWith('GetResourcePolicy')) {
     fixture.policyReads.push(body.ResourceArn);
     if (body.ResourceArn !== tableArn) throw new Error(`unexpected policy read target ${body.ResourceArn}`);
-    return fixture.policy ? { Policy: JSON.stringify(fixture.policy), RevisionId: 'revision-unexpected' }
+    return fixture.policy ? { Policy: JSON.stringify(fixture.policy), RevisionId: fixture.policyRevision }
       : { __error: 'PolicyNotFoundException' };
+  }
+  if (target.endsWith('DescribeAlarms')) {
+    fixture.alarmReads.push('DescribeAlarms');
+    return { __xml: `<DescribeAlarmsResponse xmlns="http://monitoring.amazonaws.com/doc/2010-08-01/"><DescribeAlarmsResult><MetricAlarms><member><AlarmName>IncidentTriageDemoAppStage5xx</AlarmName><AlarmArn>arn:aws:cloudwatch:${region}:${account}:alarm:IncidentTriageDemoAppStage5xx</AlarmArn><StateValue>OK</StateValue><StateReason>fixture healthy</StateReason><StateUpdatedTimestamp>2026-11-06T00:00:00.000Z</StateUpdatedTimestamp><StateTransitionedTimestamp>2026-11-06T00:00:00.000Z</StateTransitionedTimestamp><ActionsEnabled>true</ActionsEnabled></member></MetricAlarms></DescribeAlarmsResult></DescribeAlarmsResponse>` };
+  }
+  if (target.endsWith('DescribeAlarmHistory')) {
+    fixture.alarmReads.push('DescribeAlarmHistory');
+    return { __xml: '<DescribeAlarmHistoryResponse xmlns="http://monitoring.amazonaws.com/doc/2010-08-01/"><DescribeAlarmHistoryResult><AlarmHistoryItems/></DescribeAlarmHistoryResult></DescribeAlarmHistoryResponse>' };
   }
   if (target.endsWith('DescribeStacks')) return { __xml: stackXml() };
   if (target.endsWith('ListStackResources')) return { __xml: resourcesXml() };
@@ -145,7 +205,7 @@ async function awsProtocol(request, body) {
     const name = request.url.includes('Checkout') ? 'Checkout' : 'Inventory';
     return { FunctionVersion: fixture.aliasVersion[name], FunctionArn: `arn:aws:lambda:${region}:${account}:function:IncidentTriageDemo${name}:live`, RoutingConfig: {} };
   }
-  if (!target && request.url.includes('/config')) {
+  if (!target && request.url.includes('/configuration?')) {
     const name = request.url.includes('Checkout') ? 'Checkout' : 'Inventory';
     return { State: 'Active', Version: new URL(request.url, 'http://fixture').searchParams.get('Qualifier') ?? '2',
       MemorySize: 256, Timeout: name === 'Checkout' ? 12 : 6, CodeSha256: 'fixture-code',
@@ -155,6 +215,18 @@ async function awsProtocol(request, body) {
   if (target.endsWith('GetSecretValue')) {
     return { SecretString: body.SecretId.endsWith(':operator')
       ? createHash('sha256').update(operatorBearer).digest('hex') : appBearer };
+  }
+  if (!target && request.method === 'PUT' && !request.url.includes('/invocations')) {
+    const path = request.url.startsWith('/') ? request.url.slice(1) : request.url;
+    const slash = path.indexOf('/');
+    const bucket = slash < 0 ? path : path.slice(0, slash);
+    const key = slash < 0 ? '' : decodeURIComponent(path.slice(slash + 1));
+    if (bucket === evidenceBucket && key.startsWith(evidencePrefix)) {
+      fixture.mutations.push(`PutObject ${bucket}/${key}`);
+      if (fixture.checkpointMode === 'fail') return { __error: 'AccessDenied' };
+      fixture.checkpointObjects.push({ bucket, key, body });
+      return {};
+    }
   }
   if (request.url.includes('/invocations')) {
     assert.equal(request.headers['x-amz-invocation-type'], 'Event');
@@ -207,6 +279,8 @@ function awsEnvironment(port) {
     AWS_ENDPOINT_URL_DYNAMODB: endpoint,
     AWS_ENDPOINT_URL_LAMBDA: endpoint,
     AWS_ENDPOINT_URL_SECRETS_MANAGER: endpoint,
+    AWS_ENDPOINT_URL_CLOUDWATCH: endpoint,
+    AWS_ENDPOINT_URL_S3: endpoint,
     AWS_REGION: region,
     AWS_ACCESS_KEY_ID: 'fixture',
     AWS_SECRET_ACCESS_KEY: 'fixture-only',
@@ -216,6 +290,8 @@ function awsEnvironment(port) {
     CONTROLLER_OPERATOR_SECRET_ARN: `arn:aws:secretsmanager:${region}:${account}:secret:fixture:operator`,
     CONTROLLER_APP_SECRET_ARN: `arn:aws:secretsmanager:${region}:${account}:secret:fixture:app`,
     CONTROLLER_WORKER_NAME: 'ControllerWorkerFixture',
+    CONTROLLER_EVIDENCE_BUCKET: evidenceBucket,
+    CONTROLLER_EVIDENCE_PREFIX: evidencePrefix,
   });
   delete process.env.AWS_PROFILE;
   delete process.env.AWS_SESSION_TOKEN;
@@ -224,6 +300,61 @@ function awsEnvironment(port) {
 function httpEvent(method, path, body) {
   return { rawPath: path, requestContext: { http: { method } },
     headers: { authorization: `Bearer ${operatorBearer}` }, body: body && JSON.stringify(body) };
+}
+
+function appResponse(status, body) {
+  return {
+    status,
+    headers: new Headers({ 'content-type': 'application/json', 'x-amzn-requestid': 'fixture-request' }),
+    json: async () => body,
+  };
+}
+
+function appReply(path, method, body) {
+  if (method === 'GET' && path === '/api/products') {
+    if (fixture.appMode === 'generic-502') return appResponse(502, { code: 'INVENTORY_LOOKUP_FAILED' });
+    if (fixture.appMode === 'denied') return appResponse(502, {
+      code: 'INVENTORY_LOOKUP_FAILED', dependencyReason: 'inventory_access_denied',
+      inventoryVersion: fixture.aliasVersion.Inventory, inventoryTableArn: tableArn, inventoryOperation: 'dynamodb:GetItem',
+    });
+    return appResponse(200, {
+      observedAt: new Date().toISOString(),
+      products: [{ sku: 'demo-widget', productVersion: 'fixture-product-v1', availableQuantity: 99 }],
+    });
+  }
+  if (method === 'POST' && path === '/api/checkout') {
+    if (fixture.appMode === 'generic-502') return appResponse(502, { code: 'INVENTORY_LOOKUP_FAILED' });
+    if (fixture.appMode === 'denied') return appResponse(502, {
+      code: 'INVENTORY_LOOKUP_FAILED', dependencyReason: 'inventory_access_denied', checkoutId: body.checkoutId,
+      inventoryVersion: fixture.aliasVersion.Inventory, inventoryTableArn: tableArn, inventoryOperation: 'dynamodb:GetItem',
+    });
+    return appResponse(201, {
+      requestId: `fixture-${randomUUID()}`,
+      order: { checkoutId: body.checkoutId, sku: 'demo-widget', quantity: 1, unitPriceCents: 1299,
+        totalPriceCents: 1299, currency: 'USD', createdAt: new Date().toISOString(), status: 'placed' },
+    });
+  }
+  if (method === 'GET' && path.startsWith('/api/orders/')) return appResponse(404, { code: 'ORDER_NOT_FOUND' });
+  return appResponse(404, { code: 'NOT_FOUND' });
+}
+
+function appFetch(url, init = {}) {
+  const target = new URL(url);
+  assert.equal(target.origin, appApi, 'worker app requests must stay on the controlled fixture origin');
+  const method = init.method ?? 'GET';
+  const body = init.body ? JSON.parse(init.body) : undefined;
+  const request = { url: String(url), method, path: target.pathname, body };
+  fixture.appRequests.push(request);
+  if (fixture.appMode === 'hold') {
+    return new Promise((resolveResponse) => fixture.heldRequests.add(() => resolveResponse(appReply(target.pathname, method, body))));
+  }
+  return Promise.resolve(appReply(target.pathname, method, body));
+}
+
+function releaseHeld() {
+  fixture.appMode = 'healthy';
+  for (const release of fixture.heldRequests) release();
+  fixture.heldRequests.clear();
 }
 
 async function call(api, method, path, body, expected) {
@@ -250,24 +381,64 @@ async function assertActivationRejected({ api, worker, baselineRevision, revisio
   return result.action;
 }
 
-test('Inventory denial activation fails closed before mutation or app traffic', { timeout: 20_000 }, async (t) => {
+function denialDocument(actionId) {
+  return {
+    Version: '2012-10-17',
+    Statement: [{
+      Sid: `InventoryAccessDenied${actionId.replace(/-/g, '')}`,
+      Effect: 'Deny',
+      Principal: { AWS: inventoryRoleArn },
+      Action: 'dynamodb:GetItem',
+      Resource: tableArn,
+    }],
+  };
+}
+
+async function getAction(api, id) {
+  return (await call(api, 'GET', `/api/actions/${id}`, undefined, 200)).action;
+}
+
+async function getState(api) {
+  return call(api, 'GET', '/api/state', undefined, 200);
+}
+
+async function submit(api, kind, extra = {}) {
+  const id = randomUUID();
+  const accepted = await call(api, 'PUT', `/api/actions/${id}`, { kind, ...extra }, 202);
+  assert.equal(accepted.action?.id, id);
+  assert.equal(accepted.action?.kind, kind);
+  return id;
+}
+
+async function withPolicyPropagationElapsed(callback) {
+  const now = Date.now;
+  Date.now = () => now() + 16_000;
+  try {
+    return await callback();
+  } finally {
+    Date.now = now;
+  }
+}
+
+async function activateAndConfirm({ api, worker, putMode = 'apply', appMode = 'denied' }) {
+  reset();
+  fixture.putMode = putMode;
+  fixture.appMode = appMode;
+  const id = await submit(api, 'activate_inventory_denial');
+  await worker.handler({ actionId: id });
+  const action = await getAction(api, id);
+  const state = await getState(api);
+  return { id, action, state };
+}
+
+test('Inventory denial activation fails closed before mutation or app traffic', { timeout: 90_000 }, async (t) => {
   const server = await startAwsServer();
   t.after(async () => {
     server.closeAllConnections();
     await new Promise((resolveClose) => server.close(resolveClose));
   });
   awsEnvironment(server.address().port);
-  globalThis.fetch = async (url, init = {}) => {
-    fixture.appRequests.push({ url: String(url), method: init.method ?? 'GET' });
-    const target = new URL(url);
-    assert.equal(target.origin, appApi, 'worker app requests must stay on the controlled fixture origin');
-    const status = target.pathname === '/api/products' ? 200 : 502;
-    const body = target.pathname === '/api/products'
-      ? { observedAt: new Date().toISOString(), products: [{ sku: 'demo-widget', productVersion: 'fixture-product-v1', availableQuantity: 99 }] }
-      : { code: 'INVENTORY_LOOKUP_FAILED' };
-    return { status, headers: new Headers({ 'content-type': 'application/json', 'x-amzn-requestid': 'fixture-request' }),
-      json: async () => body };
-  };
+  globalThis.fetch = appFetch;
 
   const backendPath = pathToFileURL(resolve(root, '.artifacts/controller/backend/index.mjs')).href;
   const workerPath = pathToFileURL(resolve(root, '.artifacts/controller/backend/worker.mjs')).href;
@@ -296,5 +467,150 @@ test('Inventory denial activation fails closed before mutation or app traffic', 
     assert.ok(fixture.policyReads.length > 0, 'the conflict check must read the recorded policy target');
     assert.ok(fixture.policyReads.every((resourceArn) => resourceArn === tableArn),
       'the conflict check must read only the named Inventory table policy');
+  });
+
+  await t.test('a revision conflict sends one conditional Put and no app request', async () => {
+    reset();
+    fixture.putMode = 'conflict';
+    const id = await submit(api, 'activate_inventory_denial');
+    await worker.handler({ actionId: id });
+    const action = await getAction(api, id);
+    assert.equal(action.status, 'failed');
+    assert.match(action.error ?? '', /revision|policy|conflict/i);
+    assert.equal(fixture.policyPuts.length, 1, 'revision conflict must attempt exactly one Put');
+    assert.equal(fixture.policyPuts[0].ExpectedRevisionId, 'NO_POLICY');
+    assert.equal(fixture.policy, undefined, 'a rejected Put must not leave a denial behind');
+    assert.equal(fixture.appRequests.length, 0, 'revision conflict must not send an app probe');
+    assert.equal(fixture.checkpointObjects.length, 0, 'revision conflict must not write a checkpoint');
+    assert.deepEqual(fixture.mutations, [`PutResourcePolicy ${tableArn}`]);
+    assert.deepEqual(fixture.unhandled, []);
+  });
+
+  await t.test('a lost Put acknowledgement reconciles the exact denial without resending', async () => {
+    const { id, action, state } = await activateAndConfirm({ api, worker, putMode: 'lost-ack' });
+    assert.equal(action.status, 'completed');
+    assert.equal(fixture.policyPuts.length, 1, 'lost acknowledgement must not resend Put');
+    assert.deepEqual(fixture.policy, denialDocument(id), 'readback must reconcile the action-owned document');
+    assert.equal(fixture.policyRevision, 'revision-1');
+    assert.equal(state.incident?.kind, 'inventory_access_denied');
+    assert.equal(state.incident?.activationActionId, id);
+    assert.equal(state.incident?.policy?.state, 'present');
+    assert.equal(state.incident?.policy?.revision, 'revision-1');
+    assert.equal(state.incident?.policy?.statementId, denialDocument(id).Statement[0].Sid);
+    assert.equal(state.incident?.checkpoint?.status, 'stored');
+    assert.equal(fixture.checkpointObjects.length, 1, 'successful reconciliation must retain a checkpoint');
+    assert.ok(fixture.checkpointObjects[0].key.startsWith(evidencePrefix));
+    assert.ok(fixture.appRequests.some(({ path }) => path === '/api/products'));
+    assert.ok(fixture.appRequests.some(({ path, method }) => path === '/api/checkout' && method === 'POST'));
+    assert.deepEqual(fixture.unhandled, []);
+  });
+
+  await t.test('a foreign policy revision survives conditional restore', async () => {
+    const activation = await activateAndConfirm({ api, worker });
+    const beforeRestoreRequests = fixture.appRequests.length;
+    const foreign = {
+      Version: '2012-10-17',
+      Statement: [{ Effect: 'Deny', Principal: { AWS: 'arn:aws:iam::027224425948:role/ForeignRole' },
+        Action: 'dynamodb:GetItem', Resource: tableArn }],
+    };
+    fixture.beforeDelete = () => {
+      fixture.policy = foreign;
+      fixture.policyRevision = 'revision-foreign';
+    };
+    const restoreId = await submit(api, 'restore_inventory_access');
+    await withPolicyPropagationElapsed(() => worker.handler({ actionId: restoreId }));
+    const restore = await getAction(api, restoreId);
+    assert.notEqual(restore.status, 'completed');
+    assert.match(restore.error ?? '', /revision|policy|conflict|changed/i);
+    assert.equal(fixture.policyDeletes.length, 1, 'restore must use one conditional Delete');
+    assert.equal(fixture.policyDeletes[0].ExpectedRevisionId, activation.state.incident?.policy?.revision);
+    assert.deepEqual(fixture.policy, foreign, 'a foreign revision must not be deleted');
+    assert.equal(fixture.appRequests.length, beforeRestoreRequests, 'restore must not send app probes');
+    assert.deepEqual(fixture.unhandled, []);
+  });
+
+  await t.test('ordinary restore stops on unavailable checkpoint, protective restore preserves the gap', async () => {
+    await activateAndConfirm({ api, worker });
+    const beforeRequests = fixture.appRequests.length;
+    fixture.checkpointMode = 'fail';
+    const ordinaryId = await submit(api, 'restore_inventory_access');
+    await worker.handler({ actionId: ordinaryId });
+    const ordinary = await getAction(api, ordinaryId);
+    assert.notEqual(ordinary.status, 'completed');
+    assert.match(ordinary.error ?? '', /checkpoint|evidence|capture|unavailable/i);
+    assert.equal(fixture.policyDeletes.length, 0, 'ordinary restore must not delete without its checkpoint');
+    assert.ok(fixture.policy, 'the known denial must remain active after ordinary restore is blocked');
+    assert.equal(fixture.appRequests.length, beforeRequests, 'restore must not send an app request');
+    const blockedState = await getState(api);
+    assert.match(blockedState.incident?.checkpoint?.status ?? '', /unavailable|incomplete/);
+
+    fixture.checkpointMode = 'fail';
+    const expectedDeleteRevision = fixture.policyRevision;
+    const protectiveId = await submit(api, 'restore_inventory_access', { restoreWithoutEvidence: true });
+    await withPolicyPropagationElapsed(() => worker.handler({ actionId: protectiveId }));
+    const protective = await getAction(api, protectiveId);
+    assert.equal(protective.status, 'completed');
+    assert.equal(fixture.policyDeletes.length, 1);
+    assert.equal(fixture.policyDeletes[0].ExpectedRevisionId, expectedDeleteRevision);
+    assert.equal(fixture.policy, undefined, 'protective restore must remove only the recorded denial');
+    assert.equal(fixture.appRequests.length, beforeRequests, 'protective restore must not send an app request');
+    const restoredState = await getState(api);
+    assert.equal(restoredState.incident?.checkpoint?.status, 'incomplete');
+    assert.match(restoredState.incident?.checkpoint?.error ?? '', /evidence|capture|checkpoint/i);
+    assert.deepEqual(fixture.unhandled, []);
+  });
+
+  await t.test('restore runs independently while held traffic drains through Stop', async () => {
+    const activation = await activateAndConfirm({ api, worker });
+    const activationRequestCount = fixture.appRequests.length;
+    fixture.appMode = 'hold';
+    const trafficId = await submit(api, 'traffic');
+    const trafficRun = worker.handler({ actionId: trafficId });
+    try {
+      const deadline = Date.now() + 10_000;
+      while (Date.now() < deadline && fixture.appRequests.length < activationRequestCount + 3) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+      }
+      assert.equal(fixture.appRequests.length, activationRequestCount + 3, 'traffic must hold one catalog and two checkout requests');
+      const held = await getAction(api, trafficId);
+      assert.equal(held.traffic.catalog.inFlight, 1);
+      assert.equal(held.traffic.checkout.inFlight, 2);
+
+      const beforeRestoreRequests = fixture.appRequests.length;
+      const restoreId = await submit(api, 'restore_inventory_access');
+      await withPolicyPropagationElapsed(() => worker.handler({ actionId: restoreId }));
+      const restore = await getAction(api, restoreId);
+      assert.equal(restore.status, 'completed');
+      assert.equal(fixture.appRequests.length, beforeRestoreRequests, 'restore must not submit probes');
+      const stopId = await submit(api, 'stop', { targetActionId: trafficId });
+      const stop = await getAction(api, stopId);
+      assert.equal(stop.status, 'completed');
+      const draining = await getAction(api, trafficId);
+      assert.equal(draining.status, 'draining');
+      assert.equal(draining.stopRequested, true);
+    } finally {
+      releaseHeld();
+      await trafficRun;
+    }
+    const stopped = await getAction(api, trafficId);
+    assert.equal(stopped.status, 'stopped');
+    assert.equal(stopped.traffic.catalog.inFlight, 0);
+    assert.equal(stopped.traffic.checkout.inFlight, 0);
+    assert.equal(fixture.appRequests.length, activationRequestCount + 3, 'Stop must drain held requests without new producers');
+    assert.equal((await getState(api)).incident?.activationActionId, activation.id);
+    assert.deepEqual(fixture.unhandled, []);
+  });
+
+  await t.test('a generic 502 cannot confirm access denial', async () => {
+    const { id, action, state } = await activateAndConfirm({ api, worker, appMode: 'generic-502' });
+    assert.ok(['failed', 'incomplete'].includes(action.status), 'a generic 502 must not complete activation');
+    assert.match(action.error ?? '', /denial|specific|dependency|confirmed|evidence|effect/i);
+    const request = action.requests.find(({ kind }) => kind === 'catalog' || kind === 'checkout');
+    assert.ok(request, 'the activation must retain the attempted probe');
+    assert.notEqual(request.dependencyReason, 'inventory_access_denied');
+    assert.equal(state.incident?.activationActionId, id, 'the owned intent must remain visible for reconciliation');
+    assert.deepEqual(fixture.policy, denialDocument(id), 'the owned policy must remain active after an unconfirmed probe');
+    assert.equal(fixture.policyDeletes.length, 0);
+    assert.deepEqual(fixture.unhandled, []);
   });
 });

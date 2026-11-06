@@ -21,7 +21,7 @@ npm run check -- controller
 npm run check -- agent
 ```
 
-The checks write browser builds and CDK assemblies under `.artifacts/<component>/`. The agent assembly publishes `.artifacts/agent/runtime.zip` as a CDK file asset. It packages the locked dependencies for ARM64 Linux. Check the three assemblies, deployment routing, and local checkout cases with `node --test tests/phase0*.mjs tests/phase1-*.test.mjs tests/phase2-controller-*.test.mjs` after building. The deployed API suite is opt-in and consumes stock from an explicitly prepared verification fixture.
+The checks write browser builds and CDK assemblies under `.artifacts/<component>/`. The agent assembly publishes `.artifacts/agent/runtime.zip` as a CDK file asset. It packages the locked dependencies for ARM64 Linux. Check the three assemblies, deployment routing, and local checkout cases with `node --test tests/phase0*.mjs tests/phase1-*.test.mjs tests/phase2-controller-*.test.mjs tests/phase3-inventory-denial-*.test.mjs` after building. The deployed API suite is opt-in and consumes stock from an explicitly prepared verification fixture.
 
 ## GitHub Actions
 
@@ -92,6 +92,15 @@ Use the administrator to provision the existing app bearer and the SHA-256 hex d
 After deployment, open `SiteUrl` from the `IncidentTriageDemoController` stack outputs and sign in with the operator bearer. Pause other app checkout writers, then check readiness. A successful readiness action saves a one-unit order and verifies its stock decrement. The dashboard displays that baseline, request progress, and the remaining allowances. Start normal traffic explicitly and use Stop to close submissions and drain work. A second browser can sign in to the same run. Inspect and discard an expired action only after it is shown as incomplete. Its recorded attempts and unresolved checkout IDs remain available.
 
 The run allows 50 generator POSTs, 5 controller verification POSTs, and 5 manual POSTs. Track every manual attempt separately, including retries. Catalog traffic and order-status reads have separate limits. Stop, repeated Start, discard, and routine releases preserve the current allowance.
+
+## Operate the Inventory access incident
+
+1. Stop existing traffic and pause other checkout writers. Use **Check readiness** on the current release. Keep verification checkout allowance for activation and a separate post-restore readiness check.
+2. Choose **Activate Inventory denial**. Inspect the policy revision and checkpoint alongside the catalog and checkout evidence. The alarm card reads CloudWatch independently. Wait for an observed ALARM when collecting a complete incident.
+3. Choose **Restore Inventory access**. If the controller cannot save the required configuration and you need to restore service, use the explicit protective confirmation. It still requires the recorded policy and current app release. The evidence gap remains visible.
+4. Once the policy reads as absent, wait for an actual fresh catalog success and run **Check readiness**. Confirm the successful order and stock change separately from the alarm. Allow for native metric evaluation delay before observing OK.
+
+Keep the evidence bucket private. Inspect or export the referenced configuration objects using authorized AWS access before teardown. Run planned releases after the policy is restored and traffic has settled.
 
 ## Deployment and controller baseline
 

@@ -98,12 +98,14 @@ export function errorResponse(
   message: string,
   requestId: string,
   checkoutId?: string,
+  dependencyReason?: string,
 ): ApiResponse {
   return response(statusCode, {
     code,
     message,
     requestId,
     ...(checkoutId === undefined ? {} : { checkoutId }),
+    ...(dependencyReason === undefined ? {} : { dependencyReason }),
   });
 }
 
@@ -301,6 +303,9 @@ export interface RequestLog {
   readonly dependencyErrorName?: string;
   readonly dependencyFailureReason?: string;
   readonly dependencyDurationMs?: number;
+  readonly dependencyOperation?: string;
+  readonly dependencyResource?: string;
+  readonly dependencyRequestId?: string;
 }
 
 export function logRequest(log: RequestLog): void {

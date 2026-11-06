@@ -531,6 +531,10 @@ Resources:
             Effect: Allow
             Action: lambda:InvokeFunction
             Resource: arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoControllerWorker
+          - Sid: ControllerHttpAlarm
+            Effect: Allow
+            Action: cloudwatch:DescribeAlarms
+            Resource: arn:aws:cloudwatch:us-east-1:027224425948:alarm:IncidentTriageDemoAppStage5xx
 
   IncidentTriageDemoControllerWorkerRuntimeBoundary:
     Type: AWS::IAM::ManagedPolicy
@@ -579,6 +583,60 @@ Resources:
             Effect: Allow
             Action: dynamodb:GetResourcePolicy
             Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoInventory
+          - Sid: ControllerWorkerInventoryPolicyMutation
+            Effect: Allow
+            Action:
+              - dynamodb:PutResourcePolicy
+              - dynamodb:DeleteResourcePolicy
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoInventory
+          - Sid: ControllerWorkerAlarm
+            Effect: Allow
+            Action:
+              - cloudwatch:DescribeAlarms
+              - cloudwatch:DescribeAlarmHistory
+            Resource: arn:aws:cloudwatch:us-east-1:027224425948:alarm:IncidentTriageDemoAppStage5xx
+          - Sid: ControllerWorkerEvidence
+            Effect: Allow
+            Action: s3:PutObject
+            Resource: arn:aws:s3:::incident-triage-demo-evidence-027224425948-us-east-1/configuration/*
+
+  IncidentTriageDemoPhase3CfnExecution:
+    Type: AWS::IAM::ManagedPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ManagedPolicyName: IncidentTriageDemoPhase3CfnExecution
+      Description: >-
+        Scoped Phase 3 CloudFormation permissions for the named application
+        alarm and controller evidence bucket. This policy is attached
+        alongside the app and controller execution policies.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ManageAppStageAlarm
+            Effect: Allow
+            Action:
+              - cloudwatch:DeleteAlarms
+              - cloudwatch:DescribeAlarms
+              - cloudwatch:ListTagsForResource
+              - cloudwatch:PutMetricAlarm
+              - cloudwatch:TagResource
+              - cloudwatch:UntagResource
+            Resource: arn:aws:cloudwatch:us-east-1:027224425948:alarm:IncidentTriageDemoAppStage5xx
+
+          - Sid: ManageControllerEvidenceBucket
+            Effect: Allow
+            Action:
+              - s3:CreateBucket
+              - s3:DeleteBucket
+              - s3:DeleteBucketPolicy
+              - s3:GetBucket*
+              - s3:GetEncryptionConfiguration
+              - s3:ListBucket
+              - s3:PutBucket*
+              - s3:PutEncryptionConfiguration
+              - s3:TagResource
+            Resource: arn:aws:s3:::incident-triage-demo-evidence-027224425948-us-east-1
 
 Outputs:
   PolicyArn:
@@ -589,3 +647,7 @@ Outputs:
     Description: Separate managed policy ARN for the controller stack deployment.
     Value:
       Ref: IncidentTriageDemoControllerCfnExecution
+  Phase3PolicyArn:
+    Description: Managed policy ARN for the Phase 3 alarm and evidence bucket grants.
+    Value:
+      Ref: IncidentTriageDemoPhase3CfnExecution

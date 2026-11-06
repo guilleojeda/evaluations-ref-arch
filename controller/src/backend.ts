@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { basename, extname } from "node:path";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
+import { AlarmReadError, readAlarm } from "./alarm.js";
 import { applyCommand, getAction, getDashboard, CommandError } from "./store.js";
 import type { Action, Command } from "./types.js";
 
@@ -28,7 +29,6 @@ const jsonHeaders = {
   "content-type": "application/json; charset=utf-8",
   "cache-control": "no-store, max-age=0",
 };
-
 
 function json(statusCode: number, value: unknown): BackendResponse {
   return { statusCode, headers: jsonHeaders, body: JSON.stringify(value) };
@@ -90,6 +90,10 @@ function command(value: unknown): Command | undefined {
     return { kind: "readiness", confirmQuiet: true };
   }
   if (input.kind === "traffic" && keys.length === 1) return { kind: "traffic" };
+  if (input.kind === "activate_inventory_denial" && keys.length === 1) return { kind: "activate_inventory_denial" };
+  if (input.kind === "restore_inventory_access" && (keys.length === 1 || (keys.length === 2 && input.restoreWithoutEvidence === true))) {
+    return input.restoreWithoutEvidence === true ? { kind: "restore_inventory_access", restoreWithoutEvidence: true } : { kind: "restore_inventory_access" };
+  }
   if ((input.kind === "stop" || input.kind === "discard") && keys.every((key) => ["kind", "targetActionId"].includes(key))
       && typeof input.targetActionId === "string" && UUID.test(input.targetActionId)) {
     return { kind: input.kind, targetActionId: input.targetActionId };
@@ -138,6 +142,7 @@ async function dispatch(action: Action): Promise<void> {
 
 function commandError(error: unknown): BackendResponse {
   if (error instanceof CommandError) return json(error.statusCode, { code: error.code, message: error.message });
+  if (error instanceof AlarmReadError) return json(503, { code: "ALARM_UNAVAILABLE", message: error.message });
   return json(500, { code: "CONTROLLER_ERROR", message: "The controller could not complete the request" });
 }
 
@@ -149,6 +154,7 @@ export async function handler(event: BackendEvent = {}): Promise<BackendResponse
 
   try {
     if (method === "GET" && path === "/api/state") return json(200, await getDashboard());
+    if (method === "GET" && path === "/api/alarm") return json(200, await readAlarm());
     const match = path.match(/^\/api\/actions\/([^/]+)$/);
     if (!match || !UUID.test(match[1])) return json(404, { code: "NOT_FOUND", message: "Controller route not found" });
     const id = match[1];
@@ -160,7 +166,7 @@ export async function handler(event: BackendEvent = {}): Promise<BackendResponse
     const input = command(parsedBody(event));
     if (!input) return json(400, { code: "INVALID_COMMAND", message: "The action command is invalid" });
     const result = await applyCommand(id, input);
-    if (result.created && (input.kind === "readiness" || input.kind === "traffic")) {
+    if (result.created && input.kind !== "stop" && input.kind !== "discard") {
       try {
         await dispatch(result.action);
       } catch {
