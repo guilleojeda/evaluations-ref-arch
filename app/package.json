@@ -1,0 +1,22 @@
+{
+  "name": "@incident-triage/app",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build --emptyOutDir --outDir ../.artifacts/app/web",
+    "build:backend": "esbuild src/backend.ts --bundle --platform=node --target=node24 --format=esm --outfile=../.artifacts/app/backend/index.mjs"
+  },
+  "dependencies": {
+    "react": "19.1.0",
+    "react-dom": "19.1.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "4.4.1",
+    "@types/react": "19.1.2",
+    "@types/react-dom": "19.1.2",
+    "vite": "6.4.5"
+  }
+}

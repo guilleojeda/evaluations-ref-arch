@@ -1,0 +1,10 @@
+node_modules/
+agent/.venv/
+__pycache__/
+*.py[cod]
+.artifacts/
+.DS_Store
+*.tsbuildinfo
+.env
+.env.*
+!.env.example

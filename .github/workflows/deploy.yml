@@ -1,0 +1,259 @@
+name: Incident Triage Demo Deploy
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: '027224425948'
+  PHASE0_GITHUB_REPOSITORY: guilleojeda/evaluations-ref-arch
+  PHASE0_GITHUB_REPOSITORY_ID: '1411023195'
+  PHASE0_AWS_ACCOUNT_ID: '027224425948'
+  PHASE0_AWS_REGION: us-east-1
+  PHASE0_DEPLOY_ROLE_ARN: arn:aws:iam::027224425948:role/IncidentTriageDemoGitHubDeploy
+  PHASE0_EXPECTED_OIDC_SUBJECT: repo:guilleojeda@18320860/evaluations-ref-arch@1411023195:workflow_ref:guilleojeda/evaluations-ref-arch/.github/workflows/deploy.yml@refs/heads/main
+  PHASE0_CDK_QUALIFIER: evaltalk
+  PHASE0_CDK_BOOTSTRAP_STACK: IncidentTriageDemoBootstrap
+  PHASE0_APP_STACK: IncidentTriageDemoApp
+  PHASE0_CONTROLLER_STACK: IncidentTriageDemoController
+  PHASE0_AGENT_STACK: IncidentTriageDemoAgent
+  CDK_DEPLOY_ROLE_ARN: arn:aws:iam::027224425948:role/cdk-evaltalk-deploy-role-027224425948-us-east-1
+  CDK_FILE_PUBLISHING_ROLE_ARN: arn:aws:iam::027224425948:role/cdk-evaltalk-file-publishing-role-027224425948-us-east-1
+  PHASE0_ASSET_BUCKET: cdk-evaltalk-assets-027224425948-us-east-1
+
+permissions:
+  contents: read
+
+jobs:
+  route:
+    name: Select affected stacks
+    runs-on: ubuntu-24.04
+    outputs:
+      components: ${{ steps.select.outputs.components }}
+    steps:
+      - name: Check out revisions
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - name: Select changed components
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            base_ref='${{ github.event.pull_request.base.sha }}'
+            candidate='${{ github.event.pull_request.head.sha }}'
+            base="$(git merge-base "$base_ref" "$candidate")"
+          else
+            base='${{ github.event.before }}'
+            candidate="$GITHUB_SHA"
+            if [[ "$base" == 0000000000000000000000000000000000000000 ]]; then
+              base="$(git rev-list --max-parents=0 "$candidate" | tail -n 1)"
+            fi
+          fi
+          echo "components=$(node scripts/affected-stacks.mjs "$base" "$candidate")" >> "$GITHUB_OUTPUT"
+
+  check:
+    name: Check ${{ matrix.component }}
+    needs: route
+    if: >-
+      needs.route.outputs.components != '[]' &&
+      (github.event_name == 'pull_request' ||
+      (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+    runs-on: ${{ matrix.component == 'agent' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ${{ fromJSON(needs.route.outputs.components) }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Set up Python
+        if: matrix.component == 'agent'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Set up uv
+        if: matrix.component == 'agent'
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: '0.13.6'
+          enable-cache: true
+          cache-dependency-glob: agent/uv.lock
+      - name: Install locked dependencies
+        run: |
+          npm ci
+          if [[ "${{ matrix.component }}" == agent ]]; then
+            uv sync --project agent --locked
+          fi
+      - name: Run the selected check
+        run: npm run check -- ${{ matrix.component }}
+      - name: Run the locked native ARM64 smoke command
+        if: matrix.component == 'agent'
+        run: uv run --project agent --locked python agent/native_smoke.py .artifacts/agent/runtime.zip
+      - name: Save the checked assembly for the serialized preflight
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: phase0-${{ matrix.component }}-${{ github.sha }}
+          path: .artifacts/${{ matrix.component }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 1
+          compression-level: 0
+
+  deploy:
+    name: Preflight ${{ matrix.component }} deployment
+    needs: [route, check]
+    if: >-
+      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      needs.route.outputs.components != '[]'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ${{ fromJSON(needs.route.outputs.components) }}
+    concurrency:
+      group: incident-triage-main-${{ matrix.component }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out workflow tests and helpers
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Download the checked assembly
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: phase0-${{ matrix.component }}-${{ github.sha }}
+          path: .artifacts/${{ matrix.component }}
+      - name: Confirm checked assembly
+        run: test -s .artifacts/${{ matrix.component }}/cdk/manifest.json
+      - name: Resolve the checked agent file asset
+        if: matrix.component == 'agent'
+        id: asset
+        shell: bash
+        env:
+          EXPECTED_BUCKET: ${{ env.PHASE0_ASSET_BUCKET }}
+        run: |
+          set -euo pipefail
+          node scripts/phase0-agent-asset.mjs .artifacts/agent/cdk .artifacts/agent/runtime.zip "$EXPECTED_BUCKET" > "$RUNNER_TEMP/phase0-agent-asset.json"
+          cat "$RUNNER_TEMP/phase0-agent-asset.json"
+          echo "bucket=$(jq -r .bucketName "$RUNNER_TEMP/phase0-agent-asset.json")" >> "$GITHUB_OUTPUT"
+          echo "key=$(jq -r .objectKey "$RUNNER_TEMP/phase0-agent-asset.json")" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(jq -r .runtimeSha256 "$RUNNER_TEMP/phase0-agent-asset.json")" >> "$GITHUB_OUTPUT"
+          echo "runtime=$(jq -r .runtimePath "$RUNNER_TEMP/phase0-agent-asset.json")" >> "$GITHUB_OUTPUT"
+      - name: Verify the allowed OIDC case
+        env:
+          PHASE0_OIDC_CASE: allowed
+        run: node --test tests/phase0-oidc.test.mjs
+      - name: Assume the GitHub deployment role
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.PHASE0_DEPLOY_ROLE_ARN }}
+          role-session-name: phase0-github-${{ github.run_id }}
+          role-duration-seconds: 900
+      - name: Verify the GitHub deployment identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          caller="$(aws sts get-caller-identity --query Arn --output text)"
+          case "$caller" in
+            arn:aws:sts::027224425948:assumed-role/IncidentTriageDemoGitHubDeploy/*) ;;
+            *) echo "Unexpected deployment caller: $caller" >&2; exit 1 ;;
+          esac
+          echo "Verified GitHub deployment identity: $caller"
+      - name: Verify the selected CDK bootstrap path
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Keep this role chain in a subshell. Standard CDK bootstrap roles
+          # are independently trusted by the GitHub role, not by one another.
+          (
+            policy='{"Version":"2012-10-17","Statement":[{"Effect":"Allow","Action":["cloudformation:DescribeStacks","cloudformation:ListStackResources","ssm:GetParameter"],"Resource":["arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoBootstrap/*","arn:aws:ssm:us-east-1:027224425948:parameter/cdk-bootstrap/evaltalk/version"]}]}'
+            credentials="$(aws sts assume-role --role-arn "$CDK_DEPLOY_ROLE_ARN" --role-session-name phase0-bootstrap-${{ matrix.component }}-${GITHUB_RUN_ID} --duration-seconds 900 --policy "$policy" --query Credentials --output json)"
+            export AWS_ACCESS_KEY_ID="$(jq -r .AccessKeyId <<<"$credentials")"
+            export AWS_SECRET_ACCESS_KEY="$(jq -r .SecretAccessKey <<<"$credentials")"
+            export AWS_SESSION_TOKEN="$(jq -r .SessionToken <<<"$credentials")"
+            caller="$(aws sts get-caller-identity --query Arn --output text)"
+            case "$caller" in
+              arn:aws:sts::027224425948:assumed-role/cdk-evaltalk-deploy-role-027224425948-us-east-1/*) ;;
+              *) echo "Unexpected bootstrap caller: $caller" >&2; exit 1 ;;
+            esac
+            status="$(aws cloudformation describe-stacks --stack-name "$PHASE0_CDK_BOOTSTRAP_STACK" --query 'Stacks[0].StackStatus' --output text)"
+            [[ "$status" == CREATE_COMPLETE || "$status" == UPDATE_COMPLETE ]]
+            resources="$(aws cloudformation list-stack-resources --stack-name "$PHASE0_CDK_BOOTSTRAP_STACK" --query 'StackResourceSummaries[?PhysicalResourceId==`cdk-evaltalk-deploy-role-027224425948-us-east-1` || PhysicalResourceId==`cdk-evaltalk-file-publishing-role-027224425948-us-east-1` || PhysicalResourceId==`cdk-evaltalk-cfn-exec-role-027224425948-us-east-1`].PhysicalResourceId' --output text)"
+            for role in cdk-evaltalk-deploy-role-027224425948-us-east-1 cdk-evaltalk-file-publishing-role-027224425948-us-east-1 cdk-evaltalk-cfn-exec-role-027224425948-us-east-1; do
+              grep -F "$role" <<<"$resources" >/dev/null
+            done
+            version="$(aws ssm get-parameter --name /cdk-bootstrap/evaltalk/version --query 'Parameter.Value' --output text)"
+            [[ "$version" =~ ^[0-9]+$ && "$version" -gt 0 ]]
+            echo "Verified bootstrap identity: $caller; stack=$PHASE0_CDK_BOOTSTRAP_STACK status=$status version=$version"
+          )
+      - name: Publish and verify the checked agent file asset
+        if: matrix.component == 'agent'
+        shell: bash
+        env:
+          ASSET_BUCKET: ${{ steps.asset.outputs.bucket }}
+          ASSET_KEY: ${{ steps.asset.outputs.key }}
+          ASSET_SHA256: ${{ steps.asset.outputs.sha256 }}
+          ASSET_RUNTIME: ${{ steps.asset.outputs.runtime }}
+        run: |
+          set -euo pipefail
+          # This step still has the original GitHub-role credentials: the
+          # bootstrap deploy-role probe was isolated in the prior step.
+          file_policy="$(jq -cn --arg bucket "$ASSET_BUCKET" --arg key "$ASSET_KEY" '{Version:"2012-10-17",Statement:[{Effect:"Allow",Action:["s3:GetBucketLocation","s3:ListBucket"],Resource:("arn:aws:s3:::" + $bucket)},{Effect:"Allow",Action:["s3:GetObject","s3:GetObjectVersion","s3:PutObject"],Resource:("arn:aws:s3:::" + $bucket + "/" + $key)},{Effect:"Allow",Action:["kms:GenerateDataKey","kms:Decrypt"],Resource:"*",Condition:{StringEquals:{"kms:ViaService":"s3.us-east-1.amazonaws.com"},ArnEquals:{"kms:EncryptionContext:aws:s3:arn":("arn:aws:s3:::" + $bucket + "/" + $key)}}}]}')"
+          file_credentials="$(aws sts assume-role --role-arn "$CDK_FILE_PUBLISHING_ROLE_ARN" --role-session-name phase0-file-agent-${GITHUB_RUN_ID} --duration-seconds 900 --policy "$file_policy" --query Credentials --output json)"
+          export AWS_ACCESS_KEY_ID="$(jq -r .AccessKeyId <<<"$file_credentials")"
+          export AWS_SECRET_ACCESS_KEY="$(jq -r .SecretAccessKey <<<"$file_credentials")"
+          export AWS_SESSION_TOKEN="$(jq -r .SessionToken <<<"$file_credentials")"
+          caller="$(aws sts get-caller-identity --query Arn --output text)"
+          case "$caller" in
+            arn:aws:sts::027224425948:assumed-role/cdk-evaltalk-file-publishing-role-027224425948-us-east-1/*) ;;
+            *) echo "Unexpected file-publishing caller: $caller" >&2; exit 1 ;;
+          esac
+
+          head_error="$RUNNER_TEMP/phase0-head-error"
+          uploaded=false
+          if head_json="$(aws s3api head-object --bucket "$ASSET_BUCKET" --key "$ASSET_KEY" --expected-bucket-owner "$AWS_ACCOUNT_ID" 2>"$head_error")"; then
+            version_id="$(jq -r '.VersionId // "unversioned"' <<<"$head_json")"
+            get_args=(s3api get-object --bucket "$ASSET_BUCKET" --key "$ASSET_KEY" --expected-bucket-owner "$AWS_ACCOUNT_ID")
+            [[ "$version_id" == unversioned ]] || get_args+=(--version-id "$version_id")
+            get_args+=("$RUNNER_TEMP/phase0-agent-existing.zip")
+            aws "${get_args[@]}" >/dev/null
+            existing_sha="$(sha256sum "$RUNNER_TEMP/phase0-agent-existing.zip" | awk '{print $1}')"
+            test "$existing_sha" = "$ASSET_SHA256" || { echo "Refusing to overwrite a different CDK asset object" >&2; exit 1; }
+          else
+            if ! grep -Eq '404|NotFound|NoSuchKey' "$head_error"; then
+              cat "$head_error" >&2
+              exit 1
+            fi
+            put_json="$(aws s3api put-object --bucket "$ASSET_BUCKET" --key "$ASSET_KEY" --body "$ASSET_RUNTIME" --if-none-match '*' --expected-bucket-owner "$AWS_ACCOUNT_ID")"
+            uploaded=true
+            version_id="$(jq -r '.VersionId // "unversioned"' <<<"$put_json")"
+            echo "Uploaded new agent asset version: bucket=$ASSET_BUCKET key=$ASSET_KEY version_id=$version_id"
+            if [[ "$version_id" == unversioned ]]; then
+              head_json="$(aws s3api head-object --bucket "$ASSET_BUCKET" --key "$ASSET_KEY" --expected-bucket-owner "$AWS_ACCOUNT_ID")"
+            else
+              head_json="$(aws s3api head-object --bucket "$ASSET_BUCKET" --key "$ASSET_KEY" --version-id "$version_id" --expected-bucket-owner "$AWS_ACCOUNT_ID")"
+            fi
+          fi
+          get_args=(s3api get-object --bucket "$ASSET_BUCKET" --key "$ASSET_KEY" --expected-bucket-owner "$AWS_ACCOUNT_ID")
+          [[ "$version_id" == unversioned ]] || get_args+=(--version-id "$version_id")
+          get_args+=("$RUNNER_TEMP/phase0-agent-runtime-verified.zip")
+          aws "${get_args[@]}" >/dev/null
+          downloaded_sha="$(sha256sum "$RUNNER_TEMP/phase0-agent-runtime-verified.zip" | awk '{print $1}')"
+          test "$downloaded_sha" = "$ASSET_SHA256"
+          size="$(jq -r .ContentLength <<<"$head_json")"
+          echo "Verified agent asset bytes: bucket=$ASSET_BUCKET key=$ASSET_KEY sha256=$downloaded_sha bytes=$size version_id=$version_id uploaded=$uploaded"

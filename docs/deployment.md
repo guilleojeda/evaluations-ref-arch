@@ -1,42 +1,69 @@
 # Deployment
 
-**Status: designed; not implemented.** GitHub Actions automatically deploys cloud code and infrastructure changes during development. CDK defines the AWS resources; the workflow builds the artifacts and runs CDK. This is part of the development workflow from S0, independently of the presentation.
+The checkout app, failure controller, and operations agent have separate AWS CDK stacks in one development account. The repository workflow checks each component and verifies its AWS deployment access. Product releases use the corresponding stack job.
 
-## Workflow
+## Local development
 
-Use one GitHub Actions workflow and one development environment in us-east-1.
+From the repository root, select Node.js with `nvm use` or install the version in [`.nvmrc`](../.nvmrc). Use Python 3.13 and the uv version in [`agent/pyproject.toml`](../agent/pyproject.toml). Install dependencies from the locks.
 
-| Event | Behavior |
+```sh
+npm ci
+uv sync --project agent --locked
+```
+
+Run `npm run dev --workspace app` or `npm run dev --workspace controller` and open the local URL Vite prints. Start the credential-free AgentCore entry with `uv run --project agent --locked python agent/main.py`. Its health endpoint is `http://127.0.0.1:8080/ping`. See the [agent runtime commands](../agent/README.md) for a sample invocation and the native ARM64 package check.
+
+Build and synthesize the component you are changing.
+
+```sh
+npm run check -- app
+npm run check -- controller
+npm run check -- agent
+```
+
+The checks write browser builds and CDK assemblies under `.artifacts/<component>/`. The agent assembly publishes `.artifacts/agent/runtime.zip` as a CDK file asset. It packages the locked dependencies for ARM64 Linux. Check the three assemblies and deployment routing with `node --test tests/phase0*.mjs`.
+
+## GitHub Actions
+
+Use [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) for pull requests and changes to `main`. Pull requests run the affected checks without AWS credentials. Changes in shared build or infrastructure inputs select all affected stacks. Documentation-only changes skip AWS jobs.
+
+| Component | AWS stack |
 | --- | --- |
-| Pull request | Run the relevant build and ordinary code checks. |
-| Push to `main` affecting deployed code, infrastructure, dependencies, or deployment configuration | Build, check, and automatically deploy the application and agent to the development environment. |
-| Documentation-only change | No cloud deployment. |
+| App | `IncidentTriageDemoApp` |
+| Failure controller | `IncidentTriageDemoController` |
+| Agent | `IncidentTriageDemoAgent` |
 
-The deployment job packages the TypeScript application, web assets, and Python agent with their dependencies, then deploys the applicable CDK resources. The agent uses AgentCore Runtime's Python ZIP deployment. Record the source commit and deployed artifact/version identities so investigations and evaluations can identify the code actually running. The failure controller remains a local application; its code is checked in CI and run locally.
+Deploy jobs serialize within each stack. During groundwork they assume the deployment role and verify the bootstrap path. The agent job also publishes and checks the ZIP asset. The component stacks first change when their first features are delivered. Once a stack has a successful release, compare candidates with its deployed revision inside the serialized job and skip a superseded candidate.
 
-Serialize deployment jobs for the shared environment. A failed build, required check, or deployment remains a failed workflow; it does not become a successful release. Normal development deployments require no manual approval or separate release action.
+When a release depends on changes in another stack, merge and verify the dependency first. Record the checked assembly's source revision and deployed artifact or version identity with each release. Finish deployments before a demo run. If a deployment overlaps a run, abandon that run and verify the current release and settings before starting another.
 
 ## AWS access and initial setup
 
-Use GitHub OIDC to obtain short-lived AWS credentials for a deployment role restricted to this repository's deployment workflow and branch. The role can deploy the intended CDK resources; application and agent runtime roles retain their separate permissions. [GitHub OIDC for AWS](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws), [CDK deployment](https://docs.aws.amazon.com/cdk/v2/guide/deploy.html)
+Use AWS CLI v2 with the `reinvent-2026-talk` profile, account `027224425948`, and Region `us-east-1`. Check the caller before setup.
 
-Initial account setup establishes OIDC trust, the deployment role, and CDK bootstrap resources. Account/role identifiers and exact workflow commands will be set during implementation. Subsequent code changes deploy through GitHub Actions.
+```sh
+aws sts get-caller-identity --profile reinvent-2026-talk --region us-east-1
+```
 
-The deployment workflow does not activate incidents, generate traffic, call controller Recover, or reset Orders/Inventory. Normal CDK updates may replace a setting affected by an incident while applying the intended deployment; this is not a separate incident-restoration action or proof of application recovery. Initial data setup and presenter-operated reset retain the [application contract](components/application.md#deployment-development-and-reset); routine updates preserve existing business data.
+GitHub receives short-lived credentials through OIDC. The deployment role trusts the STS audience and the immutable identity of `guilleojeda/evaluations-ref-arch`, and pins the caller to `.github/workflows/deploy.yml` on `main`. It assumes the CDK deployment and file-publishing roles. Bootstrap administration, CloudFormation execution, and component runtime permissions use separate roles. [GitHub OIDC for AWS](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws) · [CDK bootstrapping](https://docs.aws.amazon.com/cdk/v2/guide/bootstrapping-env.html)
+
+Follow the [AWS bootstrap commands](../infrastructure/bootstrap/README.md) to provision the scoped execution policy, dedicated `evaltalk` toolkit, and GitHub IAM stack in that order. The groundwork role can verify the toolkit but cannot create CloudFormation change sets. Scope the deployment guard and CloudFormation execution grants to the feature resources when adding the first product change set.
+
+Before setting the GitHub subject template, inspect existing Actions runs and OIDC consumers for the repository. Preserve immutable identity. A repository admin can set the template with GitHub CLI.
+
+```sh
+gh api --method PUT repos/guilleojeda/evaluations-ref-arch/actions/oidc/customization/sub \
+  -H 'X-GitHub-Api-Version: 2026-03-10' --input - <<'JSON'
+{"use_default":false,"include_claim_keys":["repo","workflow_ref"],"use_immutable_subject":true}
+JSON
+gh api repos/guilleojeda/evaluations-ref-arch/actions/oidc/customization/sub
+```
 
 ## Deployment and controller baseline
 
-**Automatic deployment takes priority over a controller run.** After the build and required checks pass, the workflow requests exclusive deployment ownership of the shared target. The controller stops new catalog/checkout submissions and refuses new configuration actions or reset work. Accepted requests and AWS changes must settle or be reconciled before deployment starts changing cloud resources; a stop request does not cancel them. Deployment serialization and the controller's local lock alone do not provide this cross-process handoff. Use an explicit shared coordination protocol; its storage, fencing, and bounded wait settings remain implementation details. An absent backend is not proof that earlier submitted work settled. If a safe handoff cannot be established, the workflow fails or remains incomplete rather than proceeding concurrently.
+The presenter schedules deployments outside active demo runs. Routine releases preserve business data and investigation history. Keep the app's expected versions, memory, cap, and Inventory policy tied to the current release. The controller compares its recorded baseline with the deployed release and the affected live settings before restoring them. Unexpected drift or a newer release requires fresh readiness checks.
 
-The controller remains suspended while deployment owns the target. Record the deployment attempt and the trusted successfully deployed generation, including source/artifact identities and expected healthy application versions, memory/cap settings, and Inventory policy or its absence. Keep these expected settings separate from observed settings and from private incident/remedy changes. Once deployment begins cloud mutations, the previous baseline cannot authorize Recover/Reset to restore older aliases or settings. A failed or partial deployment leaves the target requiring reconciliation; it does not establish a new healthy baseline or permit a blind rollback by the controller.
-
-After successful deployment, the controller observes the new generation and the presenter explicitly reconciles before resuming operation:
-
-1. Establish the actual deployed settings and outstanding outcomes against the new generation's trusted expected settings. Preserve Orders/Inventory, the existing controller run/journal, previous agent records, and consumed POST/read allowances.
-2. Reconcile known controller changes under the new generation's expectations and revision/conflict guards. A surviving Deny or increased cap is not a new healthy baseline. Readiness checks do not silently repair it, and no operation restores an old generation's aliases or overwrites unrelated drift.
-3. Explicitly verify and adopt a new configuration/business baseline, including any verification checkout's actual order/stock effect. Verification uses the current run's remaining allowances; deployment and baseline adoption do not start a new run or renew budgets. Insufficient allowance leaves readiness incomplete. A separately requested destructive Reset may establish the next run only after safe new-generation configuration reconciliation and quiescence, following its existing next-run verification budget.
-
-The automatic workflow performs no recovery, reset, or application probes as part of this handoff. Deployment completion and controller readiness are separate outcomes. Normal traffic resumes only by explicit presenter action after reconciliation and verification. The [controller specification](components/failure-controller-behavior.md) owns the operating controls and restart behavior; these generation rules also apply after backend restart.
+The deployment workflow leaves incident activation, probes, Recover, and Reset to the presenter. Applying an expected setting through CDK does not establish fresh business behavior. Use the [controller run procedure](components/failure-controller-behavior.md) to verify a new baseline and the [application contract](components/application.md#deployment-development-and-reset) for disposable data setup and reset.
 
 ## Evaluation stages
 

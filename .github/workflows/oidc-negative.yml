@@ -1,0 +1,35 @@
+name: Phase 0 wrong-workflow OIDC probe
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/oidc-negative.yml
+
+permissions: {}
+
+jobs:
+  probe:
+    name: Verify STS rejects the alternate workflow
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24.22.2'
+      - name: Attempt the deployment role with the alternate workflow token
+        env:
+          PHASE0_OIDC_CASE: wrong-workflow
+          PHASE0_GITHUB_REPOSITORY: guilleojeda/evaluations-ref-arch
+          PHASE0_GITHUB_REPOSITORY_ID: '1411023195'
+          PHASE0_AWS_ACCOUNT_ID: '027224425948'
+          PHASE0_AWS_REGION: us-east-1
+          PHASE0_DEPLOY_ROLE_ARN: arn:aws:iam::027224425948:role/IncidentTriageDemoGitHubDeploy
+          PHASE0_EXPECTED_OIDC_SUBJECT: repo:guilleojeda@18320860/evaluations-ref-arch@1411023195:workflow_ref:guilleojeda/evaluations-ref-arch/.github/workflows/deploy.yml@refs/heads/main
+        run: node --test tests/phase0-oidc.test.mjs
