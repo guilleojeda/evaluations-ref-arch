@@ -102,6 +102,9 @@ jobs:
       - name: Run app release acceptance checks
         if: matrix.component == 'app'
         run: node --test tests/phase1-deploy.test.mjs tests/phase1-checkout-handler.test.mjs
+      - name: Run controller release acceptance checks
+        if: matrix.component == 'controller'
+        run: node --test tests/phase2-controller-deploy.test.mjs tests/phase2-controller-handler.test.mjs
       - name: Run the locked native ARM64 smoke command
         if: matrix.component == 'agent'
         run: uv run --project agent --locked python agent/native_smoke.py .artifacts/agent/runtime.zip
@@ -117,9 +120,10 @@ jobs:
           compression-level: 0
 
   deploy:
-    name: ${{ matrix.component == 'app' && 'Deploy app' || format('Preflight {0} deployment', matrix.component) }}
+    name: ${{ matrix.component == 'app' && 'Deploy app' || matrix.component == 'controller' && 'Deploy controller' || format('Preflight {0} deployment', matrix.component) }}
     needs: [route, check]
     if: >-
+      always() && !cancelled() && needs.route.result == 'success' &&
       github.event_name == 'push' && github.ref == 'refs/heads/main' &&
       needs.route.outputs.components != '[]'
     runs-on: ubuntu-24.04
@@ -145,14 +149,14 @@ jobs:
           path: .artifacts/${{ matrix.component }}
       - name: Confirm checked assembly
         run: test -s .artifacts/${{ matrix.component }}/cdk/manifest.json
-      - name: Set up Node.js for the app deploy CLI
-        if: matrix.component == 'app'
+      - name: Set up Node.js for the component deploy CLI
+        if: matrix.component == 'app' || matrix.component == 'controller'
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: .nvmrc
           cache: npm
-      - name: Install the pinned app deploy CLI
-        if: matrix.component == 'app'
+      - name: Install the pinned deploy CLI
+        if: matrix.component == 'app' || matrix.component == 'controller'
         run: npm ci --ignore-scripts
       - name: Resolve the checked agent file asset
         if: matrix.component == 'agent'
@@ -178,7 +182,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ env.PHASE0_DEPLOY_ROLE_ARN }}
           role-session-name: phase0-github-${{ github.run_id }}
-          role-duration-seconds: ${{ matrix.component == 'app' && 3600 || 900 }}
+          role-duration-seconds: ${{ (matrix.component == 'app' || matrix.component == 'controller') && 3600 || 900 }}
       - name: Verify the GitHub deployment identity
         shell: bash
         run: |
@@ -280,3 +284,12 @@ jobs:
           APP_PRESENTER_DIGEST: ${{ secrets.APP_PRESENTER_DIGEST }}
           PUSH_BASE: ${{ github.event.before }}
         run: bash scripts/deploy-app.sh
+
+      - name: Deploy the checked controller assembly
+        if: matrix.component == 'controller'
+        shell: bash
+        env:
+          CONTROLLER_OPERATOR_SECRET_ARN: ${{ vars.CONTROLLER_OPERATOR_SECRET_ARN }}
+          CONTROLLER_APP_SECRET_ARN: ${{ vars.CONTROLLER_APP_SECRET_ARN }}
+          PUSH_BASE: ${{ github.event.before }}
+        run: bash scripts/deploy-controller.sh

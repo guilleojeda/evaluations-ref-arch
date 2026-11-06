@@ -21,7 +21,7 @@ npm run check -- controller
 npm run check -- agent
 ```
 
-The checks write browser builds and CDK assemblies under `.artifacts/<component>/`. The agent assembly publishes `.artifacts/agent/runtime.zip` as a CDK file asset. It packages the locked dependencies for ARM64 Linux. Check the three assemblies, deployment routing, and local checkout cases with `node --test tests/phase0*.mjs tests/phase1-*.test.mjs` after building. The deployed API suite is opt-in and consumes stock from an explicitly prepared verification fixture.
+The checks write browser builds and CDK assemblies under `.artifacts/<component>/`. The agent assembly publishes `.artifacts/agent/runtime.zip` as a CDK file asset. It packages the locked dependencies for ARM64 Linux. Check the three assemblies, deployment routing, and local checkout cases with `node --test tests/phase0*.mjs tests/phase1-*.test.mjs tests/phase2-controller-*.test.mjs` after building. The deployed API suite is opt-in and consumes stock from an explicitly prepared verification fixture.
 
 ## GitHub Actions
 
@@ -33,7 +33,7 @@ Use [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) for pull r
 | Failure controller | `IncidentTriageDemoController` |
 | Agent | `IncidentTriageDemoAgent` |
 
-Deploy jobs serialize within each stack. The app job compares the candidate with the successful app stack revision, skips superseded or irrelevant candidates, and uses the checked CDK assembly. It inspects the prepared CloudFormation change set for table removal or possible replacement before executing that exact change set. It publishes immutable hashed assets before the revalidatable HTML. The controller and agent jobs verify their groundwork paths. The agent job also publishes and checks the ZIP asset.
+Deploy jobs serialize within each stack. The app job compares the candidate with the successful app stack revision, skips superseded or irrelevant candidates, and uses the checked CDK assembly. It inspects the prepared CloudFormation change set for table removal or possible replacement before executing that exact change set. It publishes immutable hashed assets before the revalidatable HTML. The controller job serves the checked web build in the HTTP Lambda artifact and deploys the separate worker. It inspects the change set for removal or possible replacement of the controller run table. The agent job verifies its groundwork path and publishes and checks the ZIP asset.
 
 When a release depends on changes in another stack, merge and verify the dependency first. Record the checked assembly's source revision and deployed artifact or version identity with each release. Finish deployments before a demo run. If a deployment overlaps a run, abandon that run and verify the current release and settings before starting another.
 
@@ -47,7 +47,7 @@ aws sts get-caller-identity --profile reinvent-2026-talk --region us-east-1
 
 GitHub receives short-lived credentials through OIDC. The deployment role trusts the STS audience and the immutable identity of `guilleojeda/evaluations-ref-arch`, and pins the caller to `.github/workflows/deploy.yml` on `main`. It assumes the CDK deployment and file-publishing roles. Bootstrap administration, CloudFormation execution, and component runtime permissions use separate roles. [GitHub OIDC for AWS](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws) · [CDK bootstrapping](https://docs.aws.amazon.com/cdk/v2/guide/bootstrapping-env.html)
 
-Follow the [AWS bootstrap commands](../infrastructure/bootstrap/README.md) to provision the scoped execution policy, dedicated `evaltalk` toolkit, and GitHub IAM stack in that order. The dedicated deploy role can prepare and execute change sets for the named app stack, and CloudFormation executes them using the scoped policy. Use the verified administrator for updates to the bootstrap IAM stacks. Keep the deploy guard and CloudFormation execution grants scoped to reviewed feature resources.
+Follow the [AWS bootstrap commands](../infrastructure/bootstrap/README.md) to provision the scoped execution policy, dedicated `evaltalk` toolkit, and GitHub IAM stack in that order. The dedicated deploy role can prepare and execute change sets for the named app and controller stacks. CloudFormation uses separate scoped execution policies for their resources. Use the verified administrator for updates to the bootstrap IAM stacks. Keep the deploy guard and CloudFormation execution grants scoped to reviewed feature resources.
 
 Before setting the GitHub subject template, inspect existing Actions runs and OIDC consumers for the repository. Preserve immutable identity. A repository admin can set the template with GitHub CLI.
 
@@ -84,6 +84,14 @@ node scripts/seed-app-inventory.mjs
 The seed inserts the demo SKU with 1,000 units only when it is absent. Reruns report the existing version and quantity. Open the CloudFront site URL from the outputs, enter the bearer, and verify one normal order and its stock decrement. The direct API origin is available for the local Vite proxy. The outputs also identify the source revision, tables, function and alias targets, and logs used to check the release.
 
 Reloading the page requires the bearer again. If an order response is lost, use the saved attempt to check status or retry the original submission. A missing status may precede a commit. Check that the page shows a confirmed receipt before placing another order.
+
+## First controller release and operator access
+
+Use the administrator to provision the existing app bearer and the SHA-256 hex digest of a separate high-entropy operator bearer in the two named Secrets Manager secrets. Use the names `incident-triage-demo/controller/app-bearer` and `incident-triage-demo/controller/operator-digest`. Store each as a single text value. Supply their exact ARNs as the `CONTROLLER_APP_SECRET_ARN` and `CONTROLLER_OPERATOR_SECRET_ARN` repository variables for the first release. The controller stack retains these inputs on updates. Only the worker reads the app bearer, and only the HTTP Lambda reads the operator digest. Keep the raw operator bearer in presenter-only storage that can be reached from a replacement device.
+
+After deployment, open `SiteUrl` from the `IncidentTriageDemoController` stack outputs and sign in with the operator bearer. Pause other app checkout writers, then check readiness. A successful readiness action saves a one-unit order and verifies its stock decrement. The dashboard displays that baseline, request progress, and the remaining allowances. Start normal traffic explicitly and use Stop to close submissions and drain work. A second browser can sign in to the same run. Inspect and discard an expired action only after it is shown as incomplete. Its recorded attempts and unresolved checkout IDs remain available.
+
+The run allows 50 generator POSTs, 5 controller verification POSTs, and 5 manual POSTs. Track every manual attempt separately, including retries. Catalog traffic and order-status reads have separate limits. Stop, repeated Start, discard, and routine releases preserve the current allowance.
 
 ## Deployment and controller baseline
 

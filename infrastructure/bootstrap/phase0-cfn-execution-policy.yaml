@@ -1,8 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  CloudFormation execution policy for the Incident Triage Demo app stack.
-  Product resources are named and scoped to the app; the only service APIs
-  without usable resource ARNs are constrained to this account and Region.
+  Scoped CloudFormation execution and runtime boundary policies for the
+  Incident Triage Demo app and controller stacks.
 
 Parameters:
   AppHttpApiId:
@@ -24,6 +23,12 @@ Parameters:
     AllowedPattern: '^(\*|[A-Za-z0-9_-]+)$'
     Description: >-
       Existing app CloudFront OAC ID for post-create tightening.
+  ControllerHttpApiId:
+    Type: String
+    Default: '*'
+    AllowedPattern: '^(\*|[A-Za-z0-9_-]+)$'
+    Description: >-
+      Existing controller HTTP API ID for post-create tightening.
 
 Resources:
   IncidentTriageDemoBootstrapCfnExecution:
@@ -44,7 +49,7 @@ Resources:
             Action:
               - cloudformation:DescribeStacks
               - cloudformation:ListStackResources
-            Resource: arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoBootstrap*
+            Resource: arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoBootstrap/*
 
           - Sid: ReadBootstrapVersionMarker
             Effect: Allow
@@ -314,8 +319,273 @@ Resources:
             Action: dynamodb:GetItem
             Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoInventory
 
+
+  IncidentTriageDemoControllerCfnExecution:
+    Type: AWS::IAM::ManagedPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ManagedPolicyName: IncidentTriageDemoControllerCfnExecution
+      Description: >-
+        Scoped CloudFormation execution permissions for the Incident Triage
+        Demo controller stack. This policy is attached alongside the app
+        policy on the dedicated CDK execution role.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: InspectControllerStacks
+            Effect: Allow
+            Action:
+              - cloudformation:DescribeStacks
+              - cloudformation:ListStackResources
+            Resource:
+              - arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoBootstrap/*
+              - arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoController/*
+
+          - Sid: ReadBootstrapVersionMarker
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
+            Resource: arn:aws:ssm:us-east-1:027224425948:parameter/cdk-bootstrap/evaltalk/version
+
+          - Sid: ReadCdkLambdaAssets
+            Effect: Allow
+            Action:
+              - s3:GetBucketLocation
+              - s3:GetObject
+              - s3:GetObjectVersion
+            Resource:
+              - arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1
+              - arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*
+
+          - Sid: ManageControllerRunTable
+            Effect: Allow
+            Action:
+              - dynamodb:CreateTable
+              - dynamodb:Describe*
+              - dynamodb:ListTagsOfResource
+              - dynamodb:TagResource
+              - dynamodb:UpdateTable
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoControllerRun
+
+          - Sid: ManageControllerLogGroups
+            Effect: Allow
+            Action:
+              - logs:CreateLogGroup
+              - logs:ListTagsForResource
+              - logs:PutRetentionPolicy
+              - logs:TagResource
+              - logs:UntagResource
+            Resource:
+              - arn:aws:logs:us-east-1:027224425948:log-group:/aws/lambda/IncidentTriageDemoControllerHttp
+              - arn:aws:logs:us-east-1:027224425948:log-group:/aws/lambda/IncidentTriageDemoControllerHttp:*
+              - arn:aws:logs:us-east-1:027224425948:log-group:/aws/lambda/IncidentTriageDemoControllerWorker
+              - arn:aws:logs:us-east-1:027224425948:log-group:/aws/lambda/IncidentTriageDemoControllerWorker:*
+              - arn:aws:logs:us-east-1:027224425948:log-group:/aws/apigateway/IncidentTriageDemoController
+              - arn:aws:logs:us-east-1:027224425948:log-group:/aws/apigateway/IncidentTriageDemoController:*
+
+          - Sid: ConfigureHttpApiLogDelivery
+            Effect: Allow
+            Action:
+              - logs:*LogDelivery
+              - logs:ListLogDeliveries
+              - logs:DescribeLogGroups
+              - logs:DescribeResourcePolicies
+              - logs:PutResourcePolicy
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: us-east-1
+
+          - Sid: ManageControllerFunctions
+            Effect: Allow
+            Action:
+              - lambda:AddPermission
+              - lambda:CreateFunction
+              - lambda:DeleteFunction
+              - lambda:DeleteFunctionEventInvokeConfig
+              - lambda:GetFunction
+              - lambda:GetFunctionCodeSigningConfig
+              - lambda:GetFunctionConfiguration
+              - lambda:GetFunctionEventInvokeConfig
+              - lambda:GetPolicy
+              - lambda:ListTags
+              - lambda:PutFunctionEventInvokeConfig
+              - lambda:RemovePermission
+              - lambda:TagResource
+              - lambda:UntagResource
+              - lambda:UpdateFunctionCode
+              - lambda:UpdateFunctionConfiguration
+              - lambda:UpdateFunctionEventInvokeConfig
+            Resource:
+              - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoControllerHttp
+              - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoControllerHttp:*
+              - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoControllerWorker
+              - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoControllerWorker:*
+
+          - Sid: ManageControllerApi
+            Effect: Allow
+            Action:
+              - apigateway:DELETE
+              - apigateway:GET
+              - apigateway:PATCH
+              - apigateway:POST
+              - apigateway:PUT
+            Resource:
+              - !Sub arn:aws:apigateway:us-east-1::/apis/${ControllerHttpApiId}
+              - !Sub arn:aws:apigateway:us-east-1::/apis/${ControllerHttpApiId}/*
+
+          - Sid: CreateNamedControllerHttpApi
+            Effect: Allow
+            Action:
+              - apigateway:POST
+              - apigateway:PUT
+            Resource: arn:aws:apigateway:us-east-1::/apis
+            Condition:
+              StringEquals:
+                aws:RequestTag/Name: IncidentTriageDemoController
+
+          - Sid: TagControllerApiResources
+            Effect: Allow
+            Action:
+              - apigateway:POST
+              - apigateway:DELETE
+            Resource:
+              - !Sub arn:aws:apigateway:us-east-1::/tags/arn%3Aaws%3Aapigateway%3Aus-east-1%3A%3A%2Fv2%2Fapis%2F${ControllerHttpApiId}
+              - !Sub arn:aws:apigateway:us-east-1::/tags/arn%3Aaws%3Aapigateway%3Aus-east-1%3A%3A%2Fv2%2Fapis%2F${ControllerHttpApiId}%2Fstages%2F*
+
+          - Sid: TagControllerDefaultStage
+            Effect: Allow
+            Action: apigateway:TagResource
+            Resource: !Sub arn:aws:apigateway:us-east-1::/apis/${ControllerHttpApiId}/stages
+
+          - Sid: ManageControllerRuntimeRoles
+            Effect: Allow
+            Action:
+              - iam:DeleteRole
+              - iam:DeleteRolePolicy
+              - iam:GetRole*
+              - iam:ListAttachedRolePolicies
+              - iam:ListRolePolicies
+              - iam:PutRolePolicy
+              - iam:TagRole
+              - iam:UntagRole
+            Resource:
+              - arn:aws:iam::027224425948:role/IncidentTriageDemoControllerHttpRole
+              - arn:aws:iam::027224425948:role/IncidentTriageDemoControllerWorkerRole
+
+          - Sid: CreateControllerHttpRoleWithBoundary
+            Effect: Allow
+            Action: iam:CreateRole
+            Resource: arn:aws:iam::027224425948:role/IncidentTriageDemoControllerHttpRole
+            Condition:
+              StringEquals:
+                iam:PermissionsBoundary: arn:aws:iam::027224425948:policy/IncidentTriageDemoControllerHttpRuntimeBoundary
+
+          - Sid: CreateControllerWorkerRoleWithBoundary
+            Effect: Allow
+            Action: iam:CreateRole
+            Resource: arn:aws:iam::027224425948:role/IncidentTriageDemoControllerWorkerRole
+            Condition:
+              StringEquals:
+                iam:PermissionsBoundary: arn:aws:iam::027224425948:policy/IncidentTriageDemoControllerWorkerRuntimeBoundary
+
+          - Sid: PassControllerRuntimeRolesToLambda
+            Effect: Allow
+            Action: iam:PassRole
+            Resource:
+              - arn:aws:iam::027224425948:role/IncidentTriageDemoControllerHttpRole
+              - arn:aws:iam::027224425948:role/IncidentTriageDemoControllerWorkerRole
+            Condition:
+              StringEquals:
+                iam:PassedToService: lambda.amazonaws.com
+
+  IncidentTriageDemoControllerHttpRuntimeBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ManagedPolicyName: IncidentTriageDemoControllerHttpRuntimeBoundary
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ControllerHttpLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: arn:aws:logs:us-east-1:027224425948:log-group:/aws/lambda/IncidentTriageDemoControllerHttp:*
+          - Sid: ControllerHttpTable
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoControllerRun
+          - Sid: ControllerHttpSecret
+            Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource: arn:aws:secretsmanager:us-east-1:027224425948:secret:incident-triage-demo/controller/operator-digest-??????
+          - Sid: ControllerHttpWorker
+            Effect: Allow
+            Action: lambda:InvokeFunction
+            Resource: arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoControllerWorker
+
+  IncidentTriageDemoControllerWorkerRuntimeBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ManagedPolicyName: IncidentTriageDemoControllerWorkerRuntimeBoundary
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ControllerWorkerLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: arn:aws:logs:us-east-1:027224425948:log-group:/aws/lambda/IncidentTriageDemoControllerWorker:*
+          - Sid: ControllerWorkerTable
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+              - dynamodb:UpdateItem
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoControllerRun
+          - Sid: ControllerWorkerSecret
+            Effect: Allow
+            Action: secretsmanager:GetSecretValue
+            Resource: arn:aws:secretsmanager:us-east-1:027224425948:secret:incident-triage-demo/controller/app-bearer-??????
+          - Sid: ControllerWorkerAppRelease
+            Effect: Allow
+            Action:
+              - cloudformation:DescribeStacks
+              - cloudformation:ListStackResources
+            Resource: arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoApp/*
+          - Sid: ControllerWorkerAppFunctions
+            Effect: Allow
+            Action:
+              - lambda:GetAlias
+              - lambda:GetFunctionConfiguration
+              - lambda:GetFunctionConcurrency
+            Resource:
+              - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoCheckout
+              - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoCheckout:*
+              - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory
+              - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory:*
+          - Sid: ControllerWorkerInventoryPolicy
+            Effect: Allow
+            Action: dynamodb:GetResourcePolicy
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoInventory
+
 Outputs:
   PolicyArn:
     Description: Managed policy ARN to pass as CloudFormationExecutionPolicies during bootstrap.
     Value:
       Ref: IncidentTriageDemoBootstrapCfnExecution
+  ControllerPolicyArn:
+    Description: Separate managed policy ARN for the controller stack deployment.
+    Value:
+      Ref: IncidentTriageDemoControllerCfnExecution
