@@ -387,9 +387,10 @@ function denialDocument(actionId) {
     Statement: [{
       Sid: `InventoryAccessDenied${actionId.replace(/-/g, '')}`,
       Effect: 'Deny',
-      Principal: { AWS: inventoryRoleArn },
+      Principal: '*',
       Action: 'dynamodb:GetItem',
       Resource: tableArn,
+      Condition: { ArnEquals: { 'aws:PrincipalArn': inventoryRoleArn } },
     }],
   };
 }
@@ -608,6 +609,10 @@ test('Inventory denial activation fails closed before mutation or app traffic', 
     const request = action.requests.find(({ kind }) => kind === 'catalog' || kind === 'checkout');
     assert.ok(request, 'the activation must retain the attempted probe');
     assert.notEqual(request.dependencyReason, 'inventory_access_denied');
+    const catalogs = action.requests.filter(({ kind }) => kind === 'catalog');
+    assert.equal(catalogs.length, 6);
+    assert.ok(Date.parse(catalogs.at(-1).startedAt) - Date.parse(catalogs[0].startedAt) >= 22_000,
+      'the six probes must span the available propagation window');
     assert.equal(state.incident?.activationActionId, id, 'the owned intent must remain visible for reconciliation');
     assert.deepEqual(fixture.policy, denialDocument(id), 'the owned policy must remain active after an unconfirmed probe');
     assert.equal(fixture.policyDeletes.length, 0);

@@ -183,7 +183,7 @@ export class AppStack extends DemoStack {
       environment: {
         APP_ENVIRONMENT: "demo",
         SOURCE_REVISION: sourceRevision.valueAsString,
-        INVENTORY_TABLE_NAME: inventoryTable.tableName,
+        INVENTORY_TABLE_NAME: inventoryTable.tableArn,
         PRODUCT_SKU,
       },
       logGroup: inventoryLogGroup,

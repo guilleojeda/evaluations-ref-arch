@@ -79,6 +79,17 @@ function principal(value: unknown): unknown {
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
+function principalArnCondition(value: unknown): InventoryPolicyStatement["Condition"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const operators = Object.entries(value);
+  if (operators.length !== 1 || operators[0][0] !== "ArnEquals") return undefined;
+  const condition = operators[0][1];
+  if (!condition || typeof condition !== "object" || Array.isArray(condition)) return undefined;
+  const entries = Object.entries(condition);
+  const role = entries.length === 1 && entries[0][0] === "aws:PrincipalArn" ? text(entries[0][1]) : undefined;
+  return role ? { ArnEquals: { "aws:PrincipalArn": role } } : undefined;
+}
+
 /** Keep only ordinary policy fields; raw SDK responses are never persisted in controller state. */
 function sanitizedDocument(value: unknown): InventoryPolicyDocument | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
@@ -97,7 +108,9 @@ function sanitizedDocument(value: unknown): InventoryPolicyDocument | undefined 
     if (sid) statement.Sid = sid;
     for (const key of ["Principal", "Action", "Resource", "Condition"] as const) {
       if (sourceStatement[key] === undefined) continue;
-      const safe = key === "Principal" ? principal(sourceStatement[key]) : stringOrList(sourceStatement[key]);
+      const safe = key === "Principal" ? principal(sourceStatement[key])
+        : key === "Condition" ? principalArnCondition(sourceStatement[key])
+        : stringOrList(sourceStatement[key]);
       if (safe === undefined) return undefined;
       statement[key] = safe;
     }
@@ -140,9 +153,10 @@ function targetStatement(target: InventoryPolicyTarget, actionId: string): Inven
   return {
     Sid: `InventoryAccessDenied${compactActionId}`,
     Effect: "Deny",
-    Principal: { AWS: target.roleArn },
+    Principal: "*",
     Action: "dynamodb:GetItem",
     Resource: target.tableArn,
+    Condition: { ArnEquals: { "aws:PrincipalArn": target.roleArn } },
   };
 }
 
@@ -159,7 +173,7 @@ export function isOwnedDenial(document: InventoryPolicyDocument | undefined, tar
     JSON.stringify(actual.Principal) === JSON.stringify(expected.Principal) &&
     JSON.stringify(actual.Action) === JSON.stringify(expected.Action) &&
     JSON.stringify(actual.Resource) === JSON.stringify(expected.Resource) &&
-    actual.Condition === undefined;
+    JSON.stringify(actual.Condition) === JSON.stringify(expected.Condition);
 }
 
 export async function putInventoryDenial(target: InventoryPolicyTarget, actionId: string): Promise<string | undefined> {
