@@ -14,6 +14,9 @@ const newerRevision = '8e5a48bc0edcd7a65b9cc857ea2d17d4f5da2a90';
 const table = 'IncidentTriageDemoInventory';
 const tableArn = `arn:aws:dynamodb:${region}:${account}:table/${table}`;
 const inventoryRoleArn = `arn:aws:iam::${account}:role/IncidentTriageDemoAppInventoryRole`;
+const inventoryRoleName = 'IncidentTriageDemoAppInventoryRole';
+const policyName = 'IncidentTriageDemoInventoryReadDeny';
+const policyArn = `arn:aws:iam::${account}:policy/${policyName}`;
 const checkoutRoleArn = `arn:aws:iam::${account}:role/IncidentTriageDemoAppCheckoutRole`;
 const appApi = 'https://fixtureapi.execute-api.us-east-1.amazonaws.com';
 const operatorBearer = 'fixture-operator';
@@ -27,17 +30,21 @@ const fixture = {
   appRequests: [],
   invocations: [],
   mutations: [],
-  policyReads: [],
-  policyPuts: [],
-  policyDeletes: [],
+  dynamoPolicyReads: [],
+  iamReads: [],
+  iamAttaches: [],
+  iamDetaches: [],
   checkpointObjects: [],
   alarmReads: [],
   unhandled: [],
   revision: appRevision,
-  policy: undefined,
-  policyRevision: undefined,
-  putMode: 'apply',
-  deleteMode: 'apply',
+  iamAttached: false,
+  iamPolicyDocument: undefined,
+  iamDefaultVersionId: 'v1',
+  iamVersionDocuments: new Map(),
+  attachMode: 'apply',
+  detachMode: 'apply',
+  beforeDetach: undefined,
   checkpointMode: 'store',
   aliasVersion: { Checkout: '2', Inventory: '2' },
   appMode: 'denied',
@@ -52,25 +59,36 @@ function put(value) {
   records.set(value.pk, value);
 }
 
-function reset({ baselineRevision = appRevision, revision = appRevision, policy, policyRevision } = {}) {
+function iamPolicyDocument() {
+  return {
+    Version: '2012-10-17',
+    Statement: [{ Effect: 'Deny', Action: 'dynamodb:GetItem', Resource: tableArn }],
+  };
+}
+
+function reset({ baselineRevision = appRevision, revision = appRevision, attached = false,
+  versionId = 'v1', versionDocuments } = {}) {
   records.clear();
   fixture.appRequests.length = 0;
   fixture.invocations.length = 0;
   fixture.mutations.length = 0;
-  fixture.policyReads.length = 0;
-  fixture.policyPuts.length = 0;
-  fixture.policyDeletes.length = 0;
+  fixture.dynamoPolicyReads.length = 0;
+  fixture.iamReads.length = 0;
+  fixture.iamAttaches.length = 0;
+  fixture.iamDetaches.length = 0;
   fixture.checkpointObjects.length = 0;
   fixture.alarmReads.length = 0;
   fixture.unhandled.length = 0;
   fixture.revision = revision;
-  fixture.policy = policy;
-  fixture.policyRevision = policy ? (policyRevision ?? 'revision-owned') : undefined;
-  fixture.putMode = 'apply';
-  fixture.deleteMode = 'apply';
+  fixture.iamAttached = attached;
+  fixture.iamPolicyDocument = iamPolicyDocument();
+  fixture.iamDefaultVersionId = versionId;
+  fixture.iamVersionDocuments = versionDocuments ?? new Map([[versionId, fixture.iamPolicyDocument]]);
+  fixture.attachMode = 'apply';
+  fixture.detachMode = 'apply';
   fixture.checkpointMode = 'store';
   fixture.appMode = 'denied';
-  fixture.beforeDelete = undefined;
+  fixture.beforeDetach = undefined;
   fixture.heldRequests.clear();
   put({ pk: 'STATE', revision: 1, data: {
     baseline: {
@@ -139,7 +157,8 @@ async function requestBody(request) {
 }
 
 async function awsProtocol(request, body) {
-  const target = request.headers['x-amz-target'] ?? (body.Action ? `CloudFormation_${body.Action}` : '');
+  const action = typeof body.Action === 'string' ? body.Action : '';
+  const target = request.headers['x-amz-target'] ?? (action ? `CloudFormation_${action}` : '');
   if (target.endsWith('GetItem')) {
     const item = row(body.Key?.pk?.S);
     return item ? { Item: marshall(item, { removeUndefinedValues: true }) } : {};
@@ -162,34 +181,50 @@ async function awsProtocol(request, body) {
     for (const write of writes) put(unmarshall(write.Item));
     return {};
   }
-  if (target.endsWith('PutResourcePolicy')) {
-    assert.equal(body.ResourceArn, tableArn, 'denial must target only the named Inventory table');
-    assert.equal(body.ExpectedRevisionId, 'NO_POLICY', 'activation must use the no-policy revision guard');
-    fixture.policyPuts.push({ ...body });
-    fixture.mutations.push(`PutResourcePolicy ${body.ResourceArn}`);
-    if (fixture.putMode === 'conflict') return { __error: 'ResourceInUseException' };
-    fixture.policy = JSON.parse(body.Policy);
-    fixture.policyRevision = `revision-${fixture.policyPuts.length}`;
-    if (fixture.putMode === 'lost-ack') return { __error: 'InternalServerError' };
-    return { RevisionId: fixture.policyRevision };
-  }
-  if (target.endsWith('DeleteResourcePolicy')) {
-    assert.equal(body.ResourceArn, tableArn, 'restore must target only the named Inventory table');
-    fixture.policyDeletes.push({ ...body });
-    fixture.mutations.push(`DeleteResourcePolicy ${body.ResourceArn}`);
-    if (typeof fixture.beforeDelete === 'function') fixture.beforeDelete(body);
-    if (fixture.deleteMode === 'conflict' || body.ExpectedRevisionId !== fixture.policyRevision) {
-      return { __error: 'ConditionalCheckFailedException' };
-    }
-    fixture.policy = undefined;
-    fixture.policyRevision = undefined;
-    return {};
-  }
   if (target.endsWith('GetResourcePolicy')) {
-    fixture.policyReads.push(body.ResourceArn);
+    fixture.dynamoPolicyReads.push(body.ResourceArn);
     if (body.ResourceArn !== tableArn) throw new Error(`unexpected policy read target ${body.ResourceArn}`);
-    return fixture.policy ? { Policy: JSON.stringify(fixture.policy), RevisionId: fixture.policyRevision }
-      : { __error: 'PolicyNotFoundException' };
+    return { __error: 'PolicyNotFoundException' };
+  }
+  if (action === 'ListAttachedRolePolicies') {
+    assert.equal(body.RoleName, inventoryRoleName, 'IAM reads must target the Inventory execution role');
+    fixture.iamReads.push({ action, ...body });
+    const attached = fixture.iamAttached
+      ? `<member><PolicyName>${policyName}</PolicyName><PolicyArn>${policyArn}</PolicyArn></member>` : '';
+    return { __xml: `<ListAttachedRolePoliciesResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/"><ListAttachedRolePoliciesResult><AttachedPolicies>${attached}</AttachedPolicies><IsTruncated>false</IsTruncated></ListAttachedRolePoliciesResult></ListAttachedRolePoliciesResponse>` };
+  }
+  if (action === 'GetPolicy') {
+    assert.equal(body.PolicyArn, policyArn, 'IAM policy reads must target the pre-created denial policy');
+    fixture.iamReads.push({ action, ...body });
+    return { __xml: `<GetPolicyResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/"><GetPolicyResult><Policy><PolicyName>${policyName}</PolicyName><PolicyArn>${policyArn}</PolicyArn><DefaultVersionId>${fixture.iamDefaultVersionId}</DefaultVersionId><AttachmentCount>${fixture.iamAttached ? 1 : 0}</AttachmentCount></Policy></GetPolicyResult></GetPolicyResponse>` };
+  }
+  if (action === 'GetPolicyVersion') {
+    assert.equal(body.PolicyArn, policyArn, 'IAM policy-version reads must target the pre-created denial policy');
+    fixture.iamReads.push({ action, ...body });
+    const document = fixture.iamVersionDocuments.get(body.VersionId);
+    if (!document) return { __error: 'NoSuchEntity', __errorProtocol: 'iam' };
+    return { __xml: `<GetPolicyVersionResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/"><GetPolicyVersionResult><PolicyVersion><Document>${encodeURIComponent(JSON.stringify(document))}</Document><VersionId>${body.VersionId}</VersionId><IsDefaultVersion>${body.VersionId === fixture.iamDefaultVersionId}</IsDefaultVersion></PolicyVersion></GetPolicyVersionResult></GetPolicyVersionResponse>` };
+  }
+  if (action === 'AttachRolePolicy') {
+    assert.equal(body.RoleName, inventoryRoleName, 'attach must target only the Inventory execution role');
+    assert.equal(body.PolicyArn, policyArn, 'attach must target only the pre-created denial policy');
+    fixture.iamAttaches.push({ ...body });
+    fixture.mutations.push(`AttachRolePolicy ${body.RoleName} ${body.PolicyArn}`);
+    if (fixture.attachMode === 'conflict') return { __error: 'EntityAlreadyExists', __errorProtocol: 'iam' };
+    fixture.iamAttached = true;
+    if (fixture.attachMode === 'lost-ack') return { __error: 'ServiceFailure', __errorProtocol: 'iam' };
+    return { __xml: '<AttachRolePolicyResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/"></AttachRolePolicyResponse>' };
+  }
+  if (action === 'DetachRolePolicy') {
+    assert.equal(body.RoleName, inventoryRoleName, 'detach must target only the Inventory execution role');
+    assert.equal(body.PolicyArn, policyArn, 'detach must target only the pre-created denial policy');
+    fixture.iamDetaches.push({ ...body });
+    fixture.mutations.push(`DetachRolePolicy ${body.RoleName} ${body.PolicyArn}`);
+    if (typeof fixture.beforeDetach === 'function') fixture.beforeDetach(body);
+    if (fixture.detachMode === 'conflict') return { __error: 'NoSuchEntity', __errorProtocol: 'iam' };
+    fixture.iamAttached = false;
+    if (fixture.detachMode === 'lost-ack') return { __error: 'ServiceFailure', __errorProtocol: 'iam' };
+    return { __xml: '<DetachRolePolicyResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/"></DetachRolePolicyResponse>' };
   }
   if (target.endsWith('DescribeAlarms')) {
     fixture.alarmReads.push('DescribeAlarms');
@@ -235,7 +270,7 @@ async function awsProtocol(request, body) {
   }
 
   const operation = `${target} ${request.method} ${request.url}`;
-  if (/PutResourcePolicy|DeleteResourcePolicy|PutItem|UpdateItem|DeleteItem|PutFunctionConcurrency|DeleteFunctionConcurrency|UpdateAlias|UpdateFunctionConfiguration|UpdateFunctionCode|PublishVersion|AddPermission|RemovePermission|PutObject|DeleteObject/i.test(operation) ||
+  if (/PutItem|UpdateItem|DeleteItem|PutFunctionConcurrency|DeleteFunctionConcurrency|UpdateAlias|UpdateFunctionConfiguration|UpdateFunctionCode|PublishVersion|AddPermission|RemovePermission|PutObject|DeleteObject/i.test(operation) ||
       (request.method === 'PUT' && /s3\./i.test(request.headers.host ?? ''))) {
     fixture.mutations.push(operation);
   }
@@ -248,10 +283,15 @@ async function startAwsServer() {
     try {
       const result = await awsProtocol(request, await requestBody(request));
       if (result.__error) {
-        response.writeHead(400, { 'content-type': 'application/x-amz-json-1.0', 'x-amzn-errortype': result.__error });
-        response.end(JSON.stringify({ __type: `com.amazonaws.dynamodbv20120810#${result.__error}`, message: result.__error,
-          ...(result.__error === 'TransactionCanceledException'
-            ? { CancellationReasons: [{ Code: 'ConditionalCheckFailed' }] } : {}) }));
+        if (result.__errorProtocol === 'iam') {
+          response.writeHead(400, { 'content-type': 'text/xml' });
+          response.end(`<ErrorResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/"><Error><Type>Sender</Type><Code>${result.__error}</Code><Message>${result.__error}</Message></Error><RequestId>fixture-iam-error</RequestId></ErrorResponse>`);
+        } else {
+          response.writeHead(400, { 'content-type': 'application/x-amz-json-1.0', 'x-amzn-errortype': result.__error });
+          response.end(JSON.stringify({ __type: `com.amazonaws.dynamodbv20120810#${result.__error}`, message: result.__error,
+            ...(result.__error === 'TransactionCanceledException'
+              ? { CancellationReasons: [{ Code: 'ConditionalCheckFailed' }] } : {}) }));
+        }
       } else if (result.__accepted) {
         response.writeHead(202);
         response.end();
@@ -281,6 +321,7 @@ function awsEnvironment(port) {
     AWS_ENDPOINT_URL_SECRETS_MANAGER: endpoint,
     AWS_ENDPOINT_URL_CLOUDWATCH: endpoint,
     AWS_ENDPOINT_URL_S3: endpoint,
+    AWS_ENDPOINT_URL_IAM: endpoint,
     AWS_REGION: region,
     AWS_ACCESS_KEY_ID: 'fixture',
     AWS_SECRET_ACCESS_KEY: 'fixture-only',
@@ -363,8 +404,8 @@ async function call(api, method, path, body, expected) {
   return JSON.parse(response.body);
 }
 
-async function assertActivationRejected({ api, worker, baselineRevision, revision = appRevision, policy, expectedError }) {
-  reset({ baselineRevision, revision, policy });
+async function assertActivationRejected({ api, worker, baselineRevision, revision = appRevision, expectedError }) {
+  reset({ baselineRevision, revision });
   const id = randomUUID();
   const accepted = await call(api, 'PUT', `/api/actions/${id}`, { kind: 'activate_inventory_denial' }, 202);
   assert.equal(accepted.action?.id, id);
@@ -381,18 +422,8 @@ async function assertActivationRejected({ api, worker, baselineRevision, revisio
   return result.action;
 }
 
-function denialDocument(actionId) {
-  return {
-    Version: '2012-10-17',
-    Statement: [{
-      Sid: `InventoryAccessDenied${actionId.replace(/-/g, '')}`,
-      Effect: 'Deny',
-      Principal: '*',
-      Action: 'dynamodb:GetItem',
-      Resource: tableArn,
-      Condition: { ArnEquals: { 'aws:PrincipalArn': inventoryRoleArn } },
-    }],
-  };
+function denialDocument() {
+  return iamPolicyDocument();
 }
 
 async function getAction(api, id) {
@@ -421,9 +452,9 @@ async function withPolicyPropagationElapsed(callback) {
   }
 }
 
-async function activateAndConfirm({ api, worker, putMode = 'apply', appMode = 'denied' }) {
+async function activateAndConfirm({ api, worker, attachMode = 'apply', appMode = 'denied' }) {
   reset();
-  fixture.putMode = putMode;
+  fixture.attachMode = attachMode;
   fixture.appMode = appMode;
   const id = await submit(api, 'activate_inventory_denial');
   await worker.handler({ actionId: id });
@@ -455,50 +486,62 @@ test('Inventory denial activation fails closed before mutation or app traffic', 
     assert.ok(action.finishedAt, 'the stale-baseline rejection must be durably settled');
   });
 
-  await t.test('an unexpected table policy conflicts with the recorded no-policy checkpoint', async () => {
-    const policy = {
-      Version: '2012-10-17',
-      Statement: [{ Effect: 'Deny', Principal: { AWS: inventoryRoleArn }, Action: 'dynamodb:GetItem', Resource: tableArn }],
-    };
-    const action = await assertActivationRejected({
-      api, worker, baselineRevision: appRevision, policy,
-      expectedError: /policy|conflict|drift|checkpoint/i,
-    });
-    assert.ok(action.finishedAt, 'the policy-conflict rejection must be durably settled');
-    assert.ok(fixture.policyReads.length > 0, 'the conflict check must read the recorded policy target');
-    assert.ok(fixture.policyReads.every((resourceArn) => resourceArn === tableArn),
-      'the conflict check must read only the named Inventory table policy');
-  });
-
-  await t.test('a revision conflict sends one conditional Put and no app request', async () => {
-    reset();
-    fixture.putMode = 'conflict';
+  await t.test('a pre-existing exact attachment fails closed before mutation or app traffic', async () => {
+    reset({ attached: true });
     const id = await submit(api, 'activate_inventory_denial');
     await worker.handler({ actionId: id });
     const action = await getAction(api, id);
     assert.equal(action.status, 'failed');
-    assert.match(action.error ?? '', /revision|policy|conflict/i);
-    assert.equal(fixture.policyPuts.length, 1, 'revision conflict must attempt exactly one Put');
-    assert.equal(fixture.policyPuts[0].ExpectedRevisionId, 'NO_POLICY');
-    assert.equal(fixture.policy, undefined, 'a rejected Put must not leave a denial behind');
-    assert.equal(fixture.appRequests.length, 0, 'revision conflict must not send an app probe');
-    assert.equal(fixture.checkpointObjects.length, 0, 'revision conflict must not write a checkpoint');
-    assert.deepEqual(fixture.mutations, [`PutResourcePolicy ${tableArn}`]);
+    assert.match(action.error ?? '', /attached|policy|drift|baseline/i);
+    assert.equal(fixture.iamAttaches.length, 0, 'an existing attachment must not be reattached');
+    assert.equal(fixture.iamAttached, true);
+    assert.equal(fixture.appRequests.length, 0, 'an existing attachment must not send an app probe');
+    assert.ok(fixture.dynamoPolicyReads.length > 0, 'readiness must retain the Dynamo absence read');
+    assert.ok(fixture.dynamoPolicyReads.every((resourceArn) => resourceArn === tableArn),
+      'Dynamo absence reads must target only the Inventory table');
+    assert.ok(fixture.iamReads.every(({ RoleName, PolicyArn }) =>
+      (!RoleName || RoleName === inventoryRoleName) && (!PolicyArn || PolicyArn === policyArn)));
+    assert.deepEqual(fixture.mutations, []);
     assert.deepEqual(fixture.unhandled, []);
   });
 
-  await t.test('a lost Put acknowledgement reconciles the exact denial without resending', async () => {
-    const { id, action, state } = await activateAndConfirm({ api, worker, putMode: 'lost-ack' });
+  await t.test('activation uses one exact IAM attachment and confirms the owned policy', async () => {
+    const { id, action } = await activateAndConfirm({ api, worker });
     assert.equal(action.status, 'completed');
-    assert.equal(fixture.policyPuts.length, 1, 'lost acknowledgement must not resend Put');
-    assert.deepEqual(fixture.policy, denialDocument(id), 'readback must reconcile the action-owned document');
-    assert.equal(fixture.policyRevision, 'revision-1');
+    assert.equal(fixture.iamAttaches.length, 1);
+    assert.equal(fixture.iamAttaches[0].RoleName, inventoryRoleName);
+    assert.equal(fixture.iamAttaches[0].PolicyArn, policyArn);
+    assert.equal(fixture.iamAttached, true);
+    assert.deepEqual(fixture.iamPolicyDocument, denialDocument(id));
+    assert.ok(fixture.iamReads.some(({ action: readAction }) => readAction === 'ListAttachedRolePolicies'));
+    assert.ok(fixture.iamReads.some(({ action: readAction }) => readAction === 'GetPolicy'));
+    assert.ok(fixture.iamReads.some(({ action: readAction }) => readAction === 'GetPolicyVersion'));
+    assert.ok(fixture.dynamoPolicyReads.length > 0);
+    assert.ok(fixture.dynamoPolicyReads.every((resourceArn) => resourceArn === tableArn));
+    assert.deepEqual(fixture.unhandled, []);
+  });
+
+  await t.test('a lost AttachRolePolicy acknowledgement reconciles without resending', async () => {
+    const { id, action, state } = await activateAndConfirm({ api, worker, attachMode: 'lost-ack' });
+    assert.equal(action.status, 'completed');
+    assert.equal(fixture.iamAttaches.length, 1, 'lost acknowledgement must not resend AttachRolePolicy');
+    assert.equal(fixture.iamAttached, true, 'readback must reconcile the attachment');
+    assert.deepEqual(fixture.iamPolicyDocument, denialDocument(id), 'readback must reconcile the action-owned document');
     assert.equal(state.incident?.kind, 'inventory_access_denied');
     assert.equal(state.incident?.activationActionId, id);
     assert.equal(state.incident?.policy?.state, 'present');
-    assert.equal(state.incident?.policy?.revision, 'revision-1');
-    assert.equal(state.incident?.policy?.statementId, denialDocument(id).Statement[0].Sid);
+    assert.equal(state.incident?.policy?.policyArn, policyArn);
+    assert.equal(state.incident?.policy?.policyName, policyName);
+    assert.equal(state.incident?.policy?.roleArn, inventoryRoleArn);
+    assert.equal(state.incident?.policy?.defaultVersionId, 'v1');
+    assert.equal(state.incident?.policy?.documentMatches, true);
+    assert.equal(state.incident?.policyBefore?.state, 'absent');
     assert.equal(state.incident?.checkpoint?.status, 'stored');
+    assert.equal(state.incident?.checkpoint?.inventoryPolicyAtCapture?.policyArn, policyArn);
+    assert.equal(state.incident?.checkpoint?.inventoryPolicyAtCapture?.roleArn, inventoryRoleArn);
+    assert.equal(state.incident?.checkpoint?.inventoryPolicyAtCapture?.defaultVersionId, 'v1');
+    assert.equal(state.incident?.checkpoint?.inventoryPolicyAtCapture?.documentMatches, true);
+    assert.equal(state.incident?.checkpoint?.tablePolicyBefore?.state, 'absent');
     assert.equal(fixture.checkpointObjects.length, 1, 'successful reconciliation must retain a checkpoint');
     assert.ok(fixture.checkpointObjects[0].key.startsWith(evidencePrefix));
     assert.ok(fixture.appRequests.some(({ path }) => path === '/api/products'));
@@ -506,27 +549,36 @@ test('Inventory denial activation fails closed before mutation or app traffic', 
     assert.deepEqual(fixture.unhandled, []);
   });
 
-  await t.test('a foreign policy revision survives conditional restore', async () => {
+  await t.test('a default-policy-version drift blocks detach and preserves the attachment', async () => {
     const activation = await activateAndConfirm({ api, worker });
     const beforeRestoreRequests = fixture.appRequests.length;
-    const foreign = {
-      Version: '2012-10-17',
-      Statement: [{ Effect: 'Deny', Principal: { AWS: 'arn:aws:iam::027224425948:role/ForeignRole' },
-        Action: 'dynamodb:GetItem', Resource: tableArn }],
-    };
-    fixture.beforeDelete = () => {
-      fixture.policy = foreign;
-      fixture.policyRevision = 'revision-foreign';
-    };
+    fixture.iamDefaultVersionId = 'v2';
+    fixture.iamVersionDocuments.set('v2', denialDocument());
     const restoreId = await submit(api, 'restore_inventory_access');
     await withPolicyPropagationElapsed(() => worker.handler({ actionId: restoreId }));
     const restore = await getAction(api, restoreId);
     assert.notEqual(restore.status, 'completed');
-    assert.match(restore.error ?? '', /revision|policy|conflict|changed/i);
-    assert.equal(fixture.policyDeletes.length, 1, 'restore must use one conditional Delete');
-    assert.equal(fixture.policyDeletes[0].ExpectedRevisionId, activation.state.incident?.policy?.revision);
-    assert.deepEqual(fixture.policy, foreign, 'a foreign revision must not be deleted');
+    assert.match(restore.error ?? '', /version|policy|drift|changed/i);
+    assert.equal(fixture.iamDetaches.length, 0, 'version drift must be detected before DetachRolePolicy');
+    assert.equal(fixture.iamAttached, true, 'version drift must preserve the managed-policy attachment');
+    assert.equal(fixture.iamDefaultVersionId, 'v2');
+    assert.equal(activation.state.incident?.policy?.defaultVersionId, 'v1');
+    assert.equal(activation.state.incident?.policy?.documentMatches, true);
     assert.equal(fixture.appRequests.length, beforeRestoreRequests, 'restore must not send app probes');
+    assert.deepEqual(fixture.unhandled, []);
+  });
+
+  await t.test('an already-detached owned policy is a no-op with no app traffic', async () => {
+    await activateAndConfirm({ api, worker });
+    fixture.iamAttached = false;
+    const beforeRequests = fixture.appRequests.length;
+    const restoreId = await submit(api, 'restore_inventory_access');
+    await withPolicyPropagationElapsed(() => worker.handler({ actionId: restoreId }));
+    const restore = await getAction(api, restoreId);
+    assert.equal(restore.status, 'completed');
+    assert.equal(fixture.iamDetaches.length, 0, 'absence must not issue a duplicate DetachRolePolicy');
+    assert.equal(fixture.iamAttached, false);
+    assert.equal(fixture.appRequests.length, beforeRequests, 'no-op restore must not send app probes');
     assert.deepEqual(fixture.unhandled, []);
   });
 
@@ -539,21 +591,21 @@ test('Inventory denial activation fails closed before mutation or app traffic', 
     const ordinary = await getAction(api, ordinaryId);
     assert.notEqual(ordinary.status, 'completed');
     assert.match(ordinary.error ?? '', /checkpoint|evidence|capture|unavailable/i);
-    assert.equal(fixture.policyDeletes.length, 0, 'ordinary restore must not delete without its checkpoint');
-    assert.ok(fixture.policy, 'the known denial must remain active after ordinary restore is blocked');
+    assert.equal(fixture.iamDetaches.length, 0, 'ordinary restore must not detach without its checkpoint');
+    assert.equal(fixture.iamAttached, true, 'the known denial must remain active after ordinary restore is blocked');
     assert.equal(fixture.appRequests.length, beforeRequests, 'restore must not send an app request');
     const blockedState = await getState(api);
     assert.match(blockedState.incident?.checkpoint?.status ?? '', /unavailable|incomplete/);
 
     fixture.checkpointMode = 'fail';
-    const expectedDeleteRevision = fixture.policyRevision;
     const protectiveId = await submit(api, 'restore_inventory_access', { restoreWithoutEvidence: true });
     await withPolicyPropagationElapsed(() => worker.handler({ actionId: protectiveId }));
     const protective = await getAction(api, protectiveId);
     assert.equal(protective.status, 'completed');
-    assert.equal(fixture.policyDeletes.length, 1);
-    assert.equal(fixture.policyDeletes[0].ExpectedRevisionId, expectedDeleteRevision);
-    assert.equal(fixture.policy, undefined, 'protective restore must remove only the recorded denial');
+    assert.equal(fixture.iamDetaches.length, 1);
+    assert.equal(fixture.iamDetaches[0].RoleName, inventoryRoleName);
+    assert.equal(fixture.iamDetaches[0].PolicyArn, policyArn);
+    assert.equal(fixture.iamAttached, false, 'protective restore must remove only the recorded attachment');
     assert.equal(fixture.appRequests.length, beforeRequests, 'protective restore must not send an app request');
     const restoredState = await getState(api);
     assert.equal(restoredState.incident?.checkpoint?.status, 'incomplete');
@@ -614,8 +666,8 @@ test('Inventory denial activation fails closed before mutation or app traffic', 
     assert.ok(Date.parse(catalogs.at(-1).startedAt) - Date.parse(catalogs[0].startedAt) >= 22_000,
       'the six probes must span the available propagation window');
     assert.equal(state.incident?.activationActionId, id, 'the owned intent must remain visible for reconciliation');
-    assert.deepEqual(fixture.policy, denialDocument(id), 'the owned policy must remain active after an unconfirmed probe');
-    assert.equal(fixture.policyDeletes.length, 0);
+    assert.deepEqual(fixture.iamPolicyDocument, denialDocument(id), 'the managed policy document must remain unchanged after an unconfirmed probe');
+    assert.equal(fixture.iamAttached, true, 'the owned attachment must remain active after an unconfirmed probe');
     assert.deepEqual(fixture.unhandled, []);
   });
 });
