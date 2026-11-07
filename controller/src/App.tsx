@@ -164,6 +164,7 @@ export function App() {
     if (isRestore) setRestoreSubmitting(true);
     else setLoading(true);
     setNotice(undefined);
+    setMenuOpen(false);
     setPending({ id, command });
     try {
       const response = await fetch(`/api/actions/${id}`, { method: "PUT", headers: { Authorization: `Bearer ${bearer}`, Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify(command), signal: AbortSignal.timeout(8_000) });
