@@ -115,7 +115,7 @@ Every entry answers the same four questions: what the audience already knows, th
 
 - **What does the audience already know?** Variable output can be assessed against explicit criteria. They do not yet know our application or the agent's authority.
 - **What idea or question does it establish?** The agent investigates and recommends; the operator independently chooses and applies an action. Application behavior needs its own observation.
-- **What makes that understandable on screen?** A minimal map of application, alarm, read-only investigating agent, recommendation, and operator using the Failure Controller. Show only enough application context to follow the incident. Do not reveal the table-policy Deny or the agent's investigation.
+- **What makes that understandable on screen?** A minimal map of application, alarm, read-only investigating agent, recommendation, and operator using the Failure Controller. Show only enough application context to follow the incident. Do not reveal the Inventory role's Deny or the agent's investigation.
 - **Why does the next screen follow?** “Recommendation” now has a concrete meaning. Slide 05 gives the demonstration a question to answer.
 
 ### 05. Does the recommendation actually fix the problem?
@@ -142,7 +142,7 @@ Every entry answers the same four questions: what the audience already knows, th
 
 - **What does the audience already know?** The faulty candidate proposes increasing Inventory memory during the incident.
 - **What idea or question does it establish?** Completing the configuration change and resolving the application incident are separate observations.
-- **What makes that understandable on screen?** Show the actual selected action, memory readback, and later fresh request failures as separate evidence. Explain privately that memory does not remove the table-policy Deny; do not reveal that diagnosis to the audience yet. The action generates no traffic. Preserve the source capture before recovery; a successful action status alone does not establish recovery.
+- **What makes that understandable on screen?** Show the actual selected action, memory readback, and later fresh request failures as separate evidence. Explain privately that memory does not remove the Inventory role's Deny; do not reveal that diagnosis to the audience yet. The action generates no traffic. Preserve the source capture before recovery; a successful action status alone does not establish recovery.
 - **Why does the next screen follow?** Slide 08 returns to the observations so the audience can state what was established before inspecting the code.
 
 ### 08. What did we actually establish?
@@ -196,7 +196,7 @@ Every entry answers the same four questions: what the audience already knows, th
 
 - **What does the audience already know?** The accepted expectation is evidence-supported restoration of Inventory access.
 - **What idea or question does it establish?** We can make this failure reproducible without giving the candidate the expected answer.
-- **What makes that understandable on screen?** One complete actual case when implemented: alarm context, incident window, effective investigation reference time, versioned evidence references/provenance, acceptable behavior, and unacceptable behavior. Show correct Inventory table-policy restoration as the expected action/target. Keep expectations and private scenario cause outside candidate input and tools. All four captured providers use the coherent case reference time and allow the candidate to choose its own queries, with no live fallback. Normalize reviewed audience wording into prepared fields; do not execute it or use it as judge instructions.
+- **What makes that understandable on screen?** One complete actual case when implemented: alarm context, incident window, effective investigation reference time, versioned evidence references/provenance, acceptable behavior, and unacceptable behavior. Show detachment of the Inventory deny policy as the expected action/target. Keep expectations and private scenario cause outside candidate input and tools. All four captured providers use the coherent case reference time and allow the candidate to choose its own queries, with no live fallback. Normalize reviewed audience wording into prepared fields; do not execute it or use it as judge instructions.
 - **Why does the next screen follow?** The case states what good means. Slide 14 explains how different assessments can recognize or reject that behavior.
 
 ### 14. Code checks and model judgment
@@ -313,7 +313,7 @@ Every entry answers the same four questions: what the audience already knows, th
 
 - **What does the audience already know?** The prompt changed, the cases and criteria stayed fixed, and prepared measurements do not establish the pending candidate's outcome.
 - **What idea or question does it establish?** Improvement and permission to deploy require actual candidate evidence and a passing reviewed local policy.
-- **What makes that understandable on screen?** Pair the actual repaired-candidate findings: denied reads support restoring the Inventory table policy, and throttling under a reserved-concurrency cap supports increasing that Inventory cap. Compare them with the faulty candidate to show how the repair selects an action that addresses each supported mechanism. Include relevant controls. Label saved runs recorded and keep recommendation findings separate from remedy outcomes. Preserve comparable evaluator setup and artifact provenance. Show the actual passing S4 local Strands experiment and reviewed policy result bound to the candidate before pushing it.
+- **What makes that understandable on screen?** Pair the actual repaired-candidate findings: denied reads support detaching the Inventory deny policy, and throttling under a reserved-concurrency cap supports increasing that Inventory cap. Compare them with the faulty candidate to show how the repair selects an action that addresses each supported mechanism. Include relevant controls. Label saved runs recorded and keep recommendation findings separate from remedy outcomes. Preserve comparable evaluator setup and artifact provenance. Show the actual passing S4 local Strands experiment and reviewed policy result bound to the candidate before pushing it.
 - **Why does the next screen follow?** If the comparison is ready while the local policy result is pending, show the comparison and leave the release decision pending. If a required result is late, use only a matching actual recorded result, labeled accordingly. After the local policy passes and the repair is pushed, slide 27 explains how to automate the same release decision for future changes while deployment proceeds.
 
 ### 27. What can reach deployment?

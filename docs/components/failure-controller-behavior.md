@@ -13,7 +13,7 @@ The deployed [controller](failure-controller.md) supports checkout readiness, no
 | Stop traffic | Stop new catalog and checkout submissions, retaining already submitted and unresolved work |
 | Increase function capacity | Increase the selected checkout or inventory reserved-concurrency cap to an explicit permitted value, without changing another component |
 | Increase function memory | Increase the selected checkout or inventory Lambda memory allocation to an explicit supported size in MB, preserving code and other settings |
-| Restore inventory access | Restore the expected Inventory table resource policy with conflict checks and configuration readback |
+| Restore inventory access | Detach the named Inventory deny policy with ownership and version checks, then read back the attachment state |
 | Recover application | Stop producers, restore expected caps/policy, baseline memory and alias versions, settle work, and verify fresh business behavior without deleting data |
 | Reset demo | Perform recovery and the quiescent data reset, invalidating old productVersion payloads and recording the next verified baseline |
 | Observe and inspect | Show action progress, separate catalog/checkout demand and outcomes, actual alarms, matching agent runs, and source-timestamped evidence |
@@ -23,7 +23,7 @@ The presenter independently chooses each action and its parameters. The agent re
 
 ## Baseline and state ownership
 
-Setup records the target account/region/resources, trusted successful deployment generation and artifact identity, healthy numeric live-alias versions and their memory sizes, normal traffic settings, positive inventory baseline cap, checkout capacity, and expected Inventory table resource policy with its revision. The inventory cap must serve normal demand; overload activation changes demand, not this cap. Checkout capacity must be adequate for the selected workload. Function-cap increases require a positive current cap. Values are selected and verified during implementation, not fixed by an illustrative rate/cap example.
+Setup records the target account/region/resources, trusted successful deployment generation and artifact identity, healthy numeric live-alias versions and their memory sizes, normal traffic settings, positive inventory baseline cap, checkout capacity, the Inventory deny policy's expected detached state and default version, and the absence of an Inventory table resource policy. The inventory cap must serve normal demand; overload activation changes demand, not this cap. Checkout capacity must be adequate for the selected workload. Function-cap increases require a positive current cap. Values are selected and verified during implementation, not fixed by an illustrative rate/cap example.
 
 Capture missing resource policies or concurrency settings explicitly. Absence is not a zero concurrency cap. Keep the original expected baseline distinct from current settings and the presenter's remediation targets; an increase during an incident does not overwrite the baseline used by Recover.
 
@@ -41,7 +41,7 @@ A run spans a recorded business/configuration baseline, traffic and incident/rem
 | --- | --- |
 | Current action | Kind, immutable ID/input, steps, timestamps, and running/completed/failed/interrupted/outcome-unknown result |
 | Traffic | Catalog and checkout producer states, pacing, submitted/completed/skipped counts, in-flight work, and remaining budgets |
-| Configuration | Expected baseline plus last confirmed current alias targets, active-version memory sizes, function caps, and Inventory policy/revision; partial or unknown where necessary |
+| Configuration | Expected baseline plus last confirmed current alias targets, active-version memory sizes, function caps, and Inventory deny-policy attachment and default version; partial or unknown where necessary |
 | Application | Actual request outcomes, unresolved checkouts, incident or remedy effect, and observation windows |
 | Monitoring and agent | Actual alarm state/freshness and matching event/run/status/result; previous runs remain identifiable |
 | Reset | Not in progress, incomplete with its last recorded step, or verified next baseline |
@@ -58,7 +58,7 @@ Every action exposes its real steps, elapsed time, and evidence. Use bounded rea
 
 ### Check readiness
 
-Require no competing action or active producer and presenter confirmation that unrelated browser checkouts are stopped. Inspect the selected account, region, resource identifiers, healthy aliases and their memory sizes, actual function caps, expected table policy, private setup record, and AWS permissions. Do not silently repair mismatches.
+Require no competing action or active producer and presenter confirmation that unrelated browser checkouts are stopped. Inspect the selected account, region, resource identifiers, healthy aliases and their memory sizes, actual function caps, expected deny-policy attachment and table-policy absence, private setup record, and AWS permissions. Do not silently repair mismatches.
 
 Verify an authenticated catalog read and a fresh quantity-one checkout, its saved receipt, and its stock decrement after outcomes settle. Retain that real order in the baseline and count its POST attempt. Capture sku/productVersion for later probes; the two incidents may prevent catalog refresh.
 
@@ -91,11 +91,11 @@ The result may be “surge started; incident effect unverified.” An expired pr
 
 ### Activate inventory access denied
 
-Start with healthy versions, adequate capacity for the selected normal traffic, and the expected table policy. Keep the overload producer stopped. Record the prior policy and revision and apply only the prepared denial of the inventory role's required read operation on the selected Inventory table. Preserve the role's existing Allow and access for checkout/controller or other principals; no general IAM policy editor is exposed.
+Start with healthy versions, adequate capacity, and the named deny policy detached. Keep the overload producer stopped. Verify the default document and attach the prepared policy that denies only `dynamodb:GetItem` on the Inventory table to the Inventory Lambda execution role. The role retains its existing Allow and the table resource policy stays absent.
 
-Use DynamoDB policy revision checks, including the no-policy condition when appropriate. Stop on unexpected policy drift instead of overwriting unrelated changes. Policy application and readback are eventually consistent, and subsequent updates are blocked for 15 seconds; use bounded observation and respect that interval. API acknowledgement is not activation proof. See [PutResourcePolicy](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_PutResourcePolicy.html) and [policy constraints](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/rbac-considerations.html).
+The controller serializes its configuration actions and records intent before making one attachment change. It checks the observed attachment and default policy version and stops on unexpected drift. IAM changes are eventually consistent. An unresolved attachment with an absent readback stays unknown until reconciled. [IAM propagation](https://docs.aws.amazon.com/IAM/latest/UserGuide/troubleshoot.html#troubleshoot_general_eventual-consistency)
 
-Activation requires a verified current release, settled controller traffic, and paused unrelated writers. The current app baseline expects no policy. The worker records an action-specific denial and installs it with `NO_POLICY`, then reads back its exact document and revision. It captures configuration before sending bounded catalog probes and one verification checkout. A specific denied-read response and a fresh checkout 502 establish the incident. Keep actual successes and unresolved checkout identities in the run if the request evidence differs.
+Activation requires a verified current release, settled controller traffic, and paused unrelated writers. The worker checks that the table resource policy is absent and captures the exact IAM policy and attachment before sending up to six paced catalog probes. A typed catalog denial permits one verification checkout. A specific denied-read response and a fresh checkout 502 establish the incident. Keep actual successes and unresolved checkout identities in the run if the request evidence differs.
 
 Neither incident activation nor its probes invoke the agent. A repeated command ID does not create another action. An explicit new workload phase records its own observations without promising a new incident, alarm transition, or agent run.
 
@@ -103,9 +103,9 @@ Neither incident activation nor its probes invoke the agent. A repeated command 
 
 The presenter selects checkout or inventory and an explicit bounded target reserved-concurrency value. Read the selected current cap and verify target/account headroom. Require an existing positive cap and a strictly larger permitted target; setting a cap on an uncapped function is not presented as an increase. An already-active target is a no-change result, not an executed increase.
 
-Record before/target values and apply only the selected function setting. Read it back and retain the acknowledgement and actual observation. Controller action serialization prevents competing controller changes. The capacity API lacks the alias and policy revision guard, so unexpected changes or ambiguous results require reconciliation rather than an exactly-once claim.
+Record before/target values and apply only the selected function setting. Read it back and retain the acknowledgement and actual observation. Controller action serialization prevents competing controller changes. The capacity API lacks the alias revision guard, so unexpected changes or ambiguous results require reconciliation rather than an exactly-once claim.
 
-Do not change another function, memory allocation, table policy, code, or traffic profile. Apply the operator's selected target without substituting another action.
+Do not change another function, memory allocation, deny-policy attachment, code, or traffic profile. Apply the operator's selected target without substituting another action.
 
 End the action after the configuration result/readback. Do not submit probes, start/stop a producer, compare workload outcomes, or decide whether the incident persists. The presenter may separately repeat traffic and inspect its outcome.
 
@@ -121,9 +121,9 @@ Use the existing action serialization, deduplication, conflict handling, and bou
 
 ### Restore inventory access
 
-The presenter selects restoration of the expected Inventory table policy. Record current/expected state and use the applicable revision condition to restore the captured policy or its captured absence. Remove only the scenario's access change; unexpected external edits are conflicts requiring inspection. Do not add broad grants, change execution roles, move aliases, alter capacity, or silently stop traffic.
+The presenter chooses **Restore inventory access**. The worker checks the current app release and the attachment and default version recorded by activation. It detaches only that named policy from the named role and reads back the state. Unexpected changes require inspection.
 
-Capture the live incident configuration in the private evidence bucket before removing the recorded denial. If required capture fails, the presenter can explicitly confirm restoration without evidence for the same owned policy. Record the evidence gap. Both paths use the current app release and exact policy revision. Retain owned policy identity across interruption for reconciliation. Report policy readback independently of request health, then let the presenter run separate traffic or readiness to observe the effect.
+Capture the live incident configuration in the private evidence bucket before removing the recorded denial. If required capture fails, the presenter can explicitly confirm restoration without evidence for the same owned policy. Record the evidence gap. Both paths use the current app release and exact IAM policy default version. Retain owned policy identity across interruption for reconciliation. Report policy readback independently of request health, then let the presenter run separate traffic or readiness to observe the effect.
 
 ### Observe after a targeted remedy
 
@@ -135,7 +135,7 @@ Observed improvement does not prove the agent's reasoning was sound; evaluation 
 
 ### Recover application
 
-Stop catalog and checkout producers. Confirm the trusted deployment generation still matches the baseline, then restore/read back the original expected function caps, Inventory table policy, and baseline memory/version state through the healthy live aliases. Apply policy/alias revision guards where supported and inspect conflicting external changes. Restore the baseline, not whichever increased limit or memory allocation was most recently used. If deployment identity is newer or unknown, or a deployment is failed/partial, keep Recover blocked pending deployment reconciliation; never silently restore old aliases/settings over it. Reconcile the new generation against its trusted manifest explicitly before adopting a new baseline or resuming presenter actions.
+Stop catalog and checkout producers. Confirm the trusted deployment generation still matches the baseline, then restore/read back the original expected function caps, Inventory deny-policy attachment, and baseline memory/version state through the healthy live aliases. Apply alias revision guards where supported and inspect conflicting external changes. Restore the baseline, not whichever increased limit or memory allocation was most recently used. If deployment identity is newer or unknown, or a deployment is failed/partial, keep Recover blocked pending deployment reconciliation; never silently restore old aliases/settings over it. Reconcile the new generation against its trusted manifest explicitly before adopting a new baseline or resuming presenter actions.
 
 Settle submitted work, including ambiguous checkout outcomes, then verify a fresh catalog read, quantity-one checkout, receipt, and stock decrement while other writers are stopped. Configuration restoration may complete while effect verification is incomplete. Exhausted POST budget permits configuration restoration but not an unsupported recovery-success claim.
 
@@ -159,7 +159,7 @@ Initially poll every five seconds without overlapping reads for a source. A time
 | Checkout outcomes | Controller POST records only, separating HTTP result from confirmed/unknown business outcome and labelling probes |
 | Latency | Completed controller POSTs begun within a rolling 60-second window: median and sample count; client timeouts separate. Catalog latency and CloudWatch metrics are separate series |
 | Orders/stock | Deduplicated confirmed receipts/status reads for known IDs and last authenticated stock/productVersion observation; no all-orders source implied |
-| Function configuration/access | Selected current function caps, active-version memory sizes and alias targets, Inventory policy/revision, ordinary management history, actual caller error reasons, and native inventory Throttles with scope/freshness |
+| Function configuration/access | Selected current function caps, active-version memory sizes and alias targets, Inventory deny-policy attachment and default version, ordinary management history, actual caller error reasons, and native inventory Throttles with scope/freshness |
 | Alarm | DescribeAlarms: actual stage 5xx alarm state, reason, transition/update/read times, and actions-enabled status. Missing/stale/failed is not OK; read time is freshness only |
 | Agent | Selected alarm ARN plus normalized originating ALARM transition timestamp, matching durable run identity, status, start/end times, and result reference; unavailable and no observed run are distinct |
 | Timeline | Recorded intent, traffic phases, confirmed settings, request effects, alarm transitions, agent events, and recovery/reset; no invented missed transitions |
@@ -172,7 +172,7 @@ DescribeAlarms `StateTransitionedTimestamp` may corroborate an identity only whe
 
 Expose defined authenticated commands and observation reads. The controller table records accepted actions and immutable checkout inputs before external submission. The worker charges a request against its allowance before sending it. A failed durable write blocks the send.
 
-Record target/run/action identities, expected baseline including its deployment generation/artifact identity, current/target settings and revisions, traffic profiles/budgets and actual request records, command results, request/effect windows, alarm/event/run references, unresolved outcomes, and reset progress. Memory actions retain before/after allocation and active-version/code/alias identity. Retain original expected policy/absence separately from the temporary denial and later restoration. Scope permissions to the named functions' concurrency and memory/version operations, Inventory table policy, selected aliases, and existing data-reset operations; no general code/configuration editor is exposed.
+Record target/run/action identities, expected baseline including its deployment generation/artifact identity, current/target settings and revisions, traffic profiles/budgets and actual request records, command results, request/effect windows, alarm/event/run references, unresolved outcomes, and reset progress. Memory actions retain before/after allocation and active-version/code/alias identity. Keep the expected detached state, the observed attachment, and the later restoration as separate records. Scope permissions to the named functions' concurrency and memory/version operations, the named Inventory role and deny-policy ARN, selected aliases, and existing data-reset operations; no general code/configuration editor is exposed.
 
 Private intended causes, scenario IDs, prepared baseline mappings, and expected answers are scorer context. Ordinary current settings and management history may be agent evidence. Never store credentials, authentication configuration, or raw SDK dumps. Do not require an agent recommendation/run ID to operate a shortcut; an optional reference merely records what the presenter was reviewing.
 

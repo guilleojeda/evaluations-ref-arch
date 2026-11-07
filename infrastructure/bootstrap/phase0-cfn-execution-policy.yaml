@@ -583,12 +583,25 @@ Resources:
             Effect: Allow
             Action: dynamodb:GetResourcePolicy
             Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoInventory
-          - Sid: ControllerWorkerInventoryPolicyMutation
+          - Sid: ControllerWorkerInventoryRoleAttachments
+            Effect: Allow
+            Action: iam:ListAttachedRolePolicies
+            Resource: arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryRole
+          - Sid: ControllerWorkerInventoryReadDenyPolicy
             Effect: Allow
             Action:
-              - dynamodb:PutResourcePolicy
-              - dynamodb:DeleteResourcePolicy
-            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoInventory
+              - iam:GetPolicy
+              - iam:GetPolicyVersion
+            Resource: arn:aws:iam::027224425948:policy/IncidentTriageDemoInventoryReadDeny
+          - Sid: ControllerWorkerInventoryReadDenyAttachment
+            Effect: Allow
+            Action:
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+            Resource: arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryRole
+            Condition:
+              StringEquals:
+                iam:PolicyARN: arn:aws:iam::027224425948:policy/IncidentTriageDemoInventoryReadDeny
           - Sid: ControllerWorkerAlarm
             Effect: Allow
             Action:
@@ -637,6 +650,23 @@ Resources:
               - s3:PutEncryptionConfiguration
               - s3:TagResource
             Resource: arn:aws:s3:::incident-triage-demo-evidence-027224425948-us-east-1
+
+  IncidentTriageDemoInventoryReadDeny:
+    Type: AWS::IAM::ManagedPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ManagedPolicyName: IncidentTriageDemoInventoryReadDeny
+      Description: >-
+        Administrator-owned, unattached Deny used by the Incident Triage Demo
+        to block Inventory GetItem calls during the access-denial incident.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInventoryGetItem
+            Effect: Deny
+            Action: dynamodb:GetItem
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoInventory
 
 Outputs:
   PolicyArn:

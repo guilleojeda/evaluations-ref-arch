@@ -1,198 +1,234 @@
 import {
-  DeleteResourcePolicyCommand,
+  GetPolicyCommand,
+  GetPolicyVersionCommand,
+  ListAttachedRolePoliciesCommand,
+  AttachRolePolicyCommand,
+  DetachRolePolicyCommand,
+  IAMClient,
+} from "@aws-sdk/client-iam";
+import {
   DynamoDBClient,
   GetResourcePolicyCommand,
-  PutResourcePolicyCommand,
 } from "@aws-sdk/client-dynamodb";
-import type { InventoryPolicyObservation, PolicyState } from "./types.js";
+import type {
+  InventoryAccessPolicyObservation,
+  InventoryTablePolicyObservation,
+  PolicyState,
+} from "./types.js";
 
 const account = "027224425948";
 const region = "us-east-1";
 const inventoryTable = "IncidentTriageDemoInventory";
-const client = new DynamoDBClient({ maxAttempts: 1, region });
-const policyTimeout = () => ({ abortSignal: AbortSignal.timeout(4_000) });
-
-export interface InventoryPolicyDocument {
-  Version: "2012-10-17";
-  Statement: InventoryPolicyStatement[];
-}
-
-export interface InventoryPolicyStatement {
-  Sid?: string;
-  Effect: "Allow" | "Deny";
-  Principal?: unknown;
-  Action?: unknown;
-  Resource?: unknown;
-  Condition?: unknown;
-}
-
-export interface InventoryPolicyRead {
-  observation: InventoryPolicyObservation;
-  document?: InventoryPolicyDocument;
-}
+const inventoryRoleName = "IncidentTriageDemoAppInventoryRole";
+const inventoryPolicyName = "IncidentTriageDemoInventoryReadDeny";
+const inventoryRoleArn = `arn:aws:iam::${account}:role/${inventoryRoleName}`;
+const inventoryPolicyArn = `arn:aws:iam::${account}:policy/${inventoryPolicyName}`;
+const inventoryTableArn = `arn:aws:dynamodb:${region}:${account}:table/${inventoryTable}`;
+const clientOptions = { maxAttempts: 1, region };
+const iam = new IAMClient(clientOptions);
+const dynamo = new DynamoDBClient(clientOptions);
+const providerTimeout = () => ({ abortSignal: AbortSignal.timeout(4_000) });
 
 export interface InventoryPolicyTarget {
   tableArn: string;
   roleArn: string;
 }
 
-export function inventoryTableArn(): string {
-  return `arn:aws:dynamodb:${region}:${account}:table/${inventoryTable}`;
+export interface InventoryPolicyDocument {
+  Version: "2012-10-17";
+  Statement: [{ Sid?: "DenyInventoryGetItem"; Effect: "Deny"; Action: "dynamodb:GetItem"; Resource: string }];
 }
 
-export function expectedInventoryTarget(tableArn = inventoryTableArn(), roleArn?: string): InventoryPolicyTarget {
-  if (tableArn !== inventoryTableArn()) throw new Error("The Inventory table target is not the named demo table.");
-  const targetRole = roleArn ?? `arn:aws:iam::${account}:role/IncidentTriageDemoAppInventoryRole`;
-  if (targetRole !== `arn:aws:iam::${account}:role/IncidentTriageDemoAppInventoryRole`) {
-    throw new Error("The Inventory execution role target is invalid.");
-  }
-  return { tableArn, roleArn: targetRole };
+export interface InventoryTablePolicyRead {
+  observation: InventoryTablePolicyObservation;
 }
 
-function providerError(error: unknown, name: string): boolean {
-  return error instanceof Error && error.name === name;
+export interface InventoryAccessPolicyRead {
+  observation: InventoryAccessPolicyObservation;
+  document?: InventoryPolicyDocument;
+}
+
+export function expectedInventoryTarget(tableArn = inventoryTableArn, roleArn = inventoryRoleArn): InventoryPolicyTarget {
+  if (tableArn !== inventoryTableArn) throw new Error("The Inventory table target is not the named demo table.");
+  if (roleArn !== inventoryRoleArn) throw new Error("The Inventory execution role target is invalid.");
+  return { tableArn, roleArn };
+}
+
+export function expectedInventoryPolicyArn(): string {
+  return inventoryPolicyArn;
+}
+
+export function expectedInventoryPolicyName(): string {
+  return inventoryPolicyName;
 }
 
 function text(value: unknown, max = 512): string | undefined {
   return typeof value === "string" && value.length > 0 && value.length <= max ? value : undefined;
 }
 
-function stringOrList(value: unknown): unknown {
-  if (typeof value === "string") return text(value, 1024);
-  if (Array.isArray(value) && value.length <= 32) {
-    const values = value.map((item) => text(item, 1024));
-    return values.every((item) => item !== undefined) ? values : undefined;
-  }
-  return undefined;
+function timestamp(): string {
+  return new Date().toISOString();
 }
 
-function principal(value: unknown): unknown {
-  if (typeof value === "string") return text(value, 1024);
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const result: Record<string, string | string[]> = {};
-  for (const [key, item] of Object.entries(value)) {
-    if (!/^[A-Za-z][A-Za-z0-9]{0,40}$/.test(key)) return undefined;
-    const safe = stringOrList(item);
-    if (safe === undefined || (typeof safe !== "string" && !Array.isArray(safe))) return undefined;
-    result[key] = safe;
-  }
-  return Object.keys(result).length > 0 ? result : undefined;
-}
-
-function principalArnCondition(value: unknown): InventoryPolicyStatement["Condition"] {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const operators = Object.entries(value);
-  if (operators.length !== 1 || operators[0][0] !== "ArnEquals") return undefined;
-  const condition = operators[0][1];
-  if (!condition || typeof condition !== "object" || Array.isArray(condition)) return undefined;
-  const entries = Object.entries(condition);
-  const role = entries.length === 1 && entries[0][0] === "aws:PrincipalArn" ? text(entries[0][1]) : undefined;
-  return role ? { ArnEquals: { "aws:PrincipalArn": role } } : undefined;
-}
-
-/** Keep only ordinary policy fields; raw SDK responses are never persisted in controller state. */
-function sanitizedDocument(value: unknown): InventoryPolicyDocument | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
-  const source = value as Record<string, unknown>;
-  if (Object.keys(source).some((key) => !["Version", "Statement"].includes(key))) return undefined;
-  if (source.Version !== "2012-10-17" || !Array.isArray(source.Statement) || source.Statement.length > 64) return undefined;
-  const statements: InventoryPolicyStatement[] = [];
-  for (const item of source.Statement) {
-    if (!item || typeof item !== "object" || Array.isArray(item)) return undefined;
-    const sourceStatement = item as Record<string, unknown>;
-    if (Object.keys(sourceStatement).some((key) => !["Sid", "Effect", "Principal", "Action", "Resource", "Condition"].includes(key))) return undefined;
-    if (sourceStatement.Effect !== "Allow" && sourceStatement.Effect !== "Deny") return undefined;
-    const statement: InventoryPolicyStatement = { Effect: sourceStatement.Effect };
-    const sid = text(sourceStatement.Sid, 128);
-    if (sourceStatement.Sid !== undefined && !sid) return undefined;
-    if (sid) statement.Sid = sid;
-    for (const key of ["Principal", "Action", "Resource", "Condition"] as const) {
-      if (sourceStatement[key] === undefined) continue;
-      const safe = key === "Principal" ? principal(sourceStatement[key])
-        : key === "Condition" ? principalArnCondition(sourceStatement[key])
-        : stringOrList(sourceStatement[key]);
-      if (safe === undefined) return undefined;
-      statement[key] = safe;
-    }
-    statements.push(statement);
-  }
-  return { Version: "2012-10-17", Statement: statements };
-}
-
-function observation(state: PolicyState, target: InventoryPolicyTarget, revision?: string, statementId?: string): InventoryPolicyObservation {
+function tableObservation(state: PolicyState, target: InventoryPolicyTarget, revision?: string, statementId?: string): InventoryTablePolicyObservation {
   return {
     state,
     ...(revision ? { revision } : {}),
     ...(statementId ? { statementId } : {}),
     tableArn: target.tableArn,
     roleArn: target.roleArn,
-    observedAt: new Date().toISOString(),
+    observedAt: timestamp(),
   };
 }
 
-export async function readInventoryPolicy(target = expectedInventoryTarget()): Promise<InventoryPolicyRead> {
+/** The table resource policy remains a read-only app invariant. */
+export async function readInventoryTablePolicy(target = expectedInventoryTarget()): Promise<InventoryTablePolicyRead> {
   try {
-    const result = await client.send(new GetResourcePolicyCommand({ ResourceArn: target.tableArn }), policyTimeout());
+    const result = await dynamo.send(new GetResourcePolicyCommand({ ResourceArn: target.tableArn }), providerTimeout());
     if (!result.Policy) throw new Error("The Inventory table policy response is invalid.");
-    const document = sanitizedDocument(JSON.parse(result.Policy));
-    return { document, observation: observation("present", target, text(result.RevisionId, 256), document && statementId(document)) };
+    let statementId: string | undefined;
+    try {
+      const policy = JSON.parse(result.Policy) as { Statement?: unknown };
+      const statements = Array.isArray(policy.Statement) ? policy.Statement : [policy.Statement];
+      if (statements.length === 1 && statements[0] && typeof statements[0] === "object") {
+        statementId = text((statements[0] as Record<string, unknown>).Sid, 128);
+      }
+    } catch {
+      throw new Error("The Inventory table policy response is invalid.");
+    }
+    return { observation: tableObservation("present", target, text(result.RevisionId, 256), statementId) };
   } catch (error) {
-    if (providerError(error, "PolicyNotFoundException")) return { observation: observation("absent", target) };
-    if (error instanceof SyntaxError) throw new Error("The Inventory table policy response is invalid.");
+    if (error instanceof Error && error.name === "PolicyNotFoundException") {
+      return { observation: tableObservation("absent", target) };
+    }
     throw error;
   }
 }
 
-function statementId(document: InventoryPolicyDocument): string | undefined {
-  if (document.Statement.length !== 1) return undefined;
-  return text(document.Statement[0].Sid, 128);
-}
-
-function targetStatement(target: InventoryPolicyTarget, actionId: string): InventoryPolicyStatement {
-  const compactActionId = actionId.replace(/-/g, "");
+function parsePolicyDocument(value: unknown): InventoryPolicyDocument | undefined {
+  if (typeof value !== "string" || value.length > 16_384) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    try {
+      // IAM returns policy documents URL-encoded according to RFC 3986.
+      parsed = JSON.parse(decodeURIComponent(value));
+    } catch {
+      return undefined;
+    }
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+  const document = parsed as Record<string, unknown>;
+  if (document.Version !== "2012-10-17" || !Array.isArray(document.Statement) || document.Statement.length !== 1) return undefined;
+  const statement = document.Statement[0];
+  if (!statement || typeof statement !== "object" || Array.isArray(statement)) return undefined;
+  const fields = statement as Record<string, unknown>;
+  const sid = fields.Sid;
+  const action = typeof fields.Action === "string" ? fields.Action
+    : Array.isArray(fields.Action) && fields.Action.length === 1 ? fields.Action[0] : undefined;
+  const resource = typeof fields.Resource === "string" ? fields.Resource
+    : Array.isArray(fields.Resource) && fields.Resource.length === 1 ? fields.Resource[0] : undefined;
+  const expectedFields = sid === undefined ? "Action,Effect,Resource" : "Action,Effect,Resource,Sid";
+  if (Object.keys(document).sort().join(",") !== "Statement,Version" ||
+      Object.keys(fields).sort().join(",") !== expectedFields ||
+      (sid !== undefined && sid !== "DenyInventoryGetItem") ||
+      fields.Effect !== "Deny" || action !== "dynamodb:GetItem" || typeof resource !== "string") return undefined;
   return {
-    Sid: `InventoryAccessDenied${compactActionId}`,
-    Effect: "Deny",
-    Principal: "*",
-    Action: "dynamodb:GetItem",
-    Resource: target.tableArn,
-    Condition: { ArnEquals: { "aws:PrincipalArn": target.roleArn } },
+    Version: "2012-10-17",
+    Statement: [{ ...(sid ? { Sid: "DenyInventoryGetItem" as const } : {}), Effect: "Deny", Action: "dynamodb:GetItem", Resource: resource }],
   };
 }
 
-export function denialPolicy(target: InventoryPolicyTarget, actionId: string): InventoryPolicyDocument {
-  if (!/^[0-9a-f-]{36}$/i.test(actionId)) throw new Error("The Inventory denial action ID is invalid.");
-  return { Version: "2012-10-17", Statement: [targetStatement(target, actionId)] };
+export function denialPolicyDocument(target = expectedInventoryTarget()): InventoryPolicyDocument {
+  return { Version: "2012-10-17", Statement: [{ Effect: "Deny", Action: "dynamodb:GetItem", Resource: target.tableArn }] };
 }
 
-export function isOwnedDenial(document: InventoryPolicyDocument | undefined, target: InventoryPolicyTarget, actionId: string): boolean {
-  const expected = denialPolicy(target, actionId).Statement[0];
-  if (!document || document.Statement.length !== 1) return false;
-  const actual = document.Statement[0];
-  return actual.Sid === expected.Sid && actual.Effect === expected.Effect &&
-    JSON.stringify(actual.Principal) === JSON.stringify(expected.Principal) &&
-    JSON.stringify(actual.Action) === JSON.stringify(expected.Action) &&
-    JSON.stringify(actual.Resource) === JSON.stringify(expected.Resource) &&
-    JSON.stringify(actual.Condition) === JSON.stringify(expected.Condition);
+export function isExactInventoryPolicyDocument(document: InventoryPolicyDocument | undefined, target = expectedInventoryTarget()): boolean {
+  const expected = denialPolicyDocument(target);
+  return Boolean(document && document.Version === expected.Version && document.Statement.length === 1 &&
+    (!document.Statement[0].Sid || document.Statement[0].Sid === "DenyInventoryGetItem") &&
+    document.Statement[0].Effect === "Deny" && document.Statement[0].Action === "dynamodb:GetItem" &&
+    document.Statement[0].Resource === target.tableArn);
 }
 
-export async function putInventoryDenial(target: InventoryPolicyTarget, actionId: string): Promise<string | undefined> {
-  const result = await client.send(new PutResourcePolicyCommand({
-    ResourceArn: target.tableArn,
-    Policy: JSON.stringify(denialPolicy(target, actionId)),
-    ExpectedRevisionId: "NO_POLICY",
-  }), policyTimeout());
-  return text(result.RevisionId, 256);
+async function attachedToInventoryRole(): Promise<boolean> {
+  let marker: string | undefined;
+  const seenMarkers = new Set<string>();
+  for (let page = 0; page < 10; page++) {
+    const response = await iam.send(new ListAttachedRolePoliciesCommand({
+      RoleName: inventoryRoleName,
+      MaxItems: 100,
+      ...(marker ? { Marker: marker } : {}),
+    }), providerTimeout());
+    const attached = response.AttachedPolicies?.some((policy) => policy.PolicyArn === inventoryPolicyArn) ?? false;
+    if (attached) return true;
+    if (!response.IsTruncated) return false;
+    const next = text(response.Marker, 512);
+    if (!next || seenMarkers.has(next)) throw new Error("The Inventory role attachment list did not advance its pagination marker.");
+    seenMarkers.add(next);
+    marker = next;
+  }
+  throw new Error("The Inventory role attachment list exceeded its bounded page limit.");
 }
 
-export async function deleteInventoryPolicy(target: InventoryPolicyTarget, revision: string): Promise<void> {
-  if (!revision || revision.length > 256) throw new Error("The Inventory policy revision is missing.");
-  await client.send(new DeleteResourcePolicyCommand({
-    ResourceArn: target.tableArn,
-    ExpectedRevisionId: revision,
-  }), policyTimeout());
+/** Read the named managed policy, its exact default document, and all role attachments. */
+export async function readInventoryAccessPolicy(target = expectedInventoryTarget()): Promise<InventoryAccessPolicyRead> {
+  const [policyResult, attached] = await Promise.all([
+    iam.send(new GetPolicyCommand({ PolicyArn: inventoryPolicyArn }), providerTimeout()),
+    attachedToInventoryRole(),
+  ]);
+  const policy = policyResult.Policy;
+  if (!policy || policy.Arn !== inventoryPolicyArn || policy.PolicyName !== inventoryPolicyName) {
+    throw new Error("The pre-created Inventory denial policy identity is invalid.");
+  }
+  const defaultVersionId = text(policy.DefaultVersionId, 128);
+  let document: InventoryPolicyDocument | undefined;
+  let documentMatches = false;
+  if (defaultVersionId && /^v[1-9]\d*$/.test(defaultVersionId)) {
+    const version = await iam.send(new GetPolicyVersionCommand({ PolicyArn: inventoryPolicyArn, VersionId: defaultVersionId }), providerTimeout());
+    if (version.PolicyVersion?.VersionId === defaultVersionId && version.PolicyVersion.IsDefaultVersion === true) {
+      document = parsePolicyDocument(version.PolicyVersion.Document);
+      documentMatches = isExactInventoryPolicyDocument(document, target);
+    }
+  }
+  return {
+    observation: {
+      state: attached ? "present" : "absent",
+      policyArn: inventoryPolicyArn,
+      policyName: inventoryPolicyName,
+      roleArn: target.roleArn,
+      ...(defaultVersionId ? { defaultVersionId } : {}),
+      documentMatches,
+      observedAt: timestamp(),
+    },
+    ...(document ? { document } : {}),
+  };
 }
 
-export function isConditionalConflict(error: unknown): boolean {
-  return error instanceof Error && ["PolicyNotFoundException", "PolicyNotFound", "ResourceInUseException", "ConditionalCheckFailedException"].includes(error.name);
+export function isExactInventoryAccessPolicy(observation: InventoryAccessPolicyObservation, target = expectedInventoryTarget()): boolean {
+  return observation.policyArn === inventoryPolicyArn && observation.policyName === inventoryPolicyName &&
+    observation.roleArn === target.roleArn && Boolean(observation.defaultVersionId) && observation.documentMatches;
+}
+
+export function sameInventoryPolicyVersion(actual: InventoryAccessPolicyObservation, expected: InventoryAccessPolicyObservation): boolean {
+  return actual.policyArn === expected.policyArn && actual.policyName === expected.policyName &&
+    actual.roleArn === expected.roleArn && actual.defaultVersionId === expected.defaultVersionId &&
+    actual.documentMatches === true;
+}
+
+export async function attachInventoryPolicy(target = expectedInventoryTarget()): Promise<void> {
+  await iam.send(new AttachRolePolicyCommand({ RoleName: inventoryRoleName, PolicyArn: inventoryPolicyArn }), providerTimeout());
+}
+
+export async function detachInventoryPolicy(target = expectedInventoryTarget()): Promise<void> {
+  await iam.send(new DetachRolePolicyCommand({ RoleName: inventoryRoleName, PolicyArn: inventoryPolicyArn }), providerTimeout());
+}
+
+export function isAttachConflict(error: unknown): boolean {
+  return error instanceof Error && ["EntityAlreadyExists", "EntityAlreadyExistsException", "InvalidInput"].includes(error.name);
+}
+
+export function isDetachConflict(error: unknown): boolean {
+  return error instanceof Error && ["NoSuchEntity", "NoSuchEntityException"].includes(error.name);
 }

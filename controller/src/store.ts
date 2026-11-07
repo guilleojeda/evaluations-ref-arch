@@ -130,7 +130,8 @@ function newAction(id: string, command: Command, now: number): Action {
 function inventoryDenialOutstanding(run: RunState): boolean {
   const incident = run.incident;
   return incident?.kind === "inventory_access_denied" &&
-    (!incident.policy || incident.policy.state !== "absent");
+    (!incident.policy || incident.policy.state !== "absent" ||
+      (incident.mechanism === "iam-managed-policy" && incident.attachmentOwnership !== "controller"));
 }
 
 function canStart(run: RunState, action: Action | undefined, configuration: Action | undefined, command: Command): void {
@@ -149,6 +150,12 @@ function canStart(run: RunState, action: Action | undefined, configuration: Acti
   }
   if (command.kind === "traffic") {
     if (!run.baseline) throw new CommandError(409, "READINESS_REQUIRED", "Check readiness before starting traffic.");
+    const incident = run.incident;
+    const confirmedDenial = incident?.mechanism === "iam-managed-policy" &&
+      incident.policy.state === "present" && incident.attachmentOwnership === "controller";
+    if (inventoryDenialOutstanding(run) && !confirmedDenial) {
+      throw new CommandError(409, "INVENTORY_DENIAL_UNRESOLVED", "Reconcile the recorded Inventory access change before starting traffic.");
+    }
     if (run.budgets.checkout.generatorRemaining === 0 && run.budgets.catalog.remaining === 0) {
       throw new CommandError(409, "ALLOWANCE_EXHAUSTED", "Both traffic allowances are exhausted.");
     }
@@ -165,7 +172,7 @@ function canStart(run: RunState, action: Action | undefined, configuration: Acti
     if (action?.traffic && Object.values(action.traffic).some((value) => value.inFlight > 0)) throw new CommandError(409, "TRAFFIC_DRAINING", "Wait for accepted traffic to settle before activating an Inventory denial.");
   }
   if (command.kind === "restore_inventory_access") {
-    if (!run.incident?.kind || run.incident.kind !== "inventory_access_denied") throw new CommandError(409, "NO_INVENTORY_DENIAL", "There is no recorded Inventory denial to restore.");
+    if (run.incident?.mechanism !== "iam-managed-policy") throw new CommandError(409, "NO_INVENTORY_DENIAL", "There is no recorded Inventory IAM denial to restore.");
     if (configuration && active.has(configuration.status)) throw new CommandError(409, "CONFIGURATION_IN_PROGRESS", "Wait for the current configuration action to settle.");
     if (action && active.has(action.status) && action.kind !== "traffic") throw new CommandError(409, "ACTION_IN_PROGRESS", "Wait for the current primary action to settle before restoring access.");
   }

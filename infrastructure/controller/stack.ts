@@ -26,6 +26,8 @@ const WORKER_LOG_GROUP_NAME = `/aws/lambda/${WORKER_FUNCTION_NAME}`;
 const GATEWAY_LOG_GROUP_NAME = "/aws/apigateway/IncidentTriageDemoController";
 const APP_STACK_NAME = "IncidentTriageDemoApp";
 const INVENTORY_TABLE_NAME = "IncidentTriageDemoInventory";
+const INVENTORY_ROLE_ARN = `arn:aws:iam::${ACCOUNT}:role/IncidentTriageDemoAppInventoryRole`;
+const INVENTORY_READ_DENY_POLICY_ARN = `arn:aws:iam::${ACCOUNT}:policy/IncidentTriageDemoInventoryReadDeny`;
 const EVIDENCE_BUCKET_NAME = `incident-triage-demo-evidence-${ACCOUNT}-${REGION}`;
 const STAGE_ALARM_NAME = "IncidentTriageDemoAppStage5xx";
 const STAGE_ALARM_ARN = `arn:aws:cloudwatch:${REGION}:${ACCOUNT}:alarm:${STAGE_ALARM_NAME}`;
@@ -66,7 +68,9 @@ export class ControllerStack extends DemoStack {
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadAppRelease", actions: ["cloudformation:DescribeStacks", "cloudformation:ListStackResources"], resources: [`arn:aws:cloudformation:${REGION}:${ACCOUNT}:stack/${APP_STACK_NAME}/*`] }));
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadAppFunctionSettings", actions: ["lambda:GetAlias", "lambda:GetFunctionConfiguration", "lambda:GetFunctionConcurrency"], resources: [`arn:aws:lambda:${REGION}:${ACCOUNT}:function:IncidentTriageDemoCheckout`, `arn:aws:lambda:${REGION}:${ACCOUNT}:function:IncidentTriageDemoCheckout:*`, `arn:aws:lambda:${REGION}:${ACCOUNT}:function:IncidentTriageDemoInventory`, `arn:aws:lambda:${REGION}:${ACCOUNT}:function:IncidentTriageDemoInventory:*`] }));
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadInventoryPolicy", actions: ["dynamodb:GetResourcePolicy"], resources: [`arn:aws:dynamodb:${REGION}:${ACCOUNT}:table/${INVENTORY_TABLE_NAME}`] }));
-    workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ManageInventoryPolicy", actions: ["dynamodb:PutResourcePolicy", "dynamodb:DeleteResourcePolicy"], resources: [`arn:aws:dynamodb:${REGION}:${ACCOUNT}:table/${INVENTORY_TABLE_NAME}`] }));
+    workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadInventoryRolePolicyAttachments", actions: ["iam:ListAttachedRolePolicies"], resources: [INVENTORY_ROLE_ARN] }));
+    workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadInventoryReadDenyPolicy", actions: ["iam:GetPolicy", "iam:GetPolicyVersion"], resources: [INVENTORY_READ_DENY_POLICY_ARN] }));
+    workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ManageInventoryReadDenyAttachment", actions: ["iam:AttachRolePolicy", "iam:DetachRolePolicy"], resources: [INVENTORY_ROLE_ARN], conditions: { StringEquals: { "iam:PolicyARN": INVENTORY_READ_DENY_POLICY_ARN } } }));
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadStageAlarm", actions: ["cloudwatch:DescribeAlarms", "cloudwatch:DescribeAlarmHistory"], resources: [STAGE_ALARM_ARN] }));
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "WriteConfigurationCheckpoint", actions: ["s3:PutObject"], resources: [evidenceBucket.arnForObjects("configuration/*")] }));
 

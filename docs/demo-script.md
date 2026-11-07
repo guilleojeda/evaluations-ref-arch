@@ -7,7 +7,7 @@ The [slides plan](slides-plan.md) records slide numbers, content, purposes, and 
 ## Before the room opens
 
 - [ ] Confirm the correct AWS target and presenter controller access.
-- [ ] Verify that the controller baseline matches the current trusted deployment generation, healthy aliases, baseline memory/version and capacity settings, expected Inventory table policy, and no unresolved checkouts.
+- [ ] Verify that the controller baseline matches the current trusted deployment generation, healthy aliases, baseline memory/version and capacity settings, expected detached Inventory deny policy, and no unresolved checkouts.
 - [ ] Record the real business-data baseline after a fresh verification checkout, including its stock effect.
 - [ ] Observe the real alarm in **OK** with its alarm-to-agent path ready for a new incident.
 - [ ] Select S0 and the intentionally faulty candidate; verify no evaluation case, evaluator, score, or gate is active.
@@ -53,12 +53,12 @@ On the title slide, ask aloud: “How would you know if your latest prompt chang
 
 #### Opening live incident
 
-1. Verify the healthy starting state, expected Inventory table policy, and real alarm **OK**. Start the bounded ordinary catalog workload and, if useful, sparse fresh checkout probes within the controller's recorded budgets.
+1. Verify the healthy starting state, expected detached Inventory deny policy, and real alarm **OK**. Start the bounded ordinary catalog workload and, if useful, sparse fresh checkout probes within the controller's recorded budgets.
 2. Activate the **inventory-access-denied** scenario. The narrow policy Deny causes the Inventory read to fail while application code and aliases remain healthy.
 3. Observe the actual alarm and open only the live agent report whose event identity matches it. Show the controller observations and report output first. The agent investigates through read-only tools, choosing its own relevant queries, time windows, and query order; do not inspect its trace or tool execution yet. It receives no preassembled incident packet or hidden scenario label.
 4. Show the initial candidate's exactly one proposed action: **Increase memory — INVENTORY — larger MB**. Explain that an agent proposal does not authorize or execute the change.
 5. Independently apply that selected controller action. Show the configuration readback and the invoked-version memory allocation change, with application code and other settings preserved. The action does not generate requests or determine whether the incident is resolved.
-6. Separately start or continue ordinary traffic after the action. Show the access-denied failure persists because the table-policy Deny remains. Keep this request evidence distinct from the memory action's configuration result.
+6. Separately start or continue ordinary traffic after the action. Show the access-denied failure persists because the Inventory deny policy is still attached. Keep this request evidence distinct from the memory action's configuration result.
 7. Preserve the bounded, sanitized source capture needed to investigate the incident before restoring settings; this is data capture, with case review and verdicts reserved for later stages. Do not delay this source configuration capture until after **Recover**.
 8. After the opening request observation, stop producers and settle outstanding work, then request **Recover**. Verify recovery and observe the alarm returning to **OK** before the second live incident. **Recover** restores the current deployment generation's baseline memory/version, capacity, policy, and healthy aliases, retains business data, and ends the live fault. It is distinct from destructive **Reset**; if a full reset is needed, use the scenario contract's new `productVersion` and order/stock reset semantics.
 
@@ -108,7 +108,7 @@ While the candidate comparison is pending, use the 36–39 measurements block to
 
 #### Candidate comparison and release decision
 
-Show the matched faulty and repaired candidate results under the same reviewed cases and criteria. Pair the two actual repaired findings: denied reads support restoring the Inventory table policy, and throttling under a reserved-concurrency cap supports raising the Inventory cap. Show the evidence behind each action and label any saved run recorded. Keep the recommendation findings separate from application remedy outcomes. Before pushing, verify and show the passing S4 local Strands experiment and reviewed policy result for the exact candidate. If the comparison is ready while the S4 result is pending, show the findings and leave the release decision pending.
+Show the matched faulty and repaired candidate results under the same reviewed cases and criteria. Pair the two actual repaired findings: denied reads support detaching the Inventory deny policy, and throttling under a reserved-concurrency cap supports raising the Inventory cap. Show the evidence behind each action and label any saved run recorded. Keep the recommendation findings separate from application remedy outcomes. Before pushing, verify and show the passing S4 local Strands experiment and reviewed policy result for the exact candidate. If the comparison is ready while the S4 result is pending, show the findings and leave the release decision pending.
 
 #### CI and recurring cost
 
@@ -134,7 +134,7 @@ Use the approved closing above verbatim, then leave the final block for question
 
 ### S1–S5 editing and result cues
 
-- **S1:** Review the captured trace and queryable source evidence, identify the case version and reference time, and review expectations before evaluation. For access denied, the reviewed case expects the denied-read diagnosis grounded in the relevant evidence and **Restore inventory access** for the expected Inventory table policy. Show the provenance and expectations; do not show a pass/fail verdict yet.
+- **S1:** Review the captured trace and queryable source evidence, identify the case version and reference time, and review expectations before evaluation. For access denied, the reviewed case expects the denied-read diagnosis grounded in the relevant evidence and **Restore inventory access** for the expected detached Inventory deny policy. Show the provenance and expectations; do not show a pass/fail verdict yet.
 - **S2:** Add deterministic assertions for the action and target, semantic diagnosis and grounding criteria, judge configuration, and AgentCore evaluation results. For the opening example, INVENTORY is the correct target but **Increase memory** is the wrong action; show that failure reason. A separate wrong-target proposal must fail its target check, while multiple justified numeric targets within the reviewed bounds are accepted. Both evaluator types are introduced here; the candidate remains faulty through S2.
 - **S3:** Make and identify the prompt-only candidate repair. Keep the model, tools, permissions, and report behavior fixed. Execute the fresh candidate against the same reviewed cases and criteria, compare it with the original, and leave pending results visibly pending; introducing S3 does not imply a pass.
 - **S4:** Keep the repaired candidate and connect the local Strands experiment entrypoint across the case, task, evaluator, report, and comparison. Evaluate the existing reviewed local release policy before the first deployment; deployment is an action, not another stage.
