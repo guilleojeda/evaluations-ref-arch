@@ -96,15 +96,15 @@ The run allows 50 generator POSTs, 5 controller verification POSTs, and 5 manual
 ## Operate the Inventory access incident
 
 1. Stop existing traffic and pause other checkout writers. Use **Check readiness** on the current release. Keep verification checkout allowance for activation and a separate post-restore readiness check.
-2. Choose **Activate Inventory denial**. Inspect the policy revision and checkpoint alongside the catalog and checkout evidence. The alarm card reads CloudWatch independently. Wait for an observed ALARM when collecting a complete incident.
-3. Choose **Restore Inventory access**. If the controller cannot save the required configuration and you need to restore service, use the explicit protective confirmation. It still requires the recorded policy and current app release. The evidence gap remains visible.
-4. Once the policy reads as absent, wait for an actual fresh catalog success and run **Check readiness**. Confirm the successful order and stock change separately from the alarm. Allow for native metric evaluation delay before observing OK.
+2. Choose **Activate Inventory denial**. Inspect the named IAM policy attachment, default version, and checkpoint alongside the catalog and checkout evidence. The alarm card reads CloudWatch independently. Wait for an observed ALARM when collecting a complete incident.
+3. Choose **Restore Inventory access**. If the controller cannot save the required configuration and you need to restore service, use the explicit protective confirmation. It still requires the recorded role, policy ARN and default version, and current app release. The evidence gap remains visible.
+4. Once the policy reads as detached, wait for an actual fresh catalog success and run **Check readiness**. Confirm the successful order and stock change separately from the alarm. Allow for native metric evaluation delay before observing OK.
 
-Keep the evidence bucket private. Inspect or export the referenced configuration objects using authorized AWS access before teardown. Run planned releases after the policy is restored and traffic has settled.
+Keep the evidence bucket private. Inspect or export the referenced configuration objects using authorized AWS access before teardown. Run planned releases after the policy is detached and traffic has settled.
 
 ## Deployment and controller baseline
 
-The presenter schedules deployments outside active demo runs. Routine releases preserve business data and investigation history. Keep the app's expected versions, memory, cap, and Inventory policy tied to the current release. The controller compares its recorded baseline with the deployed release and the affected live settings before restoring them. Unexpected drift or a newer release requires fresh readiness checks.
+The presenter schedules deployments outside active demo runs. Routine releases preserve business data and investigation history. Keep the app's expected versions, memory, cap, and Inventory deny-policy attachment tied to the current release. The controller compares its recorded baseline with the deployed release and the affected live settings before restoring them. Unexpected drift or a newer release requires fresh readiness checks.
 
 The deployment workflow leaves incident activation, probes, Recover, and Reset to the presenter. Applying an expected setting through CDK does not establish fresh business behavior. Use the [controller run procedure](components/failure-controller-behavior.md) to verify a new baseline and the [application contract](components/application.md#deployment-development-and-reset) for disposable data setup and reset.
 

@@ -6,14 +6,18 @@ import { GetAliasCommand, GetFunctionConfigurationCommand, GetFunctionConcurrenc
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { readCurrentAlarm, readOriginatingAlarm } from "./alarm.js";
 import {
-  deleteInventoryPolicy,
+  attachInventoryPolicy,
+  detachInventoryPolicy,
   expectedInventoryTarget,
-  isConditionalConflict,
-  isOwnedDenial,
-  putInventoryDenial,
-  readInventoryPolicy,
-  type InventoryPolicyRead,
+  isAttachConflict,
+  isDetachConflict,
+  isExactInventoryAccessPolicy,
+  readInventoryAccessPolicy,
+  readInventoryTablePolicy,
+  sameInventoryPolicyVersion,
+  type InventoryAccessPolicyRead,
   type InventoryPolicyTarget,
+  type InventoryTablePolicyRead,
 } from "./inventory-access.js";
 import { changeAction, getRun } from "./store.js";
 import type {
@@ -22,7 +26,7 @@ import type {
   CheckoutPayload,
   ConfigurationCheckpoint,
   IncidentState,
-  InventoryPolicyObservation,
+  InventoryAccessPolicyObservation,
   Profile,
   Receipt,
   RequestRecord,
@@ -40,9 +44,9 @@ const tickLength = 1_000;
 const ticks = 15;
 const slots = { catalog: 1, checkout: 2 };
 const profiles: Profile[] = ["catalog", "checkout"];
-const denialProbeOffsets = [0, 5_000, 10_000, 15_000, 20_000, 23_000];
-const denialPropagationWindow = 25_000;
-const policyPropagationGuard = 15_000;
+const denialProbeCount = 6;
+const denialPropagationWindow = 50_000;
+const iamReadbackDelays = [0, 500, 1_000, 1_500, 2_000, 2_500];
 const providerTimeout = () => ({ abortSignal: AbortSignal.timeout(4_000) });
 const clientOptions = { maxAttempts: 1, region };
 const cloudformation = new CloudFormationClient(clientOptions);
@@ -94,7 +98,8 @@ interface IncidentContext {
   appRevision: string;
   checkout: InventoryTargetSettings;
   inventory: InventoryTargetSettings;
-  policy: InventoryPolicyRead;
+  tablePolicy: InventoryTablePolicyRead;
+  policy: InventoryAccessPolicyRead;
   baseline: Baseline;
 }
 
@@ -104,7 +109,8 @@ interface RestoreContext {
   appRevision: string;
   checkout: InventoryTargetSettings;
   inventory: InventoryTargetSettings;
-  policy: InventoryPolicyRead;
+  tablePolicy: InventoryTablePolicyRead;
+  policy: InventoryAccessPolicyRead;
   incident: IncidentState;
 }
 
@@ -180,10 +186,21 @@ async function settings(target: AppTarget): Promise<Baseline["settings"]> {
   }
   const checkout = await functionSettings(target, "Checkout", checkoutFunction);
   const inventory = await functionSettings(target, "Inventory", inventoryFunction);
-  const policy = await readInventoryPolicy(expectedInventoryTarget(target.inventoryTableArn, target.inventoryRoleArn));
-  if (policy.observation.state !== "absent") throw new ActionFailure("The Inventory table policy does not match its expected absence.");
+  const policyTarget = expectedInventoryTarget(target.inventoryTableArn, target.inventoryRoleArn);
+  const [tablePolicy, accessPolicy] = await Promise.all([
+    readInventoryTablePolicy(policyTarget),
+    readInventoryAccessPolicy(policyTarget),
+  ]);
+  if (tablePolicy.observation.state !== "absent") throw new ActionFailure("The Inventory table policy does not match its expected absence.");
+  if (!isExactInventoryAccessPolicy(accessPolicy.observation, policyTarget) || accessPolicy.observation.state !== "absent") {
+    throw new ActionFailure("The named Inventory denial policy or its detached role state does not match the expected baseline.");
+  }
+  if (!accessPolicy.document) throw new ActionFailure("The exact Inventory policy document is unavailable.");
   return { account, region, api: target.api, credentialGeneration: target.outputs.get("PresenterCredentialGeneration"),
-    checkout, inventory, inventoryPolicy: "absent", inventoryTableArn: target.inventoryTableArn, inventoryRoleArn: target.inventoryRoleArn };
+    checkout, inventory, inventoryPolicy: "absent", inventoryAccessPolicy: accessPolicy.observation,
+    inventoryPolicyName: accessPolicy.observation.policyName, inventoryPolicyArn: accessPolicy.observation.policyArn,
+    inventoryPolicyDefaultVersionId: accessPolicy.observation.defaultVersionId,
+    inventoryTableArn: target.inventoryTableArn, inventoryRoleArn: target.inventoryRoleArn };
 }
 
 async function loadBearer(): Promise<string> {
@@ -235,8 +252,28 @@ async function incidentContext(): Promise<IncidentContext> {
     throw new ActionFailure("The deployed Inventory settings changed after readiness.");
   }
   const policyTarget = expectedInventoryTarget(target.inventoryTableArn, target.inventoryRoleArn);
-  const policy = await readInventoryPolicy(policyTarget);
-  return { app: target, target: policyTarget, appRevision: target.revision, checkout, inventory, policy, baseline };
+  const [tablePolicy, policy] = await Promise.all([
+    readInventoryTablePolicy(policyTarget),
+    readInventoryAccessPolicy(policyTarget),
+  ]);
+  if (tablePolicy.observation.state !== "absent") throw new ActionFailure("The Inventory table resource policy no longer matches the app's expected absence.");
+  if (!isExactInventoryAccessPolicy(policy.observation, policyTarget)) {
+    throw new ActionFailure("The named Inventory denial policy has a different default version or document.");
+  }
+  if (policy.observation.state !== "absent") {
+    throw new ActionFailure("The named Inventory denial policy is already attached to the Inventory role.");
+  }
+  const baselinePolicy = baselineSettings && record(baselineSettings.inventoryAccessPolicy);
+  if (!baselinePolicy || baselinePolicy.state !== "absent" || baselinePolicy.documentMatches !== true ||
+      baselinePolicy.policyArn !== policy.observation.policyArn || baselinePolicy.policyName !== policy.observation.policyName ||
+      baselinePolicy.roleArn !== policy.observation.roleArn || !baselinePolicy.defaultVersionId ||
+      !sameInventoryPolicyVersion(policy.observation, baselinePolicy as unknown as InventoryAccessPolicyObservation) ||
+      baselineSettings?.inventoryPolicyArn !== policy.observation.policyArn ||
+      baselineSettings?.inventoryPolicyName !== policy.observation.policyName ||
+      baselineSettings?.inventoryPolicyDefaultVersionId !== policy.observation.defaultVersionId) {
+    throw new ActionFailure("The named Inventory policy or its default version changed after readiness; check readiness again.");
+  }
+  return { app: target, target: policyTarget, appRevision: target.revision, checkout, inventory, tablePolicy, policy, baseline };
 }
 
 async function restoreContext(): Promise<RestoreContext> {
@@ -244,31 +281,33 @@ async function restoreContext(): Promise<RestoreContext> {
   const incident = incidentRecord(run);
   if (!incident || !incident.policy) throw new ActionFailure("The recorded Inventory denial is unavailable.");
   const appRevision = incident.appRevision;
-  const { tableArn, roleArn } = incident.policy;
-  if (!appRevision || !tableArn || !roleArn) throw new ActionFailure("The recorded Inventory denial target is incomplete.");
+  const { policyArn, roleArn } = incident.policy;
+  if (!appRevision || !policyArn || !roleArn || policyArn !== `arn:aws:iam::${account}:policy/IncidentTriageDemoInventoryReadDeny`) {
+    throw new ActionFailure("The recorded Inventory denial target is incomplete.");
+  }
   const target = await appTarget();
   if (target.revision !== appRevision) throw new ActionFailure("The deployed app release changed after the denial; reconcile readiness before restoring.");
-  const policyTarget = expectedInventoryTarget(tableArn, roleArn);
+  const policyTarget = expectedInventoryTarget(target.inventoryTableArn, roleArn);
   if (policyTarget.tableArn !== target.inventoryTableArn || policyTarget.roleArn !== target.inventoryRoleArn) {
     throw new ActionFailure("The recorded Inventory denial target is not the named app resource.");
   }
   const checkout = await functionSettings(target, "Checkout", checkoutFunction);
   const inventory = await functionSettings(target, "Inventory", inventoryFunction);
-  const policy = await readInventoryPolicy(policyTarget);
-  return { app: target, target: policyTarget, appRevision, checkout, inventory, policy, incident };
+  const [tablePolicy, policy] = await Promise.all([
+    readInventoryTablePolicy(policyTarget),
+    readInventoryAccessPolicy(policyTarget),
+  ]);
+  if (tablePolicy.observation.state !== "absent") throw new ActionFailure("The Inventory table resource policy changed during the denial.");
+  return { app: target, target: policyTarget, appRevision, checkout, inventory, tablePolicy, policy, incident };
 }
 
 function incidentRecord(run: RunState): IncidentState | undefined {
-  return run.incident?.kind === "inventory_access_denied" ? run.incident : undefined;
+  return run.incident?.kind === "inventory_access_denied" && run.incident.mechanism === "iam-managed-policy"
+    ? run.incident : undefined;
 }
 
 function commandRestoreWithoutEvidence(action: Action): boolean {
   return action.command.kind === "restore_inventory_access" && action.command.restoreWithoutEvidence === true;
-}
-
-function policyMatches(value: InventoryPolicyRead, target: InventoryPolicyTarget, actionId: string): boolean {
-  return value.observation.state === "present" && Boolean(value.observation.revision) &&
-    isOwnedDenial(value.document, target, actionId);
 }
 
 function ensureActionDeadline(action: Action, operation: string): void {
@@ -277,11 +316,14 @@ function ensureActionDeadline(action: Action, operation: string): void {
 
 async function checkpoint(
   action: Action,
-  context: Pick<IncidentContext, "target" | "appRevision" | "checkout" | "inventory" | "policy">,
-  deniedPolicy: InventoryPolicyRead,
+  context: Pick<IncidentContext, "target" | "appRevision" | "checkout" | "inventory" | "tablePolicy">,
+  policyBefore: InventoryAccessPolicyObservation,
+  capturedPolicy: InventoryAccessPolicyRead,
   incident?: IncidentState,
 ): Promise<ConfigurationCheckpoint> {
-  const denial = deniedPolicy.observation;
+  if (!capturedPolicy.document || !capturedPolicy.observation.documentMatches || capturedPolicy.observation.state !== "present") {
+    throw new IncompleteActionFailure("The exact attached Inventory policy could not be captured.");
+  }
   const bucket = process.env.CONTROLLER_EVIDENCE_BUCKET;
   if (!bucket || !/^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$/.test(bucket)) {
     throw new IncompleteActionFailure("The incident evidence bucket is unavailable.");
@@ -300,13 +342,14 @@ async function checkpoint(
     inventoryMemory: context.inventory.memory,
     inventoryTimeout: context.inventory.timeout,
     inventoryCap: context.inventory.cap,
-    policyBefore: context.policy.observation,
-    denial,
+    tablePolicyBefore: context.tablePolicy.observation,
+    inventoryPolicyBefore: policyBefore,
+    inventoryPolicyAtCapture: capturedPolicy.observation,
   };
   try {
     if (incident) {
       try {
-        const since = incident.policy?.observedAt ?? incident.updatedAt;
+        const since = incident.policyBefore.observedAt ?? incident.updatedAt;
         const current = await readCurrentAlarm();
         partial.alarm = current.state === "ALARM" && current.stateTransitionedAt &&
           Date.parse(current.stateTransitionedAt) >= Date.parse(since)
@@ -333,20 +376,11 @@ async function checkpoint(
         checkout: context.checkout,
         inventory: context.inventory,
       },
-      policyBefore: context.policy.observation,
-      denial,
-      policy: {
-        Version: "2012-10-17",
-        Statement: [{
-          Sid: denial.statementId,
-          Effect: "Deny",
-          Principal: { AWS: denial.roleArn },
-          Action: "dynamodb:GetItem",
-          Resource: denial.tableArn,
-        }],
-      },
+      tablePolicyBefore: context.tablePolicy.observation,
+      inventoryPolicyBefore: policyBefore,
+      inventoryPolicyAtCapture: capturedPolicy.observation,
+      policyDocument: capturedPolicy.document,
       ...(partial.alarm ? { alarm: partial.alarm } : {}),
-      policyDocument: deniedPolicy.document,
     });
     await s3.send(new PutObjectCommand({
       Bucket: bucket,
@@ -367,26 +401,66 @@ async function checkpoint(
 async function recordActivationIntent(action: Action, context: IncidentContext): Promise<void> {
   const intent: IncidentState = {
     kind: "inventory_access_denied",
+    mechanism: "iam-managed-policy",
     activationActionId: action.id,
+    policyBefore: context.policy.observation,
     policy: { ...context.policy.observation, state: "unknown" },
+    attachOutcome: "pending",
+    attachmentOwnership: "unknown",
     appRevision: context.appRevision,
     updatedAt: new Date().toISOString(),
   };
   const result = await changeAction(action.id, (run) => {
+    if (run.incident) {
+      const prior = run.incident;
+      const inactive = prior.mechanism === "iam-managed-policy"
+        ? prior.policy.state === "absent" && prior.policy.documentMatches && prior.attachmentOwnership === "controller"
+        : prior.policy?.state === "absent";
+      if (!inactive) return false;
+      run.incidentHistory ??= [];
+      if (!run.incidentHistory.some((item) => item.activationActionId === prior.activationActionId)) {
+        run.incidentHistory.push(structuredClone(prior));
+      }
+    }
     run.incident = intent;
     return true;
   });
   if (!result) throw new IncompleteActionFailure("The Inventory denial intent could not be recorded.");
 }
 
-async function recordCheckpoint(actionId: string, checkpointValue: ConfigurationCheckpoint, denial: InventoryPolicyObservation): Promise<void> {
+async function recordCheckpoint(actionId: string, checkpointValue: ConfigurationCheckpoint, policy: InventoryAccessPolicyObservation): Promise<void> {
   const result = await changeAction(actionId, (run, current) => {
     const incident = incidentRecord(run);
     if (!incident || incident.activationActionId !== actionId) return false;
-    run.incident = { ...incident, checkpoint: checkpointValue, policy: denial, updatedAt: new Date().toISOString() };
+    run.incident = { ...incident, checkpoint: checkpointValue, policy, updatedAt: new Date().toISOString() };
     return true;
   });
   if (!result) throw new IncompleteActionFailure("The incident checkpoint could not be linked to the run.");
+}
+
+async function recordAttachOutcome(actionId: string, outcome: IncidentState["attachOutcome"]): Promise<void> {
+  const result = await changeAction(actionId, (run) => {
+    const incident = incidentRecord(run);
+    if (!incident || incident.activationActionId !== actionId) return false;
+    run.incident = { ...incident, attachOutcome: outcome, updatedAt: new Date().toISOString() };
+    return true;
+  });
+  if (!result) throw new IncompleteActionFailure("The Inventory attachment outcome could not be recorded.");
+}
+
+async function recordPolicyObservation(
+  actionId: string,
+  activationActionId: string,
+  observed: InventoryAccessPolicyObservation,
+  ownership: IncidentState["attachmentOwnership"],
+): Promise<void> {
+  const result = await changeAction(actionId, (run) => {
+    const incident = incidentRecord(run);
+    if (!incident || incident.activationActionId !== activationActionId) return false;
+    run.incident = { ...incident, policy: observed, attachmentOwnership: ownership, updatedAt: new Date().toISOString() };
+    return true;
+  });
+  if (!result) throw new IncompleteActionFailure("The Inventory policy observation could not be recorded.");
 }
 
 function deniedResponse(response: AppResponse): boolean {
@@ -398,100 +472,107 @@ function deniedCheckoutResponse(response: AppResponse, payload: CheckoutPayload)
   return deniedResponse(response) && response.body?.checkoutId === payload.checkoutId && Boolean(response.requestId);
 }
 
-async function waitForOwnedDenial(
-  action: Action, target: InventoryPolicyTarget, acknowledgedRevision?: string,
-): Promise<InventoryPolicyRead> {
-  const deadline = Math.min(action.deadlineAt, Date.now() + 8_000);
-  let last: InventoryPolicyRead | undefined;
-  while (Date.now() < deadline) {
-    try {
-      last = await readInventoryPolicy(target);
-    } catch {
-      // Provider reads can lag the write.
-    }
-    if (last?.observation.state === "present") {
-      if (policyMatches(last, target, action.id) &&
-          (!acknowledgedRevision || last.observation.revision === acknowledgedRevision)) return last;
-      throw new ActionFailure("The Inventory policy differs from the action-owned document or acknowledged revision.");
-    }
-    await delay(Math.min(500, Math.max(0, deadline - Date.now())));
+async function waitForOwnedAttachment(
+  action: Action,
+  target: InventoryPolicyTarget,
+  expectedVersion: InventoryAccessPolicyObservation,
+  conflict: boolean,
+): Promise<InventoryAccessPolicyRead> {
+  let last: InventoryAccessPolicyRead | undefined;
+  if (conflict) {
+    try { last = await readInventoryAccessPolicy(target); } catch { /* Preserve the durable unknown intent. */ }
+    const observation = last?.observation.state === "present"
+      ? last.observation
+      : { ...expectedVersion, state: "unknown" as const, observedAt: new Date().toISOString() };
+    await recordPolicyObservation(action.id, action.id, observation, "unknown");
+    throw new ActionFailure("The named Inventory policy attachment changed before the controller could attach it.");
   }
-  throw new IncompleteActionFailure(last ? "The Inventory denial policy did not reconcile to the action-owned document." : "The Inventory denial policy readback is unavailable.");
+  for (const wait of iamReadbackDelays) {
+    if (wait > 0) {
+      if (Date.now() + wait + requestTimeout >= action.deadlineAt) break;
+      await delay(wait);
+    }
+    if (Date.now() + requestTimeout >= action.deadlineAt) break;
+    try {
+      last = await readInventoryAccessPolicy(target);
+    } catch {
+      // An IAM read failure leaves the attachment outcome unresolved.
+      continue;
+    }
+    if (last.observation.state !== "present") continue;
+    if (!isExactInventoryAccessPolicy(last.observation, target) || !sameInventoryPolicyVersion(last.observation, expectedVersion)) {
+      await recordPolicyObservation(action.id, action.id, last.observation, "unknown");
+      throw new IncompleteActionFailure("The attached Inventory policy version or document drifted during activation.");
+    }
+    await recordPolicyObservation(action.id, action.id, last.observation, "controller");
+    return last;
+  }
+  const unresolved = {
+    ...(last?.observation ?? expectedVersion),
+    state: "unknown" as const,
+    observedAt: new Date().toISOString(),
+  };
+  await recordPolicyObservation(action.id, action.id, unresolved, "unknown");
+  throw new IncompleteActionFailure("The single Inventory attachment could not be reconciled; readiness and another activation remain blocked.");
 }
 
-async function recordPolicyApplied(actionId: string, observed: InventoryPolicyObservation): Promise<void> {
-  const result = await changeAction(actionId, (run, current) => {
+async function linkUnavailableCheckpoint(actionId: string, checkpointValue: ConfigurationCheckpoint): Promise<void> {
+  const linked = await changeAction(actionId, (run) => {
     const incident = incidentRecord(run);
-    if (!incident || incident.activationActionId !== actionId) return false;
-    run.incident = { ...incident, policy: observed, updatedAt: new Date().toISOString() };
+    if (!incident) return false;
+    run.incident = { ...incident, checkpoint: checkpointValue, updatedAt: new Date().toISOString() };
     return true;
   });
-  if (!result) throw new IncompleteActionFailure("The applied Inventory denial could not be recorded.");
+  if (!linked) throw new IncompleteActionFailure("The unavailable incident checkpoint could not be recorded.");
 }
 
 async function activateInventoryDenial(action: Action): Promise<void> {
   const context = await incidentContext();
-  if (context.policy.observation.state !== "absent") {
-    throw new ActionFailure("The Inventory table already has a policy; activation refuses to overwrite it.");
-  }
   await recordActivationIntent(action, context);
 
-  let acknowledgedRevision: string | undefined;
   ensureActionDeadline(action, "Inventory denial");
+  let conflict = false;
   try {
-    acknowledgedRevision = await putInventoryDenial(context.target, action.id);
+    await attachInventoryPolicy(context.target);
+    await recordAttachOutcome(action.id, "acknowledged");
   } catch (error) {
-    if (isConditionalConflict(error)) {
-      await changeAction(action.id, (run) => {
-        if (run.incident?.activationActionId !== action.id) return false;
-        delete run.incident;
-        return true;
-      });
-      throw new ActionFailure("The Inventory policy changed before the denial could be applied.");
-    }
-    // A lost acknowledgement is reconciled by readback. This action sends Put once.
+    conflict = isAttachConflict(error);
+    await recordAttachOutcome(action.id, conflict ? "conflict" : "ambiguous");
   }
-  if (acknowledgedRevision) {
-    await recordPolicyApplied(action.id, { ...context.policy.observation, state: "unknown", revision: acknowledgedRevision });
-  }
-  const observed = await waitForOwnedDenial(action, context.target, acknowledgedRevision);
-  await recordPolicyApplied(action.id, observed.observation);
+  const observed = await waitForOwnedAttachment(action, context.target, context.policy.observation, conflict);
   let stored: ConfigurationCheckpoint;
   try {
-    stored = await checkpoint(action, context, observed);
+    stored = await checkpoint(action, context, context.policy.observation, observed);
   } catch (error) {
     const unavailable = error instanceof IncompleteActionFailure ? error.checkpoint : undefined;
-    if (unavailable) {
-      const linked = await changeAction(action.id, (run) => {
-        const incident = incidentRecord(run);
-        if (!incident) return false;
-        run.incident = { ...incident, checkpoint: unavailable, updatedAt: new Date().toISOString() };
-        return true;
-      });
-      if (!linked) throw new IncompleteActionFailure("The unavailable incident checkpoint could not be recorded.");
-    }
+    if (unavailable) await linkUnavailableCheckpoint(action.id, unavailable);
     throw error;
   }
   await recordCheckpoint(action.id, stored, observed.observation);
 
   const bearer = await loadBearer();
   const startedAt = Date.now();
-  const propagationDeadline = Math.min(action.deadlineAt, startedAt + denialPropagationWindow);
+  const roomForCatalogAndCheckout = requestTimeout * 2 + 500;
+  const propagationWindow = Math.min(denialPropagationWindow, action.deadlineAt - startedAt - roomForCatalogAndCheckout);
+  if (propagationWindow < 0) throw new IncompleteActionFailure("The Inventory propagation window leaves no time for the verification checkout.");
+  const offsets = Array.from({ length: denialProbeCount }, (_, index) => Math.round(propagationWindow * index / (denialProbeCount - 1)));
   let denied = false;
-  for (const offset of denialProbeOffsets) {
+  for (const offset of offsets) {
     const wait = startedAt + offset - Date.now();
     if (wait > 0) await delay(wait);
+    if (Date.now() + requestTimeout * 2 >= action.deadlineAt) break;
     const request = newRequest("catalog");
     const reserved = await changeAction(action.id, (run, current) =>
-      Date.now() < propagationDeadline && reserve(run, current, request));
+      Date.now() + requestTimeout * 2 < current.deadlineAt && reserve(run, current, request));
     if (!reserved) break;
-    const remaining = Math.min(requestTimeout, Math.max(1, propagationDeadline - Date.now()));
+    const remaining = Math.min(requestTimeout, Math.max(1, action.deadlineAt - Date.now() - requestTimeout));
     const response = await send(action.id, context.app, bearer, request, undefined, remaining);
     denied = deniedResponse(response.response);
     if (denied) break;
   }
   if (!denied) throw new ActionFailure("The Inventory denial did not produce the specific dependency failure within the bounded window.");
 
+  ensureActionDeadline(action, "Inventory denial verification checkout");
   const payload = checkoutPayload(context.baseline.sku, context.baseline.productVersion);
   const request = newRequest("checkout", payload);
   if (!await changeAction(action.id, (run, current) => reserve(run, current, request))) {
@@ -508,15 +589,22 @@ async function activateInventoryDenial(action: Action): Promise<void> {
     if (!incident || incident.activationActionId !== action.id) return false;
     run.incident = { ...incident, updatedAt: finishedAt };
     current.status = "completed";
+    current.configurationOutcome = "applied";
     current.finishedAt = finishedAt;
     return true;
   });
   if (!done) throw new IncompleteActionFailure("The completed Inventory denial could not be recorded.");
 }
 
-function incompleteCheckpoint(context: Pick<IncidentContext, "target" | "appRevision" | "inventory" | "policy">, denial: InventoryPolicyObservation, error: string): ConfigurationCheckpoint {
+function incompleteCheckpoint(
+  context: Pick<IncidentContext, "target" | "appRevision" | "inventory" | "tablePolicy">,
+  policyBefore: InventoryAccessPolicyObservation,
+  policyAtCapture: InventoryAccessPolicyObservation,
+  error: string,
+  status: "unavailable" | "incomplete" = "incomplete",
+): ConfigurationCheckpoint {
   return {
-    status: "incomplete",
+    status,
     createdAt: new Date().toISOString(),
     appRevision: context.appRevision,
     inventoryTableArn: context.target.tableArn,
@@ -526,46 +614,112 @@ function incompleteCheckpoint(context: Pick<IncidentContext, "target" | "appRevi
     inventoryMemory: context.inventory.memory,
     inventoryTimeout: context.inventory.timeout,
     inventoryCap: context.inventory.cap,
-    policyBefore: context.policy.observation,
-    denial,
+    tablePolicyBefore: context.tablePolicy.observation,
+    inventoryPolicyBefore: policyBefore,
+    inventoryPolicyAtCapture: policyAtCapture,
     error,
   };
 }
 
-async function recordRestoreIntent(action: Action, policy: InventoryPolicyObservation): Promise<void> {
+async function recordRestoreIntent(action: Action, activationActionId: string, policy: InventoryAccessPolicyObservation): Promise<void> {
   const result = await changeAction(action.id, (run, current) => {
     const incident = incidentRecord(run);
-    if (!incident) return false;
-    run.incident = { ...incident, restoreActionId: action.id, policy, updatedAt: new Date().toISOString() };
+    if (!incident || incident.activationActionId !== activationActionId) return false;
+    run.incident = {
+      ...incident,
+      restoreActionId: action.id,
+      policy: { ...policy, state: "unknown" },
+      attachmentOwnership: "controller",
+      updatedAt: new Date().toISOString(),
+    };
+    current.configurationOutcome = "unknown";
     return true;
   });
   if (!result) throw new IncompleteActionFailure("The Inventory restore intent could not be recorded.");
 }
 
-async function waitForPolicyAbsence(action: Action, target: InventoryPolicyTarget, revision: string): Promise<InventoryPolicyRead> {
+async function waitForPolicyAbsence(
+  action: Action,
+  activationActionId: string,
+  target: InventoryPolicyTarget,
+  expected: InventoryAccessPolicyObservation,
+): Promise<InventoryAccessPolicyRead> {
+  const delays = [0, 1_000, 2_000, 3_000, 4_000, 5_000];
   const deadline = Math.min(action.deadlineAt, Date.now() + 20_000);
-  let last: InventoryPolicyRead | undefined;
-  while (Date.now() < deadline) {
+  let last: InventoryAccessPolicyRead | undefined;
+  for (const wait of delays) {
+    if (wait > 0) {
+      if (Date.now() + wait + requestTimeout >= deadline) break;
+      await delay(wait);
+    }
+    if (Date.now() + requestTimeout >= deadline) break;
     try {
-      last = await readInventoryPolicy(target);
+      last = await readInventoryAccessPolicy(target);
     } catch {
-      // The read may lag a successful Delete.
+      // A failed read after DetachRolePolicy leaves the outcome unknown.
+      continue;
     }
-    if (last?.observation.state === "absent") return last;
-    if (last?.observation.state === "present" && last.observation.revision !== revision) {
-      throw new ActionFailure("The Inventory policy changed during restoration.");
+    if (!sameInventoryPolicyVersion(last.observation, expected)) {
+      await recordPolicyObservation(action.id, activationActionId,
+        { ...last.observation, state: "unknown", observedAt: new Date().toISOString() }, "unknown");
+      throw new IncompleteActionFailure("The Inventory policy version or document changed during detach readback; reconcile the recorded restore intent.");
     }
-    await delay(Math.min(1_000, Math.max(0, deadline - Date.now())));
+    if (last.observation.state === "absent") {
+      await recordPolicyObservation(action.id, activationActionId, last.observation, "controller");
+      return last;
+    }
   }
-  throw new IncompleteActionFailure(last ? "The Inventory policy deletion has not reconciled to absence." : "The Inventory policy absence is unavailable after deletion.");
+  const unresolved = { ...(last?.observation ?? expected), state: "unknown" as const, observedAt: new Date().toISOString() };
+  await recordPolicyObservation(action.id, activationActionId, unresolved, "controller");
+  throw new IncompleteActionFailure("The single Inventory detach could not be reconciled; readiness remains blocked.");
+}
+
+async function completeRestore(
+  action: Action,
+  activationActionId: string,
+  policy: InventoryAccessPolicyObservation,
+  checkpointValue: ConfigurationCheckpoint | undefined,
+  outcome: "applied" | "no_change",
+): Promise<void> {
+  const finishedAt = new Date().toISOString();
+  const done = await changeAction(action.id, (run, current) => {
+    const incident = incidentRecord(run);
+    if (!incident || incident.activationActionId !== activationActionId) return false;
+    run.incident = {
+      ...incident,
+      restoreActionId: action.id,
+      policy,
+      attachmentOwnership: "controller",
+      ...(checkpointValue ? { checkpoint: checkpointValue } : {}),
+      updatedAt: finishedAt,
+    };
+    current.status = "completed";
+    current.configurationOutcome = outcome;
+    current.finishedAt = finishedAt;
+    return true;
+  });
+  if (!done) throw new IncompleteActionFailure("The completed Inventory restore could not be recorded.");
 }
 
 async function restoreInventoryAccess(action: Action): Promise<void> {
   const context = await restoreContext();
   const incident = context.incident;
   if (incident.activationActionId === action.id) throw new ActionFailure("The recorded Inventory denial is unavailable.");
-  const recordedPolicy = incident.policy;
-  if (!recordedPolicy) throw new ActionFailure("The recorded Inventory denial policy is unavailable.");
+  if (incident.policyBefore.state !== "absent" || !incident.policyBefore.defaultVersionId) {
+    throw new ActionFailure("The recorded Inventory policy version changed after activation; restore will not detach it.");
+  }
+  if (!isExactInventoryAccessPolicy(context.policy.observation, context.target) ||
+      !sameInventoryPolicyVersion(context.policy.observation, incident.policyBefore)) {
+    await recordPolicyObservation(action.id, incident.activationActionId,
+      { ...context.policy.observation, state: "unknown", observedAt: new Date().toISOString() }, "unknown");
+    throw new ActionFailure("The current Inventory policy version or document differs from the recorded denial.");
+  }
+  if (incident.restoreActionId && context.policy.observation.state === "present") {
+    // A prior durable detach intent may have reached IAM. Reconcile it, but never send Detach again.
+    const restored = await waitForPolicyAbsence(action, incident.activationActionId, context.target, incident.policyBefore);
+    await completeRestore(action, incident.activationActionId, restored.observation, incident.checkpoint, "applied");
+    return;
+  }
   const withoutEvidence = commandRestoreWithoutEvidence(action);
   if (withoutEvidence && incident.checkpoint?.status === "stored" && incident.checkpoint.key) {
     throw new ActionFailure("restoreWithoutEvidence is only allowed when the ordinary configuration capture is unavailable.");
@@ -575,40 +729,39 @@ async function restoreInventoryAccess(action: Action): Promise<void> {
     throw new ActionFailure("The incident configuration checkpoint is unavailable; confirm restoreWithoutEvidence to protectively restore the known policy.");
   }
   if (context.policy.observation.state === "absent") {
-    const done = await changeAction(action.id, (nextRun, current) => {
-      const currentIncident = incidentRecord(nextRun);
-      if (!currentIncident) return false;
-      nextRun.incident = { ...currentIncident, restoreActionId: action.id, policy: context.policy.observation, updatedAt: new Date().toISOString() };
-      current.status = "completed";
-      current.configurationOutcome = "no_change";
-      current.finishedAt = new Date().toISOString();
-      return true;
-    });
-    if (!done) throw new IncompleteActionFailure("The no-op Inventory restore could not be recorded.");
+    if ((!incident.restoreActionId && incident.attachmentOwnership !== "controller") ||
+        (!incident.restoreActionId && incident.policy.state !== "present")) {
+      throw new IncompleteActionFailure("The attachment outcome is unresolved; IAM list absence alone cannot clear an uncertain activation.");
+    }
+    await completeRestore(action, incident.activationActionId, context.policy.observation, incident.checkpoint,
+      incident.restoreActionId && incident.policy.state === "unknown" ? "applied" : "no_change");
     return;
   }
-  const revision = context.policy.observation.revision;
-  if (!revision || !policyMatches(context.policy, context.target, incident.activationActionId) ||
-      (recordedPolicy.revision !== undefined && revision !== recordedPolicy.revision) ||
-      (recordedPolicy.revision === undefined && recordedPolicy.state !== "unknown")) {
-    throw new ActionFailure("The Inventory policy is no longer the recorded action-owned denial.");
+  if (context.policy.observation.state !== "present") {
+    throw new IncompleteActionFailure("The Inventory attachment state is unresolved.");
+  }
+  if (incident.attachmentOwnership !== "controller" && !["acknowledged", "ambiguous"].includes(incident.attachOutcome)) {
+    throw new ActionFailure("The Inventory policy attachment is not known to belong to this controller action.");
   }
   let evidenceIncomplete = false;
   let freshCheckpoint: ConfigurationCheckpoint | undefined;
   if (priorCaptureUnavailable && withoutEvidence) evidenceIncomplete = true;
   try {
-    if (!priorCaptureUnavailable || !withoutEvidence) freshCheckpoint = await checkpoint(action, context, context.policy, incident);
-  } catch (error) {
-    const unavailable = error instanceof IncompleteActionFailure ? error.checkpoint : undefined;
-    if (unavailable) {
-      const linked = await changeAction(action.id, (nextRun, current) => {
-        const currentIncident = incidentRecord(nextRun);
-        if (!currentIncident) return false;
-        nextRun.incident = { ...currentIncident, checkpoint: unavailable, updatedAt: new Date().toISOString() };
-        return true;
-      });
-      if (!linked) throw new IncompleteActionFailure("The unavailable restore checkpoint could not be recorded.");
+    if (!priorCaptureUnavailable || !withoutEvidence) {
+      freshCheckpoint = await checkpoint(action, context, incident.policyBefore, context.policy, incident);
     }
+  } catch (error) {
+    const unavailable = error instanceof IncompleteActionFailure && error.checkpoint
+      ? error.checkpoint
+      : incompleteCheckpoint(context, incident.policyBefore, context.policy.observation,
+        "The fresh pre-restore checkpoint could not be stored.", "unavailable");
+    const linked = await changeAction(action.id, (nextRun) => {
+      const currentIncident = incidentRecord(nextRun);
+      if (!currentIncident || currentIncident.activationActionId !== incident.activationActionId) return false;
+      nextRun.incident = { ...currentIncident, checkpoint: unavailable, updatedAt: new Date().toISOString() };
+      return true;
+    });
+    if (!linked) throw new IncompleteActionFailure("The unavailable restore checkpoint could not be recorded.");
     // No configuration mutation has happened yet; keep ordinary restore retryable while
     // preserving the unavailable capture in the run incident.
     if (!withoutEvidence) throw new ActionFailure(error instanceof Error ? error.message : "The pre-restore checkpoint is unavailable.");
@@ -617,49 +770,45 @@ async function restoreInventoryAccess(action: Action): Promise<void> {
   if (freshCheckpoint) {
     const linked = await changeAction(action.id, (nextRun, current) => {
       const currentIncident = incidentRecord(nextRun);
-      if (!currentIncident) return false;
+      if (!currentIncident || currentIncident.activationActionId !== incident.activationActionId) return false;
       nextRun.incident = { ...currentIncident, checkpoint: freshCheckpoint, updatedAt: new Date().toISOString() };
       return true;
     });
     if (!linked) throw new IncompleteActionFailure("The pre-restore configuration checkpoint could not be linked to the run.");
   }
-  await recordRestoreIntent(action, context.policy.observation);
-  const observedAt = Date.parse(context.policy.observation.observedAt);
-  const waitFor = Number.isFinite(observedAt) ? policyPropagationGuard - (Date.now() - observedAt) : policyPropagationGuard;
-  if (waitFor > 0) {
-    if (Date.now() + waitFor >= action.deadlineAt) throw new IncompleteActionFailure("The Inventory policy propagation guard exceeds the restore action deadline.");
-    await delay(waitFor);
+  if (incident.attachmentOwnership !== "controller") {
+    // The ambiguous Attach is reconciled only after the exact attached state has been checkpointed.
+    await recordPolicyObservation(action.id, incident.activationActionId, context.policy.observation, "controller");
+  }
+  const preDetach = await readInventoryAccessPolicy(context.target);
+  if (!isExactInventoryAccessPolicy(preDetach.observation, context.target) ||
+      !sameInventoryPolicyVersion(preDetach.observation, incident.policyBefore)) {
+    await recordPolicyObservation(action.id, incident.activationActionId,
+      { ...preDetach.observation, state: "unknown", observedAt: new Date().toISOString() }, "unknown");
+    throw new ActionFailure("The Inventory policy version or document changed before detach.");
+  }
+  if (preDetach.observation.state === "absent") {
+    await recordPolicyObservation(action.id, incident.activationActionId, preDetach.observation, "controller");
+    await completeRestore(action, incident.activationActionId, preDetach.observation, freshCheckpoint ?? incident.checkpoint, "no_change");
+    return;
   }
   ensureActionDeadline(action, "Inventory restore");
+  await recordRestoreIntent(action, incident.activationActionId, preDetach.observation);
   try {
-    await deleteInventoryPolicy(context.target, revision);
+    await detachInventoryPolicy(context.target);
   } catch (error) {
-    if (isConditionalConflict(error)) {
-      throw new ActionFailure("The Inventory policy changed before the recorded denial could be removed.");
+    if (isDetachConflict(error)) {
+      // Readback can confirm a detach made by an earlier attempt; never send a second Detach.
+    } else {
+      // Reconcile a possible lost acknowledgement without retrying the mutation.
     }
-    // Reconcile a possible lost acknowledgement by reading, without sending Delete again.
   }
-  const restored = await waitForPolicyAbsence(action, context.target, revision);
-  const finishedAt = new Date().toISOString();
-  const done = await changeAction(action.id, (nextRun, current) => {
-    const currentIncident = incidentRecord(nextRun);
-    if (!currentIncident) return false;
-    const checkpointResult = evidenceIncomplete
-      ? incompleteCheckpoint(context, context.policy.observation, "Restored only through explicit restoreWithoutEvidence; durable pre-change capture was unavailable.")
-      : freshCheckpoint ?? currentIncident.checkpoint;
-    nextRun.incident = {
-      ...currentIncident,
-      restoreActionId: action.id,
-      policy: restored.observation,
-      ...(checkpointResult ? { checkpoint: checkpointResult } : {}),
-      updatedAt: finishedAt,
-    };
-    current.status = "completed";
-    current.configurationOutcome = "applied";
-    current.finishedAt = finishedAt;
-    return true;
-  });
-  if (!done) throw new IncompleteActionFailure("The completed Inventory restore could not be recorded.");
+  const restored = await waitForPolicyAbsence(action, incident.activationActionId, context.target, incident.policyBefore);
+  const checkpointResult = evidenceIncomplete
+    ? incompleteCheckpoint(context, incident.policyBefore, preDetach.observation,
+      "Restored only through explicit restoreWithoutEvidence; durable pre-change capture was unavailable.")
+    : freshCheckpoint ?? incident.checkpoint;
+  await completeRestore(action, incident.activationActionId, restored.observation, checkpointResult, "applied");
 }
 
 async function appRequest(target: AppTarget, bearer: string, request: RequestRecord, timeout = requestTimeout): Promise<AppResponse> {
@@ -892,12 +1041,17 @@ export async function handler(event: { actionId?: string } = {}): Promise<void> 
     if (claim.action.kind === "activate_inventory_denial") await activateInventoryDenial(claim.action);
     if (claim.action.kind === "restore_inventory_access") await restoreInventoryAccess(claim.action);
   } catch (error) {
-    await changeAction(actionId, (_run, current) => {
+    await changeAction(actionId, (run, current) => {
       const unrecorded = current.requests.some((request) => !request.completedAt);
       current.status = error instanceof IncompleteActionFailure || unrecorded || Date.now() >= current.deadlineAt
         ? "incomplete" : "failed";
       if (current.kind === "restore_inventory_access") {
         current.configurationOutcome = current.status === "incomplete" ? "unknown" : "failed";
+      } else if (current.kind === "activate_inventory_denial") {
+        const incident = run.incident?.mechanism === "iam-managed-policy" && run.incident.activationActionId === actionId
+          ? run.incident : undefined;
+        current.configurationOutcome = !incident ? "failed"
+          : incident.policy.state === "present" && incident.attachmentOwnership === "controller" ? "applied" : "unknown";
       }
       current.error = error instanceof ActionFailure ? error.message : "A required controller or app provider call failed.";
       current.finishedAt = new Date().toISOString();

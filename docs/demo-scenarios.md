@@ -6,7 +6,7 @@ The [application](components/application.md) owns API/business semantics; the [c
 
 ## Common contract
 
-Setup records the trusted deployment generation and artifact identities, healthy numeric checkout/inventory live-alias versions and memory allocations, expected function caps, the expected Inventory table policy/revision or its absence, target resources, and the normal catalog/business baseline. A baseline belongs to that deployment generation; it cannot restore old settings over a later or uncertain deployment. The [deployment contract](deployment.md) and [controller specification](components/failure-controller-behavior.md) own reconciliation and safe baseline adoption. Inventory's positive cap supports ordinary demand. A positive checkout cap with adequate headroom allows a real wrong-component increase to be demonstrated. Exact caps and workload bounds remain unselected.
+Setup records the trusted deployment generation and artifact identities, healthy numeric checkout/inventory live-alias versions and memory allocations, expected function caps, the Inventory deny policy's expected detached state and default version, plus the absence of an Inventory table resource policy, target resources, and the normal catalog/business baseline. A baseline belongs to that deployment generation; it cannot restore old settings over a later or uncertain deployment. The [deployment contract](deployment.md) and [controller specification](components/failure-controller-behavior.md) own reconciliation and safe baseline adoption. Inventory's positive cap supports ordinary demand. A positive checkout cap with adequate headroom allows a real wrong-component increase to be demonstrated. Exact caps and workload bounds remain unselected.
 
 The presenter controls incident activation, targeted fixes, traffic, recovery, and reset separately. The agent recommends one of **Increase reserved concurrency**, **Increase memory**, **Restore inventory access**, or **Other**, with an explanation and the action's target/value where applicable. Other includes a justified no-change response or insufficient evidence. It does not call the controller or supply its authority. Shortcuts are usable independently of an agent report or evaluation result.
 
@@ -20,14 +20,14 @@ Stop prevents new submissions; it does not cancel accepted AWS changes or submit
 
 Retain four evidence layers:
 
-1. **Actions:** private intent and expected baseline, actual target/value or policy revisions, acknowledgements/readbacks, and traffic phase parameters.
+1. **Actions:** private intent and expected baseline, actual target/value or deny-policy attachment and default version, acknowledgements/readbacks, and traffic phase parameters.
 2. **Effects:** measured demand, HTTP outcomes, correlated caller/child errors, actual execution versions where code executed, confirmed receipts, and settled stock/order changes.
 3. **Monitoring:** actual alarm ARN, originating ALARM-transition timestamp, current state/reason, separate update/read times, and observation freshness. Retain the originating identity after OK and use actual durable run records to discover investigations missed by polling.
 4. **Agent:** genuine alarm-event identity, matching run/trace/status, and result. An alarm or dashboard poll does not establish an invocation.
 
 Both incidents use the selected native stage-level HTTP API **5xx** alarm: Sum >=1 over 60 seconds, 1-of-1, missing data notBreaching. It includes catalog failures and is not checkout/controller-only. The two causes produce dependency-failure 502 responses where the inventory lookup is confirmed to have failed before a transaction. Unrelated timeouts or ambiguous write acknowledgements retain their own API meanings.
 
-Agent evidence may include ordinary current caps, relevant table policy, management change history, logs, metrics, and version metadata. Private scenario labels, intended causes, controller baseline mappings, expected answers, credentials, and raw authentication configuration are not agent inputs. Do not infer a failed child's executed version from an alias when no child invocation occurred.
+Agent evidence may include ordinary current caps, relevant IAM policy attachments, management change history, logs, metrics, and version metadata. Private scenario labels, intended causes, controller baseline mappings, expected answers, credentials, and raw authentication configuration are not agent inputs. Do not infer a failed child's executed version from an alias when no child invocation occurred.
 
 For repeatable local/CI regressions, retain versioned, queryable captures of those ordinary sources at an explicit investigation reference time. All four tools use the same captured view, including supported as-of configuration and bounded change history; no query falls back to the recovered live application. Candidates choose their own queries, with missing coverage visible. Each new regression execution has its own identity and retains the original event/case provenance. The [evaluation contract](evaluations.md) owns capture, time, and candidate-comparison semantics; recorded-trace judging remains distinct from executing a candidate.
 
@@ -38,7 +38,7 @@ The [agent software stages](components/operations-agent.md#software-stages) defi
 | Condition supported by the evidence | Corrected candidate recommendation | Unacceptable response |
 | --- | --- | --- |
 | Inventory capacity is throttling the comparable workload | Increase reserved concurrency on inventory to an explicit supported higher limit | Increase the unconstrained checkout function, restore an unrelated policy, or assert that a memory increase addresses the observed limit without supporting evidence |
-| Inventory reads are blocked by the scoped table-policy denial | Restore inventory access on the Inventory table | Increase memory or reserved concurrency while leaving the denial in place |
+| Inventory reads are blocked by the scoped IAM Deny | Detach the Inventory deny policy | Increase memory or reserved concurrency while leaving the denial in place |
 | Current requests support recovery within the investigated scope | Other, explaining that no configuration change is needed and the scope of that conclusion | Apply a remedy solely because the old alarm remains ALARM |
 | The available evidence cannot establish a supported action | Other, explaining the uncertainty and useful next investigation | Invent a cause, target, or recovery claim |
 
@@ -84,25 +84,25 @@ After the presenter has observed the remedy result, stop producers and settle wo
 
 ### Cause and baseline
 
-Normal traffic works with healthy versions, sufficient capacity, and the expected Inventory table policy. Keep the overload producer stopped. The inventory execution role already has the required read Allow.
+Normal traffic works with healthy versions, sufficient capacity, and the named deny policy detached. Keep the overload producer stopped. The Inventory execution role retains the required read Allow.
 
 ### Activation
 
-Apply a prepared Inventory table resource-policy Deny scoped to the inventory role and its actual required read operation. Preserve other principals and operations, including controller recovery and checkout writes. Record the prior policy or its absence and the applicable revision. Stop on unexpected external drift rather than overwriting unrelated access.
+Attach the prepared IAM policy to the Inventory Lambda execution role. It denies only `dynamodb:GetItem` on the Inventory table. Record the prior attachment, the policy ARN, and its default version and document. Stop on unexpected attachment or document drift.
 
-Policy application/readback are eventually consistent, and subsequent policy updates are blocked for 15 seconds. Actual request observations establish the effect; configuration acknowledgement alone does not. See [PutResourcePolicy](https://docs.aws.amazon.com/amazondynamodb/latest/APIReference/API_PutResourcePolicy.html) and [policy constraints](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/rbac-considerations.html).
+IAM readback and authorization changes are eventually consistent. Record the attachment and separately observe actual request failures within the bounded probe window. [IAM propagation](https://docs.aws.amazon.com/IAM/latest/UserGuide/troubleshoot.html#troubleshoot_general_eventual-consistency)
 
 Bounded catalog reads can establish a correlated denied DynamoDB operation in inventory logs. A fresh checkout lookup fails with 502 before its transaction; confirm no writes for those known pre-write failures after settling, while keeping overlapping successes and unrelated unknown outcomes separate.
 
 ### Fixes and separate demonstration
 
-**Appropriate recommendation:** Restore inventory access, restoring the expected Inventory table resource policy and removing the scoped denial.
+**Appropriate recommendation:** Restore inventory access by detaching the named Deny from the Inventory execution role.
 
-**Initial candidate's ineffective recommendation:** Increase memory on inventory. The presenter selects a supported larger size in MB. Confirm the live alias's effective memory/version change, then separately repeat ordinary requests while the denial remains active. Those requests should still show the denied read and 502 responses. Do not silently restore the table policy or execute Recover as part of the memory action. A configuration failure or no-change result does not demonstrate a successfully executed ineffective remedy.
+**Initial candidate's ineffective recommendation:** Increase memory on inventory. The presenter selects a supported larger size in MB. Confirm the live alias's effective memory/version change, then separately repeat ordinary requests while the denial remains active. Those requests should still show the denied read and 502 responses. Keep the deny policy attached during the memory demonstration. A configuration failure or no-change result does not demonstrate a successfully executed ineffective remedy.
 
 An increase to either function's reserved concurrency also leaves this denial in place; it is another incorrect recommendation for the reviewed case, not an additional required live demonstration.
 
-The access shortcut applies only the expected policy restoration, with revision/conflict checks and configuration readback. It does not broaden the execution role, change aliases/caps, issue application probes, or decide whether reads work.
+The access shortcut detaches the exact named policy from the recorded role and reads back the attachment after verifying the current release and policy version. It does not broaden the execution role, change aliases/caps, issue application probes, or decide whether reads work.
 
 After policy restoration, the presenter explicitly repeats ordinary catalog/checkout traffic and observes whether the previously denied operation succeeds. Do not reapply the Deny to test the fix; that would cause another incident. Propagation can leave transient failures after a successful policy action, so preserve their timestamps rather than equating action completion with immediate request success. A changed memory version may remain active during this observation; full Recover restores its captured baseline afterward.
 
@@ -126,7 +126,7 @@ If no qualifying live run exists, preserve a reviewed regression/replay case wit
 
 A targeted fix completes at its configuration result; traffic and observed application effects are separate presenter steps. Missing post-fix traffic means effect unobserved, not failed or proven remediation. Completed AWS work may coexist with persistent request failures.
 
-Recover stops all producers, restores expected function caps/table policy and baseline memory/version state through healthy aliases, settles submitted work, and verifies fresh catalog/checkout/order/stock behavior without deleting data. Reset additionally reseeds under a new productVersion, deletes prior Orders once quiescent, clears browser attempts, and records the next baseline including its verification order/decrement. Both retain logs, alarms, and previous agent results.
+Recover stops all producers, restores expected function caps and Inventory deny-policy attachment and baseline memory/version state through healthy aliases, settles submitted work, and verifies fresh catalog/checkout/order/stock behavior without deleting data. Reset additionally reseeds under a new productVersion, deletes prior Orders once quiescent, clears browser attempts, and records the next baseline including its verification order/decrement. Both retain logs, alarms, and previous agent results.
 
 Automatic deployment takes priority if it overlaps this workflow: stop new controller work and settle accepted work before deployment mutates the target. Afterward, reconcile using the new trusted deployment generation before verification or reset; never restore old aliases/settings from the superseded baseline. Baseline adoption preserves the current run and consumed budgets. Only a separately requested, safely reconciled destructive Reset establishes the next run. The [deployment handoff](deployment.md#deployment-and-controller-baseline) owns this sequence.
 

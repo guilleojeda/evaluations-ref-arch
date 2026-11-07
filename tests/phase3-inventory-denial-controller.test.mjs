@@ -45,6 +45,7 @@ const fixture = {
   attachMode: 'apply',
   detachMode: 'apply',
   beforeDetach: undefined,
+  detachEntered: false,
   checkpointMode: 'store',
   aliasVersion: { Checkout: '2', Inventory: '2' },
   appMode: 'denied',
@@ -62,7 +63,7 @@ function put(value) {
 function iamPolicyDocument() {
   return {
     Version: '2012-10-17',
-    Statement: [{ Effect: 'Deny', Action: 'dynamodb:GetItem', Resource: tableArn }],
+    Statement: [{ Sid: 'DenyInventoryGetItem', Effect: 'Deny', Action: 'dynamodb:GetItem', Resource: tableArn }],
   };
 }
 
@@ -89,6 +90,7 @@ function reset({ baselineRevision = appRevision, revision = appRevision, attache
   fixture.checkpointMode = 'store';
   fixture.appMode = 'denied';
   fixture.beforeDetach = undefined;
+  fixture.detachEntered = false;
   fixture.heldRequests.clear();
   put({ pk: 'STATE', revision: 1, data: {
     baseline: {
@@ -105,6 +107,12 @@ function reset({ baselineRevision = appRevision, revision = appRevision, attache
       settings: {
         account, region, api: appApi, credentialGeneration: 'fixture-generation',
         inventoryPolicy: 'absent', inventoryTableArn: tableArn, inventoryRoleArn,
+        inventoryPolicyName: policyName, inventoryPolicyArn: policyArn,
+        inventoryPolicyDefaultVersionId: 'v1', inventoryPolicyDocument: iamPolicyDocument(),
+        inventoryAccessPolicy: {
+          state: 'absent', policyArn, policyName, roleArn: inventoryRoleArn,
+          defaultVersionId: 'v1', documentMatches: true, observedAt: new Date().toISOString(),
+        },
         checkout: { version: '2', aliasArn: `arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoCheckout:live`,
           memory: 256, timeout: 12, cap: 'unreserved', codeSha256: 'fixture-code', role: checkoutRoleArn },
         inventory: { version: '2', aliasArn: `arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoInventory:live`,
@@ -196,7 +204,7 @@ async function awsProtocol(request, body) {
   if (action === 'GetPolicy') {
     assert.equal(body.PolicyArn, policyArn, 'IAM policy reads must target the pre-created denial policy');
     fixture.iamReads.push({ action, ...body });
-    return { __xml: `<GetPolicyResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/"><GetPolicyResult><Policy><PolicyName>${policyName}</PolicyName><PolicyArn>${policyArn}</PolicyArn><DefaultVersionId>${fixture.iamDefaultVersionId}</DefaultVersionId><AttachmentCount>${fixture.iamAttached ? 1 : 0}</AttachmentCount></Policy></GetPolicyResult></GetPolicyResponse>` };
+    return { __xml: `<GetPolicyResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/"><GetPolicyResult><Policy><PolicyName>${policyName}</PolicyName><Arn>${policyArn}</Arn><DefaultVersionId>${fixture.iamDefaultVersionId}</DefaultVersionId><AttachmentCount>${fixture.iamAttached ? 1 : 0}</AttachmentCount></Policy></GetPolicyResult></GetPolicyResponse>` };
   }
   if (action === 'GetPolicyVersion') {
     assert.equal(body.PolicyArn, policyArn, 'IAM policy-version reads must target the pre-created denial policy');
@@ -211,6 +219,7 @@ async function awsProtocol(request, body) {
     fixture.iamAttaches.push({ ...body });
     fixture.mutations.push(`AttachRolePolicy ${body.RoleName} ${body.PolicyArn}`);
     if (fixture.attachMode === 'conflict') return { __error: 'EntityAlreadyExists', __errorProtocol: 'iam' };
+    if (fixture.attachMode === 'lost-no-observation') return { __error: 'ServiceFailure', __errorProtocol: 'iam' };
     fixture.iamAttached = true;
     if (fixture.attachMode === 'lost-ack') return { __error: 'ServiceFailure', __errorProtocol: 'iam' };
     return { __xml: '<AttachRolePolicyResponse xmlns="https://iam.amazonaws.com/doc/2010-05-08/"></AttachRolePolicyResponse>' };
@@ -220,7 +229,7 @@ async function awsProtocol(request, body) {
     assert.equal(body.PolicyArn, policyArn, 'detach must target only the pre-created denial policy');
     fixture.iamDetaches.push({ ...body });
     fixture.mutations.push(`DetachRolePolicy ${body.RoleName} ${body.PolicyArn}`);
-    if (typeof fixture.beforeDetach === 'function') fixture.beforeDetach(body);
+    if (typeof fixture.beforeDetach === 'function') await fixture.beforeDetach(body);
     if (fixture.detachMode === 'conflict') return { __error: 'NoSuchEntity', __errorProtocol: 'iam' };
     fixture.iamAttached = false;
     if (fixture.detachMode === 'lost-ack') return { __error: 'ServiceFailure', __errorProtocol: 'iam' };
@@ -442,14 +451,18 @@ async function submit(api, kind, extra = {}) {
   return id;
 }
 
-async function withPolicyPropagationElapsed(callback) {
+async function withElapsed(milliseconds, callback) {
   const now = Date.now;
-  Date.now = () => now() + 16_000;
+  Date.now = () => now() + milliseconds;
   try {
     return await callback();
   } finally {
     Date.now = now;
   }
+}
+
+async function withPolicyPropagationElapsed(callback) {
+  return withElapsed(16_000, callback);
 }
 
 async function activateAndConfirm({ api, worker, attachMode = 'apply', appMode = 'denied' }) {
@@ -521,6 +534,23 @@ test('Inventory denial activation fails closed before mutation or app traffic', 
     assert.deepEqual(fixture.unhandled, []);
   });
 
+  await t.test('a live default policy version drift from baseline v1 to v2 blocks activation before mutation', async () => {
+    const document = denialDocument();
+    reset({ versionId: 'v2', versionDocuments: new Map([['v1', document], ['v2', document]]) });
+    const id = await submit(api, 'activate_inventory_denial');
+    await worker.handler({ actionId: id });
+    const action = await getAction(api, id);
+    assert.equal(action.status, 'failed');
+    assert.match(action.error ?? '', /version|policy|drift|changed/i);
+    assert.equal(fixture.iamDefaultVersionId, 'v2');
+    assert.equal(fixture.iamAttaches.length, 0, 'version drift must be rejected before AttachRolePolicy');
+    assert.equal(fixture.appRequests.length, 0, 'version drift must not send app probes');
+    assert.equal(fixture.checkpointObjects.length, 0, 'version drift must not capture a checkpoint');
+    assert.ok(fixture.iamReads.some(({ action: readAction, VersionId }) =>
+      readAction === 'GetPolicyVersion' && VersionId === 'v2'));
+    assert.deepEqual(fixture.unhandled, []);
+  });
+
   await t.test('a lost AttachRolePolicy acknowledgement reconciles without resending', async () => {
     const { id, action, state } = await activateAndConfirm({ api, worker, attachMode: 'lost-ack' });
     assert.equal(action.status, 'completed');
@@ -544,8 +574,49 @@ test('Inventory denial activation fails closed before mutation or app traffic', 
     assert.equal(state.incident?.checkpoint?.tablePolicyBefore?.state, 'absent');
     assert.equal(fixture.checkpointObjects.length, 1, 'successful reconciliation must retain a checkpoint');
     assert.ok(fixture.checkpointObjects[0].key.startsWith(evidencePrefix));
+    const checkpointBody = typeof fixture.checkpointObjects[0].body === 'string'
+      ? JSON.parse(fixture.checkpointObjects[0].body) : fixture.checkpointObjects[0].body;
+    assert.deepEqual(checkpointBody.policyDocument, denialDocument(), 'checkpoint must retain the exact provisioned IAM policy document');
     assert.ok(fixture.appRequests.some(({ path }) => path === '/api/products'));
     assert.ok(fixture.appRequests.some(({ path, method }) => path === '/api/checkout' && method === 'POST'));
+    assert.deepEqual(fixture.unhandled, []);
+  });
+
+  await t.test('a lost attach acknowledgement with no observed attachment stays unknown and blocks reuse', async () => {
+    reset();
+    fixture.attachMode = 'lost-no-observation';
+    const id = await submit(api, 'activate_inventory_denial');
+    await worker.handler({ actionId: id });
+    const action = await getAction(api, id);
+    const state = await getState(api);
+    assert.equal(action.status, 'incomplete');
+    assert.equal(action.configurationOutcome, 'unknown');
+    assert.equal(state.incident?.activationActionId, id);
+    assert.equal(state.incident?.policy?.state, 'unknown', 'an absent read after lost attach is not proof of safe absence');
+    assert.equal(fixture.iamAttaches.length, 1, 'unknown attach must not be repeated');
+    assert.equal(fixture.iamAttached, false);
+    assert.equal(fixture.appRequests.length, 0, 'unknown attachment must not send app probes');
+    assert.equal(fixture.checkpointObjects.length, 0, 'unknown attachment must not capture incident evidence');
+
+    const readinessId = randomUUID();
+    const readiness = await call(api, 'PUT', `/api/actions/${readinessId}`,
+      { kind: 'readiness', confirmQuiet: true }, 409);
+    assert.match(readiness.code ?? '', /incident|unknown|incomplete/i);
+    const retryId = randomUUID();
+    const retry = await call(api, 'PUT', `/api/actions/${retryId}`,
+      { kind: 'activate_inventory_denial' }, 409);
+    assert.match(retry.code ?? '', /incident|unknown|incomplete/i);
+    assert.deepEqual(fixture.invocations, [id], 'blocked readiness/reactivation must not dispatch workers');
+
+    const discardId = randomUUID();
+    const discardedCommand = await withElapsed(120_000, () => call(api, 'PUT', `/api/actions/${discardId}`,
+      { kind: 'discard', targetActionId: id }, 202));
+    assert.equal(discardedCommand.action?.status, 'completed');
+    assert.equal((await getAction(api, id)).status, 'discarded');
+    const trafficId = randomUUID();
+    const traffic = await call(api, 'PUT', `/api/actions/${trafficId}`, { kind: 'traffic' }, 409);
+    assert.equal(traffic.code, 'INVENTORY_DENIAL_UNRESOLVED');
+    assert.deepEqual(fixture.invocations, [id], 'discard and blocked traffic must not dispatch workers');
     assert.deepEqual(fixture.unhandled, []);
   });
 
@@ -579,6 +650,25 @@ test('Inventory denial activation fails closed before mutation or app traffic', 
     assert.equal(fixture.iamDetaches.length, 0, 'absence must not issue a duplicate DetachRolePolicy');
     assert.equal(fixture.iamAttached, false);
     assert.equal(fixture.appRequests.length, beforeRequests, 'no-op restore must not send app probes');
+    assert.deepEqual(fixture.unhandled, []);
+  });
+
+  await t.test('a lost DetachRolePolicy acknowledgement reconciles observed absence without reissue', async () => {
+    await activateAndConfirm({ api, worker });
+    const beforeRequests = fixture.appRequests.length;
+    fixture.detachMode = 'lost-ack';
+    const restoreId = await submit(api, 'restore_inventory_access');
+    await withPolicyPropagationElapsed(() => worker.handler({ actionId: restoreId }));
+    const restore = await getAction(api, restoreId);
+    const state = await getState(api);
+    assert.equal(restore.status, 'completed');
+    assert.equal(restore.configurationOutcome, 'applied');
+    assert.equal(fixture.iamDetaches.length, 1, 'observed detach must not be retried');
+    assert.equal(fixture.iamDetaches[0].RoleName, inventoryRoleName);
+    assert.equal(fixture.iamDetaches[0].PolicyArn, policyArn);
+    assert.equal(fixture.iamAttached, false);
+    assert.equal(state.incident?.policy?.state, 'absent');
+    assert.equal(fixture.appRequests.length, beforeRequests, 'restore must not send app probes');
     assert.deepEqual(fixture.unhandled, []);
   });
 
@@ -619,6 +709,9 @@ test('Inventory denial activation fails closed before mutation or app traffic', 
     fixture.appMode = 'hold';
     const trafficId = await submit(api, 'traffic');
     const trafficRun = worker.handler({ actionId: trafficId });
+    let releaseDetach;
+    let restoreRun;
+    let restoreId;
     try {
       const deadline = Date.now() + 10_000;
       while (Date.now() < deadline && fixture.appRequests.length < activationRequestCount + 3) {
@@ -630,10 +723,18 @@ test('Inventory denial activation fails closed before mutation or app traffic', 
       assert.equal(held.traffic.checkout.inFlight, 2);
 
       const beforeRestoreRequests = fixture.appRequests.length;
-      const restoreId = await submit(api, 'restore_inventory_access');
-      await withPolicyPropagationElapsed(() => worker.handler({ actionId: restoreId }));
-      const restore = await getAction(api, restoreId);
-      assert.equal(restore.status, 'completed');
+      const detachGate = new Promise((resolveDetach) => { releaseDetach = resolveDetach; });
+      fixture.beforeDetach = async () => {
+        fixture.detachEntered = true;
+        await detachGate;
+      };
+      restoreId = await submit(api, 'restore_inventory_access');
+      restoreRun = withPolicyPropagationElapsed(() => worker.handler({ actionId: restoreId }));
+      const detachDeadline = Date.now() + 10_000;
+      while (Date.now() < detachDeadline && !fixture.detachEntered) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, 25));
+      }
+      assert.equal(fixture.detachEntered, true, 'restore must reach the exact DetachRolePolicy call');
       assert.equal(fixture.appRequests.length, beforeRestoreRequests, 'restore must not submit probes');
       const stopId = await submit(api, 'stop', { targetActionId: trafficId });
       const stop = await getAction(api, stopId);
@@ -641,10 +742,15 @@ test('Inventory denial activation fails closed before mutation or app traffic', 
       const draining = await getAction(api, trafficId);
       assert.equal(draining.status, 'draining');
       assert.equal(draining.stopRequested, true);
+      const restoreWhileHeld = await getAction(api, restoreId);
+      assert.equal(restoreWhileHeld.status, 'running', 'Stop must not cancel or replace the in-flight restore');
     } finally {
+      releaseDetach?.();
       releaseHeld();
-      await trafficRun;
+      await Promise.all([trafficRun, restoreRun].filter(Boolean));
     }
+    const restore = await getAction(api, restoreId);
+    assert.equal(restore.status, 'completed');
     const stopped = await getAction(api, trafficId);
     assert.equal(stopped.status, 'stopped');
     assert.equal(stopped.traffic.catalog.inFlight, 0);

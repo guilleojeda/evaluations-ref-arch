@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Action, AlarmResponse, AlarmState, Command, DashboardState } from "./types";
 
 type Notice = { kind: "error" | "success"; message: string } | undefined;
+type PendingCommand = { id: string; command: Command };
 const activeStatuses = new Set(["queued", "running", "draining"]);
 
 function formatTime(value: unknown): string {
@@ -34,6 +35,9 @@ function isAlarmResponse(value: Record<string, unknown>): value is Record<string
 
 function alarmTone(state: AlarmState | undefined): string {
   return state === "ALARM" ? "alarm-danger" : state === "OK" ? "alarm-ok" : "alarm-unknown";
+}
+function attachmentLabel(state: unknown): string {
+  return state === "present" ? "Attached" : state === "absent" ? "Detached" : "Unknown";
 }
 function freshness(value: string | undefined): string {
   if (!value) return "Unknown freshness";
@@ -76,7 +80,9 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [readinessConfirmed, setReadinessConfirmed] = useState(false);
   const [protectiveRestoreConfirmed, setProtectiveRestoreConfirmed] = useState(false);
-  const [pendingCommand, setPendingCommand] = useState<{ id: string; command: Command }>();
+  const [pendingCommand, setPendingCommand] = useState<PendingCommand>();
+  const [pendingRestoreCommand, setPendingRestoreCommand] = useState<PendingCommand>();
+  const [restoreSubmitting, setRestoreSubmitting] = useState(false);
   const polling = useRef<number | undefined>(undefined);
   const alarmPolling = useRef<number | undefined>(undefined);
   const sessionEpoch = useRef(0);
@@ -92,7 +98,8 @@ export function App() {
       if (epoch === sessionEpoch.current) {
         setState(body);
         setLastObservedAt(body.observedAt);
-        setPendingCommand((pending) => pending && [body.currentAction?.id, body.currentConfigurationAction?.id].includes(pending.id) ? undefined : pending);
+        setPendingCommand((pending) => pending && body.currentAction?.id === pending.id ? undefined : pending);
+        setPendingRestoreCommand((pending) => pending && body.currentConfigurationAction?.id === pending.id ? undefined : pending);
         setPollFailure(undefined);
       }
     } catch (error) {
@@ -121,16 +128,26 @@ export function App() {
   const configurationAction = state?.currentConfigurationAction;
   const currentStatus = currentAction?.status ?? "idle";
   const trafficActive = currentAction?.kind === "traffic" && activeStatuses.has(currentStatus);
-  const actionBusy = loading || !state || Boolean(pendingCommand) || Boolean(currentAction && activeStatuses.has(currentStatus)) || currentStatus === "incomplete";
-  const configurationBusy = loading || Boolean(pendingCommand) || Boolean(configurationAction && activeStatuses.has(configurationAction.status)) || configurationAction?.status === "incomplete";
+  const anyPendingCommand = Boolean(pendingCommand || pendingRestoreCommand);
+  const actionBusy = loading || !state || anyPendingCommand || Boolean(currentAction && activeStatuses.has(currentStatus)) || currentStatus === "incomplete";
+  const configurationBusy = loading || anyPendingCommand || Boolean(configurationAction && activeStatuses.has(configurationAction.status)) || configurationAction?.status === "incomplete";
   const restoreBusy = configurationBusy || Boolean(currentAction && activeStatuses.has(currentStatus) && currentAction.kind !== "traffic");
   const baseline = state?.baseline;
   const budgets = state?.budgets;
   const incident = state?.incident;
+  const iamIncident = incident?.mechanism === "iam-managed-policy" ? incident : undefined;
+  const legacyIncident = incident?.mechanism !== "iam-managed-policy" ? incident : undefined;
   const checkpoint = incident?.checkpoint;
   const baselinePolicyAbsent = isRecord(baseline?.settings) && baseline.settings.inventoryPolicy === "absent";
   const observedPolicy = incident?.policy?.state ?? (baselinePolicyAbsent ? "absent" : "unknown");
   const incidentActive = Boolean(incident && observedPolicy !== "absent");
+  const baselineAccessObservation = isRecord(baseline?.settings?.inventoryAccessPolicy) ? baseline.settings.inventoryAccessPolicy : undefined;
+  const iamPolicyObservation = iamIncident?.policy ?? baselineAccessObservation;
+  const policyName = iamIncident?.policy.policyName ?? display(baselineAccessObservation?.policyName ?? baseline?.settings.inventoryPolicyName, "Not observed");
+  const policyVersion = iamIncident?.policy.defaultVersionId ?? display(baselineAccessObservation?.defaultVersionId ?? baseline?.settings.inventoryPolicyDefaultVersionId, "Not observed");
+  const inventoryRoleArn = iamIncident?.policy.roleArn ?? display(baselineAccessObservation?.roleArn ?? baseline?.settings.inventoryRoleArn, "Not observed");
+  const policyArn = iamIncident?.policy.policyArn ?? display(baselineAccessObservation?.policyArn ?? baseline?.settings.inventoryPolicyArn, "Not observed");
+  const trafficStartAllowed = !incidentActive || (iamIncident?.policy.state === "present" && iamIncident.attachmentOwnership === "controller");
   const needsProtectiveRestore = checkpoint?.status === "unavailable" || checkpoint?.status === "incomplete";
   const alarmObservation = alarm?.alarm;
   const retainedAlarm = checkpoint?.alarm;
@@ -142,8 +159,12 @@ export function App() {
     const epoch = sessionEpoch.current;
     const callNumber = requestEpoch.current + 1;
     requestEpoch.current = callNumber;
-    setLoading(true); setNotice(undefined);
-    setPendingCommand({ id, command });
+    const isRestore = command.kind === "restore_inventory_access";
+    const setPending = isRestore ? setPendingRestoreCommand : setPendingCommand;
+    if (isRestore) setRestoreSubmitting(true);
+    else setLoading(true);
+    setNotice(undefined);
+    setPending({ id, command });
     try {
       const response = await fetch(`/api/actions/${id}`, { method: "PUT", headers: { Authorization: `Bearer ${bearer}`, Accept: "application/json", "Content-Type": "application/json" }, body: JSON.stringify(command), signal: AbortSignal.timeout(8_000) });
       const body = await readJson(response);
@@ -153,7 +174,7 @@ export function App() {
         setState((previous) => previous && (command.kind === "restore_inventory_access" ? { ...previous, currentConfigurationAction: action } : { ...previous, currentAction: action }));
       }
       if (epoch === sessionEpoch.current) {
-        setPendingCommand(undefined);
+        setPending(undefined);
         if (command.kind === "readiness") setReadinessConfirmed(false);
         setNotice({ kind: "success", message: `${String(command.kind)} accepted` });
         setMenuOpen(false);
@@ -162,12 +183,13 @@ export function App() {
     } catch (error) {
       if (epoch === sessionEpoch.current) {
         if (error instanceof RequestError && error.status < 500) {
-          setPendingCommand(undefined);
+          setPending(undefined);
           setNotice({ kind: "error", message: error.message });
         } else setNotice({ kind: "error", message: "The command outcome is unknown. Retry with the same ID." });
       }
     } finally {
-      if (epoch === sessionEpoch.current && requestEpoch.current === callNumber) setLoading(false);
+      if (epoch === sessionEpoch.current && isRestore) setRestoreSubmitting(false);
+      if (epoch === sessionEpoch.current && !isRestore && requestEpoch.current === callNumber) setLoading(false);
     }
   }, [bearer, loadAlarm, loadState]);
 
@@ -188,14 +210,14 @@ export function App() {
       if (sessionEpoch.current === epoch) setNotice({ kind: "error", message: error instanceof Error ? error.message : "The presenter credential was rejected." });
     } finally { if (sessionEpoch.current === epoch) setLoading(false); }
   };
-  const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setPendingCommand(undefined); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
+  const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setPendingCommand(undefined); setPendingRestoreCommand(undefined); setRestoreSubmitting(false); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
   const runReadiness = () => { if (readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "readiness", confirmQuiet: true }); };
   const runTraffic = () => void sendAction(crypto.randomUUID(), { kind: "traffic" });
   const runActivation = () => { if (readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "activate_inventory_denial" }); };
-  const runRestore = () => { if (incident && !restoreBusy && (!needsProtectiveRestore || protectiveRestoreConfirmed)) void sendAction(crypto.randomUUID(), needsProtectiveRestore ? { kind: "restore_inventory_access", restoreWithoutEvidence: true } : { kind: "restore_inventory_access" }); };
+  const runRestore = () => { if (iamIncident && !restoreBusy && (!needsProtectiveRestore || protectiveRestoreConfirmed)) void sendAction(crypto.randomUUID(), needsProtectiveRestore ? { kind: "restore_inventory_access", restoreWithoutEvidence: true } : { kind: "restore_inventory_access" }); };
   const stopTraffic = () => currentAction && void sendAction(crypto.randomUUID(), { kind: "stop", targetActionId: currentAction.id });
   const discardAction = () => { const target = currentAction?.status === "incomplete" ? currentAction : configurationAction?.status === "incomplete" ? configurationAction : undefined; if (target) void sendAction(crypto.randomUUID(), { kind: "discard", targetActionId: target.id }); };
-  const retryPending = () => pendingCommand && void sendAction(pendingCommand.id, pendingCommand.command);
+  const retryPending = (pending: PendingCommand) => void sendAction(pending.id, pending.command);
   const actionLabel = currentAction ? `${currentAction.kind} · ${currentAction.status}` : "No action running";
 
   if (!bearer) return (
@@ -210,29 +232,62 @@ export function App() {
   return (
     <main className="controller-shell" aria-label="Incident triage failure controller">
       <header className="topbar"><div className="brand"><div className="brand-mark" aria-hidden="true">IT</div><div><p className="eyebrow">Incident triage demo</p><h1>Failure controller</h1></div></div><div className="top-actions"><span className="connection-pill"><span className="status-dot" aria-hidden="true" /> Cloud state</span><button className="button button-secondary" type="button" onClick={signOut}>Sign out</button></div></header>
-      <section className="hero-panel"><div className="hero-copy"><p className="eyebrow">Current action</p><h2>{actionLabel}</h2>{currentAction && <p className="mono muted compact">{currentAction.id}</p>}<p className="muted">Last observation {formatTime(lastObservedAt)}{pollFailure ? ` · ${pollFailure}` : ""}</p>{currentAction?.startedAt && <p className="muted">Started {formatTime(currentAction.startedAt)}{currentAction.finishedAt ? ` · Ended ${formatTime(currentAction.finishedAt)}` : ""}</p>}{currentAction?.error && <p className="action-error" role="alert">{currentAction.error}</p>}{currentAction?.discardAfter && currentStatus === "incomplete" && <p className="muted">Discard available after {formatTime(new Date(currentAction.discardAfter).toISOString())}</p>}<label className="quiet-check"><input type="checkbox" checked={readinessConfirmed} onChange={(event) => setReadinessConfirmed(event.target.checked)} /> I confirm other checkout writers are paused.</label></div><div className="action-controls"><button className="button button-primary" type="button" onClick={runReadiness} disabled={actionBusy || configurationBusy || incidentActive || !readinessConfirmed}>Check readiness</button><button className="button button-secondary" type="button" onClick={runTraffic} disabled={actionBusy || !baseline}>Start healthy traffic</button>{trafficActive && <button className="button button-stop" type="button" onClick={stopTraffic} disabled={loading || Boolean(pendingCommand) || currentStatus === "draining"}>Stop traffic</button>}{(currentAction?.status === "incomplete" || configurationAction?.status === "incomplete") && <button className="button button-secondary" type="button" onClick={discardAction} disabled={loading || Boolean(pendingCommand) || Date.now() < (currentAction?.status === "incomplete" ? currentAction.discardAfter : configurationAction!.discardAfter)}>Discard action</button>}<div className="menu-wrap"><button className="button button-secondary" type="button" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>Actions <span className="chevron" aria-hidden="true" /></button>{menuOpen && <div className="actions-menu" role="menu"><button type="button" role="menuitem" onClick={runReadiness} disabled={actionBusy || configurationBusy || incidentActive || !readinessConfirmed}>Check readiness</button><button type="button" role="menuitem" onClick={runTraffic} disabled={actionBusy || !baseline}>Start healthy traffic</button><button type="button" role="menuitem" onClick={runActivation} disabled={actionBusy || configurationBusy || incidentActive || !baseline || !readinessConfirmed}>Activate Inventory denial</button><button type="button" role="menuitem" onClick={runRestore} disabled={!incident || restoreBusy || (needsProtectiveRestore && !protectiveRestoreConfirmed)}>Restore Inventory access</button><button type="button" role="menuitem" onClick={stopTraffic} disabled={!trafficActive || loading || Boolean(pendingCommand) || currentStatus === "draining"}>Stop traffic</button></div>}</div></div></section>
-      {notice && <p className={`notice notice-${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}>{notice.message}{pendingCommand && <button className="inline-action" type="button" onClick={retryPending} disabled={loading}>Retry same command</button>}</p>}
+      <section className="hero-panel">
+        <div className="hero-copy">
+          <p className="eyebrow">Current action</p><h2>{actionLabel}</h2>{currentAction && <p className="mono muted compact">{currentAction.id}</p>}
+          <p className="muted">Last observation {formatTime(lastObservedAt)}{pollFailure ? ` · ${pollFailure}` : ""}</p>
+          {currentAction?.startedAt && <p className="muted">Started {formatTime(currentAction.startedAt)}{currentAction.finishedAt ? ` · Ended ${formatTime(currentAction.finishedAt)}` : ""}</p>}
+          {currentAction?.error && <p className="action-error" role="alert">{currentAction.error}</p>}
+          {currentAction?.discardAfter && currentStatus === "incomplete" && <p className="muted">Discard available after {formatTime(new Date(currentAction.discardAfter).toISOString())}</p>}
+          <label className="quiet-check"><input type="checkbox" checked={readinessConfirmed} onChange={(event) => setReadinessConfirmed(event.target.checked)} /> I confirm other checkout writers are paused.</label>
+        </div>
+        <div className="action-controls">
+          <button className="button button-primary" type="button" onClick={runReadiness} disabled={actionBusy || configurationBusy || incidentActive || !readinessConfirmed}>Check readiness</button>
+          <button className="button button-secondary" type="button" onClick={runTraffic} disabled={actionBusy || !baseline || !trafficStartAllowed}>Start healthy traffic</button>
+          {trafficActive && <button className="button button-stop" type="button" onClick={stopTraffic} disabled={loading || Boolean(pendingCommand) || currentStatus === "draining"}>Stop traffic</button>}
+          {(currentAction?.status === "incomplete" || configurationAction?.status === "incomplete") && <button className="button button-secondary" type="button" onClick={discardAction} disabled={loading || anyPendingCommand || Date.now() < (currentAction?.status === "incomplete" ? currentAction.discardAfter : configurationAction!.discardAfter)}>Discard action</button>}
+          <div className="menu-wrap">
+            <button className="button button-secondary" type="button" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>Actions <span className="chevron" aria-hidden="true" /></button>
+            {menuOpen && <div className="actions-menu" role="menu">
+              <button type="button" role="menuitem" onClick={runReadiness} disabled={actionBusy || configurationBusy || incidentActive || !readinessConfirmed}>Check readiness</button>
+              <button type="button" role="menuitem" onClick={runTraffic} disabled={actionBusy || !baseline || !trafficStartAllowed}>Start healthy traffic</button>
+              <button type="button" role="menuitem" onClick={runActivation} disabled={actionBusy || configurationBusy || incidentActive || !baseline || !readinessConfirmed}>Activate Inventory denial</button>
+              {!legacyIncident && <button type="button" role="menuitem" onClick={runRestore} disabled={!iamIncident || restoreBusy || (needsProtectiveRestore && !protectiveRestoreConfirmed)}>Restore Inventory access</button>}
+              <button type="button" role="menuitem" onClick={stopTraffic} disabled={!trafficActive || loading || Boolean(pendingCommand) || currentStatus === "draining"}>Stop traffic</button>
+            </div>}
+          </div>
+        </div>
+      </section>
+      {notice && <p className={`notice notice-${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}>{notice.message}</p>}
+      {pendingCommand && !loading && <div className="notice notice-error" role="status">
+        <span>Command outcome unknown. Retry with the original ID.</span>
+        <button className="inline-action" type="button" onClick={() => retryPending(pendingCommand)} disabled={loading}>Retry {pendingCommand.command.kind}</button>
+      </div>}
+      {pendingRestoreCommand && !restoreSubmitting && <div className="notice notice-error" role="status">
+        <span>Restore outcome unknown. Retry with the original ID.</span>
+        <button className="inline-action" type="button" onClick={() => retryPending(pendingRestoreCommand)} disabled={loading || restoreSubmitting}>Retry restore_inventory_access</button>
+      </div>}
       {pollFailure && <p className="notice notice-error" role="alert">{pollFailure}. The last good cloud observation remains visible.</p>}
       <section className="incident-controls card" aria-label="Inventory denial controls">
         <div className="card-heading">
           <div><p className="eyebrow">Scoped incident control</p><h3>Inventory access</h3></div>
           <span className={`incident-badge ${incidentActive ? "badge-warning" : "badge-neutral"}`}>
-            {incidentActive ? "Policy change recorded" : incident ? "Access restored" : "Readiness baseline"}
+            {incidentActive ? "Policy change recorded" : legacyIncident ? "Legacy record · read only" : incident ? "Access restored" : "Readiness baseline"}
           </span>
         </div>
         <div className="incident-grid">
           <div>
-            <span className="fact-label">Policy</span>
-            <strong>{observedPolicy}</strong>
+            <span className="fact-label">{iamIncident ? "Observed attachment" : legacyIncident ? "Legacy table policy" : "IAM policy attachment"}</span>
+            <strong>{iamIncident ? attachmentLabel(iamIncident.policy.state) : legacyIncident ? display(legacyIncident.policy?.state, "unknown") : attachmentLabel(iamPolicyObservation?.state)}</strong>
             <small>
-              {incident?.policy?.revision ? `revision ${incident.policy.revision}` : "Last policy observation"}
-              {" · "}{formatTime(incident?.policy?.observedAt ?? baseline?.verifiedAt)}
+              {iamIncident ? `${iamIncident.attachOutcome} · ownership ${iamIncident.attachmentOwnership}` : legacyIncident ? `revision ${display(legacyIncident.policy?.revision, "unknown")}` : "Baseline observation"}
+              {" · "}{formatTime(iamIncident?.policy.observedAt ?? legacyIncident?.policy?.observedAt ?? (typeof baselineAccessObservation?.observedAt === "string" ? baselineAccessObservation.observedAt : baseline?.verifiedAt))}
             </small>
           </div>
           <div>
             <span className="fact-label">Checkpoint</span>
             <strong>{display(checkpoint?.status, "Not captured")}</strong>
-            <small>{checkpoint?.key ?? "Configuration evidence is private"}</small>
+            <small>{checkpoint?.error ?? checkpoint?.key ?? "Configuration evidence is private"}</small>
           </div>
           <div>
             <span className="fact-label">Restore</span>
@@ -240,7 +295,14 @@ export function App() {
             <small>{configurationAction?.id ?? "No restoration action"}</small>
           </div>
         </div>
-        {incidentActive && needsProtectiveRestore && <label className="quiet-check protective-check">
+        {iamPolicyObservation && <dl className="facts">
+          <div><dt>Prepared policy name</dt><dd className="mono">{policyName}</dd></div>
+          <div><dt>Default version</dt><dd className="mono">{policyVersion}</dd></div>
+          <div><dt>Inventory role ARN</dt><dd className="mono">{inventoryRoleArn}</dd></div>
+          <div><dt>Policy ARN</dt><dd className="mono">{policyArn}</dd></div>
+        </dl>}
+        {legacyIncident && <p className="muted">This persisted DynamoDB table-policy record remains visible for history; IAM restore controls do not target it.</p>}
+        {iamIncident && incidentActive && needsProtectiveRestore && <label className="quiet-check protective-check">
           <input type="checkbox" checked={protectiveRestoreConfirmed} onChange={(event) => setProtectiveRestoreConfirmed(event.target.checked)} />
           Evidence capture is unavailable. Allow protective restore of the recorded policy.
         </label>}
@@ -270,7 +332,9 @@ export function App() {
         </article>
         <article className="card outcome-card">
           <div className="card-heading"><div><p className="eyebrow">Incident outcome</p><h3>Request observations</h3></div></div>
-          {deniedCheckout && <p>Checkout returned HTTP {deniedCheckout.statusCode} · {deniedCheckout.dependencyReason}</p>}
+          <p>{deniedCheckout
+            ? `Checkout returned HTTP ${display(deniedCheckout.statusCode, "unknown")} · ${display(deniedCheckout.dependencyReason, "Inventory dependency failure")}`
+            : "No Inventory-denied checkout request observed in the current action"}</p>
           {deniedCheckout?.requestId && <p className="mono compact">{deniedCheckout.requestId}</p>}
           <p className="muted">{state?.unresolved?.length
             ? `${state.unresolved.length} unresolved checkout attempts`

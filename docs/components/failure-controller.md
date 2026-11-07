@@ -11,7 +11,7 @@ Both incidents start from healthy application code and do not require a faulty c
 | Incident | How the controller causes it | Configuration control |
 | --- | --- | --- |
 | Inventory capacity overload | Start a finite surge of ordinary authenticated catalog reads against a positive inventory Lambda concurrency limit that supports baseline demand. Include sparse checkout probes. Activation increases demand without changing code or lowering the limit. | Increase inventory reserved concurrency. |
-| Inventory access denied | Apply a narrowly scoped Inventory table resource-policy denial of the inventory role's required read operation, keeping its original role permission intact. | Restore the expected Inventory table policy. |
+| Inventory access denied | Attach the prepared IAM Deny for `dynamodb:GetItem` on the Inventory table to the Inventory Lambda execution role. | Detach the same IAM policy from the Inventory role. |
 
 ## Configuration actions
 
@@ -80,7 +80,7 @@ Schedule deployments outside demo runs and wait for both stacks to settle before
 | Establish baseline | Bind known expected healthy versions and settings to a trusted successful deployment generation; exercise normal reads and a checkout | Target, generation/artifact identity, actual settings/revisions, successful requests, and the post-checkout stock/order baseline |
 | Cause capacity overload | Apply the selected finite demand profile without changing its positive inventory cap | Intended profile, actual demand, invocation errors/throttles, and affected request windows |
 | Deny inventory access | Apply only the selected role/read-operation denial on the Inventory table | Prior policy, requested change, actual revision/readback, and observed denied reads |
-| Apply a configuration action | Increase the selected function's reserved concurrency or memory, or restore the expected Inventory table policy, without generating traffic | Operator choice, before/after values and version/alias state where applicable, and configuration result/readback |
+| Apply a configuration action | Increase the selected function's reserved concurrency or memory, or detach the Inventory deny policy, without generating traffic | Operator choice, before/after values and version/alias state where applicable, and configuration result/readback |
 | Repeat traffic and observe | Explicitly run another bounded workload at the current configuration | Actual demand, phase windows, and request outcomes, separate from the preceding action result |
 | Recover application | Stop traffic, confirm the baseline generation is still current, restore expected policies/caps and baseline memory/alias versions, settle work, then verify fresh behavior | Confirmed restoration and fresh evidence, retaining prior effects and results |
 | Reset demo | Reconcile against trusted expected settings for the current successful generation, settle work, reset Orders/Inventory under a new productVersion, then verify the next baseline | Reset progress and the actual baseline including the verification order |

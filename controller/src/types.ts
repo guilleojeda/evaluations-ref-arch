@@ -71,12 +71,26 @@ export interface RequestRecord {
 
 export type PolicyState = "absent" | "present" | "unknown";
 
-export interface InventoryPolicyObservation {
+/** Read-only DynamoDB table resource-policy observation kept for the app invariant. */
+export interface InventoryTablePolicyObservation {
   state: PolicyState;
   revision?: string;
   statementId?: string;
   tableArn?: string;
   roleArn?: string;
+  observedAt: string;
+}
+
+/** Kept to read previously persisted table-policy incident records without changing their meaning. */
+export type InventoryPolicyObservation = InventoryTablePolicyObservation;
+
+export interface InventoryAccessPolicyObservation {
+  state: PolicyState;
+  policyArn: string;
+  policyName: string;
+  roleArn: string;
+  defaultVersionId?: string;
+  documentMatches: boolean;
   observedAt: string;
 }
 
@@ -98,21 +112,59 @@ export interface ConfigurationCheckpoint {
   inventoryMemory: number;
   inventoryTimeout: number;
   inventoryCap: number | "unreserved";
-  policyBefore: InventoryPolicyObservation;
-  denial?: InventoryPolicyObservation;
+  tablePolicyBefore: InventoryTablePolicyObservation;
+  inventoryPolicyBefore: InventoryAccessPolicyObservation;
+  inventoryPolicyAtCapture: InventoryAccessPolicyObservation;
+  alarm?: AlarmObservation;
+  error?: string;
+}
+
+/** Shape of the table-resource-policy checkpoint written by earlier controller releases. */
+export interface LegacyConfigurationCheckpoint {
+  status: CheckpointStatus;
+  key?: string;
+  createdAt: string;
+  appRevision: string;
+  inventoryTableArn: string;
+  inventoryRoleArn: string;
+  inventoryVersion: string;
+  inventoryCodeSha256: string;
+  inventoryMemory: number;
+  inventoryTimeout: number;
+  inventoryCap: number | "unreserved";
+  policyBefore: InventoryTablePolicyObservation;
+  denial?: InventoryTablePolicyObservation;
   alarm?: AlarmObservation;
   error?: string;
 }
 
 export interface IncidentState {
   kind: "inventory_access_denied";
+  mechanism: "iam-managed-policy";
   activationActionId: string;
   appRevision?: string;
   checkpoint?: ConfigurationCheckpoint;
-  policy?: InventoryPolicyObservation;
+  policyBefore: InventoryAccessPolicyObservation;
+  policy: InventoryAccessPolicyObservation;
+  attachOutcome: "pending" | "acknowledged" | "ambiguous" | "conflict";
+  attachmentOwnership: "controller" | "unknown";
   restoreActionId?: string;
   updatedAt: string;
 }
+
+/** Existing inactive table-policy records remain readable and are archived intact on replacement. */
+export interface LegacyIncidentState {
+  kind: "inventory_access_denied";
+  mechanism?: never;
+  activationActionId: string;
+  appRevision?: string;
+  checkpoint?: LegacyConfigurationCheckpoint;
+  policy?: InventoryTablePolicyObservation;
+  restoreActionId?: string;
+  updatedAt: string;
+}
+
+export type StoredIncidentState = IncidentState | LegacyIncidentState;
 
 export interface Action {
   id: string;
@@ -148,7 +200,8 @@ export interface RunState {
   latestStockAt?: string;
   receipts: Receipt[];
   unresolved: Array<CheckoutPayload & { startedAt: string; status: "unknown" }>;
-  incident?: IncidentState;
+  incident?: StoredIncidentState;
+  incidentHistory?: StoredIncidentState[];
 }
 
 export type AlarmState = "OK" | "ALARM" | "INSUFFICIENT_DATA" | "UNKNOWN";
