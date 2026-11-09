@@ -248,9 +248,9 @@ test('deploy script restores recognized staging before any new CloudFormation ch
 test('deploy guard permits only the exact Inventory Lambda environment decrypt context', () => {
   const template = readFileSync(new URL('../infrastructure/bootstrap/github-iam.yaml', import.meta.url), 'utf8');
   assert.match(template, /- kms:Decrypt\s+- kms:DescribeKey\s+- s3:GetBucketLocation/);
-  assert.match(template, /Sid: DenyBootstrapKmsContext[\s\S]*?Resource: arn:aws:kms:us-east-1:027224425948:key\/b292b95c-709f-42c6-aa42-b934ba2c6f07[\s\S]*?kms:EncryptionContext:aws:s3:arn:/);
-  assert.match(template, /Sid: DenyInventoryKmsContext[\s\S]*?Resource: arn:aws:kms:us-east-1:027224425948:key\/9d894f12-dc33-4332-bb3e-df489928914b[\s\S]*?kms:EncryptionContext:aws:lambda:FunctionArn:\s+arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory/);
-  assert.match(template, /Sid: DenyDescribeOtherKmsKeys[\s\S]*?Action: kms:DescribeKey[\s\S]*?NotResource: arn:aws:kms:us-east-1:027224425948:key\/9d894f12-dc33-4332-bb3e-df489928914b/);
-  assert.match(template, /Sid: DenyDescribeNonLambda[\s\S]*?Action: kms:DescribeKey[\s\S]*?Resource: arn:aws:kms:us-east-1:027224425948:key\/9d894f12-dc33-4332-bb3e-df489928914b[\s\S]*?kms:ViaService:\s+lambda.us-east-1.amazonaws.com/);
+  assert.match(template, /Sid: DenyBootstrapKeyOutsideBootstrapTemplates[\s\S]*?Resource: arn:aws:kms:us-east-1:027224425948:key\/b292b95c-709f-42c6-aa42-b934ba2c6f07[\s\S]*?kms:EncryptionContext:aws:s3:arn:/);
+  assert.match(template, /Sid: DenyInventoryKeyOutsideLambdaEnvironment[\s\S]*?Resource: arn:aws:kms:us-east-1:027224425948:key\/9d894f12-dc33-4332-bb3e-df489928914b[\s\S]*?kms:EncryptionContext:aws:lambda:FunctionArn:\s+arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory/);
+  assert.match(template, /Sid: DenyDescribeKeyOutsideInventoryEnvironmentKey[\s\S]*?Action: kms:DescribeKey[\s\S]*?NotResource: arn:aws:kms:us-east-1:027224425948:key\/9d894f12-dc33-4332-bb3e-df489928914b/);
+  assert.match(template, /Sid: DenyDescribeInventoryKeyOutsideLambdaService[\s\S]*?Action: kms:DescribeKey[\s\S]*?Resource: arn:aws:kms:us-east-1:027224425948:key\/9d894f12-dc33-4332-bb3e-df489928914b[\s\S]*?kms:ViaService:\s+lambda.us-east-1.amazonaws.com/);
   assert.doesNotMatch(template, /kms:EncryptionContext:aws:lambda:FunctionArn:\s+arn:aws:lambda:us-east-1:027224425948:function:\*/);
 });
