@@ -88,14 +88,15 @@ def install_locked_dependencies(staging: Path, requirements: Path, *, adapter: b
 
 
 def write_otel_launcher(staging: Path) -> None:
-    launcher = staging / "opentelemetry-instrument"
-    launcher.write_text(
+    launcher_source = (
         "#!/usr/bin/env python3\n"
         "from opentelemetry.instrumentation.auto_instrumentation import run\n"
-        "run()\n",
-        encoding="utf-8",
+        "run()\n"
     )
-    launcher.chmod(0o755)
+    for launcher in (staging / "opentelemetry-instrument", staging / "bin" / "opentelemetry-instrument"):
+        launcher.parent.mkdir(parents=True, exist_ok=True)
+        launcher.write_text(launcher_source, encoding="utf-8")
+        launcher.chmod(0o755)
 
 
 def main() -> None:
