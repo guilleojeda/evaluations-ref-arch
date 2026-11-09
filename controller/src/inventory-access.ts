@@ -2,31 +2,34 @@ import {
   GetPolicyCommand,
   GetPolicyVersionCommand,
   ListAttachedRolePoliciesCommand,
-  AttachRolePolicyCommand,
-  DetachRolePolicyCommand,
   IAMClient,
 } from "@aws-sdk/client-iam";
 import {
   DynamoDBClient,
   GetResourcePolicyCommand,
 } from "@aws-sdk/client-dynamodb";
+import { GetObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import type {
   InventoryAccessPolicyObservation,
+  InventoryVariantsManifest,
   InventoryTablePolicyObservation,
   PolicyState,
 } from "./types.js";
-
 const account = "027224425948";
 const region = "us-east-1";
 const inventoryTable = "IncidentTriageDemoInventory";
 const inventoryRoleName = "IncidentTriageDemoAppInventoryRole";
+const inventoryDeniedRoleName = "IncidentTriageDemoAppInventoryDeniedRole";
 const inventoryPolicyName = "IncidentTriageDemoInventoryReadDeny";
 const inventoryRoleArn = `arn:aws:iam::${account}:role/${inventoryRoleName}`;
+const inventoryDeniedRoleArn = `arn:aws:iam::${account}:role/${inventoryDeniedRoleName}`;
 const inventoryPolicyArn = `arn:aws:iam::${account}:policy/${inventoryPolicyName}`;
 const inventoryTableArn = `arn:aws:dynamodb:${region}:${account}:table/${inventoryTable}`;
 const clientOptions = { maxAttempts: 1, region };
 const iam = new IAMClient(clientOptions);
 const dynamo = new DynamoDBClient(clientOptions);
+const manifestEndpoint = process.env.AWS_ENDPOINT_URL_S3 ?? process.env.AWS_ENDPOINT_URL;
+const s3 = new S3Client({ ...clientOptions, forcePathStyle: true, ...(manifestEndpoint ? { endpoint: manifestEndpoint } : {}) });
 const providerTimeout = () => ({ abortSignal: AbortSignal.timeout(4_000) });
 
 export interface InventoryPolicyTarget {
@@ -50,8 +53,55 @@ export interface InventoryAccessPolicyRead {
 
 export function expectedInventoryTarget(tableArn = inventoryTableArn, roleArn = inventoryRoleArn): InventoryPolicyTarget {
   if (tableArn !== inventoryTableArn) throw new Error("The Inventory table target is not the named demo table.");
-  if (roleArn !== inventoryRoleArn) throw new Error("The Inventory execution role target is invalid.");
+  if (roleArn !== inventoryRoleArn && roleArn !== inventoryDeniedRoleArn) throw new Error("The Inventory execution role target is invalid.");
   return { tableArn, roleArn };
+}
+
+export function expectedInventoryRoleArn(): string { return inventoryRoleArn; }
+export function expectedInventoryDeniedRoleArn(): string { return inventoryDeniedRoleArn; }
+export function expectedInventoryManifestBucket(): string {
+  return "cdk-evaltalk-assets-027224425948-us-east-1";
+}
+
+export async function readInventoryVariantsManifest(bucket: string, key: string): Promise<InventoryVariantsManifest> {
+  if (bucket !== expectedInventoryManifestBucket() || !/^releases\/app\/[0-9a-f]{40}\/inventory-variants\.json$/.test(key)) {
+    throw new Error("The Inventory variants manifest location is invalid.");
+  }
+  const result = await s3.send(new GetObjectCommand({ Bucket: bucket, Key: key }), providerTimeout());
+  let raw: string | undefined;
+  if (result.Body) {
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of result.Body as AsyncIterable<Uint8Array>) chunks.push(chunk);
+    raw = Buffer.concat(chunks).toString("utf8");
+  }
+  if (!raw || raw.length > 64_000) throw new Error("The Inventory variants manifest is unavailable.");
+  let value: unknown;
+  try { value = JSON.parse(raw); } catch { throw new Error("The Inventory variants manifest is invalid JSON."); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("The Inventory variants manifest is invalid.");
+  const input = value as Record<string, unknown>;
+  const sourceRevision = typeof input.sourceRevision === "string" && /^[0-9a-f]{40}$/.test(input.sourceRevision) ? input.sourceRevision : undefined;
+  const codeSha256 = typeof input.codeSha256 === "string" && input.codeSha256.length > 0 && input.codeSha256.length <= 256 ? input.codeSha256 : undefined;
+  if (input.schemaVersion !== 1 || !sourceRevision || input.functionName !== "IncidentTriageDemoInventory" ||
+      input.aliasName !== "live" || input.baselineMemoryMb !== 256 || !codeSha256 || !Array.isArray(input.variants) || input.variants.length !== 2) {
+    throw new Error("The Inventory variants manifest schema is invalid.");
+  }
+  const variants = input.variants.map((entry): InventoryVariantsManifest["variants"][number] | undefined => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
+    const item = entry as Record<string, unknown>;
+    const access = item.access === "healthy" || item.access === "denied" ? item.access : undefined;
+    const version = typeof item.version === "string" && /^[1-9]\d*$/.test(item.version) ? item.version : undefined;
+    const roleArn = item.roleArn === inventoryRoleArn || item.roleArn === inventoryDeniedRoleArn ? item.roleArn : undefined;
+    if (!access || item.memoryMb !== 256 || !version || !roleArn) return;
+    const expectedRole = access === "healthy" ? inventoryRoleArn : inventoryDeniedRoleArn;
+    if (roleArn !== expectedRole) return;
+    return { memoryMb: 256, access, version, roleArn };
+  });
+  if (variants.some((entry) => !entry) || new Set(variants.map((entry) => entry?.access)).size !== 2 ||
+      new Set(variants.map((entry) => entry?.version)).size !== 2) {
+    throw new Error("The Inventory variants manifest must contain one distinct healthy and denied pair.");
+  }
+  return { schemaVersion: 1, sourceRevision, functionName: "IncidentTriageDemoInventory", aliasName: "live",
+    baselineMemoryMb: 256, codeSha256, variants: variants as InventoryVariantsManifest["variants"] };
 }
 
 export function expectedInventoryPolicyArn(): string {
@@ -152,12 +202,14 @@ export function isExactInventoryPolicyDocument(document: InventoryPolicyDocument
     document.Statement[0].Resource === target.tableArn);
 }
 
-async function attachedToInventoryRole(): Promise<boolean> {
+async function attachedToInventoryRole(roleArn: string): Promise<boolean> {
+  const roleName = roleArn === inventoryRoleArn ? inventoryRoleName : roleArn === inventoryDeniedRoleArn ? inventoryDeniedRoleName : undefined;
+  if (!roleName) throw new Error("The Inventory role target is invalid.");
   let marker: string | undefined;
   const seenMarkers = new Set<string>();
   for (let page = 0; page < 10; page++) {
     const response = await iam.send(new ListAttachedRolePoliciesCommand({
-      RoleName: inventoryRoleName,
+      RoleName: roleName,
       MaxItems: 100,
       ...(marker ? { Marker: marker } : {}),
     }), providerTimeout());
@@ -176,7 +228,7 @@ async function attachedToInventoryRole(): Promise<boolean> {
 export async function readInventoryAccessPolicy(target = expectedInventoryTarget()): Promise<InventoryAccessPolicyRead> {
   const [policyResult, attached] = await Promise.all([
     iam.send(new GetPolicyCommand({ PolicyArn: inventoryPolicyArn }), providerTimeout()),
-    attachedToInventoryRole(),
+    attachedToInventoryRole(target.roleArn),
   ]);
   const policy = policyResult.Policy;
   if (!policy || policy.Arn !== inventoryPolicyArn || policy.PolicyName !== inventoryPolicyName) {
@@ -215,20 +267,4 @@ export function sameInventoryPolicyVersion(actual: InventoryAccessPolicyObservat
   return actual.policyArn === expected.policyArn && actual.policyName === expected.policyName &&
     actual.roleArn === expected.roleArn && actual.defaultVersionId === expected.defaultVersionId &&
     actual.documentMatches === true;
-}
-
-export async function attachInventoryPolicy(target = expectedInventoryTarget()): Promise<void> {
-  await iam.send(new AttachRolePolicyCommand({ RoleName: inventoryRoleName, PolicyArn: inventoryPolicyArn }), providerTimeout());
-}
-
-export async function detachInventoryPolicy(target = expectedInventoryTarget()): Promise<void> {
-  await iam.send(new DetachRolePolicyCommand({ RoleName: inventoryRoleName, PolicyArn: inventoryPolicyArn }), providerTimeout());
-}
-
-export function isAttachConflict(error: unknown): boolean {
-  return error instanceof Error && ["EntityAlreadyExists", "EntityAlreadyExistsException", "InvalidInput"].includes(error.name);
-}
-
-export function isDetachConflict(error: unknown): boolean {
-  return error instanceof Error && ["NoSuchEntity", "NoSuchEntityException"].includes(error.name);
 }

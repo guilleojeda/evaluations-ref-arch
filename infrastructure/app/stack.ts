@@ -30,8 +30,11 @@ const CHECKOUT_FUNCTION_NAME = "IncidentTriageDemoCheckout";
 const INVENTORY_FUNCTION_NAME = "IncidentTriageDemoInventory";
 const CHECKOUT_ROLE_NAME = "IncidentTriageDemoAppCheckoutRole";
 const INVENTORY_ROLE_NAME = "IncidentTriageDemoAppInventoryRole";
+const INVENTORY_DENIED_ROLE_NAME = "IncidentTriageDemoAppInventoryDeniedRole";
 const CHECKOUT_BOUNDARY_ARN = "arn:aws:iam::027224425948:policy/IncidentTriageDemoAppCheckoutRuntimeBoundary";
 const INVENTORY_BOUNDARY_ARN = "arn:aws:iam::027224425948:policy/IncidentTriageDemoAppInventoryRuntimeBoundary";
+const INVENTORY_READ_DENY_POLICY_ARN = "arn:aws:iam::027224425948:policy/IncidentTriageDemoInventoryReadDeny";
+const INVENTORY_VARIANTS_MANIFEST_BUCKET = "cdk-evaltalk-assets-027224425948-us-east-1";
 const ORDERS_TABLE_NAME = "IncidentTriageDemoOrders";
 const INVENTORY_TABLE_NAME = "IncidentTriageDemoInventory";
 const CHECKOUT_LOG_GROUP_NAME = `/aws/lambda/${CHECKOUT_FUNCTION_NAME}`;
@@ -162,6 +165,21 @@ export class AppStack extends DemoStack {
       actions: ["dynamodb:GetItem"],
       resources: [inventoryTable.tableArn],
     }));
+    const inventoryDeniedRole = new iam.Role(this, "InventoryDeniedRole", {
+      roleName: INVENTORY_DENIED_ROLE_NAME,
+      assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"),
+      permissionsBoundary: iam.ManagedPolicy.fromManagedPolicyArn(this, "InventoryDeniedRuntimeBoundary", INVENTORY_BOUNDARY_ARN),
+      description: "Prepared denied read role for the Incident Triage inventory Lambda.",
+    });
+    inventoryLogGroup.grantWrite(inventoryDeniedRole);
+    inventoryDeniedRole.addToPolicy(new iam.PolicyStatement({
+      sid: "ReadSeededProduct",
+      actions: ["dynamodb:GetItem"],
+      resources: [inventoryTable.tableArn],
+    }));
+    inventoryDeniedRole.addManagedPolicy(
+      iam.ManagedPolicy.fromManagedPolicyArn(this, "InventoryReadDenyPolicy", INVENTORY_READ_DENY_POLICY_ARN),
+    );
 
     const backendDirectory = resolve(process.cwd(), ".artifacts/app/backend");
     for (const artifact of ["index.mjs", "inventory.mjs"]) {
@@ -368,6 +386,11 @@ export class AppStack extends DemoStack {
     new CfnOutput(this, "StageAlarmName", { value: stageAlarm.ref });
     new CfnOutput(this, "StageAlarmArn", { value: stageAlarm.attrArn });
     new CfnOutput(this, "InventoryRoleArn", { value: inventoryRole.roleArn });
+    new CfnOutput(this, "InventoryDeniedRoleArn", { value: inventoryDeniedRole.roleArn });
+    new CfnOutput(this, "InventoryVariantsManifestBucket", { value: INVENTORY_VARIANTS_MANIFEST_BUCKET });
+    new CfnOutput(this, "InventoryVariantsManifestKey", {
+      value: Fn.join("", ["releases/app/", sourceRevision.valueAsString, "/inventory-variants.json"]),
+    });
 
     distribution.node.addDependency(defaultStage);
   }

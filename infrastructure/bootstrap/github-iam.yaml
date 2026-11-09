@@ -54,6 +54,14 @@ Resources:
               - s3:GetObject
               - s3:PutObject
               - lambda:GetAlias
+              - lambda:GetFunctionConfiguration
+              - lambda:ListVersionsByFunction
+              - lambda:PublishVersion
+              - lambda:UpdateFunctionConfiguration
+              - iam:GetRole
+              - iam:ListAttachedRolePolicies
+              - iam:GetPolicy
+              - iam:GetPolicyVersion
               - ssm:GetParameter
               - ssm:GetParameters
               - sts:GetCallerIdentity
@@ -87,6 +95,8 @@ Resources:
             Action: iam:PassRole
             NotResource:
               - Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-evaltalk-cfn-exec-role-${AWS::AccountId}-${AWS::Region}
+              - Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/IncidentTriageDemoAppInventoryRole
+              - Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/IncidentTriageDemoAppInventoryDeniedRole
           # CloudFormation retrieves the checked JSON template from the
           # SSE-KMS bootstrap bucket using the deployment caller's authority.
           - Sid: DenyDecryptOutsideBootstrapS3Key
@@ -106,6 +116,7 @@ Resources:
             NotResource:
               - arn:aws:s3:::incident-triage-demo-web-027224425948-us-east-1/assets/*
               - arn:aws:s3:::incident-triage-demo-web-027224425948-us-east-1/index.html
+              - arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/releases/app/*/inventory-variants.json
           - Sid: PublishPhase1AppWebBucket
             Effect: Allow
             Action:
@@ -142,6 +153,49 @@ Resources:
             Effect: Allow
             Action: sts:GetCallerIdentity
             Resource: '*'
+          - Sid: PrepareInventoryReleaseVariants
+            Effect: Allow
+            Action:
+              - lambda:GetFunctionConfiguration
+              - lambda:GetAlias
+              - lambda:ListVersionsByFunction
+              - lambda:PublishVersion
+              - lambda:UpdateFunctionConfiguration
+            Resource:
+              - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory
+              - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory:*
+          - Sid: ReadInventoryReleaseRolesAndPolicy
+            Effect: Allow
+            Action:
+              - iam:GetRole
+              - iam:GetPolicy
+              - iam:GetPolicyVersion
+              - iam:ListAttachedRolePolicies
+            Resource:
+              - arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryRole
+              - arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryDeniedRole
+              - arn:aws:iam::027224425948:policy/IncidentTriageDemoInventoryReadDeny
+          - Sid: PassInventoryReleaseRoles
+            Effect: Allow
+            Action: iam:PassRole
+            Resource:
+              - arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryRole
+              - arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryDeniedRole
+            Condition:
+              StringEquals:
+                iam:PassedToService: lambda.amazonaws.com
+          - Sid: ReadInventoryReleaseManifestBucket
+            Effect: Allow
+            Action:
+              - s3:GetBucketLocation
+              - s3:ListBucket
+            Resource: arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1
+          - Sid: PublishInventoryReleaseManifest
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:PutObject
+            Resource: arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/releases/app/*/inventory-variants.json
 
   GitHubOidcProvider:
     Condition: CreateGitHubOidcProvider

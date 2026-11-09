@@ -102,8 +102,8 @@ jobs:
       - name: Run app release acceptance checks
         if: matrix.component == 'app'
         run: |
-          node --test tests/phase1-deploy.test.mjs tests/phase1-checkout-handler.test.mjs
-          node --test --test-name-pattern="^app alarm" tests/phase3-inventory-denial-infrastructure.test.mjs
+          node --test tests/phase1-deploy.test.mjs tests/phase1-checkout-handler.test.mjs tests/phase3-inventory-version-preparation.test.mjs
+          node --test --test-name-pattern="^app " tests/phase3-inventory-denial-infrastructure.test.mjs
       - name: Run controller release acceptance checks
         if: matrix.component == 'controller'
         run: |

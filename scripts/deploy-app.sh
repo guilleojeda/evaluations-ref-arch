@@ -61,6 +61,64 @@ verify_aliases() {
   done
 }
 
+prepare_inventory_versions() {
+  local function_name healthy_version healthy_role denied_role manifest_bucket manifest_key table_name
+  function_name="$(stack_output InventoryFunctionName <<<"$stack_state")"
+  healthy_version="$(stack_output InventoryLiveVersion <<<"$stack_state")"
+  healthy_role="$(stack_output InventoryRoleArn <<<"$stack_state")"
+  denied_role="$(stack_output InventoryDeniedRoleArn <<<"$stack_state")"
+  manifest_bucket="$(stack_output InventoryVariantsManifestBucket <<<"$stack_state")"
+  manifest_key="$(stack_output InventoryVariantsManifestKey <<<"$stack_state")"
+  table_name="$(stack_output InventoryTableName <<<"$stack_state")"
+  [[ -n "$function_name" && "$healthy_version" =~ ^[1-9][0-9]*$ &&
+     "$healthy_role" =~ ^arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryRole$ &&
+     "$denied_role" =~ ^arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryDeniedRole$ &&
+     "$manifest_bucket" == cdk-evaltalk-assets-027224425948-us-east-1 &&
+     "$manifest_key" == "releases/app/$GITHUB_SHA/inventory-variants.json" &&
+     "$table_name" == IncidentTriageDemoInventory ]]
+  AWS_ACCESS_KEY_ID="$access_key" AWS_SECRET_ACCESS_KEY="$secret_key" AWS_SESSION_TOKEN="$session_token" \
+    AWS_REGION="$AWS_REGION" AWS_ACCOUNT_ID="$AWS_ACCOUNT_ID" \
+    node scripts/prepare-inventory-versions.mjs \
+      --function-name "$function_name" \
+      --source-revision "$GITHUB_SHA" \
+      --healthy-version "$healthy_version" \
+      --healthy-role-arn "$healthy_role" \
+      --denied-role-arn "$denied_role" \
+      --baseline-memory "$(stack_output InventoryMemorySize <<<"$stack_state")" \
+      --inventory-table-arn "arn:aws:dynamodb:$AWS_REGION:$AWS_ACCOUNT_ID:table/$table_name" \
+      --manifest-bucket "$manifest_bucket" \
+      --manifest-key "$manifest_key"
+}
+
+restore_previous_inventory_staging() {
+  local previous_revision function_name healthy_version healthy_role denied_role table_name
+  previous_revision="$(stack_output SourceRevision <<<"$stack_state")"
+  denied_role="$(stack_output InventoryDeniedRoleArn <<<"$stack_state")"
+  # Pre-Phase-3 app stacks have no denied-role output and cannot have left
+  # prepared staging behind; skip recovery safely for the first app release.
+  [[ -n "$denied_role" ]] || return 0
+  function_name="$(stack_output InventoryFunctionName <<<"$stack_state")"
+  healthy_version="$(stack_output InventoryLiveVersion <<<"$stack_state")"
+  healthy_role="$(stack_output InventoryRoleArn <<<"$stack_state")"
+  table_name="$(stack_output InventoryTableName <<<"$stack_state")"
+  [[ "$previous_revision" =~ ^[a-f0-9]{40}$ && "$function_name" == IncidentTriageDemoInventory &&
+     "$healthy_version" =~ ^[1-9][0-9]*$ &&
+     "$healthy_role" =~ ^arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryRole$ &&
+     "$denied_role" =~ ^arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryDeniedRole$ &&
+     "$table_name" == IncidentTriageDemoInventory ]]
+  AWS_ACCESS_KEY_ID="$access_key" AWS_SECRET_ACCESS_KEY="$secret_key" AWS_SESSION_TOKEN="$session_token" \
+    AWS_REGION="$AWS_REGION" AWS_ACCOUNT_ID="$AWS_ACCOUNT_ID" \
+    node scripts/prepare-inventory-versions.mjs \
+      --restore-staging-only true \
+      --function-name "$function_name" \
+      --source-revision "$previous_revision" \
+      --healthy-version "$healthy_version" \
+      --healthy-role-arn "$healthy_role" \
+      --denied-role-arn "$denied_role" \
+      --baseline-memory "$(stack_output InventoryMemorySize <<<"$stack_state")" \
+      --inventory-table-arn "arn:aws:dynamodb:$AWS_REGION:$AWS_ACCOUNT_ID:table/$table_name"
+}
+
 # Reconcile an earlier job that stopped while CloudFormation was still working.
 reconcile_until=$((SECONDS + 720))
 while :; do
@@ -75,9 +133,15 @@ while :; do
   esac
 done
 
+# Reconcile a prior release's recognized role-only staging before preparing a
+# new CloudFormation change set. The helper uses the previous revision's
+# healthy qualified version and a fresh $LATEST revision guard.
+restore_previous_inventory_staging
+
 deployed_revision="$(stack_output SourceRevision <<<"$stack_state")"
 if [[ "$deployed_revision" == "$GITHUB_SHA" ]]; then
   verify_aliases
+  prepare_inventory_versions
   if entry="$(deploy_aws s3api head-object --bucket "$bucket" --key index.html \
       --expected-bucket-owner "$AWS_ACCOUNT_ID" 2>"$aws_error")"; then
     if [[ "$(jq -r '.Metadata.sourcerevision // ""' <<<"$entry")" == "$GITHUB_SHA" ]]; then
@@ -175,6 +239,10 @@ else
     sleep 15
   done
   verify_aliases
+fi
+
+if [[ "$deployed_revision" != "$GITHUB_SHA" ]]; then
+  prepare_inventory_versions
 fi
 
 [[ "$(stack_output WebBucketName <<<"$stack_state")" == "$bucket" ]]

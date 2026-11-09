@@ -94,6 +94,49 @@ export interface InventoryAccessPolicyObservation {
   observedAt: string;
 }
 
+export type InventoryAccess = "healthy" | "denied";
+
+export interface InventoryVariant {
+  memoryMb: number;
+  access: InventoryAccess;
+  version: string;
+  roleArn: string;
+}
+
+export interface InventoryVariantsManifest {
+  schemaVersion: 1;
+  sourceRevision: string;
+  functionName: string;
+  aliasName: string;
+  baselineMemoryMb: number;
+  codeSha256: string;
+  variants: InventoryVariant[];
+}
+
+export interface InventoryAliasObservation {
+  functionName: string;
+  aliasName: string;
+  aliasArn: string;
+  functionVersion: string;
+  revisionId: string;
+  routingWeighted: boolean;
+  observedAt: string;
+}
+
+export interface InventoryVersionObservation {
+  version: string;
+  aliasArn: string;
+  memory: number;
+  timeout: number;
+  cap: number | "unreserved";
+  codeSha256: string;
+  role: string;
+  aliasRevision: string;
+  access: InventoryAccess;
+  sourceRevision: string;
+  observedAt: string;
+}
+
 export type CheckpointStatus =
   | "pending"
   | "stored"
@@ -112,6 +155,8 @@ export interface ConfigurationCheckpoint {
   inventoryMemory: number;
   inventoryTimeout: number;
   inventoryCap: number | "unreserved";
+  inventoryAliasBefore: InventoryAliasObservation;
+  inventoryAliasAtCapture: InventoryAliasObservation;
   tablePolicyBefore: InventoryTablePolicyObservation;
   inventoryPolicyBefore: InventoryAccessPolicyObservation;
   inventoryPolicyAtCapture: InventoryAccessPolicyObservation;
@@ -140,14 +185,17 @@ export interface LegacyConfigurationCheckpoint {
 
 export interface IncidentState {
   kind: "inventory_access_denied";
-  mechanism: "iam-managed-policy";
+  mechanism: "lambda-alias";
   activationActionId: string;
   appRevision?: string;
   checkpoint?: ConfigurationCheckpoint;
   policyBefore: InventoryAccessPolicyObservation;
   policy: InventoryAccessPolicyObservation;
-  attachOutcome: "pending" | "acknowledged" | "ambiguous" | "conflict";
-  attachmentOwnership: "controller" | "unknown";
+  aliasBefore: InventoryAliasObservation;
+  alias: InventoryAliasObservation;
+  target: InventoryVariant;
+  active: "denied" | "healthy" | "unknown";
+  aliasOutcome: "pending" | "acknowledged" | "ambiguous" | "conflict";
   restoreActionId?: string;
   updatedAt: string;
 }
@@ -155,7 +203,7 @@ export interface IncidentState {
 /** Existing inactive table-policy records remain readable and are archived intact on replacement. */
 export interface LegacyIncidentState {
   kind: "inventory_access_denied";
-  mechanism?: never;
+  mechanism?: "iam-managed-policy" | "table-resource-policy";
   activationActionId: string;
   appRevision?: string;
   checkpoint?: LegacyConfigurationCheckpoint;
@@ -182,6 +230,11 @@ export interface Action {
   traffic?: Record<Profile, Counters>;
   requests: RequestRecord[];
   baseline?: Baseline;
+  inventorySwitch?: {
+    before: InventoryAliasObservation;
+    target: InventoryVariant;
+    after?: InventoryAliasObservation;
+  };
   configurationOutcome?: "applied" | "no_change" | "failed" | "unknown";
   error?: string;
 }

@@ -14,11 +14,14 @@ The setup has three deliberately separate layers:
    inspection and the scoped service actions CloudFormation needs for the app;
    the second covers the controller stack; and the third keeps the Phase 3
    alarm and evidence-bucket provisioning grants separate from the near-limit
-   app policy. It also creates the unattached
+   app policy. It also creates the
    `IncidentTriageDemoInventoryReadDeny` managed policy. That policy has one
-   explicit `dynamodb:GetItem` Deny on the Inventory table; only the controller
-   worker can attach or detach it on the exact Inventory Lambda role. It is not
-   attached to the CloudFormation execution role. The same stack owns the four
+   explicit `dynamodb:GetItem` Deny on the Inventory table; the app stack
+   permanently attaches it to the named denied Inventory role. The controller
+   worker reads both static role states and never attaches or detaches policies.
+   The Phase 3 policy gives the app CloudFormation execution path only the
+   scoped denied-role creation, attachment and PassRole grants. It is not
+   attached to any runtime role. The same stack owns the four
    app/controller runtime permissions boundaries. The app and controller
    CloudFormation execution role cannot edit those boundaries.
 2. The standard CDK v2 bootstrap command creates stack
@@ -31,8 +34,10 @@ The setup has three deliberately separate layers:
    identity policy contains only `sts:AssumeRole` for the standard CDK deploy
    and file-publishing roles. The same stack attaches the deploy guard to
    the existing `cdk-evaltalk-deploy-role-*`. It limits the standard role to
-   bootstrap inspection and the actions needed to release the named app and controller stacks
-   and publish checked app static assets. Keep the setup order below.
+   bootstrap inspection and the actions needed to release the named app and
+   controller stacks, prepare the two baseline Inventory versions, and publish
+   their immutable JSON manifest into the existing CDK asset bucket. Keep the
+   setup order below.
 
 ## Before any mutation
 
@@ -73,7 +78,7 @@ arn:aws:iam::027224425948:policy/IncidentTriageDemoPhase3CfnExecution
 ```
 
 The administrator-managed Deny policy ARN is separate and is not passed to
-CDK bootstrap or attached to the CloudFormation execution role:
+CDK bootstrap or attached to a runtime role:
 
 ```text
 arn:aws:iam::027224425948:policy/IncidentTriageDemoInventoryReadDeny
@@ -159,9 +164,20 @@ repo:guilleojeda@18320860/evaluations-ref-arch@1411023195:workflow_ref:guilleoje
 ```
 
 It also requires the separate `repository_id=1411023195`,
-`ref=refs/heads/main`, and `aud=sts.amazonaws.com` conditions. The role's
-identity policy does not grant S3, CloudFormation, IAM, or product-service
-access directly; GitHub first assumes the standard CDK roles.
+`ref=refs/heads/main`, and `aud=sts.amazonaws.com` conditions. The GitHub role
+only assumes the standard CDK roles. The deploy role's scoped guard permits
+the release helper's Lambda role-only stage/publish/restore operations, exact
+role and policy reads, and conditional manifest publication; it cannot publish
+outside the revision-scoped manifest prefix or pass an unrelated role.
+
+The app release script runs `scripts/prepare-inventory-versions.mjs` after the
+app stack is healthy. It verifies the healthy `live` alias, stages only the
+denied role with the observed `$LATEST` revision, publishes with the observed
+code hash and revision, immediately restores `$LATEST` to the healthy role,
+checks both static policy states, and then writes
+`releases/app/<SourceRevision>/inventory-variants.json` with explicit
+`AES256` server-side encryption. A matching existing object is reused only
+when its bytes are identical; a conflicting object fails the release.
 
 ## Pin the first app release's resource IDs
 
