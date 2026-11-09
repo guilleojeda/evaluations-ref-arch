@@ -27,6 +27,8 @@ The setup has three deliberately separate layers:
    app/controller runtime permissions boundaries and separate runtime and
    alarm-adapter boundaries. The product-stack CloudFormation execution roles
    cannot edit those boundaries.
+   Creation-time tagging requires the project/component tags and target Region;
+   workload identity tags cover only the `IncidentTriageDemoAgent-*` prefix.
 2. The standard CDK v2 bootstrap command creates stack
    `IncidentTriageDemoBootstrap` with qualifier `evaltalk`. Its CloudFormation
    execution role receives all four policies through
@@ -57,6 +59,40 @@ aws sts get-caller-identity --profile "$AWS_PROFILE" --region "$AWS_REGION"
 
 The returned account must be `027224425948`. Do not continue if the named
 profile is missing or the caller is different.
+
+## One-time AgentCore Runtime Identity account prerequisite
+
+Before the first agent release, use the verified administrator to check for
+the AWS-managed Runtime Identity service-linked role:
+
+```sh
+aws iam get-role \
+  --profile "$AWS_PROFILE" \
+  --region "$AWS_REGION" \
+  --role-name AWSServiceRoleForBedrockAgentCoreRuntimeIdentity \
+  --query 'Role.Arn' --output text
+```
+
+The expected ARN is
+`arn:aws:iam::027224425948:role/aws-service-role/runtime-identity.bedrock-agentcore.amazonaws.com/AWSServiceRoleForBedrockAgentCoreRuntimeIdentity`.
+If it is present, preserve it and continue. Only if the check returns
+`NoSuchEntity`, create this exact service-linked role as the administrator,
+then repeat the check and confirm the ARN:
+
+```sh
+aws iam create-service-linked-role \
+  --profile "$AWS_PROFILE" \
+  --region "$AWS_REGION" \
+  --aws-service-name runtime-identity.bedrock-agentcore.amazonaws.com
+```
+
+For any other error, resolve the administrative access or account check before
+continuing. This one-time account setup creates only the Runtime Identity
+service-linked role, without provisioning other roles or AgentCore network or
+instances resources. AWS can create this role during Runtime creation or
+update, but the scoped CI policies do not grant service-linked-role creation.
+The role is managed by AWS; it does not add authority to the agent execution
+role. See [AgentCore service-linked roles](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/service-linked-roles.html).
 
 ## 1. Provision the scoped execution policy
 

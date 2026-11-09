@@ -2,7 +2,9 @@
 from __future__ import annotations
 import base64
 import copy
+from fnmatch import fnmatchcase
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -76,11 +78,15 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual([], self.adapter.updates)
 
 class ReleaseTemplateTests(unittest.TestCase):
-    def test_runtime_creation_dependencies_use_unnamed_arns_without_widening_ongoing_actions(self):
+    @staticmethod
+    def agent_policy():
         class Loader(yaml.SafeLoader): pass
         Loader.add_multi_constructor("!", lambda loader, tag, node: {tag: loader.construct_scalar(node)})
         template = yaml.load((Path(__file__).parents[1] / "infrastructure/bootstrap/phase0-cfn-execution-policy.yaml").read_text(), Loader=Loader)
-        statements = template["Resources"]["IncidentTriageDemoAgentCfnExecution"]["Properties"]["PolicyDocument"]["Statement"]
+        return template["Resources"]["IncidentTriageDemoAgentCfnExecution"]["Properties"]["PolicyDocument"]
+
+    def test_runtime_creation_dependencies_use_unnamed_arns_without_widening_ongoing_actions(self):
+        statements = self.agent_policy()["Statement"]
         creation = next(s for s in statements if s["Sid"] == "CreateRuntimeDependencies")
         self.assertEqual({"bedrock-agentcore:CreateAgentRuntimeEndpoint", "bedrock-agentcore:CreateWorkloadIdentity"}, set(creation["Action"]))
         self.assertIn("arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/*", creation["Resource"])
@@ -88,7 +94,10 @@ class ReleaseTemplateTests(unittest.TestCase):
         self.assertEqual({"aws:RequestedRegion": "us-east-1", "aws:RequestTag/Project": "IncidentTriageDemo", "aws:RequestTag/Component": "agent"}, creation["Condition"]["StringEquals"])
         tags = next(s for s in statements if s["Sid"] == "TagRuntimeDuringCreation")
         self.assertEqual("bedrock-agentcore:TagResource", tags["Action"])
-        self.assertEqual("arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/*", tags["Resource"])
+        self.assertEqual([
+            "arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/*",
+            "arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default/workload-identity/IncidentTriageDemoAgent-*",
+        ], tags["Resource"])
         self.assertEqual(creation["Condition"], tags["Condition"])
         outer_create = next(s for s in statements if s["Sid"] == "CreateTaggedAgent")
         self.assertEqual(creation["Condition"], outer_create["Condition"])
@@ -100,6 +109,36 @@ class ReleaseTemplateTests(unittest.TestCase):
                 self.assertNotIn("*", resources)
                 self.assertNotIn("arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/*", resources)
                 self.assertNotIn("arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default/workload-identity/*", resources)
+
+    def test_workload_identity_tag_scope_excludes_other_names_accounts_regions_and_untag(self):
+        statements = self.agent_policy()["Statement"]
+        def resource_matches(action, resource):
+            # Check the union of resource grants, even before their conditions.
+            for statement in statements:
+                actions = statement["Action"] if isinstance(statement["Action"], list) else [statement["Action"]]
+                resources = statement["Resource"] if isinstance(statement["Resource"], list) else [statement["Resource"]]
+                if statement["Effect"] == "Allow" and any(fnmatchcase(action, pattern) for pattern in actions):
+                    if any(fnmatchcase(resource, pattern) for pattern in resources): return True
+            return False
+
+        identity = "arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default/workload-identity/IncidentTriageDemoAgent-JRWneh9GXf"
+        self.assertTrue(resource_matches("bedrock-agentcore:TagResource", identity))
+        for resource in [
+            identity.replace("IncidentTriageDemoAgent-JRWneh9GXf", "OtherAgent-JRWneh9GXf"),
+            identity.replace("IncidentTriageDemoAgent-", "IncidentTriageDemoAgentOther-"),
+            identity.replace("IncidentTriageDemoAgent-JRWneh9GXf", "IncidentTriageDemoAgent"),
+            identity.replace("027224425948", "123456789012"),
+            identity.replace("us-east-1", "us-west-2"),
+            identity.replace("directory/default/", "directory/other/"),
+            identity.rsplit("/workload-identity/", 1)[0],
+        ]:
+            with self.subTest(resource=resource):
+                self.assertFalse(resource_matches("bedrock-agentcore:TagResource", resource))
+        self.assertFalse(resource_matches("bedrock-agentcore:UntagResource", identity))
+
+    def test_agent_execution_policy_fits_managed_policy_quota(self):
+        size = len(json.dumps(self.agent_policy(), separators=(",", ":")))
+        self.assertLessEqual(size, 6144, f"Agent managed policy uses {size}/6144 characters")
 
     def test_bootstrap_templates_do_not_use_cloudformation_forbidden_yaml_aliases(self):
         for name in ["github-iam.yaml", "phase0-cfn-execution-policy.yaml"]:
