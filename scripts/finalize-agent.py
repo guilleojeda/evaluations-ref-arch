@@ -81,9 +81,21 @@ def finalize(control, lambdas, xray, *, runtime_id, revision, artifact_sha256, a
     desired = {"AGENT_RUNTIME_ARN": runtime_arn, "AGENT_ENDPOINT_NAME": "faulty", "AGENT_RUNTIME_VERSION": version,
                "AGENT_ALARM_ARN": "arn:aws:cloudwatch:us-east-1:027224425948:alarm:IncidentTriageDemoAppStage5xx",
                "AGENT_SOURCE_REVISION": revision, "AGENT_ARTIFACT_SHA256": artifact_sha256}
-    actual = adapter.get("Environment", {}).get("Variables", {})
-    if {k: v for k, v in actual.items() if k != "AGENT_RUNTIME_VERSION"} != {k: v for k, v in desired.items() if k != "AGENT_RUNTIME_VERSION"}:
-        raise RuntimeError("Adapter configuration differs from checked release")
+    environment = adapter.get("Environment", {})
+    if environment.get("Error"):
+        # The service message may contain private authorization details.
+        raise RuntimeError("Adapter environment read failed: " + environment["Error"].get("ErrorCode", "Unknown"))
+    actual = environment.get("Variables", {})
+    checked = {k: v for k, v in desired.items() if k != "AGENT_RUNTIME_VERSION"}
+    observed = {k: v for k, v in actual.items() if k != "AGENT_RUNTIME_VERSION"}
+    if observed != checked:
+        # Report field names, never environment values.
+        diagnostics = {
+            "missingKeys": sorted(checked.keys() - observed.keys()),
+            "unexpectedKeys": sorted(observed.keys() - checked.keys()),
+            "changedKeys": sorted(k for k in checked.keys() & observed.keys() if observed[k] != checked[k]),
+        }
+        raise RuntimeError("Adapter configuration differs from checked release: " + json.dumps(diagnostics, sort_keys=True))
     if actual != desired:
         lambdas.update_function_configuration(FunctionName=name, RevisionId=adapter["RevisionId"], Environment={"Variables": desired})
         adapter = wait_ready(lambda: lambdas.get_function_configuration(FunctionName=name), status_key="LastUpdateStatus", success="Successful", accept=lambda value: value.get("Environment", {}).get("Variables") == desired)

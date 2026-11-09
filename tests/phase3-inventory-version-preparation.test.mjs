@@ -245,12 +245,12 @@ test('deploy script restores recognized staging before any new CloudFormation ch
   assert.match(deploy, /--restore-staging-only true/);
 });
 
-test('deploy guard permits only the exact Inventory Lambda environment decrypt context', () => {
+test('deploy guard permits only the exact Inventory and alarm-adapter Lambda environment decrypt contexts', () => {
   const template = readFileSync(new URL('../infrastructure/bootstrap/github-iam.yaml', import.meta.url), 'utf8');
-  assert.match(template, /- kms:Decrypt\s+- kms:DescribeKey\s+- s3:GetBucketLocation/);
+  assert.match(template, /- kms:Decrypt\s+- kms:Encrypt\s+- kms:DescribeKey\s+- s3:GetBucketLocation/);
   assert.match(template, /Sid: DenyBootstrapKeyOutsideBootstrapTemplates[\s\S]*?Resource: arn:aws:kms:us-east-1:027224425948:key\/b292b95c-709f-42c6-aa42-b934ba2c6f07[\s\S]*?kms:EncryptionContext:aws:s3:arn:/);
-  assert.match(template, /Sid: DenyInventoryKeyOutsideLambdaEnvironment[\s\S]*?Resource: arn:aws:kms:us-east-1:027224425948:key\/9d894f12-dc33-4332-bb3e-df489928914b[\s\S]*?kms:EncryptionContext:aws:lambda:FunctionArn:\s+arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory/);
-  assert.match(template, /Sid: DenyDescribeKeyOutsideInventoryEnvironmentKey[\s\S]*?Action: kms:DescribeKey[\s\S]*?NotResource: arn:aws:kms:us-east-1:027224425948:key\/9d894f12-dc33-4332-bb3e-df489928914b/);
-  assert.match(template, /Sid: DenyDescribeInventoryKeyOutsideLambdaService[\s\S]*?Action: kms:DescribeKey[\s\S]*?Resource: arn:aws:kms:us-east-1:027224425948:key\/9d894f12-dc33-4332-bb3e-df489928914b[\s\S]*?kms:ViaService:\s+lambda.us-east-1.amazonaws.com/);
-  assert.doesNotMatch(template, /kms:EncryptionContext:aws:lambda:FunctionArn:\s+arn:aws:lambda:us-east-1:027224425948:function:\*/);
+  assert.match(template, /Sid: DenyLambdaKeyOutsideApprovedEnvironments[\s\S]*?Resource: arn:aws:kms:us-east-1:027224425948:key\/9d894f12-dc33-4332-bb3e-df489928914b[\s\S]*?kms:EncryptionContext:aws:lambda:FunctionArn:\s+- arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory\s+- arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter/);
+  assert.match(template, /Sid: DenyEncryptOrDescribeOtherKeys[\s\S]*?Action:\s+- kms:DescribeKey\s+- kms:Encrypt[\s\S]*?NotResource: arn:aws:kms:us-east-1:027224425948:key\/9d894f12-dc33-4332-bb3e-df489928914b/);
+  assert.match(template, /Sid: DenyEncryptOrDescribeOutsideLambda[\s\S]*?Action:\s+- kms:DescribeKey\s+- kms:Encrypt[\s\S]*?Resource: arn:aws:kms:us-east-1:027224425948:key\/9d894f12-dc33-4332-bb3e-df489928914b[\s\S]*?kms:ViaService:\s+lambda.us-east-1.amazonaws.com/);
+  assert.doesNotMatch(template, /kms:EncryptionContext:aws:lambda:FunctionArn:\s+(?:-\s*)?arn:aws:lambda:us-east-1:027224425948:function:\*/);
 });
