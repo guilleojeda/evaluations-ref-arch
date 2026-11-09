@@ -62,11 +62,14 @@ def finalize(control, lambdas, xray, *, runtime_id, revision, artifact_sha256, a
     validate(current)
     if current.get("metadataConfiguration", {}).get("requireMMDSV2") is not True:
         raise RuntimeError("Native MMDSv2 readback failed")
+    def endpoint_pins_version(value):
+        # Stable READY responses may omit the optional targetVersion field.
+        return value.get("status") == "READY" and value.get("liveVersion") == version and value.get("targetVersion", version) == version
     endpoint = wait_ready(lambda: control.get_agent_runtime_endpoint(agentRuntimeId=runtime_id, endpointName="faulty"))
-    if endpoint.get("liveVersion") != version or endpoint.get("targetVersion") != version:
+    if not endpoint_pins_version(endpoint):
         control.update_agent_runtime_endpoint(agentRuntimeId=runtime_id, endpointName="faulty", agentRuntimeVersion=version, clientToken=f"{revision}-pin-{version}")
-        endpoint = wait_ready(lambda: control.get_agent_runtime_endpoint(agentRuntimeId=runtime_id, endpointName="faulty"), accept=lambda value: value.get("liveVersion") == version and value.get("targetVersion") == version)
-    if endpoint.get("liveVersion") != version or endpoint.get("targetVersion") != version or endpoint.get("agentRuntimeArn") != runtime_arn:
+        endpoint = wait_ready(lambda: control.get_agent_runtime_endpoint(agentRuntimeId=runtime_id, endpointName="faulty"), accept=endpoint_pins_version)
+    if not endpoint_pins_version(endpoint) or endpoint.get("agentRuntimeArn") != runtime_arn:
         raise RuntimeError("Endpoint does not pin the verified final version")
     destination = xray.get_trace_segment_destination()
     if destination.get("Destination") != "CloudWatchLogs" or destination.get("Status") != "ACTIVE":
@@ -89,7 +92,7 @@ def finalize(control, lambdas, xray, *, runtime_id, revision, artifact_sha256, a
     final = control.get_agent_runtime(agentRuntimeId=runtime_id, agentRuntimeVersion=version)
     validate(final)
     endpoint = control.get_agent_runtime_endpoint(agentRuntimeId=runtime_id, endpointName="faulty")
-    if final.get("metadataConfiguration", {}).get("requireMMDSV2") is not True or endpoint.get("status") != "READY" or endpoint.get("liveVersion") != version or endpoint.get("targetVersion") != version:
+    if final.get("metadataConfiguration", {}).get("requireMMDSV2") is not True or not endpoint_pins_version(endpoint):
         raise RuntimeError("Endpoint changed during finalization")
     return {"sourceRevision": revision, "runtimeArn": runtime_arn, "runtimeVersion": version,
             "endpointArn": endpoint["agentRuntimeEndpointArn"], "endpointName": "faulty", "artifactSha256": artifact_sha256,
