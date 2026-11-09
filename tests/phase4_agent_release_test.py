@@ -86,8 +86,14 @@ class ReleaseTemplateTests(unittest.TestCase):
         self.assertIn("arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/*", creation["Resource"])
         self.assertIn("arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default/workload-identity/*", creation["Resource"])
         self.assertEqual({"aws:RequestedRegion": "us-east-1", "aws:RequestTag/Project": "IncidentTriageDemo", "aws:RequestTag/Component": "agent"}, creation["Condition"]["StringEquals"])
+        tags = next(s for s in statements if s["Sid"] == "TagRuntimeDuringCreation")
+        self.assertEqual("bedrock-agentcore:TagResource", tags["Action"])
+        self.assertEqual("arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/*", tags["Resource"])
+        self.assertEqual(creation["Condition"], tags["Condition"])
+        outer_create = next(s for s in statements if s["Sid"] == "CreateTaggedAgent")
+        self.assertEqual(creation["Condition"], outer_create["Condition"])
         for statement in statements:
-            if statement is creation: continue
+            if statement is creation or statement is tags: continue
             actions = statement["Action"] if isinstance(statement["Action"], list) else [statement["Action"]]
             if any(action.startswith("bedrock-agentcore:") and not action.startswith("bedrock-agentcore:Create") for action in actions):
                 resources = statement["Resource"] if isinstance(statement["Resource"], list) else [statement["Resource"]]

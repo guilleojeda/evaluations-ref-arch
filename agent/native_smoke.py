@@ -84,11 +84,18 @@ def main() -> None:
         adapter_root.mkdir()
         with zipfile.ZipFile(runtime_archive) as archive:
             archive.extractall(runtime_root)
-            launcher_info = archive.getinfo("opentelemetry-instrument")
-            launcher_mode = (launcher_info.external_attr >> 16) & 0o777
-            if not launcher_mode & 0o111:
-                raise RuntimeError("Runtime ZIP launcher is not marked executable")
-            (runtime_root / "opentelemetry-instrument").chmod(launcher_mode)
+            root_launcher_info = archive.getinfo("opentelemetry-instrument")
+            bin_launcher_info = archive.getinfo("bin/opentelemetry-instrument")
+            root_launcher_mode = (root_launcher_info.external_attr >> 16) & 0o777
+            bin_launcher_mode = (bin_launcher_info.external_attr >> 16) & 0o777
+            if not root_launcher_mode & 0o111 or not bin_launcher_mode & 0o111:
+                raise RuntimeError("Runtime ZIP launchers are not marked executable")
+            root_launcher = runtime_root / "opentelemetry-instrument"
+            bin_launcher = runtime_root / "bin" / "opentelemetry-instrument"
+            if root_launcher.read_bytes() != bin_launcher.read_bytes():
+                raise RuntimeError("Runtime ZIP launcher copies do not match")
+            root_launcher.chmod(root_launcher_mode)
+            bin_launcher.chmod(bin_launcher_mode)
         with zipfile.ZipFile(adapter_archive) as archive:
             archive.extractall(adapter_root)
 
@@ -117,7 +124,7 @@ def main() -> None:
         assert str(adapter_root) in adapter_check.stdout, adapter_check.stdout
 
         process = subprocess.Popen(
-            [str(runtime_root / "opentelemetry-instrument"), sys.executable, "main.py"],
+            [str(runtime_root / "bin" / "opentelemetry-instrument"), sys.executable, "main.py"],
             cwd=runtime_root,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

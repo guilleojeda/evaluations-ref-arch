@@ -15,6 +15,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Iterable, Mapping, Sequence
 from urllib.parse import unquote
 
+from botocore.exceptions import ClientError
 from strands import tool
 
 
@@ -525,6 +526,9 @@ class EvidenceTools:
         for observation in observations:
             if isinstance(observation, Mapping) and observation.get("error"):
                 errors.append(str(observation["error"]))
+            concurrency = observation.get("concurrency") if isinstance(observation, Mapping) else None
+            if isinstance(concurrency, Mapping) and concurrency.get("unavailable"):
+                errors.append(f"{observation.get('function', 'Lambda')} concurrency: {concurrency['unavailable']}")
         return self._result(
             source="configuration",
             scope=list(resources),
@@ -547,8 +551,6 @@ class EvidenceTools:
         try:
             concurrency = lambda_client.get_function_concurrency(FunctionName=function)
         except Exception as exc:
-            # ResourceNotFoundException is the provider's representation of an
-            # unconfigured cap.  Preserve absence rather than reporting zero.
             concurrency = {"unavailable": self._safe_error(exc)}
         output: dict[str, Any] = {
             "kind": "lambda",
@@ -561,16 +563,22 @@ class EvidenceTools:
 
     def _read_inventory_access(self) -> list[dict[str, Any]]:
         outputs: list[dict[str, Any]] = []
-        # The table resource policy is an exact, non-business-data read.  Some
-        # test boundaries intentionally omit this optional API; surface that as
-        # an unavailable observation without weakening the other readbacks.
+        # The exact inventory table policy read is part of the access diagnosis.
+        # PolicyNotFoundException is a known absent policy; other provider errors
+        # remain visible and make configuration coverage partial.
+        table_arn = INVENTORY_TABLE_ARN_TEMPLATE.format(region=self.region, account=self.account_id)
         try:
             table_client = self._client("dynamodb")
-            table_arn = INVENTORY_TABLE_ARN_TEMPLATE.format(region=self.region, account=self.account_id)
             table_policy = table_client.get_resource_policy(ResourceArn=table_arn)
-            outputs.append({"kind": "dynamodb-resource-policy", "table": INVENTORY_TABLE, "tableArn": table_arn, "policy": self._project_policy(table_policy)})
+            outputs.append({"kind": "dynamodb-resource-policy", "table": INVENTORY_TABLE, "tableArn": table_arn, "policyStatus": "present", "policy": self._project_policy(table_policy)})
+        except ClientError as exc:
+            code = (exc.response.get("Error") or {}).get("Code")
+            if code == "PolicyNotFoundException":
+                outputs.append({"kind": "dynamodb-resource-policy", "table": INVENTORY_TABLE, "tableArn": table_arn, "policyStatus": "absent"})
+            else:
+                outputs.append({"kind": "dynamodb-resource-policy", "table": INVENTORY_TABLE, "tableArn": table_arn, "error": self._safe_error(exc)})
         except Exception as exc:
-            outputs.append({"kind": "dynamodb-resource-policy", "table": INVENTORY_TABLE, "error": self._safe_error(exc)})
+            outputs.append({"kind": "dynamodb-resource-policy", "table": INVENTORY_TABLE, "tableArn": table_arn, "error": self._safe_error(exc)})
 
         lambda_client = self._client("lambda")
         alias = lambda_client.get_alias(FunctionName=INVENTORY_FUNCTION, Name="live")
@@ -1025,7 +1033,7 @@ class EvidenceTools:
             return {"ReservedConcurrentExecutions": item["ReservedConcurrentExecutions"]}
         if "unavailable" in item:
             return {"unavailable": item["unavailable"]}
-        return {}
+        return {"state": "unreserved"}
 
     def _project_role(self, item: Mapping[str, Any]) -> dict[str, Any]:
         role = item.get("Role", item)
