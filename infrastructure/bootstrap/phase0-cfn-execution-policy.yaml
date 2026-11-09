@@ -929,12 +929,14 @@ Resources:
               aws:RequestedRegion: us-east-1
               aws:RequestTag/Project: IncidentTriageDemo
               aws:RequestTag/Component: agent
-        # The same create call also authorizes tags before the Runtime ID exists.
-        # This grant is only for tagging runtimes, never identity resources.
+        # Runtime creation authorizes tags before its ID exists and tags its
+        # named workload identity. Other workload identities are excluded.
         - Sid: TagRuntimeDuringCreation
           Effect: Allow
           Action: bedrock-agentcore:TagResource
-          Resource: arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/*
+          Resource:
+          - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/*
+          - arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default/workload-identity/IncidentTriageDemoAgent-*
           Condition:
             StringEquals:
               aws:RequestedRegion: us-east-1
