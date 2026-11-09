@@ -119,7 +119,6 @@ test('genuine alarm investigations remain discoverable through the deployed cont
   const started = timestamp(run.startedAt, 'run start');
   const deadline = timestamp(run.deadlineAt, 'run deadline');
   assert.ok(started >= Date.parse(transitionAt) && deadline > started);
-  assert.ok(run.traceRef && typeof run.traceRef === 'object', 'retain native trace/session selectors');
   // Native spans and S3 source coverage are independently inspected on AWS;
   // references alone cannot establish that actual telemetry was captured.
 
@@ -144,6 +143,7 @@ test('genuine alarm investigations remain discoverable through the deployed cont
     assert.ok(timestamp(run.finishedAt, 'completion time') >= started);
     reportContract(run.report);
     assert.deepEqual(reconnected.runs[0].report, run.report, 'reconnection must preserve the actual report');
+    assert.ok(run.traceRef && typeof run.traceRef === 'object', 'retain native trace/session selectors');
     assert.ok(run.captureRef && typeof run.captureRef === 'object', 'retain the independent source manifest reference');
     assert.equal(run.report.recommendation.action, 'Increase memory', 'the genuine initial candidate must exhibit the planned defect');
     assert.equal(run.report.recommendation.target, 'inventory');

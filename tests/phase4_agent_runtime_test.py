@@ -186,6 +186,7 @@ class RuntimeAcceptanceTests(unittest.TestCase):
         self.assertIsNone(agent_options["retry_strategy"])
         self.assertEqual({"turns": 12, "structured_output_attempts": 1}, call_options["limits"])
         self.assertIsInstance(agent_options["model"].client, module.BoundedBedrockClient)
+        self.assertEqual(64_000, agent_options["model"].config["max_tokens"])
 
     def test_bedrock_client_cap_covers_direct_and_structured_output_fallback_requests(self):
         class NoNetworkClient:
@@ -357,6 +358,7 @@ class RuntimeAcceptanceTests(unittest.TestCase):
                 pass  # Exhausting the turn budget must not produce a completed report.
         self.assertEqual(12, len(boundary.model_requests),
                          "the deliberately unending model must reach the limit; an earlier unrelated failure is not budget proof")
+        self.assertTrue(all(request.get("inferenceConfig", {}).get("maxTokens") == 64_000 for request in boundary.model_requests))
         row = self.run_row(boundary)
         self.assertNotEqual("complete", row["status"])
         self.assertNotIn("report", row)

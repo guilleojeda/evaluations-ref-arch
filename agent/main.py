@@ -557,6 +557,7 @@ def invoke(payload: Any, context: RequestContext) -> dict[str, Any]:
             model = BedrockModel(
                 model_id=config["AGENT_MODEL_ID"],
                 region_name=config["AGENT_REGION"],
+                max_tokens=64_000,
                 boto_client_config=Config(
                     connect_timeout=10,
                     read_timeout=180,
