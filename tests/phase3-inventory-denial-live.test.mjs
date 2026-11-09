@@ -4,6 +4,13 @@ import { test } from 'node:test';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const SHA = /^[0-9a-f]{40}$/i;
+const VERSION = /^[1-9]\d*$/;
+const ACCOUNT = '027224425948';
+const INVENTORY_ALIAS = `arn:aws:lambda:us-east-1:${ACCOUNT}:function:IncidentTriageDemoInventory:live`;
+const INVENTORY_FUNCTION = 'IncidentTriageDemoInventory';
+const HEALTHY_ROLE = `arn:aws:iam::${ACCOUNT}:role/IncidentTriageDemoAppInventoryRole`;
+const DENIED_ROLE = `arn:aws:iam::${ACCOUNT}:role/IncidentTriageDemoAppInventoryDeniedRole`;
+const INVENTORY_TABLE = `arn:aws:dynamodb:us-east-1:${ACCOUNT}:table/IncidentTriageDemoInventory`;
 
 function origin(name) {
   let url;
@@ -64,6 +71,51 @@ function assertOrder(order, checkoutId, sku, quantity = 1) {
   assert.equal(order?.sku, sku);
   assert.equal(order?.quantity, quantity);
   assert.equal(order?.status, 'placed');
+}
+
+function manifestVariant(manifest, access, label) {
+  assert.equal(manifest?.schemaVersion, 1, `${label} must use the prepared Inventory manifest schema`);
+  assert.match(manifest?.sourceRevision ?? '', SHA, `${label} source revision must be present`);
+  assert.equal(manifest?.functionName, INVENTORY_FUNCTION);
+  assert.equal(manifest?.aliasName, 'live');
+  assert.ok(Number.isSafeInteger(manifest?.baselineMemoryMb), `${label} must expose baseline memory`);
+  assert.equal(typeof manifest?.codeSha256, 'string', `${label} must expose the qualified code hash`);
+  assert.ok(Array.isArray(manifest?.variants) && manifest.variants.length === 2,
+    `${label} must expose exactly the Phase 3 healthy and denied variants`);
+  const matches = manifest.variants.filter((variant) => variant?.access === access);
+  assert.equal(matches.length, 1, `${label} must contain exactly one ${access} variant`);
+  const variant = matches[0];
+  assert.match(String(variant.version ?? ''), VERSION, `${label} ${access} variant must use a numeric version`);
+  assert.equal(variant.memoryMb, manifest.baselineMemoryMb, `${label} ${access} variant memory mismatch`);
+  assert.equal(variant.roleArn, access === 'healthy' ? HEALTHY_ROLE : DENIED_ROLE,
+    `${label} ${access} variant role mismatch`);
+  return variant;
+}
+
+function assertAliasObservation(alias, label, expectedVersion) {
+  assert.ok(alias && typeof alias === 'object', `${label} must be present`);
+  assert.equal(alias.functionName, INVENTORY_FUNCTION, `${label} function mismatch`);
+  assert.equal(alias.aliasName, 'live', `${label} alias name mismatch`);
+  if (expectedVersion === undefined) assert.match(alias.functionVersion ?? '', VERSION, `${label} must expose a numeric version`);
+  else assert.equal(alias.functionVersion, expectedVersion, `${label} version mismatch`);
+  assert.equal(alias.routingWeighted, false, `${label} must be an unweighted single-target alias`);
+  assert.equal(alias.aliasArn, INVENTORY_ALIAS, `${label} must identify the Inventory live alias`);
+  assert.equal(typeof alias.revisionId, 'string', `${label} must retain the alias revision`);
+  assert.ok(alias.revisionId.length > 0 && alias.revisionId.length <= 256, `${label} alias revision must be bounded`);
+  assert.ok(Number.isFinite(Date.parse(alias.observedAt)), `${label} must retain its observation time`);
+  return alias;
+}
+
+function assertQualifiedCheckpoint(checkpoint, label, variant, manifest) {
+  assert.equal(checkpoint?.status, 'stored', `${label} must be stored`);
+  assert.equal(checkpoint.inventoryTableArn, INVENTORY_TABLE, `${label} table mismatch`);
+  assert.equal(checkpoint.inventoryVersion, variant.version, `${label} version mismatch`);
+  assert.equal(checkpoint.inventoryRoleArn, variant.roleArn, `${label} role mismatch`);
+  assert.equal(checkpoint.inventoryMemory, variant.memoryMb, `${label} memory mismatch`);
+  assert.equal(checkpoint.inventoryCodeSha256, manifest.codeSha256, `${label} code hash mismatch`);
+  const aliasAtCapture = assertAliasObservation(checkpoint.inventoryAliasAtCapture, `${label} aliasAtCapture`, variant.version);
+  assert.equal(checkpoint.inventoryAliasBefore.routingWeighted, false, `${label} aliasBefore must be unweighted`);
+  return aliasAtCapture;
 }
 
 test('deployed Inventory denial and restoration checkpoints are visible through public APIs', {
@@ -146,6 +198,42 @@ test('deployed Inventory denial and restoration checkpoints are visible through 
       'readiness must precede the denial action');
     assert.equal(snapshot.currentAction?.id, activationId, 'the denied checkpoint must still be current');
     assert.equal(snapshot.currentAction?.status, 'completed');
+    const manifest = baseline.settings?.inventoryVariantsManifest;
+    assert.equal(manifest?.sourceRevision, appRevision, 'prepared Inventory manifest must match the readiness release');
+    const healthyVariant = manifestVariant(manifest, 'healthy', 'baseline');
+    const deniedVariant = manifestVariant(manifest, 'denied', 'baseline');
+    assert.notEqual(healthyVariant.version, deniedVariant.version, 'prepared variants must use distinct versions');
+    assert.equal(healthyVariant.roleArn, HEALTHY_ROLE);
+    assert.equal(deniedVariant.roleArn, DENIED_ROLE);
+    const baselineInventory = baseline.settings?.inventory;
+    assert.equal(baselineInventory?.version, healthyVariant.version, 'readiness must start on the prepared healthy version');
+    assert.equal(baselineInventory?.role, HEALTHY_ROLE, 'readiness must record the healthy Inventory role');
+    assert.equal(baselineInventory?.memory, manifest.baselineMemoryMb, 'readiness must record baseline Inventory memory');
+    assert.equal(baselineInventory?.codeSha256, manifest.codeSha256, 'readiness must record the prepared code hash');
+    assert.equal(baselineInventory?.aliasArn, INVENTORY_ALIAS, 'readiness must record the Inventory live alias');
+
+    const incident = snapshot.incident;
+    assert.equal(incident?.kind, 'inventory_access_denied');
+    assert.equal(incident?.mechanism, 'lambda-alias');
+    assert.equal(incident?.activationActionId, activationId);
+    assert.equal(incident?.active, 'denied');
+    assert.deepEqual(incident?.target, deniedVariant, 'activation must retain the selected denied manifest variant');
+    const aliasBefore = assertAliasObservation(incident?.aliasBefore, 'activation aliasBefore', healthyVariant.version);
+    const deniedAlias = assertAliasObservation(incident?.alias, 'activation alias', deniedVariant.version);
+    assert.notEqual(deniedAlias.revisionId, aliasBefore.revisionId, 'activation must read back a changed alias revision');
+    const actionAliasBefore = assertAliasObservation(activation.inventorySwitch?.before, 'activation action aliasBefore', healthyVariant.version);
+    assert.equal(actionAliasBefore.revisionId, aliasBefore.revisionId,
+      'activation action and incident must retain the same alias before observation');
+    assert.deepEqual(activation.inventorySwitch?.target, deniedVariant, 'activation action must retain the selected denied manifest variant');
+    const actionDeniedAlias = assertAliasObservation(activation.inventorySwitch?.after, 'activation action aliasAfter', deniedVariant.version);
+    assert.notEqual(actionDeniedAlias.revisionId, actionAliasBefore.revisionId,
+      'activation action must read back a changed alias revision');
+    assert.equal(activation.inventorySwitch.after.revisionId, deniedAlias.revisionId,
+      'activation action must retain the actual denied alias readback');
+    const checkpoint = incident?.checkpoint;
+    const capturedAlias = assertQualifiedCheckpoint(checkpoint, 'denied configuration checkpoint', deniedVariant, manifest);
+    assertAliasObservation(checkpoint.inventoryAliasBefore, 'checkpoint aliasBefore', healthyVariant.version);
+    assert.equal(capturedAlias.revisionId, deniedAlias.revisionId, 'checkpoint must retain the actual denied alias revision');
 
     const catalogs = activation.requests.filter(({ kind }) => kind === 'catalog');
     assert.ok(catalogs.length >= 1 && catalogs.length <= 6, 'catalog probes must stay within the activation allowance');
@@ -166,6 +254,10 @@ test('deployed Inventory denial and restoration checkpoints are visible through 
     assert.match(failedCheckout.checkout?.checkoutId ?? '', UUID);
     assert.notEqual(failedCheckout.checkout.checkoutId, baseline.checkoutId,
       'the denied checkout must use a fresh identity');
+    assert.equal(failedCheckout.executedVersion, deniedVariant.version,
+      'denied checkout must retain the actually executed denied Inventory version');
+    assert.equal(deniedCatalog.executedVersion, deniedVariant.version,
+      'denied catalog must retain the actually executed denied Inventory version');
     const deniedIds = [requestId(deniedCatalog, 'denied catalog'), requestId(failedCheckout, 'denied checkout')];
     assert.notEqual(deniedIds[0], deniedIds[1], 'distinct app requests must retain distinct request IDs');
 
@@ -204,6 +296,7 @@ test('deployed Inventory denial and restoration checkpoints are visible through 
 
     t.diagnostic(`denied catalog requestId=${deniedIds[0]}`);
     t.diagnostic(`denied checkout requestId=${deniedIds[1]}`);
+    t.diagnostic(`denied Inventory version=${deniedVariant.version} memory=${deniedVariant.memoryMb}`);
     t.diagnostic(`matching saved-order replay requestId=${duplicate.requestId}`);
     t.diagnostic(`denied checkout status requestId=${missing.requestId ?? 'not returned'}`);
     return;
@@ -213,10 +306,18 @@ test('deployed Inventory denial and restoration checkpoints are visible through 
   const recoveryId = actionId('PHASE3_RECOVERY_ID');
   const restore = completedAction(await readAction(restoreId), restoreId, 'restore_inventory_access');
   assert.deepEqual(restore.requests, [], 'restoration must change configuration only and send no app requests');
+  const restoreSwitch = restore.inventorySwitch;
+  const restoreBefore = assertAliasObservation(restoreSwitch?.before, 'restore action aliasBefore', undefined);
+  const restoreTarget = restoreSwitch?.target;
+  assert.equal(restoreTarget?.access, 'healthy', 'restore must target the healthy prepared variant');
+  assert.equal(restoreTarget?.roleArn, HEALTHY_ROLE, 'restore must target the healthy Inventory role');
+  assert.match(restoreTarget?.version ?? '', VERSION, 'restore must target a numeric prepared version');
+  const restoreAfter = assertAliasObservation(restoreSwitch?.after, 'restore action aliasAfter', restoreTarget.version);
+  assert.notEqual(restoreAfter.revisionId, restoreBefore.revisionId, 'restore must read back a changed alias revision');
 
   const recovery = completedAction(await readAction(recoveryId), recoveryId, 'readiness');
   assert.ok(Date.parse(restore.finishedAt) <= Date.parse(recovery.startedAt ?? recovery.createdAt),
-    'fresh readiness must follow completed policy restoration');
+    'fresh readiness must follow completed Inventory alias restoration');
   const snapshot = await state();
   assert.equal(snapshot.currentAction?.id, recoveryId, 'the recovery readiness action must be current');
   assert.equal(snapshot.currentAction?.status, 'completed');
@@ -228,6 +329,35 @@ test('deployed Inventory denial and restoration checkpoints are visible through 
   assert.equal(baseline.stockBefore - baseline.stockAfter, 1, 'fresh readiness must confirm its one-unit order');
   assert.ok(Date.parse(baseline.verifiedAt) >= Date.parse(restore.finishedAt),
     'recovery readiness must establish a post-restoration baseline');
+  const recoveredHealthy = baseline.settings?.inventory;
+  assert.equal(recoveredHealthy?.role, HEALTHY_ROLE, 'recovery readiness must use the healthy Inventory role');
+  assert.match(recoveredHealthy?.version ?? '', VERSION, 'recovery readiness must retain a numeric Inventory version');
+  assert.equal(recoveredHealthy?.version, restoreTarget.version,
+    'recovery readiness must use the healthy prepared version selected by restoration');
+  assert.equal(recoveredHealthy?.memory, restoreTarget.memoryMb,
+    'restoration must preserve the current Inventory memory');
+  const recoveredManifest = baseline.settings?.inventoryVariantsManifest;
+  const recoveredHealthyVariant = manifestVariant(recoveredManifest, 'healthy', 'recovery');
+  assert.equal(recoveredHealthyVariant.version, restoreTarget.version);
+  assert.deepEqual(restoreTarget, recoveredHealthyVariant, 'restore must target the manifest healthy variant for the current release');
+  assert.equal(recoveredHealthy?.codeSha256, recoveredManifest.codeSha256);
+  const retainedIncident = snapshot.incident;
+  assert.equal(retainedIncident?.restoreActionId, restoreId, 'restored incident must retain the restore action identity');
+  assert.equal(retainedIncident?.active, 'healthy', 'restored incident must report healthy active access');
+  const restoredAlias = assertAliasObservation(retainedIncident?.alias, 'restored incident alias', restoreTarget.version);
+  assert.equal(restoredAlias.revisionId, restoreAfter.revisionId, 'incident must retain the restore alias readback');
+  const retainedCheckpoint = retainedIncident?.checkpoint;
+  const deniedVariant = manifestVariant(recoveredManifest, 'denied', 'retained checkpoint');
+  const capturedDeniedAlias = assertQualifiedCheckpoint(retainedCheckpoint, 'retained denied checkpoint', deniedVariant, recoveredManifest);
+  assert.equal(restoreBefore.functionVersion, capturedDeniedAlias.functionVersion,
+    'restore must read the denied alias target before switching');
+  assert.equal(restoreBefore.revisionId, capturedDeniedAlias.revisionId,
+    'restore must retain the denied alias revision it guarded');
+  assertAliasObservation(retainedCheckpoint.inventoryAliasBefore, 'retained checkpoint aliasBefore', recoveredHealthyVariant.version);
+  assert.equal(retainedCheckpoint.inventoryRoleArn, DENIED_ROLE, 'retained checkpoint must preserve the denied role');
+  assert.equal(retainedCheckpoint.inventoryAliasAtCapture.functionVersion, deniedVariant.version,
+    'retained checkpoint must preserve the denied alias target at capture');
+  assert.equal(capturedDeniedAlias.functionVersion, deniedVariant.version);
 
   const checkout = checkoutAttempt(recovery, 'recovery readiness');
   assert.ok([200, 201].includes(checkout.statusCode));
@@ -258,6 +388,7 @@ test('deployed Inventory denial and restoration checkpoints are visible through 
     'the fresh recovery receipt must remain visible in controller state');
 
   t.diagnostic(`restoration action=${restoreId} completed without app requests`);
+  t.diagnostic(`restored Inventory version=${restoreTarget.version} memory=${restoreTarget.memoryMb}`);
   t.diagnostic(`recovery checkout requestId=${checkout.requestId}`);
   t.diagnostic(`recovery order-status requestId=${statusRequests[0].requestId}`);
   t.diagnostic(`recovery app order status requestId=${existing.requestId ?? 'not returned'}`);
