@@ -75,7 +75,9 @@ test('app alarm watches the real HTTP API stage and publishes the target for the
   assert.deepEqual(alarm.AlarmActions ?? [], []);
   assert.ok(Outputs.StageAlarmName?.Value && Outputs.StageAlarmArn?.Value && Outputs.InventoryRoleArn?.Value);
   assert.equal(Outputs.InventoryVariantsManifestBucket?.Value, `cdk-evaltalk-assets-${account}-${region}`);
-  assert.match(Outputs.InventoryVariantsManifestKey?.Value ?? '', /releases\/app\//);
+  assert.deepEqual(Outputs.InventoryVariantsManifestKey?.Value, {
+    'Fn::Join': ['', ['releases/app/', { Ref: 'SourceRevision' }, '/inventory-variants.json']],
+  }, 'manifest key must be bound to the deployed app revision');
   assert.ok(Outputs.InventoryDeniedRoleArn?.Value);
 });
 

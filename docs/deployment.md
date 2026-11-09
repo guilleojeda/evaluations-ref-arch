@@ -81,7 +81,7 @@ aws cloudformation describe-stacks --stack-name IncidentTriageDemoApp \
 node scripts/seed-app-inventory.mjs
 ```
 
-The seed inserts the demo SKU with 1,000 units only when it is absent. Reruns report the existing version and quantity. Open the CloudFront site URL from the outputs, enter the bearer, and verify one normal order and its stock decrement. The direct API origin is available for the local Vite proxy. The outputs also identify the source revision, tables, function and alias targets, and logs used to check the release.
+The seed inserts the demo SKU with 1,000 units only when it is absent. Reruns report the existing version and quantity. Open the CloudFront site URL from the outputs, enter the bearer, and verify one normal order and its stock decrement. The direct API origin is available for the local Vite proxy. The outputs also identify the source revision, tables, function and alias targets, and logs used to check the release. Inventory release preparation publishes the healthy and denied baseline variants from the checked artifact, restores and verifies the original unpublished `$LATEST` settings, then conditionally writes the immutable version manifest with explicit AES256 server-side encryption to the existing private CDK asset bucket under `releases/app/<SourceRevision>/inventory-variants.json`; no new service or bucket is introduced. The outputs identify that manifest location and the denied execution role; the controller uses them for allowlist validation and alias-only changes.
 
 Reloading the page requires the bearer again. If an order response is lost, use the saved attempt to check status or retry the original submission. A missing status may precede a commit. Check that the page shows a confirmed receipt before placing another order.
 
@@ -96,15 +96,15 @@ The run allows 50 generator POSTs, 5 controller verification POSTs, and 5 manual
 ## Operate the Inventory access incident
 
 1. Stop existing traffic and pause other checkout writers. Use **Check readiness** on the current release. Keep verification checkout allowance for activation and a separate post-restore readiness check.
-2. Choose **Activate Inventory denial**. Inspect the named IAM policy attachment, default version, and checkpoint alongside the catalog and checkout evidence. The alarm card reads CloudWatch independently. Wait for an observed ALARM when collecting a complete incident.
-3. Choose **Restore Inventory access**. If the controller cannot save the required configuration and you need to restore service, use the explicit protective confirmation. It still requires the recorded role, policy ARN and default version, and current app release. The evidence gap remains visible.
-4. Once the policy reads as detached, wait for an actual fresh catalog success and run **Check readiness**. Confirm the successful order and stock change separately from the alarm. Allow for native metric evaluation delay before observing OK.
+2. Choose **Activate Inventory denial**. Inspect the active alias/version, execution role, exact policy/default document, and checkpoint alongside the catalog and checkout evidence. The alarm card reads CloudWatch independently. Wait for an observed ALARM when collecting a complete incident.
+3. Choose **Restore Inventory access**. If the controller cannot save the required configuration and you need to restore service, use the explicit protective confirmation. It still requires the recorded app source revision, alias/version/role/policy state, and current release. The evidence gap remains visible.
+4. Once the alias reads as the healthy version at the current memory, wait for an actual fresh catalog success and run **Check readiness**. Confirm the successful order and stock change separately from the alarm. Allow for native metric evaluation delay before observing OK.
 
-Keep the evidence bucket private. Inspect or export the referenced configuration objects using authorized AWS access before teardown. Run planned releases after the policy is detached and traffic has settled.
+Keep the evidence bucket private. Inspect or export the referenced configuration objects using authorized AWS access before teardown. Run planned releases after the healthy alias is restored and traffic has settled.
 
 ## Deployment and controller baseline
 
-The presenter schedules deployments outside active demo runs. Routine releases preserve business data and investigation history. Keep the app's expected versions, memory, cap, and Inventory deny-policy attachment tied to the current release. The controller compares its recorded baseline with the deployed release and the affected live settings before restoring them. Unexpected drift or a newer release requires fresh readiness checks.
+The presenter schedules deployments outside active demo runs. Routine releases preserve business data and investigation history. Keep the app's expected versions, memory, cap, and Inventory role/policy/access-state manifest tied to the current release. The controller compares its recorded baseline with the deployed source revision, manifest, and affected live settings before restoring them. Unexpected drift or a newer release requires fresh readiness checks.
 
 The deployment workflow leaves incident activation, probes, Recover, and Reset to the presenter. Applying an expected setting through CDK does not establish fresh business behavior. Use the [controller run procedure](components/failure-controller-behavior.md) to verify a new baseline and the [application contract](components/application.md#deployment-development-and-reset) for disposable data setup and reset.
 

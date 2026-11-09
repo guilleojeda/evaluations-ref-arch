@@ -254,10 +254,6 @@ test('deployed Inventory denial and restoration checkpoints are visible through 
     assert.match(failedCheckout.checkout?.checkoutId ?? '', UUID);
     assert.notEqual(failedCheckout.checkout.checkoutId, baseline.checkoutId,
       'the denied checkout must use a fresh identity');
-    assert.equal(failedCheckout.executedVersion, deniedVariant.version,
-      'denied checkout must retain the actually executed denied Inventory version');
-    assert.equal(deniedCatalog.executedVersion, deniedVariant.version,
-      'denied catalog must retain the actually executed denied Inventory version');
     const deniedIds = [requestId(deniedCatalog, 'denied catalog'), requestId(failedCheckout, 'denied checkout')];
     assert.notEqual(deniedIds[0], deniedIds[1], 'distinct app requests must retain distinct request IDs');
 

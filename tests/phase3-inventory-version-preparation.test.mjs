@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { prepareInventoryVersions } from '../scripts/prepare-inventory-versions.mjs';
+import { prepareInventoryVersions, restoreRecognizedInventoryStaging } from '../scripts/prepare-inventory-versions.mjs';
 
 const sourceRevision = '0123456789abcdef0123456789abcdef01234567';
 const functionName = 'IncidentTriageDemoInventory';
@@ -17,6 +18,7 @@ const manifestKey = `releases/app/${sourceRevision}/inventory-variants.json`;
 const codeSha256 = '1dX6yZZAb7TaBN3yVt++SsJwB4U7bT58nJQYfhKle18=';
 
 const latestBase = {
+  FunctionArn: `arn:aws:lambda:us-east-1:027224425948:function:${functionName}`,
   CodeSha256: codeSha256,
   Description: sourceRevision,
   Handler: 'inventory.handler',
@@ -24,6 +26,9 @@ const latestBase = {
   Runtime: 'nodejs24.x',
   Timeout: 6,
   Architectures: ['x86_64'],
+  LastModified: '2026-11-09T12:00:00.000+0000',
+  LastUpdateStatus: 'Successful',
+  State: 'Active',
   Environment: {
     Variables: {
       APP_ENVIRONMENT: 'demo',
@@ -54,7 +59,7 @@ function config(overrides = {}) {
 }
 
 function qualified(roleArn, overrides = {}) {
-  return { ...latestBase, Role: roleArn, ...overrides };
+  return { ...latestBase, FunctionArn: `${latestBase.FunctionArn}:10`, Version: '10', Role: roleArn, ...overrides };
 }
 
 function fakeAws({
@@ -99,7 +104,7 @@ function fakeAws({
       assert.equal(revisionId, stagingRevision);
       if (publishMode === 'definite-failure') throw new Error('publish failed');
       state.versions.add('11');
-      state.qualified.set('11', qualified(deniedRoleArn));
+      state.qualified.set('11', { ...state.latest, FunctionArn: `${latestBase.FunctionArn}:11`, Version: '11', Role: deniedRoleArn });
       if (publishMode === 'lost-response') throw Object.assign(new Error('publication response lost'), { unknown: true });
       return { Version: '11' };
     },
@@ -168,11 +173,36 @@ test('reconciles a lost publication response only through one exact matching ver
   assert.equal(aws.state.latest.Role, healthyRoleArn);
 });
 
+test('resumes after publication completed but restoration was interrupted', async () => {
+  const aws = fakeAws({ latestRole: deniedRoleArn, listVersions: ['10', '11'] });
+  aws.state.qualified.set('11', { ...latestBase, FunctionArn: `${latestBase.FunctionArn}:11`, Version: '11', Role: deniedRoleArn });
+  const result = await prepareInventoryVersions({ config: config(), aws });
+  assert.equal(JSON.parse(result.manifestBody).variants[1].version, '11');
+  assert.deepEqual(aws.calls.filter(([name]) => name === 'updateFunctionConfiguration').map(([, role]) => role), [healthyRoleArn]);
+});
+
+test('restores prior-release staging before the next release with the fresh current revision', async () => {
+  const aws = fakeAws({ latestRole: deniedRoleArn });
+  aws.state.latest.RevisionId = 'fresh-current-revision';
+  const result = await restoreRecognizedInventoryStaging({ config: config(), aws });
+  assert.equal(result.restored, true);
+  assert.deepEqual(aws.calls.filter(([name]) => name === 'updateFunctionConfiguration'), [
+    ['updateFunctionConfiguration', healthyRoleArn, 'fresh-current-revision'],
+  ]);
+});
+
 test('restores $LATEST after a failed publication and does not publish a manifest', async () => {
   const aws = fakeAws({ publishMode: 'definite-failure' });
   await assert.rejects(() => prepareInventoryVersions({ config: config(), aws }), /publish failed|matching version/i);
   assert.equal(aws.state.latest.Role, healthyRoleArn);
   assert.equal(aws.calls.some(([name]) => name === 'putObject'), false);
+});
+
+test('restores a recognized denied role even when the prior Lambda update is already failed', async () => {
+  const aws = fakeAws({ latestRole: deniedRoleArn, latestOverrides: { LastUpdateStatus: 'Failed', LastUpdateStatusReason: 'simulated stage failure' } });
+  await assert.rejects(() => prepareInventoryVersions({ config: config(), aws }), /failed Lambda update/i);
+  assert.equal(aws.state.latest.Role, healthyRoleArn);
+  assert.deepEqual(aws.calls.filter(([name]) => name === 'updateFunctionConfiguration').map(([, role]) => role), [healthyRoleArn]);
 });
 
 test('rejects configuration drift before mutation and rejects a conflicting immutable manifest', async () => {
@@ -183,4 +213,14 @@ test('rejects configuration drift before mutation and rejects a conflicting immu
   const conflicting = fakeAws({ existingManifest: { body: '{"schemaVersion":999}', serverSideEncryption: 'AES256' } });
   await assert.rejects(() => prepareInventoryVersions({ config: config(), aws: conflicting }), /manifest|immutable|different/i);
   assert.equal(conflicting.calls.some(([name]) => name === 'updateFunctionConfiguration'), false);
+});
+
+test('deploy script restores recognized staging before any new CloudFormation change set and skips old stacks safely', () => {
+  const deploy = readFileSync(new URL('../scripts/deploy-app.sh', import.meta.url), 'utf8');
+  const recovery = deploy.indexOf('restore_previous_inventory_staging');
+  const deployedRevision = deploy.indexOf('deployed_revision=');
+  const cdk = deploy.indexOf('cdk deploy');
+  assert.ok(recovery >= 0 && recovery < deployedRevision && recovery < cdk);
+  assert.match(deploy, /\[\[ -n "\$denied_role" \]\] \|\| return 0/);
+  assert.match(deploy, /--restore-staging-only true/);
 });

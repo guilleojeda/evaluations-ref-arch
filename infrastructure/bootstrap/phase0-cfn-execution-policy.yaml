@@ -579,29 +579,32 @@ Resources:
               - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoCheckout:*
               - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory
               - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory:*
+          - Sid: ControllerWorkerUpdateInventoryAlias
+            Effect: Allow
+            Action: lambda:UpdateAlias
+            Resource: arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory
           - Sid: ControllerWorkerInventoryPolicy
             Effect: Allow
             Action: dynamodb:GetResourcePolicy
             Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoInventory
           - Sid: ControllerWorkerInventoryRoleAttachments
             Effect: Allow
-            Action: iam:ListAttachedRolePolicies
-            Resource: arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryRole
+            Action:
+              - iam:GetRole
+              - iam:ListAttachedRolePolicies
+            Resource:
+              - arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryRole
+              - arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryDeniedRole
           - Sid: ControllerWorkerInventoryReadDenyPolicy
             Effect: Allow
             Action:
               - iam:GetPolicy
               - iam:GetPolicyVersion
             Resource: arn:aws:iam::027224425948:policy/IncidentTriageDemoInventoryReadDeny
-          - Sid: ControllerWorkerInventoryReadDenyAttachment
+          - Sid: ControllerWorkerInventoryVariantsManifest
             Effect: Allow
-            Action:
-              - iam:AttachRolePolicy
-              - iam:DetachRolePolicy
-            Resource: arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryRole
-            Condition:
-              StringEquals:
-                iam:PolicyARN: arn:aws:iam::027224425948:policy/IncidentTriageDemoInventoryReadDeny
+            Action: s3:GetObject
+            Resource: arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/releases/app/*/inventory-variants.json
           - Sid: ControllerWorkerAlarm
             Effect: Allow
             Action:
@@ -650,6 +653,47 @@ Resources:
               - s3:PutEncryptionConfiguration
               - s3:TagResource
             Resource: arn:aws:s3:::incident-triage-demo-evidence-027224425948-us-east-1
+
+          - Sid: ManagePreparedInventoryDeniedRole
+            Effect: Allow
+            Action:
+              - iam:DeleteRole
+              - iam:DeleteRolePolicy
+              - iam:GetRole*
+              - iam:ListAttachedRolePolicies
+              - iam:ListRolePolicies
+              - iam:PutRolePolicy
+              - iam:TagRole
+              - iam:UntagRole
+              - iam:UpdateAssumeRolePolicy
+            Resource: arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryDeniedRole
+          - Sid: CreatePreparedInventoryDeniedRoleWithBoundary
+            Effect: Allow
+            Action: iam:CreateRole
+            Resource: arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryDeniedRole
+            Condition:
+              StringEquals:
+                iam:PermissionsBoundary: arn:aws:iam::027224425948:policy/IncidentTriageDemoAppInventoryRuntimeBoundary
+
+          - Sid: AttachPreparedInventoryDeny
+            Effect: Allow
+            Action:
+              - iam:AttachRolePolicy
+              - iam:DetachRolePolicy
+            Resource: arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryDeniedRole
+            Condition:
+              StringEquals:
+                iam:PolicyARN: arn:aws:iam::027224425948:policy/IncidentTriageDemoInventoryReadDeny
+
+          - Sid: PassPreparedInventoryRolesToLambda
+            Effect: Allow
+            Action: iam:PassRole
+            Resource:
+              - arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryRole
+              - arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryDeniedRole
+            Condition:
+              StringEquals:
+                iam:PassedToService: lambda.amazonaws.com
 
   IncidentTriageDemoInventoryReadDeny:
     Type: AWS::IAM::ManagedPolicy

@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Action, AlarmResponse, AlarmState, Command, DashboardState } from "./types";
+import type {
+  Action,
+  AlarmResponse,
+  AlarmState,
+  Command,
+  DashboardState,
+  InventoryAliasObservation,
+  InventoryVariant,
+  InventoryVersionObservation,
+} from "./types";
 
 type Notice = { kind: "error" | "success"; message: string } | undefined;
 type PendingCommand = { id: string; command: Command };
@@ -36,8 +45,31 @@ function isAlarmResponse(value: Record<string, unknown>): value is Record<string
 function alarmTone(state: AlarmState | undefined): string {
   return state === "ALARM" ? "alarm-danger" : state === "OK" ? "alarm-ok" : "alarm-unknown";
 }
-function attachmentLabel(state: unknown): string {
-  return state === "present" ? "Attached" : state === "absent" ? "Detached" : "Unknown";
+function accessLabel(access: unknown): string {
+  return access === "healthy" ? "Healthy" : access === "denied" ? "Denied" : "Unknown";
+}
+function resultLabel(result: Action["configurationOutcome"] | undefined): string {
+  return result === "applied" ? "Success" : result === "no_change" ? "No-op" : result === "unknown" ? "Unknown" : result === "failed" ? "Failed" : "Not attempted";
+}
+function inventoryVersionObservation(value: unknown): InventoryVersionObservation | undefined {
+  if (!isRecord(value) || typeof value.version !== "string" || typeof value.aliasArn !== "string" ||
+      typeof value.memory !== "number" || typeof value.timeout !== "number" ||
+      (typeof value.cap !== "number" && value.cap !== "unreserved") || typeof value.codeSha256 !== "string" ||
+      typeof value.role !== "string") return undefined;
+  return value as unknown as InventoryVersionObservation;
+}
+function aliasStatus(
+  alias: InventoryAliasObservation | undefined,
+  variant: InventoryVariant | undefined,
+  baselineReady: boolean,
+  access?: unknown,
+): string {
+  if (!baselineReady) return "Unready";
+  if (!alias) return "Unknown";
+  if (access === "unknown") return "Unknown";
+  if (alias.routingWeighted || !variant || variant.version !== alias.functionVersion) return "Foreign";
+  if (freshness(alias.observedAt) === "Stale") return "Stale";
+  return "Observed";
 }
 function freshness(value: string | undefined): string {
   if (!value) return "Unknown freshness";
@@ -135,25 +167,55 @@ export function App() {
   const baseline = state?.baseline;
   const budgets = state?.budgets;
   const incident = state?.incident;
-  const iamIncident = incident?.mechanism === "iam-managed-policy" ? incident : undefined;
-  const legacyIncident = incident?.mechanism !== "iam-managed-policy" ? incident : undefined;
+  const aliasIncident = incident?.mechanism === "lambda-alias" ? incident : undefined;
+  const legacyIncident = incident && incident.mechanism !== "lambda-alias" ? incident : undefined;
   const checkpoint = incident?.checkpoint;
-  const baselinePolicyAbsent = isRecord(baseline?.settings) && baseline.settings.inventoryPolicy === "absent";
-  const observedPolicy = incident?.policy?.state ?? (baselinePolicyAbsent ? "absent" : "unknown");
-  const incidentActive = Boolean(incident && observedPolicy !== "absent");
+  const baselineInventory = inventoryVersionObservation(baseline?.settings?.inventory);
+  const baselineAlias: InventoryAliasObservation | undefined = baselineInventory ? {
+    functionName: "IncidentTriageDemoInventory",
+    aliasName: "live",
+    aliasArn: baselineInventory.aliasArn,
+    functionVersion: baselineInventory.version,
+    revisionId: baselineInventory.aliasRevision ?? "unknown",
+    routingWeighted: false,
+    observedAt: baselineInventory.observedAt ?? baseline?.verifiedAt ?? "",
+  } : undefined;
+  const currentAlias = aliasIncident?.alias ?? baselineAlias;
+  const currentAccess = aliasIncident?.active ?? baselineInventory?.access ?? "unknown";
+  const targetVariant = aliasIncident?.target ?? (baselineInventory ? {
+    version: baselineInventory.version,
+    roleArn: baselineInventory.role,
+    memoryMb: baselineInventory.memory,
+    access: baselineInventory.access,
+  } : undefined);
+  const currentVariant = targetVariant && currentAlias && targetVariant.version === currentAlias.functionVersion
+    ? targetVariant
+    : baselineInventory ? { version: baselineInventory.version, roleArn: baselineInventory.role, memoryMb: baselineInventory.memory, access: baselineInventory.access } : undefined;
+  const currentAliasStatus = aliasStatus(currentAlias, currentVariant, Boolean(baseline), currentAccess);
+  const incidentActive = Boolean(aliasIncident && aliasIncident.active !== "healthy");
   const baselineAccessObservation = isRecord(baseline?.settings?.inventoryAccessPolicy) ? baseline.settings.inventoryAccessPolicy : undefined;
-  const iamPolicyObservation = iamIncident?.policy ?? baselineAccessObservation;
-  const policyName = iamIncident?.policy.policyName ?? display(baselineAccessObservation?.policyName ?? baseline?.settings.inventoryPolicyName, "Not observed");
-  const policyVersion = iamIncident?.policy.defaultVersionId ?? display(baselineAccessObservation?.defaultVersionId ?? baseline?.settings.inventoryPolicyDefaultVersionId, "Not observed");
-  const inventoryRoleArn = iamIncident?.policy.roleArn ?? display(baselineAccessObservation?.roleArn ?? baseline?.settings.inventoryRoleArn, "Not observed");
-  const policyArn = iamIncident?.policy.policyArn ?? display(baselineAccessObservation?.policyArn ?? baseline?.settings.inventoryPolicyArn, "Not observed");
-  const trafficStartAllowed = !incidentActive || (iamIncident?.policy.state === "present" && iamIncident.attachmentOwnership === "controller");
+  const policyObservation = aliasIncident?.policy ?? baselineAccessObservation;
+  const inventoryRoleArn = currentAccess === "denied"
+    ? display(aliasIncident?.target.roleArn ?? baselineInventory?.role, "Not observed")
+    : currentAccess === "healthy" ? display(baselineInventory?.role ?? baseline?.settings.inventoryRoleArn, "Not observed") : "Unknown";
+  const trafficStartAllowed = !incidentActive;
   const needsProtectiveRestore = checkpoint?.status === "unavailable" || checkpoint?.status === "incomplete";
   const alarmObservation = alarm?.alarm;
   const retainedAlarm = checkpoint?.alarm;
+  const configurationObservation = currentAction?.kind === "activate_inventory_denial" ? currentAction : configurationAction;
   const deniedCheckout = currentAction?.kind === "activate_inventory_denial"
     ? currentAction.requests.find(({ kind, dependencyReason }) => kind === "checkout" && dependencyReason === "inventory_access_denied")
     : undefined;
+  const requestImpact = configurationObservation
+    ? configurationObservation.requests.reduce((summary, request) => {
+      summary[request.kind] = (summary[request.kind] ?? 0) + 1;
+      return summary;
+    }, {} as Record<string, number>)
+    : {};
+  const switchObservation = configurationObservation?.inventorySwitch;
+  const switchBefore = switchObservation?.before ?? aliasIncident?.aliasBefore;
+  const switchAfter = switchObservation?.after ?? aliasIncident?.alias;
+  const switchTarget = switchObservation?.target ?? aliasIncident?.target;
 
   const sendAction = useCallback(async (id: string, command: Command) => {
     const epoch = sessionEpoch.current;
@@ -215,7 +277,7 @@ export function App() {
   const runReadiness = () => { if (readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "readiness", confirmQuiet: true }); };
   const runTraffic = () => void sendAction(crypto.randomUUID(), { kind: "traffic" });
   const runActivation = () => { if (readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "activate_inventory_denial" }); };
-  const runRestore = () => { if (iamIncident && !restoreBusy && (!needsProtectiveRestore || protectiveRestoreConfirmed)) void sendAction(crypto.randomUUID(), needsProtectiveRestore ? { kind: "restore_inventory_access", restoreWithoutEvidence: true } : { kind: "restore_inventory_access" }); };
+  const runRestore = () => { if (aliasIncident && !restoreBusy && (!needsProtectiveRestore || protectiveRestoreConfirmed)) void sendAction(crypto.randomUUID(), needsProtectiveRestore ? { kind: "restore_inventory_access", restoreWithoutEvidence: true } : { kind: "restore_inventory_access" }); };
   const stopTraffic = () => currentAction && void sendAction(crypto.randomUUID(), { kind: "stop", targetActionId: currentAction.id });
   const discardAction = () => { const target = currentAction?.status === "incomplete" ? currentAction : configurationAction?.status === "incomplete" ? configurationAction : undefined; if (target) void sendAction(crypto.randomUUID(), { kind: "discard", targetActionId: target.id }); };
   const retryPending = (pending: PendingCommand) => void sendAction(pending.id, pending.command);
@@ -253,7 +315,7 @@ export function App() {
               <button type="button" role="menuitem" onClick={runReadiness} disabled={actionBusy || configurationBusy || incidentActive || !readinessConfirmed}>Check readiness</button>
               <button type="button" role="menuitem" onClick={runTraffic} disabled={actionBusy || !baseline || !trafficStartAllowed}>Start healthy traffic</button>
               <button type="button" role="menuitem" onClick={runActivation} disabled={actionBusy || configurationBusy || incidentActive || !baseline || !readinessConfirmed}>Activate Inventory denial</button>
-              {!legacyIncident && <button type="button" role="menuitem" onClick={runRestore} disabled={!iamIncident || restoreBusy || (needsProtectiveRestore && !protectiveRestoreConfirmed)}>Restore Inventory access</button>}
+              {!legacyIncident && <button type="button" role="menuitem" onClick={runRestore} disabled={!aliasIncident || restoreBusy || (needsProtectiveRestore && !protectiveRestoreConfirmed)}>Restore Inventory access</button>}
               <button type="button" role="menuitem" onClick={stopTraffic} disabled={!trafficActive || loading || Boolean(pendingCommand) || currentStatus === "draining"}>Stop traffic</button>
             </div>}
           </div>
@@ -271,41 +333,54 @@ export function App() {
       {pollFailure && <p className="notice notice-error" role="alert">{pollFailure}. The last good cloud observation remains visible.</p>}
       <section className="incident-controls card" aria-label="Inventory denial controls">
         <div className="card-heading">
-          <div><p className="eyebrow">Scoped incident control</p><h3>Inventory access</h3></div>
+          <div><p className="eyebrow">Prepared version control</p><h3>Inventory access state</h3></div>
           <span className={`incident-badge ${incidentActive ? "badge-warning" : "badge-neutral"}`}>
-            {incidentActive ? "Policy change recorded" : legacyIncident ? "Legacy record · read only" : incident ? "Access restored" : "Readiness baseline"}
+            {aliasIncident?.active === "unknown" ? "State unknown" : incidentActive ? "Denial active" : legacyIncident ? "Legacy record · read only" : aliasIncident ? "Access restored" : baseline ? "Ready" : "Unready"}
           </span>
         </div>
         <div className="incident-grid">
           <div>
-            <span className="fact-label">{iamIncident ? "Observed attachment" : legacyIncident ? "Legacy table policy" : "IAM policy attachment"}</span>
-            <strong>{iamIncident ? attachmentLabel(iamIncident.policy.state) : legacyIncident ? display(legacyIncident.policy?.state, "unknown") : attachmentLabel(iamPolicyObservation?.state)}</strong>
-            <small>
-              {iamIncident ? `${iamIncident.attachOutcome} · ownership ${iamIncident.attachmentOwnership}` : legacyIncident ? `revision ${display(legacyIncident.policy?.revision, "unknown")}` : "Baseline observation"}
-              {" · "}{formatTime(iamIncident?.policy.observedAt ?? legacyIncident?.policy?.observedAt ?? (typeof baselineAccessObservation?.observedAt === "string" ? baselineAccessObservation.observedAt : baseline?.verifiedAt))}
-            </small>
+            <span className="fact-label">Current alias</span>
+            <strong>{display(currentAlias?.aliasName, "Unknown")}</strong>
+            <small>{display(currentAlias?.functionName, "Inventory function")} · revision {display(currentAlias?.revisionId ?? baselineInventory?.aliasRevision, "unknown")} · {currentAliasStatus}</small>
           </div>
           <div>
-            <span className="fact-label">Checkpoint</span>
-            <strong>{display(checkpoint?.status, "Not captured")}</strong>
-            <small>{checkpoint?.error ?? checkpoint?.key ?? "Configuration evidence is private"}</small>
+            <span className="fact-label">Current version</span>
+            <strong>{display(currentAlias?.functionVersion ?? baselineInventory?.version, "Unknown")}</strong>
+            <small>{accessLabel(currentAccess)} · {display(currentAlias?.observedAt ?? baselineInventory?.observedAt, "No observation")}</small>
           </div>
           <div>
-            <span className="fact-label">Restore</span>
-            <strong>{display(configurationAction?.configurationOutcome ?? configurationAction?.status, "Idle").replace("_", " ")}</strong>
-            <small>{configurationAction?.id ?? "No restoration action"}</small>
+            <span className="fact-label">Role</span>
+            <strong>{accessLabel(currentAccess)}</strong>
+            <small className="mono">{inventoryRoleArn}</small>
+          </div>
+          <div>
+            <span className="fact-label">Configuration result</span>
+            <strong>{resultLabel(configurationObservation?.configurationOutcome)}</strong>
+            <small>{configurationObservation?.id ?? "No alias action"}</small>
           </div>
         </div>
-        {iamPolicyObservation && <dl className="facts">
-          <div><dt>Prepared policy name</dt><dd className="mono">{policyName}</dd></div>
-          <div><dt>Default version</dt><dd className="mono">{policyVersion}</dd></div>
-          <div><dt>Inventory role ARN</dt><dd className="mono">{inventoryRoleArn}</dd></div>
-          <div><dt>Policy ARN</dt><dd className="mono">{policyArn}</dd></div>
+        <dl className="facts">
+          <div><dt>Target version</dt><dd className="mono">{display(switchTarget?.version, "No target")}</dd></div>
+          <div><dt>Target memory</dt><dd>{switchTarget ? `${display(switchTarget.memoryMb)} MB` : "No target"}</dd></div>
+          <div><dt>Target access</dt><dd>{accessLabel(switchTarget?.access)}</dd></div>
+          <div><dt>Target role ARN</dt><dd className="mono">{display(switchTarget?.roleArn, "No target")}</dd></div>
+          <div><dt>Current alias ARN</dt><dd className="mono">{display(currentAlias?.aliasArn, "Not observed")}</dd></div>
+          <div><dt>Checkpoint</dt><dd>{display(checkpoint?.status, "Not captured")}</dd></div>
+          <div><dt>Request impact</dt><dd>{configurationObservation ? `${display(requestImpact.catalog, "0")} catalog · ${display(requestImpact.checkout, "0")} checkout` : "No configuration request"}</dd></div>
+        </dl>
+        {policyObservation && <dl className="facts readonly-policy">
+          <div><dt>Prepared policy</dt><dd className="mono">{display(policyObservation.policyName, "Not observed")}</dd></div>
+          <div><dt>Policy state</dt><dd>{display(policyObservation.state, "unknown")}</dd></div>
         </dl>}
-        {legacyIncident && <p className="muted">This persisted DynamoDB table-policy record remains visible for history; IAM restore controls do not target it.</p>}
-        {iamIncident && incidentActive && needsProtectiveRestore && <label className="quiet-check protective-check">
+        {configurationObservation && <div className="configuration-result" aria-label="Configuration result details">
+          <p><strong>{resultLabel(configurationObservation.configurationOutcome)}</strong> · {configurationObservation.kind === "activate_inventory_denial" ? "Activation" : "Restore"} completed as a configuration action.</p>
+          <p className="muted">Alias {display(switchBefore?.functionVersion, "unknown")} → {display(switchTarget?.version, "unknown")} {switchAfter ? `· read back ${switchAfter.functionVersion}` : "· awaiting readback"}; {configurationObservation.kind === "activate_inventory_denial" ? "bounded request observations are shown separately below" : "restore submits no app probes"}.</p>
+        </div>}
+        {legacyIncident && <p className="muted">This persisted {legacyIncident.mechanism === "iam-managed-policy" ? "IAM" : "DynamoDB table-policy"} incident remains visible for history only. Prepared-version controls do not mutate or restore it.</p>}
+        {aliasIncident && incidentActive && needsProtectiveRestore && <label className="quiet-check protective-check">
           <input type="checkbox" checked={protectiveRestoreConfirmed} onChange={(event) => setProtectiveRestoreConfirmed(event.target.checked)} />
-          Evidence capture is unavailable. Allow protective restore of the recorded policy.
+          Evidence capture is unavailable. Allow protective restore of the recorded alias state.
         </label>}
         {configurationAction?.error && <p className="action-error" role="alert">{configurationAction.error}</p>}
       </section>
