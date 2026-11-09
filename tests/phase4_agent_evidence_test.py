@@ -8,6 +8,8 @@ import time
 import unittest
 from pathlib import Path
 
+from botocore.exceptions import ClientError
+
 AGENT_DIR = Path(__file__).resolve().parents[1] / "agent"
 if str(AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(AGENT_DIR))
@@ -47,6 +49,37 @@ class _DynamoPolicyBoundary(FakeAWSBoundary):
         if service_name == "dynamodb":
             return _DynamoPolicyClient(self)
         return super().client(service_name, **kwargs)
+
+
+class _DynamoPolicyErrorClient:
+    def __init__(self, error_code: str) -> None:
+        self.error_code = error_code
+
+    def get_resource_policy(self, **request):
+        raise ClientError({"Error": {"Code": self.error_code, "Message": "controlled provider response"}}, "GetResourcePolicy")
+
+
+class _DynamoPolicyErrorBoundary(FakeAWSBoundary):
+    def __init__(self, error_code: str) -> None:
+        super().__init__()
+        self.error_code = error_code
+
+    def client(self, service_name: str, **kwargs):
+        if service_name == "dynamodb":
+            return _DynamoPolicyErrorClient(self.error_code)
+        return super().client(service_name, **kwargs)
+
+
+class _LambdaConcurrencyErrorClient:
+    def __init__(self, boundary: FakeAWSBoundary, delegate) -> None:
+        self.boundary, self.delegate = boundary, delegate
+
+    def __getattr__(self, operation):
+        return getattr(self.delegate, operation)
+
+    def get_function_concurrency(self, **request):
+        self.boundary.calls.append(("lambda", "get_function_concurrency", request))
+        raise ClientError({"Error": {"Code": "AccessDeniedException", "Message": "controlled provider response"}}, "GetFunctionConcurrency")
 
 
 class EvidenceProviderTests(unittest.TestCase):
@@ -111,6 +144,50 @@ class EvidenceProviderTests(unittest.TestCase):
         self.assertEqual("Deny", table_policy["policy"]["Statement"][0]["Effect"])
         document = tools._project_policy({"PolicyDocument": {"Version": "2012-10-17", "Statement": [{"Effect": "Deny"}]}})
         self.assertEqual("Deny", document["Statement"][0]["Effect"])
+
+    def test_missing_inventory_resource_policy_is_explicit_and_complete(self):
+        boundary = _DynamoPolicyErrorBoundary("PolicyNotFoundException")
+        tools, _, _ = self.make_tools(boundary)
+        result = tools.read_configuration(resource="inventory")
+        policy = next(item for item in result["observations"] if item["kind"] == "dynamodb-resource-policy")
+        self.assertEqual("absent", policy["policyStatus"])
+        self.assertEqual("arn:aws:dynamodb:us-east-1:123456789012:table/IncidentTriageDemoInventory", policy["tableArn"])
+        self.assertNotIn("error", policy)
+        self.assertEqual("complete", result["completeness"])
+        self.assertEqual([], result["errors"])
+
+    def test_other_inventory_policy_errors_remain_partial(self):
+        boundary = _DynamoPolicyErrorBoundary("AccessDeniedException")
+        tools, _, _ = self.make_tools(boundary)
+        result = tools.read_configuration(resource="inventory")
+        policy = next(item for item in result["observations"] if item["kind"] == "dynamodb-resource-policy")
+        self.assertIn("AccessDeniedException", policy["error"])
+        self.assertEqual("partial", result["completeness"])
+        self.assertTrue(any("AccessDeniedException" in error for error in result["errors"]))
+
+    def test_unreserved_concurrency_is_explicit_without_inventing_zero(self):
+        boundary = FakeAWSBoundary()
+        boundary.responses[("lambda", "get_function_concurrency")] = {}
+        tools, _, _ = self.make_tools(boundary)
+        result = tools.read_configuration(resource="checkout")
+        configuration = result["observations"][0]
+        self.assertEqual({"state": "unreserved"}, configuration["concurrency"])
+        self.assertEqual("complete", result["completeness"])
+        self.assertNotIn("ReservedConcurrentExecutions", configuration["concurrency"])
+
+    def test_concurrency_read_error_is_nested_and_marks_configuration_partial(self):
+        class LambdaErrorBoundary(FakeAWSBoundary):
+            def client(self, service_name: str, **kwargs):
+                if service_name == "lambda":
+                    return _LambdaConcurrencyErrorClient(self, super().client(service_name, **kwargs))
+                return super().client(service_name, **kwargs)
+
+        tools, _, _ = self.make_tools(LambdaErrorBoundary())
+        result = tools.read_configuration(resource="checkout")
+        configuration = result["observations"][0]
+        self.assertIn("AccessDeniedException", configuration["concurrency"]["unavailable"])
+        self.assertEqual("partial", result["completeness"])
+        self.assertTrue(any("concurrency" in error and "AccessDeniedException" in error for error in result["errors"]))
 
     def test_scope_and_window_rejections_happen_before_source_calls(self):
         tools, boundary, charges = self.make_tools()
