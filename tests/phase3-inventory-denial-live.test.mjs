@@ -349,7 +349,7 @@ test('deployed Inventory denial and restoration checkpoints are visible through 
     'restore must read the denied alias target before switching');
   assert.equal(restoreBefore.revisionId, capturedDeniedAlias.revisionId,
     'restore must retain the denied alias revision it guarded');
-  assertAliasObservation(retainedCheckpoint.inventoryAliasBefore, 'retained checkpoint aliasBefore', recoveredHealthyVariant.version);
+  assertAliasObservation(retainedCheckpoint.inventoryAliasBefore, 'retained checkpoint aliasBefore', deniedVariant.version);
   assert.equal(retainedCheckpoint.inventoryRoleArn, DENIED_ROLE, 'retained checkpoint must preserve the denied role');
   assert.equal(retainedCheckpoint.inventoryAliasAtCapture.functionVersion, deniedVariant.version,
     'retained checkpoint must preserve the denied alias target at capture');
