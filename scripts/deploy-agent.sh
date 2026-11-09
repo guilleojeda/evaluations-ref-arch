@@ -7,6 +7,7 @@ change_set_name="phase4-agent-${GITHUB_SHA}"
 description="$RUNNER_TEMP/agent-change-set.json"
 aws_error="$RUNNER_TEMP/agent-deploy.error"
 test -s "$assembly/manifest.json"
+candidate_template="$(jq -er --arg stack "$stack" '.artifacts[$stack].properties.templateFile' "$assembly/manifest.json")"
 
 credentials="$(aws sts assume-role --role-arn "$CDK_DEPLOY_ROLE_ARN" \
   --role-session-name "phase4-agent-${GITHUB_RUN_ID}" --duration-seconds 3300 --query Credentials --output json)"
@@ -87,7 +88,7 @@ if deploy_aws cloudformation describe-change-set --stack-name "$stack" --change-
     --output json >"$description" 2>"$aws_error"; then
   case "$(jq -r '.Status + ":" + .ExecutionStatus' "$description")" in
     CREATE_COMPLETE:AVAILABLE)
-      node scripts/check-agent-change-set.mjs <"$description"
+      node scripts/check-agent-change-set.mjs "$assembly/$candidate_template" <"$description"
       prepared=true ;;
     FAILED:*|*:OBSOLETE) deploy_aws cloudformation delete-change-set --stack-name "$stack" --change-set-name "$change_set_name" ;;
     *) echo "Previous agent change set is still in progress or unavailable" >&2; exit 1 ;;
@@ -98,19 +99,21 @@ elif ! grep -Eqi 'does not exist|not found|ChangeSetNotFound' "$aws_error"; then
 fi
 
 if [[ "$prepared" == false ]]; then
+  # A failed first create can leave these two retained resources unmanaged.
+  # Native auto-import preserves them; the checked-template guard below rejects
+  # adoption of every other resource and still inspects the complete change set.
   ./node_modules/.bin/cdk deploy "$stack" --app "$assembly" --exclusively \
-    --method prepare-change-set --change-set-name "$change_set_name" --require-approval never \
+    --import-existing-resources --method prepare-change-set --change-set-name "$change_set_name" --require-approval never \
     --previous-parameters "${parameter_args[@]}"
   deploy_aws cloudformation describe-change-set --stack-name "$stack" --change-set-name "$change_set_name" \
     --output json >"$description"
 fi
-node scripts/check-agent-change-set.mjs <"$description"
+node scripts/check-agent-change-set.mjs "$assembly/$candidate_template" <"$description"
 
 change_set_id="$(jq -er .ChangeSetId "$description")"
 jq -e --arg revision "$GITHUB_SHA" \
   '[.Parameters[] | select(.ParameterKey == "SourceRevision") | .ParameterValue] == [$revision]' \
   "$description" >/dev/null
-candidate_template="$(jq -er --arg stack "$stack" '.artifacts[$stack].properties.templateFile' "$assembly/manifest.json")"
 checked_hash="$(jq -cS . "$assembly/$candidate_template" | sha256sum | cut -d' ' -f1)"
 prepared_hash="$(deploy_aws cloudformation get-template --stack-name "$stack" --change-set-name "$change_set_id" \
   --template-stage Original --output json | jq -cS '.TemplateBody | if type == "string" then fromjson else . end' | sha256sum | cut -d' ' -f1)"

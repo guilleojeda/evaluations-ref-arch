@@ -199,6 +199,10 @@ aws cloudformation list-stack-resources --stack-name IncidentTriageDemoApp \
 
 Reapply step 1 with `--parameter-overrides AppHttpApiId="$api_id" AppDistributionId="$distribution_id" AppOriginAccessControlId="$origin_access_control_id"`, using the three reported IDs. The named execution role then has resource-level access to the app's generated resources. Keep these values for routine releases. A reviewed replacement of one of those resources needs a corresponding bootstrap update.
 
+## Recover a failed initial agent creation
+
+After a failed first agent create reaches `ROLLBACK_COMPLETE`, an administrator removes only that failed stack shell. Preserve `IncidentTriageDemoAgentRun` and `/aws/lambda/IncidentTriageDemoAlarmAdapter`; the next normal checked agent deployment uses CDK auto-import, and its guard permits only those exact retained resources from the checked template. Never delete table rows or log history to make deployment succeed.
+
 ## Offline checks
 
 Run these checks from the repository root before handoff:

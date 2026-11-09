@@ -76,6 +76,25 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual([], self.adapter.updates)
 
 class ReleaseTemplateTests(unittest.TestCase):
+    def test_runtime_creation_dependencies_use_unnamed_arns_without_widening_ongoing_actions(self):
+        class Loader(yaml.SafeLoader): pass
+        Loader.add_multi_constructor("!", lambda loader, tag, node: {tag: loader.construct_scalar(node)})
+        template = yaml.load((Path(__file__).parents[1] / "infrastructure/bootstrap/phase0-cfn-execution-policy.yaml").read_text(), Loader=Loader)
+        statements = template["Resources"]["IncidentTriageDemoAgentCfnExecution"]["Properties"]["PolicyDocument"]["Statement"]
+        creation = next(s for s in statements if s["Sid"] == "CreateRuntimeDependencies")
+        self.assertEqual({"bedrock-agentcore:CreateAgentRuntimeEndpoint", "bedrock-agentcore:CreateWorkloadIdentity"}, set(creation["Action"]))
+        self.assertIn("arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/*", creation["Resource"])
+        self.assertIn("arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default/workload-identity/*", creation["Resource"])
+        self.assertEqual({"aws:RequestedRegion": "us-east-1", "aws:RequestTag/Project": "IncidentTriageDemo", "aws:RequestTag/Component": "agent"}, creation["Condition"]["StringEquals"])
+        for statement in statements:
+            if statement is creation: continue
+            actions = statement["Action"] if isinstance(statement["Action"], list) else [statement["Action"]]
+            if any(action.startswith("bedrock-agentcore:") and not action.startswith("bedrock-agentcore:Create") for action in actions):
+                resources = statement["Resource"] if isinstance(statement["Resource"], list) else [statement["Resource"]]
+                self.assertNotIn("*", resources)
+                self.assertNotIn("arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/*", resources)
+                self.assertNotIn("arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default/workload-identity/*", resources)
+
     def test_bootstrap_templates_do_not_use_cloudformation_forbidden_yaml_aliases(self):
         for name in ["github-iam.yaml", "phase0-cfn-execution-policy.yaml"]:
             path = Path(__file__).parents[1] / "infrastructure/bootstrap" / name
