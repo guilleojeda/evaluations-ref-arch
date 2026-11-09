@@ -216,6 +216,10 @@ and bootstraps the account; subsequent product releases and finalization run
 through the scoped GitHub workflow.
 The deploy role's existing Lambda-key decryption exception covers only the
 exact Inventory and alarm-adapter environment contexts.
+Adapter attestation also permits `kms:Encrypt` only through Lambda on that
+same key and the exact alarm-adapter environment context. It does not permit
+Inventory encryption or grant/key creation. See [Lambda environment encryption](https://docs.aws.amazon.com/lambda/latest/dg/configuration-envvars-encryption.html)
+and the [KMS Encrypt permission](https://docs.aws.amazon.com/kms/latest/APIReference/API_Encrypt.html).
 
 The app release script runs `scripts/prepare-inventory-versions.mjs` after the
 app stack is healthy. It verifies the healthy `live` alias, stages only the

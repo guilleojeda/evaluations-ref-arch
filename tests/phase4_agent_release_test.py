@@ -194,6 +194,56 @@ class ReleaseTemplateTests(unittest.TestCase):
         oidc = template["Resources"]["GitHubDeployRole"]["Properties"]["Policies"]
         self.assertEqual({"sts:AssumeRole"}, {statement["Action"] for policy in oidc for statement in policy["PolicyDocument"]["Statement"]})
 
+    def test_adapter_encrypt_requires_exact_lambda_key_function_context_and_service(self):
+        template = yaml.safe_load((Path(__file__).parents[1] / "infrastructure/bootstrap/github-iam.yaml").read_text())
+        statements = template["Resources"]["DedicatedCdkDeployRolePhase0Guard"]["Properties"]["PolicyDocument"]["Statement"]
+        indexed = {statement["Sid"]: statement for statement in statements}
+        actions = indexed["DenyNonAppDeploymentActions"]["NotAction"]
+        self.assertEqual({"kms:Decrypt", "kms:Encrypt", "kms:DescribeKey"}, {action for action in actions if action.startswith("kms:")})
+        key = "arn:aws:kms:us-east-1:027224425948:key/9d894f12-dc33-4332-bb3e-df489928914b"
+        adapter = "arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter"
+        context_key = "kms:EncryptionContext:aws:lambda:FunctionArn"
+        self.assertEqual({"StringNotEquals": {context_key: adapter}}, indexed["DenyEncryptOutsideAdapterEnvironment"]["Condition"])
+        self.assertEqual(key, indexed["DenyEncryptOrDescribeOtherKeys"]["NotResource"])
+        self.assertEqual({"StringNotEquals": {"kms:ViaService": "lambda.us-east-1.amazonaws.com"}}, indexed["DenyEncryptOrDescribeOutsideLambda"]["Condition"])
+
+        def explicitly_denied(resource, context):
+            # Evaluate only the explicit Denies relevant to this one action.
+            for statement in statements:
+                if statement["Effect"] != "Deny": continue
+                action_key = "NotAction" if "NotAction" in statement else "Action"
+                values = statement[action_key]
+                values = values if isinstance(values, list) else [values]
+                matches = any(fnmatchcase("kms:Encrypt", value) for value in values)
+                if matches == (action_key == "NotAction"): continue
+                resource_key = "NotResource" if "NotResource" in statement else "Resource"
+                values = statement[resource_key]
+                values = values if isinstance(values, list) else [values]
+                matches = any(fnmatchcase(resource, value) for value in values)
+                if matches == (resource_key == "NotResource"): continue
+                condition = statement.get("Condition", {})
+                if condition:
+                    self.assertEqual({"StringNotEquals"}, set(condition))
+                    if not all(context.get(name) != value for name, value in condition["StringNotEquals"].items()): continue
+                return True
+            return False
+
+        allowed = {context_key: adapter, "kms:ViaService": "lambda.us-east-1.amazonaws.com"}
+        self.assertFalse(explicitly_denied(key, allowed))
+        for resource, context in [
+            (key.replace("9d894f12-dc33-4332-bb3e-df489928914b", "b292b95c-709f-42c6-aa42-b934ba2c6f07"), allowed),
+            (key.replace("027224425948", "123456789012"), allowed),
+            (key, {**allowed, context_key: adapter.replace("AlarmAdapter", "Inventory")}),
+            (key, {**allowed, context_key: adapter.replace("AlarmAdapter", "ControllerHttp")}),
+            (key, {**allowed, context_key: adapter + ":live"}),
+            (key, {"kms:ViaService": allowed["kms:ViaService"]}),
+            (key, {context_key: adapter}),
+            (key, {**allowed, "kms:ViaService": "s3.us-east-1.amazonaws.com"}),
+            (key, {**allowed, "kms:ViaService": "lambda.us-west-2.amazonaws.com"}),
+        ]:
+            with self.subTest(resource=resource, context=context):
+                self.assertTrue(explicitly_denied(resource, context))
+
     def test_runtime_creation_dependencies_use_unnamed_arns_without_widening_ongoing_actions(self):
         statements = self.agent_policy()["Statement"]
         creation = next(s for s in statements if s["Sid"] == "CreateRuntimeDependencies")
