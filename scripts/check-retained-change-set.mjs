@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 const CHANGE_SET_ID = /^arn:aws:cloudformation:us-east-1:027224425948:changeSet\/[^/]+\/[0-9a-f-]+$/i;
 const ALLOWED_STATUSES = new Set(["CREATE_COMPLETE", "UPDATE_COMPLETE"]);
 
-export function checkRetainedChangeSet({ component, stackName: expectedStackName, tableIds, success }) {
+export function checkRetainedChangeSet({ component, stackName: expectedStackName, tableIds, imports = {}, success }) {
   const stackIdPattern = new RegExp(`^arn:aws:cloudformation:us-east-1:027224425948:stack/${expectedStackName}/[0-9a-f-]+$`, "i");
   function fail(message) {
     console.error(`Rejected ${component} change set: ${message}`);
@@ -60,6 +60,16 @@ export function checkRetainedChangeSet({ component, stackName: expectedStackName
         const logicalId = resource.LogicalResourceId;
         if (typeof logicalId !== "string" || logicalId.length === 0) {
           fail("a resource change has no logical ID");
+          continue;
+        }
+        if (resource.Action === "Import") {
+          const expected = imports[logicalId];
+          if (!expected || resource.ResourceType !== expected.type || resource.PhysicalResourceId !== expected.physicalId) {
+            fail(`${logicalId} is not an approved retained resource import`);
+          }
+          if (resource.Replacement !== undefined && resource.Replacement !== "False") {
+            fail(`${logicalId} import may replace a resource`);
+          }
           continue;
         }
         if (!tableIds.includes(logicalId)) continue;

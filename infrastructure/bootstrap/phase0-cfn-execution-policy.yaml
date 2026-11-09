@@ -912,6 +912,23 @@ Resources:
               aws:RequestedRegion: us-east-1
               aws:RequestTag/Project: IncidentTriageDemo
               aws:RequestTag/Component: agent
+        # CreateAgentRuntime authorizes its default endpoint/identity before
+        # generated IDs exist. Only these creation actions use unnamed ARNs;
+        # ordinary reads, updates and deletes remain scoped to the agent name.
+        - Sid: CreateRuntimeDependencies
+          Effect: Allow
+          Action:
+          - bedrock-agentcore:CreateAgentRuntimeEndpoint
+          - bedrock-agentcore:CreateWorkloadIdentity
+          Resource:
+          - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/*
+          - arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default
+          - arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default/workload-identity/*
+          Condition:
+            StringEquals:
+              aws:RequestedRegion: us-east-1
+              aws:RequestTag/Project: IncidentTriageDemo
+              aws:RequestTag/Component: agent
         - Sid: ManageNamedRuntime
           Effect: Allow
           Action:
@@ -928,11 +945,9 @@ Resources:
           Resource:
           - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-*
           - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-*/runtime-endpoint/*
-        - Sid: RuntimeIdentity
+        - Sid: DeleteNamedRuntimeIdentity
           Effect: Allow
-          Action:
-          - bedrock-agentcore:CreateWorkloadIdentity
-          - bedrock-agentcore:DeleteWorkloadIdentity
+          Action: bedrock-agentcore:DeleteWorkloadIdentity
           Resource:
           - arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default
           - arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default/workload-identity/IncidentTriageDemoAgent-*
