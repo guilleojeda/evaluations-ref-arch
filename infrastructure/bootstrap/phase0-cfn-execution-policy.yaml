@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   Scoped CloudFormation execution and runtime boundary policies for the
-  Incident Triage Demo app and controller stacks.
+  Incident Triage Demo app, controller, and agent stacks.
 
 Parameters:
   AppHttpApiId:
@@ -523,6 +523,18 @@ Resources:
               - dynamodb:PutItem
               - dynamodb:UpdateItem
             Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoControllerRun
+          - Sid: ControllerHttpAgentDiscovery
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:Query
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoAgentRun
+          - Sid: ControllerHttpAgentReadiness
+            Effect: Allow
+            Action: bedrock-agentcore:GetAgentRuntimeEndpoint
+            Resource:
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-*
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-*/runtime-endpoint/faulty
           - Sid: ControllerHttpSecret
             Effect: Allow
             Action: secretsmanager:GetSecretValue
@@ -712,6 +724,311 @@ Resources:
             Action: dynamodb:GetItem
             Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoInventory
 
+  IncidentTriageDemoAgentRuntimeBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ManagedPolicyName: IncidentTriageDemoAgentRuntimeBoundary
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: SelectedModel
+          Effect: Allow
+          Action:
+          - bedrock:InvokeModel
+          - bedrock:InvokeModelWithResponseStream
+          Resource:
+          - arn:aws:bedrock:us-east-1:027224425948:inference-profile/us.anthropic.claude-sonnet-4-6
+          - arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6
+          - arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-6
+          - arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6
+        - Sid: OwnInvestigationRecords
+          Effect: Allow
+          Action:
+          - dynamodb:GetItem
+          - dynamodb:PutItem
+          - dynamodb:UpdateItem
+          Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoAgentRun
+        - Sid: SanitizedSourceCapture
+          Effect: Allow
+          Action: s3:PutObject
+          Resource: arn:aws:s3:::incident-triage-demo-evidence-027224425948-us-east-1/agent-source/*
+        - Sid: AppLogs
+          Effect: Allow
+          Action: logs:FilterLogEvents
+          Resource:
+          - arn:aws:logs:us-east-1:027224425948:log-group:/aws/lambda/IncidentTriageDemoCheckout:*
+          - arn:aws:logs:us-east-1:027224425948:log-group:/aws/lambda/IncidentTriageDemoInventory:*
+          - arn:aws:logs:us-east-1:027224425948:log-group:/aws/apigateway/IncidentTriageDemoApp:*
+        - Sid: AppMetrics
+          Effect: Allow
+          Action:
+          - cloudwatch:GetMetricData
+          - cloudwatch:GetMetricStatistics
+          Resource: '*'
+          Condition:
+            StringEquals:
+              aws:RequestedRegion: us-east-1
+        - Sid: AppFunctionConfiguration
+          Effect: Allow
+          Action:
+          - lambda:GetFunctionConfiguration
+          - lambda:GetAlias
+          - lambda:GetFunctionConcurrency
+          Resource:
+          - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoCheckout
+          - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoCheckout:*
+          - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory
+          - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory:*
+        - Sid: InventoryRoles
+          Effect: Allow
+          Action:
+          - iam:GetRole
+          - iam:ListAttachedRolePolicies
+          - iam:ListRolePolicies
+          - iam:GetRolePolicy
+          Resource:
+          - arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryRole
+          - arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryDeniedRole
+        - Sid: InventoryReadDenyPolicy
+          Effect: Allow
+          Action:
+          - iam:GetPolicy
+          - iam:GetPolicyVersion
+          Resource: arn:aws:iam::027224425948:policy/IncidentTriageDemoInventoryReadDeny
+        - Sid: InventoryResourcePolicy
+          Effect: Allow
+          Action: dynamodb:GetResourcePolicy
+          Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoInventory
+        - Sid: ManagementHistory
+          Effect: Allow
+          Action: cloudtrail:LookupEvents
+          Resource: '*'
+          Condition:
+            StringEquals:
+              aws:RequestedRegion: us-east-1
+        - Sid: RuntimeLogGroups
+          Effect: Allow
+          Action:
+          - logs:CreateLogGroup
+          - logs:DescribeLogStreams
+          - logs:PutResourcePolicy
+          Resource: arn:aws:logs:us-east-1:027224425948:log-group:/aws/bedrock-agentcore/runtimes/IncidentTriageDemoAgent-*
+        - Sid: RuntimeLogStreams
+          Effect: Allow
+          Action:
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          Resource: arn:aws:logs:us-east-1:027224425948:log-group:/aws/bedrock-agentcore/runtimes/IncidentTriageDemoAgent-*:log-stream:*
+        - Sid: RuntimeLogDiscovery
+          Effect: Allow
+          Action: logs:DescribeLogGroups
+          Resource: arn:aws:logs:us-east-1:027224425948:log-group:*
+        - Sid: NativeTraceExport
+          Effect: Allow
+          Action:
+          - xray:PutTraceSegments
+          - xray:PutTelemetryRecords
+          - xray:GetSamplingRules
+          - xray:GetSamplingTargets
+          Resource: '*'
+          Condition:
+            StringEquals:
+              aws:RequestedRegion: us-east-1
+        - Sid: RuntimeMetrics
+          Effect: Allow
+          Action: cloudwatch:PutMetricData
+          Resource: '*'
+          Condition:
+            StringEquals:
+              cloudwatch:namespace: bedrock-agentcore
+  IncidentTriageDemoAlarmAdapterBoundary:
+    Type: AWS::IAM::ManagedPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ManagedPolicyName: IncidentTriageDemoAlarmAdapterBoundary
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: ForwardSelectedRuntime
+          Effect: Allow
+          Action: bedrock-agentcore:InvokeAgentRuntime
+          Resource:
+          - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-*
+          - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-*/runtime-endpoint/faulty
+        - Sid: AdapterLogs
+          Effect: Allow
+          Action:
+          - logs:CreateLogStream
+          - logs:PutLogEvents
+          Resource: arn:aws:logs:us-east-1:027224425948:log-group:/aws/lambda/IncidentTriageDemoAlarmAdapter:*
+        - Sid: AdapterTracing
+          Effect: Allow
+          Action:
+          - xray:PutTraceSegments
+          - xray:PutTelemetryRecords
+          Resource: '*'
+          Condition:
+            StringEquals:
+              aws:RequestedRegion: us-east-1
+  IncidentTriageDemoAgentCfnExecution:
+    Type: AWS::IAM::ManagedPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ManagedPolicyName: IncidentTriageDemoAgentCfnExecution
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+        - Sid: InspectAgentStack
+          Effect: Allow
+          Action:
+          - cloudformation:DescribeStacks
+          - cloudformation:ListStackResources
+          Resource: arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoAgent/*
+        - Sid: ReadCheckedAssets
+          Effect: Allow
+          Action:
+          - s3:GetObject
+          - s3:GetObjectVersion
+          Resource: arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*
+        - Sid: DecryptCheckedAssets
+          Effect: Allow
+          Action: kms:Decrypt
+          Resource: arn:aws:kms:us-east-1:027224425948:key/b292b95c-709f-42c6-aa42-b934ba2c6f07
+          Condition:
+            StringEquals:
+              kms:ViaService: s3.us-east-1.amazonaws.com
+            StringLike:
+              kms:EncryptionContext:aws:s3:arn: arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*
+        - Sid: CreateTaggedAgent
+          Effect: Allow
+          Action: bedrock-agentcore:CreateAgentRuntime
+          Resource: '*'
+          Condition:
+            StringEquals:
+              aws:RequestedRegion: us-east-1
+              aws:RequestTag/Project: IncidentTriageDemo
+              aws:RequestTag/Component: agent
+        - Sid: ManageNamedRuntime
+          Effect: Allow
+          Action:
+          - bedrock-agentcore:GetAgentRuntime
+          - bedrock-agentcore:UpdateAgentRuntime
+          - bedrock-agentcore:DeleteAgentRuntime
+          - bedrock-agentcore:CreateAgentRuntimeEndpoint
+          - bedrock-agentcore:GetAgentRuntimeEndpoint
+          - bedrock-agentcore:UpdateAgentRuntimeEndpoint
+          - bedrock-agentcore:DeleteAgentRuntimeEndpoint
+          - bedrock-agentcore:TagResource
+          - bedrock-agentcore:UntagResource
+          - bedrock-agentcore:ListTagsForResource
+          Resource:
+          - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-*
+          - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-*/runtime-endpoint/*
+        - Sid: RuntimeIdentity
+          Effect: Allow
+          Action:
+          - bedrock-agentcore:CreateWorkloadIdentity
+          - bedrock-agentcore:DeleteWorkloadIdentity
+          Resource:
+          - arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default
+          - arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default/workload-identity/IncidentTriageDemoAgent-*
+        - Sid: ManageAgentRunTable
+          Effect: Allow
+          Action:
+          - dynamodb:CreateTable
+          - dynamodb:DescribeTable
+          - dynamodb:DescribeContinuousBackups
+          - dynamodb:DescribeContributorInsights
+          - dynamodb:DescribeKinesisStreamingDestination
+          - dynamodb:DescribeTimeToLive
+          - dynamodb:GetResourcePolicy
+          - dynamodb:ListTagsOfResource
+          - dynamodb:TagResource
+          - dynamodb:UpdateTable
+          Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoAgentRun
+        - Sid: ManageAdapterLogs
+          Effect: Allow
+          Action:
+          - logs:CreateLogGroup
+          - logs:ListTagsForResource
+          - logs:PutRetentionPolicy
+          - logs:TagResource
+          - logs:UntagResource
+          Resource:
+          - arn:aws:logs:us-east-1:027224425948:log-group:/aws/lambda/IncidentTriageDemoAlarmAdapter
+          - arn:aws:logs:us-east-1:027224425948:log-group:/aws/lambda/IncidentTriageDemoAlarmAdapter:*
+        - Sid: ManageAdapterFunction
+          Effect: Allow
+          Action:
+          - lambda:CreateFunction
+          - lambda:DeleteFunction
+          - lambda:GetFunction
+          - lambda:GetFunctionConfiguration
+          - lambda:GetFunctionCodeSigningConfig
+          - lambda:GetPolicy
+          - lambda:ListTags
+          - lambda:TagResource
+          - lambda:UntagResource
+          - lambda:UpdateFunctionCode
+          - lambda:UpdateFunctionConfiguration
+          - lambda:AddPermission
+          - lambda:RemovePermission
+          - lambda:GetFunctionEventInvokeConfig
+          - lambda:PutFunctionEventInvokeConfig
+          - lambda:UpdateFunctionEventInvokeConfig
+          - lambda:DeleteFunctionEventInvokeConfig
+          Resource:
+          - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter
+          - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter:*
+        - Sid: ManageAgentRolePolicies
+          Effect: Allow
+          Action:
+          - iam:DeleteRole
+          - iam:DeleteRolePolicy
+          - iam:GetRole
+          - iam:GetRolePolicy
+          - iam:ListRolePolicies
+          - iam:ListAttachedRolePolicies
+          - iam:PutRolePolicy
+          - iam:TagRole
+          - iam:UntagRole
+          - iam:UpdateAssumeRolePolicy
+          Resource:
+          - arn:aws:iam::027224425948:role/IncidentTriageDemoAgentRuntimeRole
+          - arn:aws:iam::027224425948:role/IncidentTriageDemoAlarmAdapterRole
+        - Sid: CreateRuntimeWithBoundary
+          Effect: Allow
+          Action: iam:CreateRole
+          Resource: arn:aws:iam::027224425948:role/IncidentTriageDemoAgentRuntimeRole
+          Condition:
+            StringEquals:
+              iam:PermissionsBoundary: arn:aws:iam::027224425948:policy/IncidentTriageDemoAgentRuntimeBoundary
+        - Sid: CreateAdapterWithBoundary
+          Effect: Allow
+          Action: iam:CreateRole
+          Resource: arn:aws:iam::027224425948:role/IncidentTriageDemoAlarmAdapterRole
+          Condition:
+            StringEquals:
+              iam:PermissionsBoundary: arn:aws:iam::027224425948:policy/IncidentTriageDemoAlarmAdapterBoundary
+        - Sid: PassRuntimeRole
+          Effect: Allow
+          Action: iam:PassRole
+          Resource: arn:aws:iam::027224425948:role/IncidentTriageDemoAgentRuntimeRole
+          Condition:
+            StringEquals:
+              iam:PassedToService: bedrock-agentcore.amazonaws.com
+        - Sid: PassAdapterRole
+          Effect: Allow
+          Action: iam:PassRole
+          Resource: arn:aws:iam::027224425948:role/IncidentTriageDemoAlarmAdapterRole
+          Condition:
+            StringEquals:
+              iam:PassedToService: lambda.amazonaws.com
+
 Outputs:
   PolicyArn:
     Description: Managed policy ARN to pass as CloudFormationExecutionPolicies during bootstrap.
@@ -725,3 +1042,8 @@ Outputs:
     Description: Managed policy ARN for the Phase 3 alarm and evidence bucket grants.
     Value:
       Ref: IncidentTriageDemoPhase3CfnExecution
+
+  AgentPolicyArn:
+    Description: Scoped agent stack execution policy.
+    Value:
+      Ref: IncidentTriageDemoAgentCfnExecution

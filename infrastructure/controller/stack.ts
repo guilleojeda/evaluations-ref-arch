@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
-import { CfnOutput, CfnParameter, Duration, RemovalPolicy, Tags, type StackProps } from "aws-cdk-lib";
+import { CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Tags, type StackProps } from "aws-cdk-lib";
 import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
 import { AccessLogField, AccessLogFormat } from "aws-cdk-lib/aws-apigateway";
@@ -44,6 +44,12 @@ export class ControllerStack extends DemoStack {
     operatorSecretArn.overrideLogicalId("ControllerOperatorSecretArn");
     const appSecretArn = new CfnParameter(this, "ControllerAppSecretArnInput", { type: "String", allowedPattern: `arn:aws:secretsmanager:${REGION}:${ACCOUNT}:secret:incident-triage-demo/controller/app-bearer-[A-Za-z0-9]{6}`, description: "Secrets Manager ARN containing the checkout bearer." });
     appSecretArn.overrideLogicalId("ControllerAppSecretArn");
+    const agentRunTable = new CfnParameter(this, "AgentRunTable", { type: "String", default: "IncidentTriageDemoAgentRun", allowedValues: ["IncidentTriageDemoAgentRun"] });
+    const agentAlarmArns = new CfnParameter(this, "AgentAlarmArnsInput", { type: "String", default: JSON.stringify([STAGE_ALARM_ARN]), description: "JSON current/retained alarm allowlist, current first." });
+    agentAlarmArns.overrideLogicalId("AgentAlarmArns");
+    const agentRuntimeArn = new CfnParameter(this, "AgentRuntimeArn", { type: "String", default: "", allowedPattern: "^$|^arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-[A-Za-z0-9]{10}$" });
+    const agentEndpointArn = new CfnParameter(this, "AgentEndpointArn", { type: "String", default: "", allowedPattern: "^$|^arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-[A-Za-z0-9]{10}/runtime-endpoint/faulty$", description: "Actual independently deployed faulty endpoint ARN." });
+    const agentAdapterArn = new CfnParameter(this, "AgentAlarmAdapterArn", { type: "String", default: "", allowedPattern: "^$|^arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter$" });
     const runTable = new dynamodb.Table(this, "RunTable", { tableName: RUN_TABLE_NAME, billingMode: dynamodb.BillingMode.PAY_PER_REQUEST, partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING }, encryption: dynamodb.TableEncryption.AWS_MANAGED, removalPolicy: RemovalPolicy.RETAIN });
     (runTable.node.defaultChild as dynamodb.CfnTable).overrideLogicalId("RunTable");
     const httpLogGroup = new logs.LogGroup(this, "HttpLogGroup", { logGroupName: HTTP_LOG_GROUP_NAME, retention: logs.RetentionDays.TWO_WEEKS, removalPolicy: RemovalPolicy.RETAIN });
@@ -64,6 +70,10 @@ export class ControllerStack extends DemoStack {
     httpRole.addToPolicy(new iam.PolicyStatement({ sid: "ControllerRunTable", actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"], resources: [runTable.tableArn] }));
     httpRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadOperatorSecret", actions: ["secretsmanager:GetSecretValue"], resources: [operatorSecretArn.valueAsString] }));
     httpRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadStageAlarm", actions: ["cloudwatch:DescribeAlarms"], resources: [STAGE_ALARM_ARN] }));
+    httpRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadAgentInvestigations", actions: ["dynamodb:GetItem", "dynamodb:Query"], resources: [`arn:aws:dynamodb:${REGION}:${ACCOUNT}:table/${agentRunTable.valueAsString}`] }));
+    const agentConfigured = new CfnCondition(this, "AgentEndpointConfigured", { expression: Fn.conditionNot(Fn.conditionEquals(agentEndpointArn.valueAsString, "")) });
+    const agentReadinessPolicy = new iam.CfnPolicy(this, "AgentReadinessPolicy", { policyName: "ReadConfiguredAgentEndpoint", roles: [httpRole.roleName], policyDocument: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "bedrock-agentcore:GetAgentRuntimeEndpoint", Resource: [agentRuntimeArn.valueAsString, agentEndpointArn.valueAsString] }] } });
+    agentReadinessPolicy.cfnOptions.condition = agentConfigured;
     const workerRole = new iam.Role(this, "WorkerRole", { roleName: WORKER_ROLE_NAME, assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"), permissionsBoundary: iam.ManagedPolicy.fromManagedPolicyArn(this, "WorkerBoundary", WORKER_BOUNDARY_ARN), description: "Action worker role for the Incident Triage controller." });
     workerLogGroup.grantWrite(workerRole);
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ControllerRunTable", actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"], resources: [runTable.tableArn] }));
@@ -86,7 +96,7 @@ export class ControllerStack extends DemoStack {
     const workerRuntime = lambda.Code.fromAsset(backendDirectory, { exclude: ["index.mjs", "web", "web/**"] });
     const worker = new lambda.Function(this, "WorkerFunction", { functionName: WORKER_FUNCTION_NAME, description: "Finite controller action worker.", runtime: lambda.Runtime.NODEJS_24_X, architecture: lambda.Architecture.X86_64, code: workerRuntime, handler: "worker.handler", role: workerRole, timeout: Duration.seconds(90), memorySize: 256, logGroup: workerLogGroup, environment: { CONTROLLER_RUN_TABLE: runTable.tableName, CONTROLLER_APP_SECRET_ARN: appSecretArn.valueAsString, CONTROLLER_SOURCE_REVISION: sourceRevision.valueAsString, CONTROLLER_EVIDENCE_BUCKET: evidenceBucket.bucketName } });
     new lambda.EventInvokeConfig(this, "WorkerInvokeConfig", { function: worker, maxEventAge: Duration.seconds(60), retryAttempts: 0 });
-    const http = new lambda.Function(this, "HttpFunction", { functionName: HTTP_FUNCTION_NAME, description: "Authenticated controller API and dashboard.", runtime: lambda.Runtime.NODEJS_24_X, architecture: lambda.Architecture.X86_64, code: httpRuntime, handler: "index.handler", role: httpRole, timeout: Duration.seconds(10), memorySize: 256, logGroup: httpLogGroup, environment: { CONTROLLER_RUN_TABLE: runTable.tableName, CONTROLLER_OPERATOR_SECRET_ARN: operatorSecretArn.valueAsString, CONTROLLER_WORKER_NAME: worker.functionName, CONTROLLER_SOURCE_REVISION: sourceRevision.valueAsString } });
+    const http = new lambda.Function(this, "HttpFunction", { functionName: HTTP_FUNCTION_NAME, description: "Authenticated controller API and dashboard.", runtime: lambda.Runtime.NODEJS_24_X, architecture: lambda.Architecture.X86_64, code: httpRuntime, handler: "index.handler", role: httpRole, timeout: Duration.seconds(10), memorySize: 256, logGroup: httpLogGroup, environment: { CONTROLLER_RUN_TABLE: runTable.tableName, CONTROLLER_OPERATOR_SECRET_ARN: operatorSecretArn.valueAsString, CONTROLLER_WORKER_NAME: worker.functionName, CONTROLLER_AGENT_RUN_TABLE: agentRunTable.valueAsString, CONTROLLER_AGENT_ALARM_ARNS: agentAlarmArns.valueAsString, CONTROLLER_AGENT_RUNTIME_ARN: agentRuntimeArn.valueAsString, CONTROLLER_AGENT_ENDPOINT_NAME: "faulty", CONTROLLER_AGENT_ENDPOINT_ARN: agentEndpointArn.valueAsString, CONTROLLER_AGENT_ALARM_ADAPTER_ARN: agentAdapterArn.valueAsString, CONTROLLER_SOURCE_REVISION: sourceRevision.valueAsString } });
     httpRole.addToPolicy(new iam.PolicyStatement({ sid: "InvokeControllerWorker", actions: ["lambda:InvokeFunction"], resources: [worker.functionArn] }));
 
     const api = new apigatewayv2.HttpApi(this, "HttpApi", { apiName: "IncidentTriageDemoController", createDefaultStage: false });
@@ -96,6 +106,7 @@ export class ControllerStack extends DemoStack {
     api.addRoutes({ path: "/", methods: [apigatewayv2.HttpMethod.ANY], integration });
     const stage = api.addStage("DefaultStage", { stageName: "$default", autoDeploy: true, accessLogSettings: { destination: new apigatewayv2.LogGroupLogDestination(gatewayLogGroup), format: AccessLogFormat.custom(JSON.stringify({ requestId: AccessLogField.contextRequestId(), routeKey: AccessLogField.contextRouteKey(), status: AccessLogField.contextStatus(), responseLatency: AccessLogField.contextResponseLatency(), integrationLatency: AccessLogField.contextIntegrationLatency(), integrationStatus: AccessLogField.contextIntegrationStatus(), integrationError: AccessLogField.contextIntegrationErrorMessage() })) } });
 
+    new CfnOutput(this, "AgentAlarmArns", { value: agentAlarmArns.valueAsString });
     new CfnOutput(this, "SourceRevision", { value: sourceRevision.valueAsString });
     new CfnOutput(this, "SiteUrl", { value: api.apiEndpoint });
     new CfnOutput(this, "ApiId", { value: api.httpApiId });

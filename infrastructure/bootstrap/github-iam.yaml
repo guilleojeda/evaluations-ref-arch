@@ -53,7 +53,13 @@ Resources:
               - s3:GetBucketLocation
               - s3:ListBucket
               - s3:GetObject
+              - s3:GetObjectVersion
               - s3:PutObject
+              - xray:GetTraceSegmentDestination
+              - bedrock-agentcore:GetAgentRuntime
+              - bedrock-agentcore:UpdateAgentRuntime
+              - bedrock-agentcore:GetAgentRuntimeEndpoint
+              - bedrock-agentcore:UpdateAgentRuntimeEndpoint
               - lambda:GetAlias
               - lambda:GetFunctionConfiguration
               - lambda:ListVersionsByFunction
@@ -76,6 +82,7 @@ Resources:
             NotResource:
               - Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/IncidentTriageDemoApp/*
               - Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/IncidentTriageDemoController/*
+              - Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/IncidentTriageDemoAgent/*
           - Sid: DenyAppReadsOutsideApprovedStacks
             Effect: Deny
             Action:
@@ -90,6 +97,7 @@ Resources:
               - Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/IncidentTriageDemoBootstrap*/*
               - Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/IncidentTriageDemoApp/*
               - Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/IncidentTriageDemoController/*
+              - Fn::Sub: arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/IncidentTriageDemoAgent/*
               - Fn::Sub: arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/cdk-bootstrap/evaltalk/version
           - Sid: DenyPassRoleOutsideCdkExecutionRole
             Effect: Deny
@@ -98,6 +106,7 @@ Resources:
               - Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/cdk-evaltalk-cfn-exec-role-${AWS::AccountId}-${AWS::Region}
               - Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/IncidentTriageDemoAppInventoryRole
               - Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/IncidentTriageDemoAppInventoryDeniedRole
+              - Fn::Sub: arn:${AWS::Partition}:iam::${AWS::AccountId}:role/IncidentTriageDemoAgentRuntimeRole
           # CloudFormation retrieves the checked JSON template from the
           # SSE-KMS bootstrap bucket using the deployment caller's authority.
           - Sid: DenyDecryptOutsideBootstrapS3Key
@@ -112,7 +121,9 @@ Resources:
             Resource: arn:aws:kms:us-east-1:027224425948:key/b292b95c-709f-42c6-aa42-b934ba2c6f07
             Condition:
               StringNotLike:
-                kms:EncryptionContext:aws:s3:arn: arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*.json
+                kms:EncryptionContext:aws:s3:arn:
+                  - arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*.json
+                  - arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*.zip
           - Sid: DenyInventoryKeyOutsideLambdaEnvironment
             Effect: Deny
             Action: kms:Decrypt
@@ -205,6 +216,33 @@ Resources:
             Condition:
               StringEquals:
                 iam:PassedToService: lambda.amazonaws.com
+          - Sid: VerifyTransactionSearch
+            Effect: Allow
+            Action: xray:GetTraceSegmentDestination
+            Resource: '*'
+          - Sid: FinalizeCheckedAgentRuntime
+            Effect: Allow
+            Action:
+              - bedrock-agentcore:GetAgentRuntime
+              - bedrock-agentcore:UpdateAgentRuntime
+              - bedrock-agentcore:GetAgentRuntimeEndpoint
+              - bedrock-agentcore:UpdateAgentRuntimeEndpoint
+            Resource:
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-*
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-*/runtime-endpoint/faulty
+          - Sid: AttestVerifiedRuntimeInAdapter
+            Effect: Allow
+            Action:
+              - lambda:GetFunctionConfiguration
+              - lambda:UpdateFunctionConfiguration
+            Resource: arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter
+          - Sid: PassCheckedAgentRole
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: arn:aws:iam::027224425948:role/IncidentTriageDemoAgentRuntimeRole
+            Condition:
+              StringEquals:
+                iam:PassedToService: bedrock-agentcore.amazonaws.com
           - Sid: ReadInventoryReleaseManifestBucket
             Effect: Allow
             Action:

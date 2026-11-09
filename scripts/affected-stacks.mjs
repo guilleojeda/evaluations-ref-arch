@@ -42,7 +42,23 @@ function documentationPath(path) {
   return /(?:^|\/)(?:README(?:\.[^/]*)?|[^/]+\.(?:md|mdx|rst|txt))$/i.test(path);
 }
 
+const componentScripts = new Map([
+  ['scripts/deploy-app.sh', 'app'],
+  ['scripts/check-app-change-set.mjs', 'app'],
+  ['scripts/prepare-inventory-versions.mjs', 'app'],
+  ['scripts/deploy-controller.sh', 'controller'],
+  ['scripts/check-controller-change-set.mjs', 'controller'],
+  ['scripts/deploy-agent.sh', 'agent'],
+  ['scripts/check-agent-change-set.mjs', 'agent'],
+  ['scripts/finalize-agent.py', 'agent'],
+  ['scripts/phase0-agent-asset.mjs', 'agent'],
+]);
+
 for (const path of changed) {
+  if (componentScripts.has(path)) {
+    components.add(componentScripts.get(path));
+    continue;
+  }
   // Component sources and their stack definitions are independently releasable.
   if (!documentationPath(path)) {
     if (componentPath(path, 'app')) components.add('app');

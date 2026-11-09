@@ -2,6 +2,16 @@ name: Incident Triage Demo Deploy
 
 on:
   pull_request:
+  workflow_dispatch:
+    inputs:
+      component:
+        description: Independently checked stack to deploy or recover
+        required: true
+        type: choice
+        options:
+          - app
+          - controller
+          - agent
   push:
     branches:
       - main
@@ -44,6 +54,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            component='${{ inputs.component }}'
+            case "$component" in app|controller|agent) ;; *) echo "Invalid component" >&2; exit 1 ;; esac
+            echo "components=$(node -p 'JSON.stringify([process.argv[1]])' "$component")" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             base_ref='${{ github.event.pull_request.base.sha }}'
             candidate='${{ github.event.pull_request.head.sha }}'
@@ -63,7 +79,7 @@ jobs:
     if: >-
       needs.route.outputs.components != '[]' &&
       (github.event_name == 'pull_request' ||
-      (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+      ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'))
     runs-on: ${{ matrix.component == 'agent' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     permissions:
       contents: read
@@ -80,7 +96,6 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
       - name: Set up Python
-        if: matrix.component == 'agent'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
@@ -99,21 +114,33 @@ jobs:
           fi
       - name: Run the selected check
         run: npm run check -- ${{ matrix.component }}
+      - name: Verify component routing
+        run: node --test tests/phase0-routing.test.mjs
       - name: Run app release acceptance checks
         if: matrix.component == 'app'
         run: |
           node --test tests/phase1-deploy.test.mjs tests/phase1-checkout-handler.test.mjs tests/phase3-inventory-version-preparation.test.mjs
           node --test --test-name-pattern="^app " tests/phase3-inventory-denial-infrastructure.test.mjs
+          python -m unittest discover -s tests -p 'phase4_release_bindings_test.py' -k app
       - name: Run controller release acceptance checks
         if: matrix.component == 'controller'
         run: |
           node --test tests/phase2-controller-deploy.test.mjs tests/phase2-controller-handler.test.mjs tests/phase3-inventory-denial-controller.test.mjs
           node --test --test-name-pattern="^controller evidence" tests/phase3-inventory-denial-infrastructure.test.mjs
+          node --test tests/phase4-agent-controller.test.mjs
+          node --test --test-name-pattern="^controller can read" tests/phase4-agent-infrastructure.test.mjs
+          python -m unittest discover -s tests -p 'phase4_release_bindings_test.py' -k controller
+      - name: Run agent runtime and release acceptance checks
+        if: matrix.component == 'agent'
+        run: |
+          uv run --project agent --locked python -m unittest discover -s tests -p 'phase4_*_test.py'
+          node --test --test-name-pattern="^(agent stack|adapter only)" tests/phase4-agent-infrastructure.test.mjs
+          node --test tests/phase4-agent-release.test.mjs
       - name: Run the locked native ARM64 smoke command
         if: matrix.component == 'agent'
         run: uv run --project agent --locked python agent/native_smoke.py .artifacts/agent/runtime.zip
       - name: Save the checked assembly for the serialized preflight
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: phase0-${{ matrix.component }}-${{ github.sha }}
@@ -124,11 +151,11 @@ jobs:
           compression-level: 0
 
   deploy:
-    name: ${{ matrix.component == 'app' && 'Deploy app' || matrix.component == 'controller' && 'Deploy controller' || format('Preflight {0} deployment', matrix.component) }}
+    name: Deploy ${{ matrix.component }}
     needs: [route, check]
     if: >-
       always() && !cancelled() && needs.route.result == 'success' &&
-      github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' &&
       needs.route.outputs.components != '[]'
     runs-on: ubuntu-24.04
     permissions:
@@ -154,13 +181,11 @@ jobs:
       - name: Confirm checked assembly
         run: test -s .artifacts/${{ matrix.component }}/cdk/manifest.json
       - name: Set up Node.js for the component deploy CLI
-        if: matrix.component == 'app' || matrix.component == 'controller'
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
           node-version-file: .nvmrc
           cache: npm
       - name: Install the pinned deploy CLI
-        if: matrix.component == 'app' || matrix.component == 'controller'
         run: npm ci --ignore-scripts
       - name: Resolve the checked agent file asset
         if: matrix.component == 'agent'
@@ -186,7 +211,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ env.PHASE0_DEPLOY_ROLE_ARN }}
           role-session-name: phase0-github-${{ github.run_id }}
-          role-duration-seconds: ${{ (matrix.component == 'app' || matrix.component == 'controller') && 3600 || 900 }}
+          role-duration-seconds: 3600
       - name: Verify the GitHub deployment identity
         shell: bash
         run: |
@@ -286,6 +311,7 @@ jobs:
         shell: bash
         env:
           APP_PRESENTER_DIGEST: ${{ secrets.APP_PRESENTER_DIGEST }}
+          APP_ALARM_ADAPTER_ARN: ${{ vars.APP_ALARM_ADAPTER_ARN }}
           PUSH_BASE: ${{ github.event.before }}
         run: bash scripts/deploy-app.sh
 
@@ -295,5 +321,22 @@ jobs:
         env:
           CONTROLLER_OPERATOR_SECRET_ARN: ${{ vars.CONTROLLER_OPERATOR_SECRET_ARN }}
           CONTROLLER_APP_SECRET_ARN: ${{ vars.CONTROLLER_APP_SECRET_ARN }}
+          CONTROLLER_AGENT_RUNTIME_ARN: ${{ vars.CONTROLLER_AGENT_RUNTIME_ARN }}
+          CONTROLLER_AGENT_ENDPOINT_ARN: ${{ vars.CONTROLLER_AGENT_ENDPOINT_ARN }}
+          CONTROLLER_AGENT_ALARM_ADAPTER_ARN: ${{ vars.CONTROLLER_AGENT_ALARM_ADAPTER_ARN }}
           PUSH_BASE: ${{ github.event.before }}
         run: bash scripts/deploy-controller.sh
+
+      - name: Set up Python for native agent finalization
+        if: matrix.component == 'agent'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Set up uv for native agent finalization
+        if: matrix.component == 'agent'
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: '0.13.6'
+      - name: Deploy and finalize the checked agent assembly
+        if: matrix.component == 'agent'
+        run: bash scripts/deploy-agent.sh

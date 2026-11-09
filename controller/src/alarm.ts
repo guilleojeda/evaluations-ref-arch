@@ -6,10 +6,12 @@ import {
   type MetricAlarm,
 } from "@aws-sdk/client-cloudwatch";
 import type {
+  AlarmBindingObservation,
   AlarmObservation,
   AlarmResponse,
   AlarmState,
 } from "./types";
+import { readAgentEndpoint } from "./agent-readiness.js";
 
 const client = new CloudWatchClient({ maxAttempts: 1 });
 const defaultAlarmName = "IncidentTriageDemoAppStage5xx";
@@ -72,8 +74,7 @@ async function historyItems(limit: number): Promise<AlarmHistoryItem[]> {
   return response.AlarmHistoryItems ?? [];
 }
 
-/** Read the selected native stage alarm. This is shared by HTTP observation and worker checkpoints. */
-export async function readCurrentAlarm(): Promise<AlarmObservation> {
+async function currentAlarmDetails(): Promise<{ alarm: AlarmObservation; actions: string[] }> {
   const observedAt = new Date().toISOString();
   let response;
   try {
@@ -87,7 +88,12 @@ export async function readCurrentAlarm(): Promise<AlarmObservation> {
   const alarm = response.MetricAlarms?.[0];
   if (!alarm || alarm.AlarmName !== alarmName())
     throw new AlarmReadError("The configured application alarm was not found");
-  return current(alarm, observedAt);
+  return { alarm: current(alarm, observedAt), actions: alarm.AlarmActions ?? [] };
+}
+
+/** Read the selected native stage alarm. This is shared by HTTP observation and worker checkpoints. */
+export async function readCurrentAlarm(): Promise<AlarmObservation> {
+  return (await currentAlarmDetails()).alarm;
 }
 
 /** Find the first genuine ALARM transition after an activation/effect timestamp. */
@@ -135,6 +141,19 @@ export async function readOriginatingAlarm(
 }
 
 export async function readAlarm(): Promise<AlarmResponse> {
-  const alarm = await readCurrentAlarm();
-  return { alarm, observedAt: alarm.observedAt };
+  const [{ alarm, actions }, agentEndpoint] = await Promise.all([
+    currentAlarmDetails(),
+    readAgentEndpoint(),
+  ]);
+  const observedAt = alarm.observedAt;
+  const adapterArn = process.env.CONTROLLER_AGENT_ALARM_ADAPTER_ARN?.trim();
+  let alarmBinding: AlarmBindingObservation;
+  if (!adapterArn) alarmBinding = { state: "unconfigured", observedAt };
+  else if (actions.length === 0) alarmBinding = { state: "missing", observedAt };
+  else if (actions.length === 1 && actions[0] === adapterArn) {
+    const state = alarm.actionsEnabled === true ? "bound" : alarm.actionsEnabled === false ? "disabled" : "unavailable";
+    alarmBinding = { state, observedAt };
+  }
+  else alarmBinding = { state: "unexpected", observedAt };
+  return { alarm, observedAt, agentEndpoint, alarmBinding };
 }

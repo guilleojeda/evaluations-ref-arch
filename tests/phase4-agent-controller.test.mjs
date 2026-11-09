@@ -7,6 +7,10 @@ import { handler } from '../.artifacts/controller/backend/index.mjs';
 
 const account = '027224425948';
 const region = 'us-east-1';
+const runtimeId = 'IncidentTriageAgent-1234567890';
+const runtimeArn = `arn:aws:bedrock-agentcore:${region}:${account}:runtime/${runtimeId}`;
+const endpointArn = `arn:aws:bedrock-agentcore:${region}:${account}:runtime/${runtimeId}/runtime-endpoint/faulty`;
+const adapterArn = `arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoAlarmAdapter`;
 const alarmArn = `arn:aws:cloudwatch:${region}:${account}:alarm:IncidentTriageDemoAppStage5xx`;
 const retainedAlarmArn = `arn:aws:cloudwatch:${region}:${account}:alarm:IncidentTriageDemoAppStage5xx-previous`;
 const allowedAlarmArns = [alarmArn, retainedAlarmArn];
@@ -19,6 +23,9 @@ const fixture = {
   unexpected: [],
   queryMode: 'ok',
   cloudWatchMode: 'ok',
+  alarmActions: [adapterArn],
+  actionsEnabled: true,
+  endpointMode: 'ready',
 };
 
 async function requestBody(request) {
@@ -29,6 +36,21 @@ async function requestBody(request) {
     try { return JSON.parse(raw); } catch { return {}; }
   }
   return Object.fromEntries(new URLSearchParams(raw));
+}
+
+function agentEndpointResponse() {
+  const mismatched = fixture.endpointMode === 'mismatch';
+  return {
+    agentRuntimeArn: runtimeArn,
+    agentRuntimeEndpointArn: mismatched ? `${endpointArn}-wrong` : endpointArn,
+    name: 'faulty',
+    status: 'READY',
+    liveVersion: '7',
+    targetVersion: '7',
+    id: 'faulty-id',
+    createdAt: '2026-11-09T12:00:00.000Z',
+    lastUpdatedAt: '2026-11-09T12:00:00.000Z',
+  };
 }
 
 function stringValues(value) {
@@ -81,7 +103,7 @@ function cloudWatchResponse(action) {
       StateValue: 'OK', StateReason: 'fixture state is currently healthy',
       StateUpdatedTimestamp: Date.parse('2026-11-09T12:00:00.000Z') / 1000,
       StateTransitionedTimestamp: Date.parse('2026-11-09T12:00:00.000Z') / 1000,
-      ActionsEnabled: true }] };
+      ActionsEnabled: fixture.actionsEnabled, AlarmActions: fixture.alarmActions }] };
   }
   return { AlarmHistoryItems: [] };
 }
@@ -106,6 +128,16 @@ const server = http.createServer(async (request, response) => {
       }
       response.writeHead(200, { 'content-type': 'application/x-amz-json-1.1' });
       response.end(JSON.stringify(cloudWatchResponse('DescribeAlarms')));
+      return;
+    }
+    if (request.method === 'GET' && request.url?.includes('/runtime-endpoints/faulty/')) {
+      if (fixture.endpointMode === 'unavailable') {
+        response.writeHead(500, { 'content-type': 'application/json', 'x-amzn-errortype': 'ServiceUnavailableException' });
+        response.end(JSON.stringify({ message: 'fixture endpoint read failure' }));
+        return;
+      }
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.end(JSON.stringify(agentEndpointResponse()));
       return;
     }
     if (target.endsWith('Query') || target.endsWith('GetItem')) {
@@ -148,6 +180,7 @@ Object.assign(process.env, {
   AWS_ENDPOINT_URL_DYNAMODB: endpoint,
   AWS_ENDPOINT_URL_SECRETS_MANAGER: endpoint,
   AWS_ENDPOINT_URL_CLOUDWATCH: endpoint,
+  AWS_ENDPOINT_URL_BEDROCK_AGENTCORE_CONTROL: endpoint,
   AWS_REGION: region,
   AWS_ACCESS_KEY_ID: 'fixture',
   AWS_SECRET_ACCESS_KEY: 'fixture-only',
@@ -156,6 +189,10 @@ Object.assign(process.env, {
   CONTROLLER_RUN_TABLE: 'ControllerRunFixture',
   CONTROLLER_AGENT_RUN_TABLE: tableName,
   CONTROLLER_AGENT_ALARM_ARNS: JSON.stringify(allowedAlarmArns),
+  CONTROLLER_AGENT_RUNTIME_ARN: runtimeArn,
+  CONTROLLER_AGENT_ENDPOINT_NAME: 'faulty',
+  CONTROLLER_AGENT_ENDPOINT_ARN: endpointArn,
+  CONTROLLER_AGENT_ALARM_ADAPTER_ARN: adapterArn,
   CONTROLLER_OPERATOR_SECRET_ARN: `arn:aws:secretsmanager:${region}:${account}:secret:fixture:operator`,
   CONTROLLER_ALARM_NAME: 'IncidentTriageDemoAppStage5xx',
 });
@@ -192,7 +229,7 @@ function run({ alarmArn: sourceAlarmArn = alarmArn, transitionAt, status = 'comp
     report: {
       assessment,
       summary: 'The evidence is insufficient to establish whether the inventory failure has recovered.',
-      recommendation: { action: 'Other', explanation: 'The available observation is incomplete.' },
+      recommendation: { action: 'Other', explanation: 'The available observation is incomplete.', policyDetail: 'Do not execute a configuration change from this report.' },
       evidence: [{ source: 'CloudWatch Logs', resource: '/aws/lambda/IncidentTriageDemoInventory',
         windowStart: transitionAt, windowEnd: transitionAt, observedAt: transitionAt, finding: 'AccessDeniedException observed.' }],
       uncertainties: ['Fresh post-recovery request evidence is unavailable.'],
@@ -203,13 +240,16 @@ function run({ alarmArn: sourceAlarmArn = alarmArn, transitionAt, status = 'comp
   return value;
 }
 
-function reset({ rows = [], queryMode = 'ok', cloudWatchMode = 'ok' } = {}) {
+function reset({ rows = [], queryMode = 'ok', cloudWatchMode = 'ok', alarmActions = [adapterArn], actionsEnabled = true, endpointMode = 'ready' } = {}) {
   fixture.rows = rows;
   fixture.calls.length = 0;
   fixture.invocations.length = 0;
   fixture.unexpected.length = 0;
   fixture.queryMode = queryMode;
   fixture.cloudWatchMode = cloudWatchMode;
+  fixture.alarmActions = alarmActions;
+  fixture.actionsEnabled = actionsEnabled;
+  fixture.endpointMode = endpointMode;
 }
 
 function event(method, path, authenticated = true) {
@@ -307,8 +347,55 @@ test('exact and recent discovery retain the originating ALARM report after the n
     assert.ok(query, 'recent discovery must query the base run table');
     assert.equal(query.body.TableName, tableName);
     assert.equal(query.body.ConsistentRead, true);
+    assert.equal(query.body.Limit, 20, 'the public recent-run read must be explicitly bounded');
     assert.ok(allStringValues(query.body.ExpressionAttributeValues).some((value) => allowedAlarmArns.includes(value)),
       'recent discovery must stay within configured alarm ARN partitions');
+    assertNoInvocationOrWrites();
+  });
+
+  await t.test('recent discovery is capped at 20 and excludes storage keys and event payloads', async () => {
+    const rows = Array.from({ length: 25 }, (_, index) => run({
+      transitionAt: new Date(Date.parse('2026-11-09T12:00:00.000Z') + index * 60_000).toISOString(),
+      ...(index === 24 ? {
+        artifactSha256: 'c'.repeat(64),
+        originatingEvent: { secret: 'must not reach the presenter' },
+      } : {}),
+    }));
+    reset({ rows });
+    const response = await call('GET', '/api/investigations');
+    assert.equal(response.statusCode, 200, response.body);
+    const runs = responseBody(response).runs;
+    assert.equal(runs.length, 20);
+    assert.equal(runs[0].transitionAt, rows[24].transitionAt);
+    assert.equal(runs.at(-1).transitionAt, rows[5].transitionAt);
+    assert.equal(runs[0].artifactSha256, rows[24].artifactSha256, 'the public DTO must preserve the stored runtime artifact digest');
+    assert.equal(runs[1].artifactSha256, undefined, 'older fixture rows with no artifact digest remain honestly absent');
+    assert.equal(runs[0].pk, undefined);
+    assert.equal(runs[0].sk, undefined);
+    assert.equal(runs[0].originatingEvent, undefined);
+    assertNoInvocationOrWrites();
+  });
+
+  await t.test('equivalent offset timestamps normalize to the exact UTC partition key', async () => {
+    const row = run({ transitionAt: '2026-11-09T12:05:00.000Z' });
+    reset({ rows: [row] });
+    const offset = '2026-11-09T07:05:00.000-05:00';
+    const response = await call('GET', `/api/investigations?transitionAt=${encodeURIComponent(offset)}`);
+    assert.equal(response.statusCode, 200, response.body);
+    assert.equal(responseBody(response).runs[0].transitionAt, row.transitionAt);
+    const exact = fixture.calls.find(({ target }) => target.endsWith('GetItem'));
+    assert.ok(exact);
+    assert.ok(allStringValues(exact.body.Key).includes(row.transitionAt));
+    assert.ok(!allStringValues(exact.body.Key).includes(offset));
+    assertNoInvocationOrWrites();
+  });
+
+  await t.test('a malformed present runtime artifact digest makes the run record unavailable', async () => {
+    const row = run({ transitionAt: '2026-11-09T12:05:00.000Z', artifactSha256: 'not-a-sha256' });
+    reset({ rows: [row] });
+    const response = await call('GET', `/api/investigations?transitionAt=${encodeURIComponent(row.transitionAt)}`);
+    assert.ok(response.statusCode >= 500, response.body);
+    assert.equal(responseBody(response).runs, undefined);
     assertNoInvocationOrWrites();
   });
 
@@ -432,5 +519,92 @@ test('the discovery route has no manual trigger or action-execution method', asy
   const response = await call('POST', '/api/investigations');
   assert.ok([404, 405].includes(response.statusCode), response.body);
   assertNoInvocationOrWrites();
+});
+
+test('alarm readiness reports endpoint health and the exact adapter binding without invoking the agent', async (t) => {
+  await t.test('the deployed Runtime ARN shape and stable adapter action are observed', async () => {
+    reset();
+    assert.equal(endpointArn, `arn:aws:bedrock-agentcore:${region}:${account}:runtime/${runtimeId}/runtime-endpoint/faulty`);
+    const response = await call('GET', '/api/alarm');
+    assert.equal(response.statusCode, 200, response.body);
+    const body = responseBody(response);
+    assert.equal(body.alarm?.state, 'OK');
+    assert.equal(body.agentEndpoint?.state, 'ready');
+    assert.equal(body.agentEndpoint?.runtimeArn, runtimeArn);
+    assert.equal(body.agentEndpoint?.endpointArn, endpointArn);
+    assert.equal(body.agentEndpoint?.liveVersion, '7');
+    assert.equal(body.alarmBinding?.state, 'bound');
+    const endpointRead = fixture.calls.find(({ method, url }) => method === 'GET' && url?.includes('/runtime-endpoints/faulty/'));
+    assert.ok(endpointRead, 'readiness must use the documented endpoint control-plane read');
+    assert.ok(endpointRead.url.includes(runtimeId));
+    assertNoInvocationOrWrites();
+  });
+
+  await t.test('an unavailable endpoint read is separate from the successful native alarm read', async () => {
+    reset({ endpointMode: 'unavailable' });
+    const response = await call('GET', '/api/alarm');
+    assert.equal(response.statusCode, 200, response.body);
+    const body = responseBody(response);
+    assert.equal(body.alarm?.state, 'OK');
+    assert.equal(body.agentEndpoint?.state, 'unavailable');
+    assert.equal(body.alarmBinding?.state, 'bound');
+    assertNoInvocationOrWrites();
+  });
+
+  await t.test('a mismatched control-plane identity is not reported ready', async () => {
+    reset({ endpointMode: 'mismatch' });
+    const response = await call('GET', '/api/alarm');
+    assert.equal(response.statusCode, 200, response.body);
+    const body = responseBody(response);
+    assert.equal(body.agentEndpoint?.state, 'not_ready');
+    assert.match(body.agentEndpoint?.failureReason ?? '', /identity did not match/i);
+    assertNoInvocationOrWrites();
+  });
+
+  await t.test('missing and unexpected alarm actions stay distinct', async () => {
+    reset({ alarmActions: [] });
+    const missing = responseBody(await call('GET', '/api/alarm'));
+    assert.equal(missing.alarmBinding?.state, 'missing');
+    reset({ alarmActions: [`arn:aws:lambda:${region}:${account}:function:UnexpectedAdapter`] });
+    const unexpected = responseBody(await call('GET', '/api/alarm'));
+    assert.equal(unexpected.alarmBinding?.state, 'unexpected');
+    reset({ actionsEnabled: false });
+    const disabled = responseBody(await call('GET', '/api/alarm'));
+    assert.equal(disabled.alarmBinding?.state, 'disabled');
+    assertNoInvocationOrWrites();
+  });
+
+  await t.test('unconfigured endpoint and adapter binding do not produce control-plane requests', async () => {
+    const saved = {
+      runtimeArn: process.env.CONTROLLER_AGENT_RUNTIME_ARN,
+      endpointArn: process.env.CONTROLLER_AGENT_ENDPOINT_ARN,
+      endpointName: process.env.CONTROLLER_AGENT_ENDPOINT_NAME,
+      adapterArn: process.env.CONTROLLER_AGENT_ALARM_ADAPTER_ARN,
+    };
+    delete process.env.CONTROLLER_AGENT_RUNTIME_ARN;
+    delete process.env.CONTROLLER_AGENT_ENDPOINT_ARN;
+    delete process.env.CONTROLLER_AGENT_ENDPOINT_NAME;
+    delete process.env.CONTROLLER_AGENT_ALARM_ADAPTER_ARN;
+    try {
+      reset();
+      const response = await call('GET', '/api/alarm');
+      assert.equal(response.statusCode, 200, response.body);
+      const body = responseBody(response);
+      assert.equal(body.agentEndpoint?.state, 'unconfigured');
+      assert.equal(body.alarmBinding?.state, 'unconfigured');
+      assert.ok(!fixture.calls.some(({ method, url }) => method === 'GET' && url?.includes('/runtime-endpoints/')));
+      assertNoInvocationOrWrites();
+    } finally {
+      for (const [name, value] of Object.entries({
+        CONTROLLER_AGENT_RUNTIME_ARN: saved.runtimeArn,
+        CONTROLLER_AGENT_ENDPOINT_ARN: saved.endpointArn,
+        CONTROLLER_AGENT_ENDPOINT_NAME: saved.endpointName,
+        CONTROLLER_AGENT_ALARM_ADAPTER_ARN: saved.adapterArn,
+      })) {
+        if (value === undefined) delete process.env[name];
+        else process.env[name] = value;
+      }
+    }
+  });
 });
 

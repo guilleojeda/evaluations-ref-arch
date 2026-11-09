@@ -275,6 +275,94 @@ export interface AlarmObservation {
 export interface AlarmResponse {
   alarm: AlarmObservation | null;
   observedAt: string;
+  agentEndpoint?: AgentEndpointObservation;
+  alarmBinding?: AlarmBindingObservation;
+}
+
+export type AgentEndpointState = "ready" | "not_ready" | "unavailable" | "unconfigured";
+
+export interface AgentEndpointObservation {
+  state: AgentEndpointState;
+  name?: string;
+  runtimeArn?: string;
+  endpointArn?: string;
+  liveVersion?: string;
+  targetVersion?: string;
+  failureReason?: string;
+  observedAt: string;
+}
+
+export type AlarmBindingState = "bound" | "disabled" | "missing" | "unexpected" | "unavailable" | "unconfigured";
+
+export interface AlarmBindingObservation {
+  state: AlarmBindingState;
+  observedAt: string;
+}
+
+export type InvestigationStatus = "running" | "complete" | "failed";
+export type InvestigationAssessment = "ongoing" | "recovered" | "unknown";
+
+export interface InvestigationCitation {
+  source: string;
+  resource: string;
+  windowStart: string;
+  windowEnd: string;
+  observedAt: string;
+  finding: string;
+}
+
+export interface InvestigationRecommendation {
+  action: string;
+  target?: string | null;
+  value?: string | number | null;
+  unit?: string | null;
+  explanation?: string;
+  policy?: string;
+  policyDetail?: string;
+}
+
+export interface InvestigationReport {
+  assessment: InvestigationAssessment;
+  summary: string;
+  recommendation: InvestigationRecommendation;
+  evidence: InvestigationCitation[];
+  uncertainties: string[];
+  alternatives: string[];
+}
+
+export interface InvestigationFailure {
+  code: string;
+  message: string;
+}
+
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
+
+export interface InvestigationRun {
+  alarmArn: string;
+  transitionAt: string;
+  runId: string;
+  runtimeSessionId: string;
+  candidateId: string;
+  sourceRevision: string;
+  artifactSha256?: string;
+  promptSha256: string;
+  modelId: string;
+  runtimeArn: string;
+  runtimeVersion: string;
+  endpointName: string;
+  status: InvestigationStatus;
+  startedAt: string;
+  deadlineAt: string;
+  finishedAt?: string;
+  report?: InvestigationReport;
+  failure?: InvestigationFailure;
+  traceRef?: { [key: string]: JsonValue };
+  captureRef?: { [key: string]: JsonValue };
+}
+
+export interface InvestigationResponse {
+  observedAt: string;
+  runs: InvestigationRun[];
 }
 
 export interface DashboardState extends RunState {

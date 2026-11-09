@@ -11,7 +11,7 @@ npm ci
 uv sync --project agent --locked
 ```
 
-Run `APP_API_URL=https://<api-id>.execute-api.us-east-1.amazonaws.com npm run dev --workspace app` with the direct API origin from the app stack outputs. Open the local URL Vite prints and enter the presenter credential on the page. Vite proxies the relative business routes to the deployed API. Start the controller separately with `npm run dev --workspace controller`. Start the credential-free AgentCore entry with `uv run --project agent --locked python agent/main.py`. Its health endpoint is `http://127.0.0.1:8080/ping`. See the [agent runtime commands](../agent/README.md) for a sample invocation and the native ARM64 package check.
+Run `APP_API_URL=https://<api-id>.execute-api.us-east-1.amazonaws.com npm run dev --workspace app` with the direct API origin from the app stack outputs. Open the local URL Vite prints and enter the presenter credential on the page. Vite proxies the relative business routes to the deployed API. Start the controller separately with `npm run dev --workspace controller`. Start the local AgentCore entry with `uv run --project agent --locked python agent/main.py`; its `/ping` route checks health, while its invalid-event smoke is rejected before claim or inference. See the [agent runtime commands](../agent/README.md) for the smoke commands and native ARM64 package check.
 
 Build and synthesize the component you are changing.
 
@@ -21,7 +21,7 @@ npm run check -- controller
 npm run check -- agent
 ```
 
-The checks write browser builds and CDK assemblies under `.artifacts/<component>/`. The agent assembly publishes `.artifacts/agent/runtime.zip` as a CDK file asset. It packages the locked dependencies for ARM64 Linux. Check the three assemblies, deployment routing, and local checkout cases with `node --test tests/phase0*.mjs tests/phase1-*.test.mjs tests/phase2-controller-*.test.mjs tests/phase3-inventory-denial-*.test.mjs` after building. The deployed API suite is opt-in and consumes stock from an explicitly prepared verification fixture.
+The checks write browser builds and CDK assemblies under `.artifacts/<component>/`. The agent assembly publishes `.artifacts/agent/runtime.zip` and `.artifacts/agent/alarm-adapter.zip` as CDK file assets. Both packages use locked ARM64 Linux dependencies. Check the three assemblies, deployment routing, and local checkout cases with `node --test tests/phase0*.mjs tests/phase1-*.test.mjs tests/phase2-controller-*.test.mjs tests/phase3-inventory-denial-*.test.mjs` after building. The deployed API suite is opt-in and consumes stock from an explicitly prepared verification fixture.
 
 ## GitHub Actions
 
@@ -33,9 +33,17 @@ Use [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) for pull r
 | Failure controller | `IncidentTriageDemoController` |
 | Agent | `IncidentTriageDemoAgent` |
 
-Deploy jobs serialize within each stack. The app job compares the candidate with the successful app stack revision, skips superseded or irrelevant candidates, and uses the checked CDK assembly. It inspects the prepared CloudFormation change set for table removal or possible replacement before executing that exact change set. It publishes immutable hashed assets before the revalidatable HTML. The controller job serves the checked web build in the HTTP Lambda artifact and deploys the separate worker. It inspects the change set for removal or possible replacement of the controller run table. The agent job verifies its groundwork path and publishes and checks the ZIP asset.
+Deploy jobs serialize within each stack. The app job compares the candidate with the successful app stack revision, skips superseded or irrelevant candidates, and uses the checked CDK assembly. It inspects the prepared CloudFormation change set for table removal or possible replacement before executing that exact change set. It publishes immutable hashed assets before the revalidatable HTML. The controller job serves the checked web build in the HTTP Lambda artifact and deploys the separate worker. It inspects the change set for removal or possible replacement of the controller run table. The agent job publishes and checks the runtime and adapter ZIPs, inspects the agent-stack change set, and deploys its independent Runtime, endpoint, adapter, and retained run table. Its finalization step verifies the checked Runtime configuration, applies MMDSv2 while preserving the remaining configuration when needed, uses the returned Runtime version, pins and reads back the `faulty` endpoint, checks the trace destination, and writes the verified runtime version into the adapter configuration with a revision guard. It does not invoke the agent or send application traffic.
 
-When a release depends on changes in another stack, merge and verify the dependency first. Record the checked assembly's source revision and deployed artifact or version identity with each release. Finish deployments before a demo run. If a deployment overlaps a run, abandon that run and verify the current release and settings before starting another.
+Relevant pushes to `main` deploy affected stacks automatically. The app, controller, and agent stacks remain independent; the presenter sequences dependent releases outside a live run. For an operator retry or a binding-only update at the same source revision, `workflow_dispatch` requires one component selection and deploys only that stack. Run separate dispatches in dependency order:
+
+```sh
+gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref main -f component=agent
+gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref main -f component=app
+gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref main -f component=controller
+```
+
+For the first alarm-path release, keep the app alarm adapter and controller agent variables empty until the checked agent stack has finalized and its outputs have been read back. Then set `APP_ALARM_ADAPTER_ARN` to the agent stack's `AlarmAdapterArn` and dispatch `app`; only after that succeeds set `CONTROLLER_AGENT_RUNTIME_ARN`, `CONTROLLER_AGENT_ENDPOINT_ARN`, and `CONTROLLER_AGENT_ALARM_ADAPTER_ARN` to the verified agent outputs and dispatch `controller`. Empty or unset variables preserve an existing binding on updates; fresh stacks start unconfigured. Verify each run and its stack outputs before dispatching the dependent component. Record the checked source revision and final Runtime version/artifact identity with each release. Finish deployments before a demo run. If a deployment overlaps a run, abandon that run and verify the current release and settings before starting another.
 
 ## AWS access and initial setup
 
@@ -47,7 +55,7 @@ aws sts get-caller-identity --profile reinvent-2026-talk --region us-east-1
 
 GitHub receives short-lived credentials through OIDC. The deployment role trusts the STS audience and the immutable identity of `guilleojeda/evaluations-ref-arch`, and pins the caller to `.github/workflows/deploy.yml` on `main`. It assumes the CDK deployment and file-publishing roles. Bootstrap administration, CloudFormation execution, and component runtime permissions use separate roles. [GitHub OIDC for AWS](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws) · [CDK bootstrapping](https://docs.aws.amazon.com/cdk/v2/guide/bootstrapping-env.html)
 
-Follow the [AWS bootstrap commands](../infrastructure/bootstrap/README.md) to provision the scoped execution policy, dedicated `evaltalk` toolkit, and GitHub IAM stack in that order. The dedicated deploy role can prepare and execute change sets for the named app and controller stacks. CloudFormation uses separate scoped execution policies for their resources. Use the verified administrator for updates to the bootstrap IAM stacks. Keep the deploy guard and CloudFormation execution grants scoped to reviewed feature resources.
+Follow the [AWS bootstrap commands](../infrastructure/bootstrap/README.md) to provision the scoped execution policy, dedicated `evaltalk` toolkit, and GitHub IAM stack in that order. The dedicated deploy role can prepare and execute change sets for the named app, controller, and agent stacks. CloudFormation uses separate scoped execution policies for their resources. Use the verified administrator for updates to the bootstrap IAM stacks. Keep the deploy guard and CloudFormation execution grants scoped to reviewed feature resources.
 
 Before setting the GitHub subject template, inspect existing Actions runs and OIDC consumers for the repository. Preserve immutable identity. A repository admin can set the template with GitHub CLI.
 
@@ -93,6 +101,36 @@ After deployment, open `SiteUrl` from the `IncidentTriageDemoController` stack o
 
 The run allows 50 generator POSTs, 5 controller verification POSTs, and 5 manual POSTs. Track every manual attempt separately, including retries. Catalog traffic and order-status reads have separate limits. Stop, repeated Start, discard, and routine releases preserve the current allowance.
 
+## Release and bind the initial agent path
+
+The first Phase 4 release uses the currently deployed app API ID as an input to the agent stack. The app alarm remains unbound while the agent is finalized, and the controller remains unconfigured for agent readiness. Use the stack outputs and checked GitHub assembly; do not invoke the Runtime as a smoke test.
+
+After the `IncidentTriageDemoAgent` release succeeds, verify its `SourceRevision`, `RuntimeArn`, `FaultyEndpointArn`, `AlarmAdapterArn`, and `RuntimeArtifactSha256` outputs against the checked release. The `CloudFormationRuntimeVersion` output is the initial CloudFormation version; use the finalizer's `agent-final-release.json` log record for the accepted `runtimeVersion`. The finalization step checks native `requireMMDSV2`, reads back the endpoint's live and target version, verifies CloudWatch Transaction Search is enabled, then sets the adapter's runtime version using its current `RevisionId`. A final adapter readback checks the version, checked adapter ZIP, tracing mode, and release identity. This is release evidence only; no alarm or investigation is generated.
+
+Read the finalized agent stack outputs into local shell variables, then bind the app alarm by setting the repository variable and deploying the app component:
+
+```sh
+export AGENT_ALARM_ADAPTER_ARN="$(aws cloudformation describe-stacks --stack-name IncidentTriageDemoAgent --profile reinvent-2026-talk --region us-east-1 --query "Stacks[0].Outputs[?OutputKey=='AlarmAdapterArn'].OutputValue | [0]" --output text)"
+gh variable set APP_ALARM_ADAPTER_ARN --repo guilleojeda/evaluations-ref-arch --body "$AGENT_ALARM_ADAPTER_ARN"
+gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref main -f component=app
+```
+
+Set `AGENT_ALARM_ADAPTER_ARN` to the exact `AlarmAdapterArn` output from the finalized agent stack. After the app release succeeds, read back the alarm's single `AlarmActions` target and confirm it equals that ARN.
+
+Configure controller readiness and investigation discovery from the same finalized agent outputs, then deploy only the controller component:
+
+```sh
+export AGENT_RUNTIME_ARN="$(aws cloudformation describe-stacks --stack-name IncidentTriageDemoAgent --profile reinvent-2026-talk --region us-east-1 --query "Stacks[0].Outputs[?OutputKey=='RuntimeArn'].OutputValue | [0]" --output text)"
+export AGENT_FAULTY_ENDPOINT_ARN="$(aws cloudformation describe-stacks --stack-name IncidentTriageDemoAgent --profile reinvent-2026-talk --region us-east-1 --query "Stacks[0].Outputs[?OutputKey=='FaultyEndpointArn'].OutputValue | [0]" --output text)"
+export AGENT_ALARM_ADAPTER_ARN="$(aws cloudformation describe-stacks --stack-name IncidentTriageDemoAgent --profile reinvent-2026-talk --region us-east-1 --query "Stacks[0].Outputs[?OutputKey=='AlarmAdapterArn'].OutputValue | [0]" --output text)"
+gh variable set CONTROLLER_AGENT_RUNTIME_ARN --repo guilleojeda/evaluations-ref-arch --body "$AGENT_RUNTIME_ARN"
+gh variable set CONTROLLER_AGENT_ENDPOINT_ARN --repo guilleojeda/evaluations-ref-arch --body "$AGENT_FAULTY_ENDPOINT_ARN"
+gh variable set CONTROLLER_AGENT_ALARM_ADAPTER_ARN --repo guilleojeda/evaluations-ref-arch --body "$AGENT_ALARM_ADAPTER_ARN"
+gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref main -f component=controller
+```
+
+The values are `RuntimeArn`, `FaultyEndpointArn`, and `AlarmAdapterArn` from the agent stack outputs. When the controller release completes, open the dashboard and verify the endpoint is ready and the alarm binding is bound. These checks are read-only control-plane observations; they do not prove an inference occurred. Complete the actual alarm-triggered journey through the controller after readiness.
+
 ## Operate the Inventory access incident
 
 1. Stop existing traffic and pause other checkout writers. Use **Check readiness** on the current release. Keep verification checkout allowance for activation and a separate post-restore readiness check.
@@ -104,7 +142,7 @@ Keep the evidence bucket private. Inspect or export the referenced configuration
 
 ## Deployment and controller baseline
 
-The presenter schedules deployments outside active demo runs. Routine releases preserve business data and investigation history. Keep the app's expected versions, memory, cap, and Inventory role/policy/access-state manifest tied to the current release. The controller compares its recorded baseline with the deployed source revision, manifest, and affected live settings before restoring them. Unexpected drift or a newer release requires fresh readiness checks.
+The presenter schedules releases outside active demo runs and manually sequences dependent app, agent, and controller changes. Routine releases preserve business data and investigation history. Keep the app's expected versions, memory, cap, and Inventory role/policy/access-state manifest tied to the current release. The controller compares its recorded baseline with the deployed source revision, manifest, and affected live settings before restoring them. Agent provenance separately identifies the checked Runtime artifact and final pinned version. Unexpected drift or a newer release requires fresh readiness checks.
 
 The deployment workflow leaves incident activation, probes, Recover, and Reset to the presenter. Applying an expected setting through CDK does not establish fresh business behavior. Use the [controller run procedure](components/failure-controller-behavior.md) to verify a new baseline and the [application contract](components/application.md#deployment-development-and-reset) for disposable data setup and reset.
 
@@ -116,4 +154,4 @@ The S4 workflow executes the repaired candidate through the local Python/Strands
 
 At S3, the prepared [local runner](evaluations.md#s3-fresh-candidate-before-deployment) executes candidates and submits their fresh traces to AgentCore on-demand evaluation. S4 reuses the execution function in the Strands experiment; S5 invokes that experiment from CI. Prepare local telemetry export, session correlation, collection, and evaluation permissions. The semantic backend for the S4/S5 experiment remains open; its selected path determines the corresponding CI permissions and waits. Neither candidate evaluation nor the experiment requires deploying the repaired source first.
 
-The [agent component](components/operations-agent.md) owns runtime behavior; the [talk documents](demo-progression.md) own how the stages are presented. One shared development environment and one automatic deployment workflow are the baseline.
+The [agent component](components/operations-agent.md) owns runtime behavior; the [talk documents](demo-progression.md) own how the stages are presented. The development target has three independent stacks and one GitHub Actions workflow with separate checks/deployments; the presenter sequences dependent releases.

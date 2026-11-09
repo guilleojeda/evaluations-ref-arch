@@ -23,6 +23,9 @@ SOURCE_BUCKET = "phase4-agent-evidence"
 SOURCE_PREFIX = "agent-source/"
 ALARM_ARN = "arn:aws:cloudwatch:us-east-1:123456789012:alarm:Phase4Test"
 MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+SOURCE_REVISION = "development"
+ARTIFACT_SHA256 = "a" * 64
+_DEFAULT_EVENT = object()
 SECRET_SENTINELS = ("app-secret-sentinel", "presenter-secret-sentinel", "controller-truth-sentinel")
 
 
@@ -45,6 +48,7 @@ class AgentScript:
     tool_results: list[tuple[str, Any]] = field(default_factory=list)
     prompts: list[str] = field(default_factory=list)
     constructions: list[dict[str, Any]] = field(default_factory=list)
+    call_options: list[dict[str, Any]] = field(default_factory=list)
     invocations: int = 0
 
 
@@ -61,6 +65,7 @@ class ScriptedStrandsAgent:
     def __call__(self, prompt: Any = None, **kwargs: Any) -> Any:
         self.script.invocations += 1
         self.script.prompts.append(str(prompt))
+        self.script.call_options.append(dict(kwargs))
         by_name = {getattr(tool, "tool_name", getattr(tool, "__name__", "")): tool for tool in self.tools}
         self.script.tool_names[:] = list(by_name)
         for step in self.script.steps:
@@ -212,6 +217,7 @@ class FakeAWSBoundary:
         "logs": {"filter_log_events", "get_log_events", "get_query_results", "start_query"},
         "cloudwatch": {"get_metric_data", "get_metric_statistics", "list_metrics"},
         "lambda": {"get_alias", "get_function_configuration", "get_function_concurrency", "list_versions_by_function", "get_policy"},
+        "dynamodb": {"get_resource_policy"},
         "iam": {"get_role", "get_role_policy", "list_role_policies", "list_attached_role_policies", "get_policy", "get_policy_version"},
         "cloudtrail": {"lookup_events"},
     }
@@ -300,6 +306,12 @@ class _FakeDynamoClient:
         self._check_table(request)
         item = self.boundary.runs.update(request)
         return {"Attributes": {key: _encode(value) for key, value in item.items()}}
+
+    def get_resource_policy(self, **request: Any) -> dict[str, Any]:
+        if request.get("ResourceArn") != "arn:aws:dynamodb:us-east-1:123456789012:table/IncidentTriageDemoInventory":
+            raise AssertionError(f"Inventory resource-policy read escaped the configured table: {request}")
+        self.boundary.calls.append(("dynamodb", "get_resource_policy", request))
+        return {"Policy": json.dumps({"Version": "2012-10-17", "Statement": []})}
 
     def query(self, **request: Any) -> dict[str, Any]:
         self._check_table(request)
@@ -444,6 +456,19 @@ def alarm_event(
     }
 
 
+def runtime_payload(event: Any = _DEFAULT_EVENT, *, deployment: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "event": alarm_event() if event is _DEFAULT_EVENT else event,
+        "deployment": dict(deployment or {
+            "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/IncidentTriageDemoAgent-test",
+            "runtimeVersion": "1",
+            "endpointName": "faulty",
+            "sourceRevision": SOURCE_REVISION,
+            "artifactSha256": ARTIFACT_SHA256,
+        }),
+    }
+
+
 def report() -> dict[str, Any]:
     return {
         "assessment": "unknown",
@@ -527,10 +552,9 @@ def isolated_runtime(
         "AWS_REGION": "us-east-1", "AWS_DEFAULT_REGION": "us-east-1", "AWS_EC2_METADATA_DISABLED": "true",
         "AGENT_RUN_TABLE": RUN_TABLE, "AGENT_SOURCE_BUCKET": SOURCE_BUCKET, "AGENT_SOURCE_PREFIX": SOURCE_PREFIX,
         "AGENT_ALARM_ARN": ALARM_ARN, "AGENT_MODEL_ID": MODEL_ID, "AGENT_ACCOUNT_ID": "123456789012",
-        "AGENT_REGION": "us-east-1", "AGENT_CANDIDATE_ID": "faulty-test-candidate",
-        "AGENT_SOURCE_REVISION": "a" * 40, "AGENT_PROMPT_SHA256": "b" * 64,
-        "AGENT_RUNTIME_ARN": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/test",
-        "AGENT_RUNTIME_VERSION": "1", "AGENT_ENDPOINT_NAME": "faulty",
+        "AGENT_REGION": "us-east-1", "AGENT_APP_HTTP_API_ID": "api-123456",
+        "AGENT_CANDIDATE_ID": "faulty", "AGENT_SOURCE_REVISION": SOURCE_REVISION,
+        "AGENT_ARTIFACT_SHA256": ARTIFACT_SHA256, "AGENT_ENDPOINT_NAME": "faulty",
     }
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch.dict(os.environ, env))
@@ -551,8 +575,9 @@ def isolated_adapter(boundary: FakeAWSBoundary | None = None) -> Iterator[tuple[
         "AWS_ACCESS_KEY_ID": "test-only", "AWS_SECRET_ACCESS_KEY": "test-only", "AWS_SESSION_TOKEN": "test-only",
         "AWS_REGION": "us-east-1", "AWS_DEFAULT_REGION": "us-east-1", "AWS_EC2_METADATA_DISABLED": "true",
         "AGENT_ALARM_ARN": ALARM_ARN, "AGENT_ACCOUNT_ID": "123456789012", "AGENT_REGION": "us-east-1",
-        "AGENT_RUNTIME_ARN": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/test",
-        "AGENT_ENDPOINT_NAME": "faulty",
+        "AGENT_RUNTIME_ARN": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/IncidentTriageDemoAgent-test",
+        "AGENT_RUNTIME_VERSION": "1", "AGENT_ENDPOINT_NAME": "faulty",
+        "AGENT_SOURCE_REVISION": "a" * 40, "AGENT_ARTIFACT_SHA256": ARTIFACT_SHA256,
     }
     with contextlib.ExitStack() as stack:
         stack.enter_context(patch.dict(os.environ, env))

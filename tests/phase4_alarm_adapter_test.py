@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from support.phase4_agent_fakes import ALARM_ARN, FakeAWSBoundary, alarm_event, isolated_adapter
 
@@ -67,8 +69,26 @@ class AlarmAdapterAcceptanceTests(unittest.TestCase):
         for request in boundary.runtime.requests:
             self.assertTrue(request.get("runtimeSessionId"), "Runtime sessions must be supplied by AgentCore's invocation API")
             self.assertIn("agentRuntimeArn", request)
+            self.assertEqual("application/json", request["contentType"])
+            self.assertEqual("application/json", request["accept"])
+            attestation = json.loads(request["payload"])["deployment"]
+            self.assertEqual("faulty", attestation["endpointName"])
+            self.assertEqual("1", attestation["runtimeVersion"])
+            self.assertEqual("a" * 40, attestation["sourceRevision"])
+            self.assertEqual("a" * 64, attestation["artifactSha256"])
         self.assertEqual([], boundary.runs.operations)
         self.assertEqual([], boundary.s3_writes)
+
+    def test_only_sampled_lambda_trace_context_is_forwarded(self):
+        trace_header = "Root=1-672f1f7a-0123456789abcdef01234567;Parent=0123456789abcdef;Sampled=1"
+        with isolated_adapter() as (module, boundary), patch.dict(os.environ, {"_X_AMZN_TRACE_ID": trace_header}):
+            self.call(module.handler, alarm_event())
+        self.assertEqual(trace_header, boundary.runtime.requests[0]["traceId"])
+
+        unsampled = trace_header.replace("Sampled=1", "Sampled=0")
+        with isolated_adapter() as (module, boundary), patch.dict(os.environ, {"_X_AMZN_TRACE_ID": unsampled}):
+            self.call(module.handler, alarm_event())
+        self.assertNotIn("traceId", boundary.runtime.requests[0])
 
 
 if __name__ == "__main__":

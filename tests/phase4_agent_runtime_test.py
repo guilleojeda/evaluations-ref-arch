@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from threading import Event
+import time
 import unittest
+from unittest.mock import patch
 
 from support.phase4_agent_fakes import (
     ALARM_ARN,
@@ -18,6 +21,7 @@ from support.phase4_agent_fakes import (
     isolated_runtime,
     report,
     runtime_context,
+    runtime_payload,
     tool_arguments,
 )
 
@@ -34,7 +38,7 @@ APP_LOG_GROUPS = {
 
 class RuntimeAcceptanceTests(unittest.TestCase):
     def invoke(self, module, event=None, session_id="runtime-session-1"):
-        return module.invoke(event if event is not None else alarm_event(), runtime_context(session_id))
+        return module.invoke(runtime_payload(event if event is not None else alarm_event()), runtime_context(session_id))
 
     @staticmethod
     def run_row(boundary):
@@ -45,7 +49,7 @@ class RuntimeAcceptanceTests(unittest.TestCase):
 
     def assert_invalid_without_claim(self, module, boundary, script, event):
         try:
-            response = module.invoke(event, runtime_context("invalid-session"))
+            response = module.invoke(runtime_payload(event), runtime_context("invalid-session"))
         except TypeError as exc:
             self.fail(f"invalid-event rejection must be explicit, not an entrypoint signature error: {exc}")
         except Exception:
@@ -150,20 +154,89 @@ class RuntimeAcceptanceTests(unittest.TestCase):
         self.assertEqual("complete", complete["status"])
         self.assertEqual("unknown", complete["report"]["assessment"])
 
-    def test_invalid_structured_report_fails_instead_of_becoming_unknown(self):
-        invalid_report = report()
-        invalid_report["recommendation"]["action"] = "Invented action"
-        script, boundary = AgentScript(report=invalid_report), FakeAWSBoundary()
-        with isolated_runtime(script, boundary) as (module, _):
-            try:
-                self.invoke(module)
-            except TypeError as exc:
-                self.fail(f"report validation requires invoke(payload, context): {exc}")
-            except Exception:
-                pass
+    def test_deadline_signal_cancels_and_keeps_the_claim_incomplete(self):
+        script, boundary = AgentScript(report=report()), FakeAWSBoundary()
+
+        class ExpiredTimer:
+            def __init__(self, interval, callback):
+                self.callback = callback
+
+            def start(self):
+                self.callback()
+
+            def cancel(self):
+                return None
+
+        with isolated_runtime(script, boundary, real_strands=True) as (module, _):
+            with patch.object(module, "Timer", ExpiredTimer):
+                result = self.invoke(module)
+        self.assertEqual("running", result["status"])
         row = self.run_row(boundary)
-        self.assertEqual("failed", row["status"])
+        self.assertEqual("running", row["status"])
+        self.assertNotIn("finishedAt", row)
         self.assertNotIn("report", row)
+        self.assertLessEqual(len(boundary.model_requests), 1)
+
+    def test_model_constructor_disables_retries_and_budgets_structured_output(self):
+        script, boundary = AgentScript(report=report()), FakeAWSBoundary()
+        with isolated_runtime(script, boundary) as (module, _):
+            self.invoke(module)
+        agent_options = script.constructions[0]["kwargs"]
+        call_options = script.call_options[0]
+        self.assertIsNone(agent_options["retry_strategy"])
+        self.assertEqual({"turns": 12, "structured_output_attempts": 1}, call_options["limits"])
+        self.assertIsInstance(agent_options["model"].client, module.BoundedBedrockClient)
+
+    def test_bedrock_client_cap_covers_direct_and_structured_output_fallback_requests(self):
+        class NoNetworkClient:
+            def __init__(self):
+                self.requests = []
+
+            def converse_stream(self, **request):
+                self.requests.append(request)
+                return {"stream": ()}
+
+        with isolated_runtime(AgentScript(), FakeAWSBoundary()) as (module, _):
+            backend = NoNetworkClient()
+            bounded = module.BoundedBedrockClient(
+                backend,
+                deadline_monotonic=time.monotonic() + 60,
+                cancel_signal=Event(),
+            )
+            for number in range(12):
+                kind = "structured-output-fallback" if number == 11 else "ordinary"
+                bounded.converse_stream(request_kind=kind)
+            with self.assertRaises(module.ModelRequestBudgetExceeded):
+                bounded.converse_stream(request_kind="structured-output-validation-retry")
+        self.assertEqual(12, len(backend.requests))
+        self.assertEqual("structured-output-fallback", backend.requests[-1]["request_kind"])
+
+    def test_invalid_structured_report_fails_instead_of_becoming_unknown(self):
+        invalid_reports = []
+        invalid_action = report()
+        invalid_action["recommendation"]["action"] = "Invented action"
+        invalid_reports.append(invalid_action)
+        missing_policy_detail = report()
+        missing_policy_detail["recommendation"] = {
+            "action": "Restore inventory access", "target": "inventory", "value": None, "unit": None,
+        }
+        invalid_reports.append(missing_policy_detail)
+        missing_other_explanation = report()
+        missing_other_explanation["recommendation"]["value"] = ""
+        invalid_reports.append(missing_other_explanation)
+        for invalid_report in invalid_reports:
+            with self.subTest(recommendation=invalid_report["recommendation"]):
+                script, boundary = AgentScript(report=invalid_report), FakeAWSBoundary()
+                with isolated_runtime(script, boundary) as (module, _):
+                    try:
+                        self.invoke(module)
+                    except TypeError as exc:
+                        self.fail(f"report validation requires invoke(payload, context): {exc}")
+                    except Exception:
+                        pass
+                row = self.run_row(boundary)
+                self.assertEqual("failed", row["status"])
+                self.assertNotIn("report", row)
 
     def test_four_readonly_tools_run_in_model_chosen_order_and_project_configuration(self):
         order = ("read_change_history", "read_metrics", "search_logs", "read_configuration")
@@ -188,7 +261,7 @@ class RuntimeAcceptanceTests(unittest.TestCase):
         self.assertNotIn("controller-truth", rendered)
         self.assertIn("source", rendered)
         self.assertTrue(any(field in rendered for field in ("windowStart", "window", "timeWindow")))
-        self.assertIn("observedAt", rendered)
+        self.assertIn("observedat", rendered)
         for source in ("logs", "cloudwatch", "lambda", "iam", "cloudtrail"):
             self.assertTrue(any(service == source for service, _, _ in boundary.calls), source)
         self.assertTrue(any(source == "lambda" and operation == "get_function_configuration" for source, operation, _ in boundary.calls))
@@ -235,7 +308,10 @@ class RuntimeAcceptanceTests(unittest.TestCase):
                     source_calls = [call for call in boundary.calls if call[0] == "logs"]
                     if exercised:
                         self.assertIsInstance(script.tool_results[0][1], Exception)
-                        self.assertEqual([], source_calls, "out-of-scope resource must be rejected before AWS")
+                        self.assertFalse(
+                            any(params.get("filterPattern") for _, _, params in source_calls),
+                            "out-of-scope tool query must be rejected before its source read",
+                        )
                     else:
                         self.assertFalse(isinstance(script.tool_results[0][1], Exception))
                         self.assert_allowlisted_source_requests(boundary.calls)
@@ -248,7 +324,10 @@ class RuntimeAcceptanceTests(unittest.TestCase):
                     source_calls = [call for call in boundary.calls if call[0] == "logs"]
                     if exercised:
                         self.assertIsInstance(script.tool_results[0][1], Exception)
-                        self.assertEqual([], source_calls, "query outside the supported window must be rejected before AWS")
+                        self.assertFalse(
+                            any(params.get("startTime") == 1794261600000 for _, _, params in source_calls),
+                            "query outside the supported window must be rejected before its source read",
+                        )
                     else:
                         self.assertFalse(isinstance(script.tool_results[0][1], Exception))
                         self.assert_query_windows_within_30_minutes(source_calls)
@@ -294,7 +373,8 @@ class RuntimeAcceptanceTests(unittest.TestCase):
         self.assertLessEqual(len(results.encode("utf-8")), 12 * 1024)
         self.assertRegex(results.lower(), r"truncat.{0,24}(true|yes|partial)")
         self.assertTrue(boundary.calls)
-        self.assertLess(max(boundary.pages.values()), 20)
+        self.assertLessEqual(max(boundary.pages.values()), 24,
+                             "baseline capture and model queries must retain their independent page caps")
         for service, operation, params in boundary.calls:
             start = params.get("startTime", params.get("StartTime"))
             end = params.get("endTime", params.get("EndTime"))

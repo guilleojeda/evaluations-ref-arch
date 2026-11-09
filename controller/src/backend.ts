@@ -4,11 +4,19 @@ import { basename, extname } from "node:path";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
 import { AlarmReadError, readAlarm } from "./alarm.js";
+import {
+  InvestigationQueryError,
+  InvestigationReadError,
+  parseInvestigationQuery,
+  readInvestigations,
+} from "./investigations.js";
 import { applyCommand, getAction, getDashboard, CommandError } from "./store.js";
 import type { Action, Command } from "./types.js";
 
 export interface BackendEvent {
   readonly rawPath?: string;
+  readonly rawQueryString?: string;
+  readonly queryStringParameters?: Record<string, string | undefined>;
   readonly requestContext?: { readonly http?: { readonly method?: string } };
   readonly headers?: Record<string, string | undefined>;
   readonly body?: string | null;
@@ -143,6 +151,8 @@ async function dispatch(action: Action): Promise<void> {
 function commandError(error: unknown): BackendResponse {
   if (error instanceof CommandError) return json(error.statusCode, { code: error.code, message: error.message });
   if (error instanceof AlarmReadError) return json(503, { code: "ALARM_UNAVAILABLE", message: error.message });
+  if (error instanceof InvestigationQueryError) return json(400, { code: error.code, message: error.message });
+  if (error instanceof InvestigationReadError) return json(503, { code: "INVESTIGATIONS_UNAVAILABLE", message: error.message });
   return json(500, { code: "CONTROLLER_ERROR", message: "The controller could not complete the request" });
 }
 
@@ -155,6 +165,9 @@ export async function handler(event: BackendEvent = {}): Promise<BackendResponse
   try {
     if (method === "GET" && path === "/api/state") return json(200, await getDashboard());
     if (method === "GET" && path === "/api/alarm") return json(200, await readAlarm());
+    if (method === "GET" && path === "/api/investigations") {
+      return json(200, await readInvestigations(parseInvestigationQuery(event.rawQueryString, event.queryStringParameters)));
+    }
     const match = path.match(/^\/api\/actions\/([^/]+)$/);
     if (!match || !UUID.test(match[1])) return json(404, { code: "NOT_FOUND", message: "Controller route not found" });
     const id = match[1];
