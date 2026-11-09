@@ -97,6 +97,7 @@ class ReleaseTemplateTests(unittest.TestCase):
         self.assertEqual([
             "arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/*",
             "arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default/workload-identity/IncidentTriageDemoAgent-*",
+            "arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default",
         ], tags["Resource"])
         self.assertEqual(creation["Condition"], tags["Condition"])
         outer_create = next(s for s in statements if s["Sid"] == "CreateTaggedAgent")
@@ -123,6 +124,8 @@ class ReleaseTemplateTests(unittest.TestCase):
 
         identity = "arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default/workload-identity/IncidentTriageDemoAgent-JRWneh9GXf"
         self.assertTrue(resource_matches("bedrock-agentcore:TagResource", identity))
+        parent = identity.rsplit("/workload-identity/", 1)[0]
+        self.assertTrue(resource_matches("bedrock-agentcore:TagResource", parent))
         for resource in [
             identity.replace("IncidentTriageDemoAgent-JRWneh9GXf", "OtherAgent-JRWneh9GXf"),
             identity.replace("IncidentTriageDemoAgent-", "IncidentTriageDemoAgentOther-"),
@@ -130,11 +133,12 @@ class ReleaseTemplateTests(unittest.TestCase):
             identity.replace("027224425948", "123456789012"),
             identity.replace("us-east-1", "us-west-2"),
             identity.replace("directory/default/", "directory/other/"),
-            identity.rsplit("/workload-identity/", 1)[0],
+            parent.replace("/default", "/other"),
         ]:
             with self.subTest(resource=resource):
                 self.assertFalse(resource_matches("bedrock-agentcore:TagResource", resource))
         self.assertFalse(resource_matches("bedrock-agentcore:UntagResource", identity))
+        self.assertFalse(resource_matches("bedrock-agentcore:UntagResource", parent))
 
     def test_agent_execution_policy_fits_managed_policy_quota(self):
         size = len(json.dumps(self.agent_policy(), separators=(",", ":")))
