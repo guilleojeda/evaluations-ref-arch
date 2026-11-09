@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 import yaml
 spec = importlib.util.spec_from_file_location("finalize_agent", Path(__file__).parents[1] / "scripts/finalize-agent.py")
 release = importlib.util.module_from_spec(spec)
@@ -47,7 +48,10 @@ class ReleaseTests(unittest.TestCase):
         self.adapter = Adapter(self.native)
         self.xray = SimpleNamespace(get_trace_segment_destination=lambda: {"Destination": "CloudWatchLogs", "Status": "ACTIVE"})
     def finalize(self):
-        return release.finalize(self.native, self.adapter, self.xray, runtime_id="IncidentTriageDemoAgent-abcdefghij", revision="c" * 40, artifact_sha256="a" * 64, adapter_sha256="b" * 64, bucket="assets", key="checked.zip", api_id="api", expected_environment={"SOURCE": "checked"})
+        # Exercise the real waiter with a zero deadline so rejection never sleeps.
+        wait_ready = release.wait_ready
+        with patch.object(release, "wait_ready", side_effect=lambda read, **kwargs: wait_ready(read, timeout=0, **kwargs)):
+            return release.finalize(self.native, self.adapter, self.xray, runtime_id="IncidentTriageDemoAgent-abcdefghij", revision="c" * 40, artifact_sha256="a" * 64, adapter_sha256="b" * 64, bucket="assets", key="checked.zip", api_id="api", expected_environment={"SOURCE": "checked"})
     def test_mmdsv2_preserves_checked_configuration_and_attests_final_native_version(self):
         result = self.finalize()
         self.assertEqual("2", result["runtimeVersion"])
@@ -64,6 +68,53 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(1, len(self.native.updates))
         self.assertEqual(1, len(self.native.pin_updates))
         self.assertEqual(2, len(self.adapter.updates))
+    def test_ready_endpoint_without_target_version_does_not_repin_or_create_another_version(self):
+        self.native.runtime["metadataConfiguration"]["requireMMDSV2"] = True
+        self.native.endpoint.pop("targetVersion")
+        result = self.finalize()
+        self.assertEqual("1", result["runtimeVersion"])
+        self.assertEqual([], self.native.updates)
+        self.assertEqual([], self.native.pin_updates)
+        self.assertEqual("1", self.adapter.config["Environment"]["Variables"]["AGENT_RUNTIME_VERSION"])
+    def test_repin_accepts_ready_live_version_when_service_omits_target_version(self):
+        update_endpoint = self.native.update_agent_runtime_endpoint
+        def update_without_target(**kwargs):
+            update_endpoint(**kwargs)
+            self.native.endpoint.pop("targetVersion")
+        with patch.object(self.native, "update_agent_runtime_endpoint", side_effect=update_without_target):
+            result = self.finalize()
+        self.assertEqual("2", result["runtimeVersion"])
+        self.assertEqual(1, len(self.native.pin_updates))
+        self.assertEqual("2", self.native.pin_updates[0]["agentRuntimeVersion"])
+    def test_stale_live_conflicting_target_and_in_progress_endpoints_cannot_attest(self):
+        for drift in [
+            {"liveVersion": "2"},
+            {"targetVersion": "2"},
+            {"status": "UPDATING"},
+        ]:
+            with self.subTest(drift=drift):
+                self.setUp()
+                self.native.runtime["metadataConfiguration"]["requireMMDSV2"] = True
+                self.native.endpoint.pop("targetVersion")
+                self.native.endpoint.update(drift)
+                with patch.object(self.native, "update_agent_runtime_endpoint"):
+                    with self.assertRaisesRegex(RuntimeError, "timed out"):
+                        self.finalize()
+                self.assertEqual([], self.adapter.updates)
+    def test_final_readback_rejects_stale_live_conflicting_target_and_in_progress(self):
+        for drift in [
+            {"liveVersion": "2"},
+            {"targetVersion": "2"},
+            {"status": "UPDATING"},
+        ]:
+            with self.subTest(drift=drift):
+                self.setUp()
+                self.native.runtime["metadataConfiguration"]["requireMMDSV2"] = True
+                self.native.endpoint.pop("targetVersion")
+                changed = {**self.native.endpoint, **drift}
+                with patch.object(self.native, "get_agent_runtime_endpoint", side_effect=[copy.deepcopy(self.native.endpoint), changed]):
+                    with self.assertRaisesRegex(RuntimeError, "Endpoint changed during finalization"):
+                        self.finalize()
     def test_rejects_unchecked_runtime_or_adapter_bytes_before_attesting(self):
         for kind in ["runtime", "adapter"]:
             with self.subTest(kind=kind):
