@@ -215,6 +215,26 @@ test('rejects configuration drift before mutation and rejects a conflicting immu
   assert.equal(conflicting.calls.some(([name]) => name === 'updateFunctionConfiguration'), false);
 });
 
+test('reports Lambda environment decryption errors by code without exposing the provider message', async () => {
+  const aws = fakeAws();
+  const original = aws.getFunctionConfiguration.bind(aws);
+  aws.getFunctionConfiguration = async (request = {}) => {
+    const result = await original(request);
+    if (request.qualifier === '10') {
+      return { ...result, Environment: { Error: { ErrorCode: 'AccessDeniedException', Message: 'sensitive provider detail' } } };
+    }
+    return result;
+  };
+  await assert.rejects(
+    () => prepareInventoryVersions({ config: config(), aws }),
+    (error) => {
+      assert.match(error.message, /environment decrypt failed \(AccessDeniedException\)/);
+      assert.doesNotMatch(error.message, /sensitive provider detail/);
+      return true;
+    },
+  );
+});
+
 test('deploy script restores recognized staging before any new CloudFormation change set and skips old stacks safely', () => {
   const deploy = readFileSync(new URL('../scripts/deploy-app.sh', import.meta.url), 'utf8');
   const recovery = deploy.indexOf('restore_previous_inventory_staging');
@@ -223,4 +243,11 @@ test('deploy script restores recognized staging before any new CloudFormation ch
   assert.ok(recovery >= 0 && recovery < deployedRevision && recovery < cdk);
   assert.match(deploy, /\[\[ -n "\$denied_role" \]\] \|\| return 0/);
   assert.match(deploy, /--restore-staging-only true/);
+});
+
+test('deploy guard permits only the exact Inventory Lambda environment decrypt context', () => {
+  const template = readFileSync(new URL('../infrastructure/bootstrap/github-iam.yaml', import.meta.url), 'utf8');
+  assert.match(template, /Sid: DenyBootstrapKeyOutsideBootstrapTemplates[\s\S]*?Resource: arn:aws:kms:us-east-1:027224425948:key\/b292b95c-709f-42c6-aa42-b934ba2c6f07[\s\S]*?kms:EncryptionContext:aws:s3:arn:/);
+  assert.match(template, /Sid: DenyInventoryKeyOutsideLambdaEnvironment[\s\S]*?Resource: arn:aws:kms:us-east-1:027224425948:key\/9d894f12-dc33-4332-bb3e-df489928914b[\s\S]*?kms:EncryptionContext:aws:lambda:FunctionArn:\s+arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory/);
+  assert.doesNotMatch(template, /kms:EncryptionContext:aws:lambda:FunctionArn:\s+arn:aws:lambda:us-east-1:027224425948:function:\*/);
 });

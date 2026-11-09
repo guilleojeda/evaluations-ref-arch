@@ -29,10 +29,6 @@ function numericVersion(value) {
   return typeof value === 'string' && /^[1-9][0-9]*$/.test(value);
 }
 
-function environmentOf(configuration) {
-  return configuration?.Environment?.Variables ?? {};
-}
-
 function stableConfiguration(configuration) {
   const result = {};
   for (const key of CONFIGURATION_FIELDS) if (key in (configuration ?? {})) result[key] = configuration[key];
@@ -48,11 +44,13 @@ function roleIndependentConfiguration(configuration) {
 function assertReleaseConfiguration(configuration, config, label, codeSha256) {
   if (!configuration || configuration.CodeSha256 !== codeSha256) fail(`${label} code hash does not match the release`);
   if (configuration.MemorySize !== config.baselineMemoryMb) fail(`${label} memory is not the baseline ${config.baselineMemoryMb} MB`);
-  const environment = environmentOf(configuration);
-  if (environment.SOURCE_REVISION !== config.sourceRevision) fail(`${label} SOURCE_REVISION does not match ${config.sourceRevision}`);
-  if (environment.APP_ENVIRONMENT !== 'demo') fail(`${label} APP_ENVIRONMENT is not demo`);
-  if (environment.INVENTORY_TABLE_NAME !== config.inventoryTableArn) fail(`${label} Inventory table does not match the release`);
-  if (environment.PRODUCT_SKU !== 'demo-widget') fail(`${label} product SKU does not match the release`);
+  const environment = configuration?.Environment ?? {};
+  if (environment.Error) fail(`${label} environment decrypt failed (${environment.Error.ErrorCode ?? 'unknown'})`);
+  const variables = environment.Variables ?? {};
+  if (variables.SOURCE_REVISION !== config.sourceRevision) fail(`${label} SOURCE_REVISION does not match ${config.sourceRevision}`);
+  if (variables.APP_ENVIRONMENT !== 'demo') fail(`${label} APP_ENVIRONMENT is not demo`);
+  if (variables.INVENTORY_TABLE_NAME !== config.inventoryTableArn) fail(`${label} Inventory table does not match the release`);
+  if (variables.PRODUCT_SKU !== 'demo-widget') fail(`${label} product SKU does not match the release`);
 }
 
 function assertNoRouting(alias, config) {
