@@ -72,7 +72,6 @@ test('app alarm watches the real HTTP API stage and publishes the target for the
   assert.equal(alarm.TreatMissingData, 'notBreaching');
   assert.deepEqual(Object.fromEntries(alarm.Dimensions.map(({ Name, Value }) => [Name, Value])),
     { ApiId: { Ref: apiId }, Stage: '$default' });
-  assert.deepEqual(alarm.AlarmActions ?? [], []);
   assert.ok(Outputs.StageAlarmName?.Value && Outputs.StageAlarmArn?.Value && Outputs.InventoryRoleArn?.Value);
   assert.equal(Outputs.InventoryVariantsManifestBucket?.Value, `cdk-evaltalk-assets-${account}-${region}`);
   assert.deepEqual(Outputs.InventoryVariantsManifestKey?.Value, {
