@@ -214,6 +214,8 @@ checked Runtime finalization. It cannot publish outside the revision-scoped
 manifest prefix or pass an unrelated role. The administrator attaches policies
 and bootstraps the account; subsequent product releases and finalization run
 through the scoped GitHub workflow.
+The deploy role's existing Lambda-key decryption exception covers only the
+exact Inventory and alarm-adapter environment contexts.
 
 The app release script runs `scripts/prepare-inventory-versions.mjs` after the
 app stack is healthy. It verifies the healthy `live` alias, stages only the

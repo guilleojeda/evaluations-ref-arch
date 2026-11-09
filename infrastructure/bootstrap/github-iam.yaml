@@ -124,13 +124,17 @@ Resources:
                 kms:EncryptionContext:aws:s3:arn:
                   - arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*.json
                   - arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*.zip
-          - Sid: DenyInventoryKeyOutsideLambdaEnvironment
+          # Inventory and the alarm adapter share the existing Lambda KMS key.
+          # Keep decryption limited to their exact environment contexts.
+          - Sid: DenyLambdaKeyOutsideApprovedEnvironments
             Effect: Deny
             Action: kms:Decrypt
             Resource: arn:aws:kms:us-east-1:027224425948:key/9d894f12-dc33-4332-bb3e-df489928914b
             Condition:
               StringNotLike:
-                kms:EncryptionContext:aws:lambda:FunctionArn: arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory
+                kms:EncryptionContext:aws:lambda:FunctionArn:
+                  - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory
+                  - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter
           - Sid: DenyDescribeKeyOutsideInventoryEnvironmentKey
             Effect: Deny
             Action: kms:DescribeKey

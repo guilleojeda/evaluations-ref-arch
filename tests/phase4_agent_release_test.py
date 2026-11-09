@@ -123,6 +123,35 @@ class ReleaseTests(unittest.TestCase):
                 else: self.adapter.config["CodeSha256"] = "other"
                 with self.assertRaises(RuntimeError): self.finalize()
                 self.assertEqual([], self.adapter.updates)
+    def test_adapter_mismatch_reports_only_missing_unexpected_and_changed_keys(self):
+        values = self.adapter.config["Environment"]["Variables"]
+        values.pop("AGENT_SOURCE_REVISION")
+        values["AGENT_ARTIFACT_SHA256"] = "private-changed-value"
+        values["UNAPPROVED_SETTING"] = "private-extra-value"
+        with self.assertRaisesRegex(RuntimeError, "Adapter configuration differs") as error:
+            self.finalize()
+        diagnostics = json.loads(str(error.exception).split(": ", 1)[1])
+        self.assertEqual({
+            "missingKeys": ["AGENT_SOURCE_REVISION"],
+            "unexpectedKeys": ["UNAPPROVED_SETTING"],
+            "changedKeys": ["AGENT_ARTIFACT_SHA256"],
+        }, diagnostics)
+        self.assertNotIn("private-changed-value", str(error.exception))
+        self.assertNotIn("private-extra-value", str(error.exception))
+        self.assertEqual([], self.adapter.updates)
+    def test_adapter_environment_error_never_attests_or_exposes_service_message(self):
+        for readable_values in [True, False]:
+            with self.subTest(readable_values=readable_values):
+                self.setUp()
+                if not readable_values: self.adapter.config["Environment"].pop("Variables")
+                self.adapter.config["Environment"]["Error"] = {
+                    "ErrorCode": "AccessDeniedException", "Message": "private-service-error-message",
+                }
+                with self.assertRaisesRegex(RuntimeError, "Adapter environment read failed") as error:
+                    self.finalize()
+                self.assertEqual("Adapter environment read failed: AccessDeniedException", str(error.exception))
+                self.assertNotIn("private-service-error-message", str(error.exception))
+                self.assertEqual([], self.adapter.updates)
     def test_missing_transaction_search_never_attests_a_ready_adapter(self):
         self.xray.get_trace_segment_destination = lambda: {"Destination": "XRay"}
         with self.assertRaisesRegex(RuntimeError, "Transaction Search"): self.finalize()
@@ -135,6 +164,35 @@ class ReleaseTemplateTests(unittest.TestCase):
         Loader.add_multi_constructor("!", lambda loader, tag, node: {tag: loader.construct_scalar(node)})
         template = yaml.load((Path(__file__).parents[1] / "infrastructure/bootstrap/phase0-cfn-execution-policy.yaml").read_text(), Loader=Loader)
         return template["Resources"]["IncidentTriageDemoAgentCfnExecution"]["Properties"]["PolicyDocument"]
+
+    def test_deploy_guard_decrypts_only_inventory_and_adapter_environment_contexts(self):
+        template = yaml.safe_load((Path(__file__).parents[1] / "infrastructure/bootstrap/github-iam.yaml").read_text())
+        guard = template["Resources"]["DedicatedCdkDeployRolePhase0Guard"]["Properties"]
+        self.assertEqual([{"Fn::Sub": "cdk-evaltalk-deploy-role-${AWS::AccountId}-${AWS::Region}"}], guard["Roles"])
+        statements = {statement["Sid"]: statement for statement in guard["PolicyDocument"]["Statement"]}
+        environment_key = "arn:aws:kms:us-east-1:027224425948:key/9d894f12-dc33-4332-bb3e-df489928914b"
+        decrypt = statements["DenyLambdaKeyOutsideApprovedEnvironments"]
+        self.assertEqual("Deny", decrypt["Effect"])
+        self.assertEqual("kms:Decrypt", decrypt["Action"])
+        self.assertEqual(environment_key, decrypt["Resource"])
+        inventory = "arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoInventory"
+        adapter = "arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter"
+        allowed = decrypt["Condition"]["StringNotLike"]["kms:EncryptionContext:aws:lambda:FunctionArn"]
+        self.assertEqual([inventory, adapter], allowed)
+        for context in [None, "", adapter + ":live", adapter.replace("AlarmAdapter", "ControllerHttp"), adapter.replace("AlarmAdapter", "ControllerWorker"), adapter.replace("AlarmAdapter", "Checkout"), adapter.replace("027224425948", "123456789012"), adapter.replace("us-east-1", "us-west-2")]:
+            with self.subTest(context=context):
+                self.assertFalse(any(fnmatchcase(context or "", value) for value in allowed))
+        self.assertEqual([
+            "arn:aws:kms:us-east-1:027224425948:key/b292b95c-709f-42c6-aa42-b934ba2c6f07", environment_key,
+        ], statements["DenyDecryptOutsideBootstrapS3Key"]["NotResource"])
+        self.assertEqual([
+            "arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*.json",
+            "arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*.zip",
+        ], statements["DenyBootstrapKeyOutsideBootstrapTemplates"]["Condition"]["StringNotLike"]["kms:EncryptionContext:aws:s3:arn"])
+        for sid in ["FinalizeCheckedAgentRuntime", "AttestVerifiedRuntimeInAdapter", "PassCheckedAgentRole"]:
+            self.assertEqual("Allow", statements[sid]["Effect"])
+        oidc = template["Resources"]["GitHubDeployRole"]["Properties"]["Policies"]
+        self.assertEqual({"sts:AssumeRole"}, {statement["Action"] for policy in oidc for statement in policy["PolicyDocument"]["Statement"]})
 
     def test_runtime_creation_dependencies_use_unnamed_arns_without_widening_ongoing_actions(self):
         statements = self.agent_policy()["Statement"]
