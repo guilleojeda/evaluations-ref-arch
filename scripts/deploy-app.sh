@@ -5,7 +5,6 @@ stack="$PHASE0_APP_STACK"
 bucket="$PHASE1_WEB_BUCKET"
 web=.artifacts/app/web
 assembly=.artifacts/app/cdk
-change_set_name="phase1-app-${GITHUB_SHA}"
 description="$RUNNER_TEMP/app-change-set.json"
 aws_error="$RUNNER_TEMP/app-deploy.error"
 test -s "$assembly/manifest.json"
@@ -138,8 +137,15 @@ done
 # healthy qualified version and a fresh $LATEST revision guard.
 restore_previous_inventory_staging
 
+previous_adapter="$(jq -r '.Stacks[0].Parameters[]? | select(.ParameterKey == "AlarmAdapterArn") | .ParameterValue' <<<"$stack_state")"
+desired_adapter="${APP_ALARM_ADAPTER_ARN:-$previous_adapter}"
+[[ -z "$desired_adapter" || "$desired_adapter" == arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter ]] || { echo "Unexpected alarm adapter ARN" >&2; exit 1; }
+binding_changed=false
+[[ "$previous_adapter" == "$desired_adapter" ]] || binding_changed=true
+binding_hash="$(printf '%s' "$desired_adapter" | sha256sum | cut -c1-12)"
+change_set_name="phase1-app-${GITHUB_SHA}-${binding_hash}"
 deployed_revision="$(stack_output SourceRevision <<<"$stack_state")"
-if [[ "$deployed_revision" == "$GITHUB_SHA" ]]; then
+if [[ "$deployed_revision" == "$GITHUB_SHA" && "$binding_changed" == false ]]; then
   verify_aliases
   prepare_inventory_versions
   if entry="$(deploy_aws s3api head-object --bucket "$bucket" --key index.html \
@@ -154,7 +160,7 @@ if [[ "$deployed_revision" == "$GITHUB_SHA" ]]; then
   fi
   echo "Completing static publication for $GITHUB_SHA"
 else
-  parameter_args=(--parameters "$stack:SourceRevision=$GITHUB_SHA")
+  parameter_args=(--parameters "$stack:SourceRevision=$GITHUB_SHA" --parameters "$stack:AlarmAdapterArn=$desired_adapter")
   if [[ "$status" == ABSENT || "$status" == REVIEW_IN_PROGRESS ]]; then
     base="$PUSH_BASE"
     if [[ "$base" == 0000000000000000000000000000000000000000 ]]; then
@@ -170,7 +176,7 @@ else
       echo "App stack has no valid, known SourceRevision" >&2
       exit 1
     fi
-    if git merge-base --is-ancestor "$GITHUB_SHA" "$deployed_revision"; then
+    if [[ "$deployed_revision" != "$GITHUB_SHA" ]] && git merge-base --is-ancestor "$GITHUB_SHA" "$deployed_revision"; then
       echo "App release $GITHUB_SHA was superseded by $deployed_revision"
       exit 0
     fi
@@ -181,7 +187,7 @@ else
     base="$deployed_revision"
   fi
   components="$(node scripts/affected-stacks.mjs "$base" "$GITHUB_SHA")"
-  if ! jq -e 'index("app") != null' <<<"$components" >/dev/null; then
+  if [[ "$binding_changed" == false ]] && ! jq -e 'index("app") != null' <<<"$components" >/dev/null; then
     echo "No app change from $base to $GITHUB_SHA"
     exit 0
   fi
@@ -214,6 +220,7 @@ else
   jq -e --arg revision "$GITHUB_SHA" \
     '[.Parameters[] | select(.ParameterKey == "SourceRevision") | .ParameterValue] == [$revision]' \
     "$description" >/dev/null
+  jq -e --arg adapter "$desired_adapter" '[.Parameters[] | select(.ParameterKey == "AlarmAdapterArn") | .ParameterValue] == [$adapter]' "$description" >/dev/null
   candidate_template="$(jq -er --arg stack "$stack" '.artifacts[$stack].properties.templateFile' "$assembly/manifest.json")"
   checked_hash="$(jq -cS . "$assembly/$candidate_template" | sha256sum | cut -d' ' -f1)"
   prepared_hash="$(deploy_aws cloudformation get-template --stack-name "$stack" --change-set-name "$change_set_id" \
@@ -227,7 +234,8 @@ else
     stack_state="$(read_stack)"
     status="$(stack_status <<<"$stack_state")"
     revision="$(stack_output SourceRevision <<<"$stack_state")"
-    if [[ ( "$status" == CREATE_COMPLETE || "$status" == UPDATE_COMPLETE ) && "$revision" == "$GITHUB_SHA" ]]; then
+    if [[ ( "$status" == CREATE_COMPLETE || "$status" == UPDATE_COMPLETE ) && "$revision" == "$GITHUB_SHA" ]] &&
+       jq -e --arg adapter "$desired_adapter" '[.Stacks[0].Parameters[]? | select(.ParameterKey == "AlarmAdapterArn") | .ParameterValue] == [$adapter]' <<<"$stack_state" >/dev/null; then
       break
     fi
     if [[ "$status" == ROLLBACK_COMPLETE || "$status" == *_FAILED ]] || (( SECONDS >= deploy_until )); then
@@ -241,7 +249,7 @@ else
   verify_aliases
 fi
 
-if [[ "$deployed_revision" != "$GITHUB_SHA" ]]; then
+if [[ "$deployed_revision" != "$GITHUB_SHA" || "$binding_changed" == true ]]; then
   prepare_inventory_versions
 fi
 

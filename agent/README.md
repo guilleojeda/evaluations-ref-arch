@@ -1,7 +1,10 @@
-# AgentCore runtime starter
+# AgentCore runtime
 
-The Python 3.13 workspace runs a credential-free `BedrockAgentCoreApp` starter.
-It pins `uv==0.13.6` and Python `3.13.x`.
+The agent workspace uses Python 3.13, `uv==0.13.6`, and locked ARM64 Linux
+dependencies. The runtime accepts only the checked alarm adapter payload:
+`{event, deployment}`. The adapter forwards the verbatim CloudWatch event and a
+release attestation containing the Runtime ARN/version, pinned endpoint,
+source revision, and runtime ZIP SHA-256.
 
 From the repository root:
 
@@ -10,36 +13,52 @@ uv sync --project agent --locked
 uv run --project agent --locked python agent/package_runtime.py
 ```
 
-Start the local runtime in another terminal and check its health and invocation
-routes:
+The package command writes two artifacts: `.artifacts/agent/runtime.zip` for
+AgentCore Runtime and `.artifacts/agent/alarm-adapter.zip` for the Lambda
+adapter. The Runtime ZIP contains the application modules, locked dependencies,
+an `opentelemetry-instrument` launcher, and a generated `agent-manifest.json`
+with the source revision and prompt digest. The source-tree manifest is a
+development template; packaging writes the generated identity into the ZIP.
+The checked release attests the
+complete ZIP SHA-256 externally; a ZIP cannot contain a self-hash of its final
+bytes. The checked release finalizes the endpoint and adapter attestation after
+MMDSv2 and the endpoint version have been read back.
+
+## Local health and invalid-event smoke
+
+Start the local Runtime entrypoint in one terminal:
 
 ```sh
 uv run --project agent --locked python agent/main.py
+```
+
+In another terminal, check health and submit a deliberately invalid payload:
+
+```sh
 curl --fail http://127.0.0.1:8080/ping
-curl --fail -sS -X POST http://127.0.0.1:8080/invocations \
+curl --silent --show-error -i -X POST http://127.0.0.1:8080/invocations \
   -H 'content-type: application/json' \
   -d '{"smoke":true}'
 ```
 
-The `/ping` response is a successful HTTP response whose JSON has
-`{"status":"Healthy"}` (the SDK's health response). The invocation response is
-deterministic and contains `"status":"ok"`.
+`/ping` returns `{"status":"Healthy"}`. The invocation must be rejected
+because it is not a trusted `{event, deployment}` CloudWatch delivery. It does
+not create a run, read application sources, or perform inference. This smoke
+checks only health and invalid-input handling; it is not proof of a live
+alarm-triggered investigation.
 
-## Native ARM64 proof
+## Native ARM64 package smoke
 
-AgentCore Runtime direct ZIP deployment supports Python 3.13 on ARM64 Linux.
-On a native `ubuntu-24.04-arm` runner, install the locked project and run:
+Run the package check on a native Linux ARM64 runner, matching the ZIP wheels:
 
 ```sh
 uv sync --project agent --locked
 uv run --project agent --locked python agent/package_runtime.py
-uv run --project agent --locked python agent/native_smoke.py .artifacts/agent/runtime.zip
+uv run --project agent --locked python agent/native_smoke.py \
+  .artifacts/agent/runtime.zip .artifacts/agent/alarm-adapter.zip
 ```
 
-`native_smoke.py` unpacks the ZIP and starts the entrypoint with Python `-E -S`.
-The smoke check imports the packaged Strands dependencies and calls both `/ping`
-and `/invocations`. Run it on Linux ARM64 to match the ZIP's wheels.
-
-The package script uses the lockfile's exact versions and asks `uv` for
-`aarch64-manylinux2014` binary wheels, so the native runner check imports the
-same dependency set that is uploaded in the ZIP.
+`native_smoke.py` imports both packaged artifacts, checks `/ping`, and confirms
+that the invalid Runtime and adapter smoke payloads are rejected. It starts the
+Runtime through the packaged OpenTelemetry launcher. A rejected-event smoke
+does not claim an alarm run or exercise model inference.

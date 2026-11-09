@@ -42,6 +42,9 @@ test('the CI selector identifies component, shared, and documentation changes ac
   const agent = commit('agent/example.py');
   const agentStack = commit('infrastructure/agent/example.ts');
   const shared = commit('package-lock.json');
+  const agentRelease = commit('scripts/finalize-agent.py');
+  const appRelease = commit('scripts/deploy-app.sh');
+  const controllerRelease = commit('scripts/deploy-controller.sh');
 
   assert.deepEqual(affected(baseline, docs), []);
   assert.deepEqual(affected(docs, componentDocs), []);
@@ -50,6 +53,9 @@ test('the CI selector identifies component, shared, and documentation changes ac
   assert.deepEqual(affected(controller, agent), ['agent']);
   assert.deepEqual(affected(agent, agentStack), ['agent']);
   assert.deepEqual(affected(agentStack, shared), ['agent', 'app', 'controller']);
+  assert.deepEqual(affected(shared, agentRelease), ['agent']);
+  assert.deepEqual(affected(agentRelease, appRelease), ['app']);
+  assert.deepEqual(affected(appRelease, controllerRelease), ['controller']);
   assert.deepEqual(affected(baseline, controller), ['app', 'controller'],
     'an earlier relevant change remains visible when comparing with the last successful revision');
 });

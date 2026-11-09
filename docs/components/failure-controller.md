@@ -1,8 +1,8 @@
 # Failure Controller
 
-The failure controller is a cloud-hosted presenter dashboard. The current dashboard verifies the checkout baseline, runs bounded traffic, and lets the presenter observe or stop the same run from another browser. It also selects and restores the prepared Inventory access-state versions through the single-target `live` alias, records request evidence, and displays the actual app alarm separately. The remaining incident and remedy contracts describe the full demo.
+The failure controller is a cloud-hosted presenter dashboard. It verifies the checkout baseline, runs bounded traffic, and lets the presenter observe or stop the same run from another browser. It selects and restores the prepared Inventory access-state versions through the single-target `live` alias, records request evidence, and displays the actual app alarm separately. Phase 4 adds durable read-only investigation discovery, source-cited reports, actual trace references, and independent agent endpoint/alarm-binding readiness observations.
 
-The [controller specification](failure-controller-behavior.md) owns action behavior, traffic bounds, observations, private records, and interruptions. The [scenario contracts](../demo-scenarios.md) own inventory capacity overload, denied inventory access, and the recovered/stale-alarm condition. The [demo script](../demo-script.md) places these controls in the talk. The [agent design](operations-agent.md) defines the alarm-to-Runtime path and durable run/report records; exact integration schemas remain to be implemented.
+The [controller specification](failure-controller-behavior.md) owns action behavior, traffic bounds, observations, private records, and interruptions. The [scenario contracts](../demo-scenarios.md) own inventory capacity overload, denied inventory access, and the recovered/stale-alarm condition. The [demo script](../demo-script.md) places these controls in the talk. The [agent design](operations-agent.md) defines the alarm-to-Runtime path and durable run/report records.
 
 ## Selected incidents and fixes
 
@@ -15,7 +15,7 @@ Both incidents start from healthy application code and do not require a faulty c
 
 ## Configuration actions
 
-The controller supports increasing reserved concurrency, increasing Lambda memory, and restoring Inventory access by selecting an allowlisted `live` alias target. For a function action, the operator selects checkout or inventory and an explicit supported target value. These capabilities are available independently of incident selection or an agent report.
+The controller supports increasing reserved concurrency, increasing Lambda memory, and restoring Inventory access by selecting an allowlisted `live` alias target. For capacity, the operator selects a function and permitted cap. For memory, it shows only variants prepared for the current app release; the demo needs baseline and higher Inventory sizes. These capabilities are available independently of incident selection or an agent report.
 
 **Increase Lambda memory** selects a prepared qualified version at the requested supported size in MB through a revision-guarded `live` alias update. It preserves application code and all other settings, records the previous and resulting memory/version state, and reads back the configuration of the version invoked through the alias. Recover and Reset restore the captured baseline memory and version state. The [specification](failure-controller-behavior.md#increase-function-memory) defines the action contract and published-version constraint.
 
@@ -42,7 +42,8 @@ Keep the accepted overview of checkout outcomes, latency, actual CloudWatch alar
 | Checkout activity | Show actual outcomes, latency, and unresolved logical checkouts | Distinguish generator requests and action probes; retain available request IDs |
 | Orders and inventory | Show confirmed orders and stock observations | Deduplicate receipts; stale or denied stock reads are not zero stock |
 | Application evidence | Show dependency invocation errors, inventory throttles, current limits, and relevant policy/change evidence | Label source, scope/window, and freshness; missing child logs do not establish health |
-| CloudWatch alarms | Show actual state, reason, and update/read times | Missing configuration and stale/failed reads are distinct from OK |
+| CloudWatch alarms | Show actual state, reason, update/read times, and whether the exact adapter action is configured and enabled | Missing, disabled, unexpected, and stale/failed reads are distinct from OK |
+| Agent investigations | Show the matching durable run, report, cited sources, uncertainty, release provenance, trace, and capture reference | Run discovery is separate from the current alarm read; a complete `unknown` assessment is not an overdue run |
 | Run timeline | Connect intent, configuration changes, measured demand, effects, alarms, and agent events | Preserve source times and observation times |
 
 The [application alarm](application.md#application-alarm) remains native stage-level HTTP API 5xx: Sum >=1 over 60 seconds, 1-of-1, missing data notBreaching. Both selected incidents can produce dependency-failure 502 responses, including on catalog reads. The alarm identifies a symptom, not its cause. An idle OK state does not prove health; an old ALARM does not disprove fresh recovery. Do not manufacture transitions or promise fixed detection/clearing times.
@@ -59,19 +60,19 @@ The [interactive design preview](../design/controller-dashboard-preview.html) us
 
 ### Refresh and alarm-triggered investigation
 
-Initially refresh observations every five seconds, with the intended five-to-ten-second cadence configurable. Preserve prior values and their freshness on read failure; prevent overlapping reads for the same source. Refresh does not mutate application state or move focus.
+Refresh alarm and investigation observations independently every five seconds. Preserve the last good value and its observation time on read failure, and mark investigation data stale after two intervals. Prevent overlapping reads for the same source. Refresh does not mutate application state or move focus.
 
-Show separate timestamps for the alarm transition, observed agent run, and result. Match durable runs by selected alarm ARN and originating ALARM transition identity, retaining that identity after the current alarm returns to OK. An ALARM state, dashboard poll, incident activation, or remediation action does not itself prove or start an agent invocation. A prior run stays labelled as prior.
+Show separate timestamps for the alarm transition, observed agent run, and result. Match durable runs by selected alarm ARN and originating ALARM transition identity, retaining that identity after the current alarm returns to OK. An ALARM state, dashboard poll, incident activation, or remediation action does not itself prove or start an agent invocation. A prior run stays labelled as prior. Show its run/session and candidate provenance, report evidence and uncertainty, sanitized source-capture reference, and actual trace reference separately from the alarm snapshot.
 
-Run display distinguishes waiting, alarm active with no matching run, investigating, complete, failed, and unavailable. Regression/replay workflows remain separately identified; the dashboard provides no manual agent trigger as a substitute for the live alarm path.
+The authenticated `/api/investigations` read queries the durable agent table directly. It accepts an optional configured `alarmArn` and `transitionAt`; without an alarm selector it uses the current configured alarm, and an exact event query returns that row or no row. Recent results are bounded to 20. The route does not call CloudWatch or invoke the agent. Poll it independently from `/api/alarm`, retain its last good value on error, and mark it stale after two five-second intervals. Run display distinguishes no matching run, running, overdue/incomplete, complete (including assessment `unknown`), failed, unavailable, and stale data. Regression/replay workflows remain separately identified; the dashboard provides no manual agent trigger as a substitute for the live alarm path.
 
 ### Cloud hosting
 
-A controller-owned HTTP API and Lambda serve the React dashboard and authenticated controls from the same HTTPS origin. The operator signs in with a separate bearer held in page memory. The background worker uses the checkout credential from AWS Secrets Manager to make normal app requests. The dashboard works from a clean browser with the operator credential.
+A controller-owned HTTP API and Lambda serve the React dashboard and authenticated controls from the same HTTPS origin. The operator signs in with a separate bearer held in page memory. The background worker uses the checkout credential from AWS Secrets Manager to make normal app requests. The dashboard reads durable agent runs from the agent stack's table and reports endpoint and alarm-binding readiness without invoking the agent. It works from a clean browser with the operator credential.
 
 The worker owns accepted finite work. Browser refresh or closure leaves it running within its original bounds. The controller stores the run and action records in DynamoDB. Check readiness before starting normal traffic. Use Stop to close new submissions and watch accepted requests drain. When an action outlives its deadline, the dashboard shows it as incomplete. Explicit discard retains its charged attempts and unresolved orders.
 
-Schedule deployments outside demo runs and wait for both stacks to settle before checking readiness again. A new app release makes an old baseline stale. Preserve orders, remaining allowances and observation history across deployments. [Deployment and operator access](../deployment.md#first-controller-release-and-operator-access)
+Schedule deployments outside demo runs and wait for each dependent app, agent, and controller release to settle before checking readiness again. A new app release makes an old baseline stale. Preserve orders, remaining allowances and observation history across deployments. [Deployment and operator access](../deployment.md#first-controller-release-and-operator-access)
 
 ## Responsibilities and record
 
@@ -79,7 +80,7 @@ Schedule deployments outside demo runs and wait for both stacks to settle before
 | --- | --- | --- |
 | Establish baseline | Bind known expected healthy versions and settings to a trusted successful deployment generation; exercise normal reads and a checkout | Target, generation/artifact identity, actual settings/revisions, successful requests, and the post-checkout stock/order baseline |
 | Cause capacity overload | Apply the selected finite demand profile without changing its positive inventory cap | Intended profile, actual demand, invocation errors/throttles, and affected request windows |
-| Deny inventory access | Select only the prepared denied role-backed Inventory version through the `live` alias | Prior alias/version/role/policy state, requested target, actual revision/readback, and observed denied reads |
+| Deny inventory access | Select only the prepared denied role-backed Inventory version through the `live` alias | Prior alias/version/role/policy state, requested target, actual revision/readback, and independently observed denied reads |
 | Apply a configuration action | Increase the selected function's reserved concurrency or memory, or switch the Inventory `live` alias to the healthy version, without generating traffic | Operator choice, before/after values and version/alias/role/policy state where applicable, and configuration result/readback |
 | Repeat traffic and observe | Explicitly run another bounded workload at the current configuration | Actual demand, phase windows, and request outcomes, separate from the preceding action result |
 | Recover application | Stop traffic, confirm the baseline generation is still current, restore expected caps and healthy role-backed alias versions at baseline memory, settle work, then verify fresh behavior | Confirmed restoration and fresh evidence, retaining prior effects and results |

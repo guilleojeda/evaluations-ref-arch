@@ -182,7 +182,7 @@ Retain application logs for 14 days during preparation and the two sessions. Exp
 
 ## Application alarm
 
-The app stack provisions one native CloudWatch alarm for API server errors, `IncidentTriageDemoAppStage5xx`. The stack publishes its name and ARN for the controller. The alarm observes the same stage regardless of the cause.
+The app stack provisions one native CloudWatch alarm for API server errors, `IncidentTriageDemoAppStage5xx`. It publishes its name and ARN for the controller. The alarm observes the same stage regardless of the cause. The stack accepts an optional adapter ARN from the independently deployed agent stack: while unbound, alarm actions remain disabled; after the adapter has passed native release finalization, the app release enables the alarm action to invoke that adapter. Keep the alarm's identity, dimensions, and threshold unchanged when wiring it.
 
 | Setting | Value |
 | --- | --- |
@@ -203,9 +203,9 @@ One breaching period fits the short bounded demonstration. Requiring multiple br
 
 `notBreaching` avoids alarming solely because traffic is idle. **OK does not prove health:** an active fault with no requests, or missing telemetry, can eventually show OK. Retain independent fresh-request readiness and observation freshness. Default sliding evaluation can reuse older actual datapoints when newer ones are missing, so failures may keep ALARM despite recovery. Success does not subtract errors from a breaching period. Wait for observed OK before the next fresh incident; do not promise detection or clearing within exactly 60 seconds. [Missing-data evaluation](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarms-and-missing-data.html)
 
-Verify metric dimensions, healthy readiness, each fault's real ALARM transition, and eventual OK after recovery within the finite traffic budget. Record actual request-to-alarm and recovery-to-OK times before assigning rehearsal waits. The deployed alarm is available for independent observation. The [agent design](operations-agent.md) owns the subsequent adapter integration and durable investigation tracking. The controller never publishes replacement metrics or forces alarm state. [Alarm parameters](https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_PutMetricAlarm.html)
+Verify metric dimensions, healthy readiness, each fault's real ALARM transition, and eventual OK after recovery within the finite traffic budget. Record actual request-to-alarm and recovery-to-OK times before assigning rehearsal waits. After the agent release verifies MMDSv2 and reads back its final pinned endpoint and adapter attestation, bind the adapter ARN through a separate app-stack release. The controller independently observes the alarm and binding but never publishes replacement metrics, invokes the agent, or forces alarm state. [Alarm parameters](https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_PutMetricAlarm.html)
 
-Only a real CloudWatch transition to ALARM starts this path. Preserve the originating transition timestamp delivered to the adapter as event evidence; a later alarm read or dashboard poll is an observation, not a replacement event or invocation. The agent design owns the producer's canonical event identity, and the controller specification defines how that identity is found and displayed.
+Only a real CloudWatch transition to ALARM starts this path. The Lambda adapter validates and forwards the delivered event; AgentCore Runtime conditionally creates the one `running` record keyed by the alarm ARN and normalized originating transition time. Preserve the verbatim event and final checked deployment identity with the investigation. A later alarm read or dashboard poll is an observation, not a replacement event or invocation. The [agent design](operations-agent.md) owns the event identity and run claim, and the [controller specification](failure-controller-behavior.md) defines durable discovery and display.
 
 ## Frontend hosting and access
 

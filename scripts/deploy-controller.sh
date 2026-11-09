@@ -3,7 +3,6 @@ set -euo pipefail
 
 stack="$PHASE0_CONTROLLER_STACK"
 assembly=.artifacts/controller/cdk
-change_set_name="phase2-controller-${GITHUB_SHA}"
 description="$RUNNER_TEMP/controller-change-set.json"
 aws_error="$RUNNER_TEMP/controller-deploy.error"
 test -s "$assembly/manifest.json"
@@ -63,13 +62,28 @@ while :; do
   esac
 done
 
+previous_runtime="$(jq -r '.Stacks[0].Parameters[]? | select(.ParameterKey == "AgentRuntimeArn") | .ParameterValue' <<<"$stack_state")"
+previous_endpoint="$(jq -r '.Stacks[0].Parameters[]? | select(.ParameterKey == "AgentEndpointArn") | .ParameterValue' <<<"$stack_state")"
+previous_adapter="$(jq -r '.Stacks[0].Parameters[]? | select(.ParameterKey == "AgentAlarmAdapterArn") | .ParameterValue' <<<"$stack_state")"
+desired_runtime="${CONTROLLER_AGENT_RUNTIME_ARN:-$previous_runtime}"
+desired_endpoint="${CONTROLLER_AGENT_ENDPOINT_ARN:-$previous_endpoint}"
+desired_adapter="${CONTROLLER_AGENT_ALARM_ADAPTER_ARN:-$previous_adapter}"
+if [[ -n "$desired_runtime$desired_endpoint$desired_adapter" ]]; then
+  [[ "$desired_runtime" =~ ^arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-[A-Za-z0-9]{10}$ &&
+     "$desired_endpoint" == "$desired_runtime/runtime-endpoint/faulty" &&
+     "$desired_adapter" == arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter ]] || { echo "Unexpected or partial agent readiness bindings" >&2; exit 1; }
+fi
+binding_changed=false
+[[ "$previous_runtime" == "$desired_runtime" && "$previous_endpoint" == "$desired_endpoint" && "$previous_adapter" == "$desired_adapter" ]] || binding_changed=true
+binding_hash="$(printf '%s' "$desired_runtime|$desired_endpoint|$desired_adapter" | sha256sum | cut -c1-12)"
+change_set_name="phase2-controller-${GITHUB_SHA}-${binding_hash}"
 deployed_revision="$(stack_output SourceRevision <<<"$stack_state")"
-if [[ "$deployed_revision" == "$GITHUB_SHA" ]]; then
+if [[ "$deployed_revision" == "$GITHUB_SHA" && "$binding_changed" == false ]]; then
   verify_outputs
   exit 0
 fi
 
-parameter_args=(--parameters "$stack:SourceRevision=$GITHUB_SHA")
+parameter_args=(--parameters "$stack:SourceRevision=$GITHUB_SHA" --parameters "$stack:AgentRuntimeArn=$desired_runtime" --parameters "$stack:AgentEndpointArn=$desired_endpoint" --parameters "$stack:AgentAlarmAdapterArn=$desired_adapter")
 if [[ "$status" == ABSENT || "$status" == REVIEW_IN_PROGRESS ]]; then
   base="$PUSH_BASE"
   if [[ "$base" == 0000000000000000000000000000000000000000 ]]; then
@@ -91,7 +105,7 @@ else
     echo "Controller stack has no valid, known SourceRevision" >&2
     exit 1
   fi
-  if git merge-base --is-ancestor "$GITHUB_SHA" "$deployed_revision"; then
+  if [[ "$deployed_revision" != "$GITHUB_SHA" ]] && git merge-base --is-ancestor "$GITHUB_SHA" "$deployed_revision"; then
     echo "Controller release $GITHUB_SHA was superseded by $deployed_revision"
     exit 0
   fi
@@ -105,12 +119,17 @@ else
   expected_app_arn="$(jq -er '.Stacks[0].Parameters[] | select(.ParameterKey == "ControllerAppSecretArn") | .ParameterValue' <<<"$stack_state")"
 fi
 components="$(node scripts/affected-stacks.mjs "$base" "$GITHUB_SHA")"
-if ! jq -e 'index("controller") != null' <<<"$components" >/dev/null; then
+if [[ "$binding_changed" == false ]] && ! jq -e 'index("controller") != null' <<<"$components" >/dev/null; then
   echo "No controller change from $base to $GITHUB_SHA"
   exit 0
 fi
 
 verify_bindings() {
+  jq -e --arg runtime "$desired_runtime" --arg endpoint "$desired_endpoint" --arg adapter "$desired_adapter" '
+    [.Parameters[] | select(.ParameterKey == "AgentRuntimeArn") | .ParameterValue] == [$runtime] and
+    [.Parameters[] | select(.ParameterKey == "AgentEndpointArn") | .ParameterValue] == [$endpoint] and
+    [.Parameters[] | select(.ParameterKey == "AgentAlarmAdapterArn") | .ParameterValue] == [$adapter]
+  ' "$description" >/dev/null || return 1
   jq -e --arg op "$expected_operator_arn" --arg app "$expected_app_arn" --argjson first "$first_create" '
     def valid($key; $value):
       [.Parameters[] | select(.ParameterKey == $key)] as $matches |
@@ -166,7 +185,12 @@ while :; do
   stack_state="$(read_stack)"
   status="$(stack_status <<<"$stack_state")"
   revision="$(stack_output SourceRevision <<<"$stack_state")"
-  if [[ ( "$status" == CREATE_COMPLETE || "$status" == UPDATE_COMPLETE ) && "$revision" == "$GITHUB_SHA" ]]; then break; fi
+  if [[ ( "$status" == CREATE_COMPLETE || "$status" == UPDATE_COMPLETE ) && "$revision" == "$GITHUB_SHA" ]] &&
+     jq -e --arg runtime "$desired_runtime" --arg endpoint "$desired_endpoint" --arg adapter "$desired_adapter" '
+       [.Stacks[0].Parameters[]? | select(.ParameterKey == "AgentRuntimeArn") | .ParameterValue] == [$runtime] and
+       [.Stacks[0].Parameters[]? | select(.ParameterKey == "AgentEndpointArn") | .ParameterValue] == [$endpoint] and
+       [.Stacks[0].Parameters[]? | select(.ParameterKey == "AgentAlarmAdapterArn") | .ParameterValue] == [$adapter]
+     ' <<<"$stack_state" >/dev/null; then break; fi
   if [[ "$status" == *ROLLBACK_COMPLETE || "$status" == *_FAILED ]] || (( SECONDS >= deploy_until )); then
     echo "Controller stack did not complete revision $GITHUB_SHA ($status)" >&2
     deploy_aws cloudformation describe-stack-events --stack-name "$stack" --max-items 12 \

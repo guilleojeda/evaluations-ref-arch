@@ -5,6 +5,8 @@ import type {
   AlarmState,
   Command,
   DashboardState,
+  InvestigationResponse,
+  InvestigationRun,
   InventoryAliasObservation,
   InventoryVariant,
   InventoryVersionObservation,
@@ -20,6 +22,87 @@ function formatTime(value: unknown): string {
   return Number.isFinite(timestamp) ? new Date(timestamp).toLocaleTimeString() : value;
 }
 function display(value: unknown, fallback = "—"): string { return value === undefined || value === null || value === "" ? fallback : String(value); }
+function normalizedTime(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined;
+}
+
+function runStatusLabel(run: InvestigationRun): string {
+  if (run.status === "running") {
+    return Date.parse(run.deadlineAt) <= Date.now() ? "Overdue · still running" : "Running";
+  }
+  if (run.status === "failed") return "Failed";
+  return run.report?.assessment === "unknown" ? "Complete · assessment unknown"
+    : run.report?.assessment ? `Complete · ${run.report.assessment}` : "Complete";
+}
+
+function traceUrl(run: InvestigationRun): string | undefined {
+  const storedTraceId = run.traceRef?.traceId;
+  const region = run.traceRef?.region;
+  if (typeof storedTraceId !== "string" || typeof region !== "string" || !/^[a-z0-9-]{3,32}$/.test(region)) return undefined;
+  const traceId = /^[a-f0-9]{32}$/i.test(storedTraceId)
+    ? `1-${storedTraceId.slice(0, 8)}-${storedTraceId.slice(8)}`
+    : /^1-[a-f0-9]{8}-[a-f0-9]{24}$/i.test(storedTraceId) ? storedTraceId : undefined;
+  if (!traceId) return undefined;
+  return `https://console.aws.amazon.com/xray/home?region=${encodeURIComponent(region)}#/traces/${encodeURIComponent(traceId)}`;
+}
+
+function InvestigationRecord({ run }: { run: InvestigationRun }) {
+  const trace = traceUrl(run);
+  const recommendation = run.report?.recommendation;
+  const capture = run.captureRef;
+  return <article className="investigation-record">
+    <div className="record-heading">
+      <div><p className="eyebrow">ALARM transition · {formatTime(run.transitionAt)}</p><h4>{runStatusLabel(run)}</h4></div>
+      <span className={`alarm-state ${run.status === "failed" ? "alarm-danger" : run.status === "complete" ? "alarm-ok" : "alarm-unknown"}`}>{run.status}</span>
+    </div>
+    <dl className="investigation-facts">
+      <div><dt>Run / session</dt><dd className="mono">{run.runId} / {run.runtimeSessionId}</dd></div>
+      <div><dt>Candidate / source</dt><dd className="mono">{run.candidateId} / {run.sourceRevision}</dd></div>
+      {run.artifactSha256 && <div><dt>Runtime artifact SHA-256</dt><dd className="mono">{run.artifactSha256}</dd></div>}
+      <div><dt>Prompt SHA-256</dt><dd className="mono">{run.promptSha256}</dd></div>
+      <div><dt>Model / Runtime</dt><dd className="mono">{run.modelId} · v{run.runtimeVersion} · {run.endpointName}</dd></div>
+      <div><dt>Started / deadline</dt><dd>{formatTime(run.startedAt)} · {formatTime(run.deadlineAt)}</dd></div>
+      {run.finishedAt && <div><dt>Finished</dt><dd>{formatTime(run.finishedAt)}</dd></div>}
+    </dl>
+    {run.failure && <p className="investigation-failure"><strong>{run.failure.code}</strong> · {run.failure.message}</p>}
+    {run.report && <section className="investigation-report" aria-label="Investigation report">
+      <p className="report-summary">{run.report.summary}</p>
+      {recommendation && <div className="report-recommendation"><strong>{recommendation.action}</strong>
+        {(recommendation.target !== undefined || recommendation.value !== undefined || recommendation.unit !== undefined) && <span>{[recommendation.target, recommendation.value, recommendation.unit].filter((value) => value !== undefined && value !== null && value !== "").map(String).join(" · ")}</span>}
+        {recommendation.explanation && <p>{recommendation.explanation}</p>}
+        {recommendation.policy && <p>{recommendation.policy}</p>}
+        {recommendation.policyDetail && <p>{recommendation.policyDetail}</p>}
+      </div>}
+      <div><h5>Source evidence</h5>
+        <ul className="citation-list">{run.report.evidence.map((citation, index) => <li key={`${citation.source}-${citation.resource}-${index}`}>
+          <strong>{citation.source}</strong> · <span className="mono">{citation.resource}</span>
+          <small>{formatTime(citation.windowStart)} to {formatTime(citation.windowEnd)} · observed {formatTime(citation.observedAt)}</small>
+          <span>{citation.finding}</span>
+        </li>)}</ul>
+      </div>
+      <div className="report-notes"><div><h5>Uncertainties</h5>{run.report.uncertainties.length ? <ul>{run.report.uncertainties.map((item, index) => <li key={index}>{item}</li>)}</ul> : <p>None recorded</p>}</div>
+        <div><h5>Alternatives</h5>{run.report.alternatives.length ? <ul>{run.report.alternatives.map((item, index) => <li key={index}>{item}</li>)}</ul> : <p>None recorded</p>}</div>
+      </div>
+    </section>}
+    <div className="investigation-links">
+      {trace && <a href={trace} target="_blank" rel="noreferrer">Open native CloudWatch trace</a>}
+      {run.traceRef && <span className="mono">Trace {display(run.traceRef.traceId, "not recorded")} · {display(run.traceRef.region, "region unknown")}</span>}
+    </div>
+    {capture && <details className="capture-details"><summary>Source capture and coverage</summary>
+      <dl className="investigation-facts">
+        <div><dt>Private source location</dt><dd className="mono">{display(capture.bucket)} / {display(capture.prefix)}</dd></div>
+        <div><dt>Baseline / manifest</dt><dd className="mono">{display(capture.manifestKey ?? capture.baselineKey ?? capture.key)}</dd></div>
+        <div><dt>Query results</dt><dd className="mono">{display(capture.queryResultsKey)}</dd></div>
+        <div><dt>Capture completeness</dt><dd>{display(capture.completeness)} · observed {formatTime(capture.capturedAt ?? capture.observedAt)}</dd></div>
+        <div><dt>Coverage</dt><dd>{display(capture.coveredFrom, "start not recorded")} to {display(capture.coveredThrough, "end not recorded")}</dd></div>
+      </dl>
+      {Array.isArray(capture.gaps) && capture.gaps.length > 0 && <ul className="capture-gaps">{capture.gaps.map((gap, index) => <li key={index}>{String(gap)}</li>)}</ul>}
+    </details>}
+  </article>;
+}
+
 class RequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
@@ -89,6 +172,14 @@ async function readAlarm(response: Response): Promise<AlarmResponse> {
   return data;
 }
 
+async function readInvestigations(response: Response): Promise<InvestigationResponse> {
+  const data = await readJson(response);
+  if (typeof data.observedAt !== "string" || !Array.isArray(data.runs) || !data.runs.every(isRecord)) {
+    throw new Error("The controller returned an invalid investigation history");
+  }
+  return data as unknown as InvestigationResponse;
+}
+
 async function readJson(response: Response): Promise<Record<string, unknown>> {
   const body: unknown = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -105,6 +196,8 @@ export function App() {
   const [state, setState] = useState<DashboardState>();
   const [alarm, setAlarm] = useState<AlarmResponse>();
   const [alarmReadFailed, setAlarmReadFailed] = useState(false);
+  const [investigations, setInvestigations] = useState<InvestigationResponse>();
+  const [investigationReadFailedAt, setInvestigationReadFailedAt] = useState<string>();
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState<Notice>();
   const [lastObservedAt, setLastObservedAt] = useState<string>();
@@ -117,6 +210,7 @@ export function App() {
   const [restoreSubmitting, setRestoreSubmitting] = useState(false);
   const polling = useRef<number | undefined>(undefined);
   const alarmPolling = useRef<number | undefined>(undefined);
+  const investigationPolling = useRef<number | undefined>(undefined);
   const sessionEpoch = useRef(0);
   const requestEpoch = useRef(0);
 
@@ -153,6 +247,21 @@ export function App() {
       if (epoch === sessionEpoch.current) setAlarmReadFailed(true);
     } finally {
       if (alarmPolling.current === epoch) alarmPolling.current = undefined;
+    }
+  }, [bearer]);
+
+  const loadInvestigations = useCallback(async () => {
+    const epoch = sessionEpoch.current;
+    if (!bearer || investigationPolling.current === epoch) return;
+    investigationPolling.current = epoch;
+    try {
+      const response = await fetch("/api/investigations", { headers: { Authorization: `Bearer ${bearer}`, Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(8_000) });
+      const body = await readInvestigations(response);
+      if (epoch === sessionEpoch.current) { setInvestigations(body); setInvestigationReadFailedAt(undefined); }
+    } catch {
+      if (epoch === sessionEpoch.current) setInvestigationReadFailedAt(new Date().toISOString());
+    } finally {
+      if (investigationPolling.current === epoch) investigationPolling.current = undefined;
     }
   }, [bearer]);
 
@@ -201,6 +310,25 @@ export function App() {
   const trafficStartAllowed = !incidentActive;
   const needsProtectiveRestore = checkpoint?.status === "unavailable" || checkpoint?.status === "incomplete";
   const alarmObservation = alarm?.alarm;
+  const selectedTransition = normalizedTime(alarmObservation?.stateTransitionedAt);
+  const exactObservedAlarmRun = alarmObservation?.state === "ALARM" && alarmObservation.arn && selectedTransition
+    ? investigations?.runs.find((run) => run.alarmArn === alarmObservation.arn && normalizedTime(run.transitionAt) === selectedTransition)
+    : undefined;
+  const investigationAgeMs = investigations ? Date.now() - Date.parse(investigations.observedAt) : Number.POSITIVE_INFINITY;
+  const investigationFreshness = !investigations ? investigationReadFailedAt ? "Unavailable" : "Loading"
+    : !Number.isFinite(investigationAgeMs) || investigationAgeMs >= 10_000 ? "Stale"
+      : investigationReadFailedAt ? "Refresh failed · showing last observation" : "Fresh";
+  const olderInvestigations = investigations?.runs.filter((run) => run !== exactObservedAlarmRun) ?? [];
+  const endpointStateLabel = alarm?.agentEndpoint?.state === "ready" ? "Ready"
+    : alarm?.agentEndpoint?.state === "not_ready" ? "Not ready"
+      : alarm?.agentEndpoint?.state === "unavailable" ? "Unavailable"
+        : alarm?.agentEndpoint?.state === "unconfigured" ? "Not configured" : "Unknown";
+  const bindingStateLabel = alarm?.alarmBinding?.state === "bound" ? "Bound"
+    : alarm?.alarmBinding?.state === "disabled" ? "Disabled"
+    : alarm?.alarmBinding?.state === "missing" ? "Missing"
+      : alarm?.alarmBinding?.state === "unexpected" ? "Unexpected action"
+        : alarm?.alarmBinding?.state === "unavailable" ? "Unavailable"
+          : alarm?.alarmBinding?.state === "unconfigured" ? "Not configured" : "Unknown";
   const retainedAlarm = checkpoint?.alarm;
   const configurationObservation = currentAction?.kind === "activate_inventory_denial" ? currentAction : configurationAction;
   const deniedCheckout = currentAction?.kind === "activate_inventory_denial"
@@ -256,7 +384,7 @@ export function App() {
     }
   }, [bearer, loadAlarm, loadState]);
 
-  useEffect(() => { if (!bearer) return undefined; void loadState(); void loadAlarm(); const interval = window.setInterval(() => { void loadState(); void loadAlarm(); }, 5_000); return () => window.clearInterval(interval); }, [bearer, loadAlarm, loadState]);
+  useEffect(() => { if (!bearer) return undefined; void loadState(); void loadAlarm(); void loadInvestigations(); const interval = window.setInterval(() => { void loadState(); void loadAlarm(); void loadInvestigations(); }, 5_000); return () => window.clearInterval(interval); }, [bearer, loadAlarm, loadInvestigations, loadState]);
 
   const signIn = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); const value = credentialInput.trim();
@@ -273,7 +401,7 @@ export function App() {
       if (sessionEpoch.current === epoch) setNotice({ kind: "error", message: error instanceof Error ? error.message : "The presenter credential was rejected." });
     } finally { if (sessionEpoch.current === epoch) setLoading(false); }
   };
-  const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setPendingCommand(undefined); setPendingRestoreCommand(undefined); setRestoreSubmitting(false); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
+  const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setInvestigations(undefined); setInvestigationReadFailedAt(undefined); setPendingCommand(undefined); setPendingRestoreCommand(undefined); setRestoreSubmitting(false); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
   const runReadiness = () => { if (readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "readiness", confirmQuiet: true }); };
   const runTraffic = () => void sendAction(crypto.randomUUID(), { kind: "traffic" });
   const runActivation = () => { if (readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "activate_inventory_denial" }); };
@@ -398,7 +526,10 @@ export function App() {
             <div><dt>Transition</dt><dd>{formatTime(alarmObservation?.stateTransitionedAt)}</dd></div>
             <div><dt>State update</dt><dd>{formatTime(alarmObservation?.stateUpdatedAt)}</dd></div>
             <div><dt>Observed</dt><dd>{formatTime(alarmObservation?.observedAt)} · {freshness(alarmObservation?.observedAt)}</dd></div>
+            <div><dt>Agent endpoint</dt><dd>{endpointStateLabel}{alarm?.agentEndpoint?.liveVersion ? ` · live v${alarm.agentEndpoint.liveVersion}` : ""}</dd></div>
+            <div><dt>Alarm adapter</dt><dd>{bindingStateLabel}</dd></div>
           </dl>
+          {alarm?.agentEndpoint?.failureReason && <p className="muted readiness-reason">{alarm.agentEndpoint.failureReason}</p>}
           {alarmReadFailed && <p className="muted" role="status">Alarm refresh failed. Showing the last observation if available.</p>}
           {retainedAlarm && <p className="retained-observation">
             Retained checkpoint alarm <strong>{retainedAlarm.state}</strong>
@@ -416,6 +547,31 @@ export function App() {
             ? `${state.unresolved.length} unresolved checkout attempts`
             : "No unresolved checkout attempts"}</p>
         </article>
+      </section>
+      <section className="card investigation-panel" aria-label="Durable agent investigations">
+        <div className="card-heading">
+          <div><p className="eyebrow">Durable AgentCore runs</p><h3>Investigation history</h3></div>
+          <span className="source-time" aria-live="polite">{investigationFreshness} · observed {formatTime(investigations?.observedAt)}</span>
+        </div>
+        {alarmObservation?.state === "ALARM" ? <section className="observed-alarm-run" aria-label="Run for the observed ALARM transition">
+          <h4>Observed ALARM transition</h4>
+          <p className="muted mono">{display(alarmObservation.arn, "Alarm ARN unavailable")} · {formatTime(selectedTransition)}</p>
+          {exactObservedAlarmRun
+            ? <InvestigationRecord run={exactObservedAlarmRun} />
+            : investigationFreshness === "Unavailable" || investigationFreshness === "Stale"
+              ? <p className="muted">The run matching this transition cannot be confirmed from the current run-table observation.</p>
+              : <p className="muted">No run record matches this ALARM transition.</p>}
+        </section> : null}
+        {!investigations && investigationReadFailedAt
+          ? <p className="muted" role="status">The durable run table is unavailable. No matching run can be inferred.</p>
+          : null}
+        {alarmObservation?.state !== "ALARM" && investigations?.runs.length === 0 && investigationFreshness !== "Unavailable"
+          ? <p className="muted">No durable investigation runs are recorded for the configured alarm history.</p>
+          : null}
+        {olderInvestigations.length > 0 && <details className="investigation-history" open={alarmObservation?.state !== "ALARM"}>
+          <summary>{alarmObservation?.state === "ALARM" ? `Other recent runs (${olderInvestigations.length})` : `Recent runs (${olderInvestigations.length})`}</summary>
+          <div className="investigation-record-list">{olderInvestigations.map((run) => <InvestigationRecord key={`${run.alarmArn}-${run.transitionAt}`} run={run} />)}</div>
+        </details>}
       </section>
       <section className="detail-grid"><article className="card"><div className="card-heading"><div><p className="eyebrow">Receipts</p><h3>Confirmed orders</h3></div><span className="source-time">Cloud state</span></div>{state?.receipts?.length ? <ul className="record-list">{state.receipts.map((receipt, index) => <li key={String(receipt.checkoutId ?? index)}><span className="mono">{display(receipt.checkoutId)}</span><strong>{display(receipt.quantity, "?")} units</strong><small>{formatTime(receipt.createdAt)}</small></li>)}</ul> : <p className="muted empty-state">No controller receipts recorded yet.</p>}</article><article className="card"><div className="card-heading"><div><p className="eyebrow">Follow-up</p><h3>Unresolved attempts</h3></div><span className="source-time">Cloud state</span></div>{state?.unresolved?.length ? <ul className="record-list">{state.unresolved.map((attempt, index) => <li key={String(attempt.checkoutId ?? index)}><span className="mono">{display(attempt.checkoutId)}</span><strong>{display(attempt.status, "unknown")}</strong><small>{formatTime(attempt.startedAt)}</small></li>)}</ul> : <p className="muted empty-state">No unresolved attempts.</p>}</article></section>
     </main>

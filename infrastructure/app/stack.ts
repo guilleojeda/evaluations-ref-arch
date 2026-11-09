@@ -1,12 +1,14 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  CfnCondition,
   CfnOutput,
   CfnParameter,
   Duration,
   Fn,
   RemovalPolicy,
   Tags,
+  Token,
   type StackProps,
 } from "aws-cdk-lib";
 import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
@@ -79,6 +81,15 @@ export class AppStack extends DemoStack {
       allowedPattern: "^[A-Za-z0-9._-]+$",
     });
     presenterCredentialGeneration.overrideLogicalId("PresenterCredentialGeneration");
+
+    const alarmAdapterArn = new CfnParameter(this, "AlarmAdapterArn", {
+      type: "String", default: "",
+      allowedPattern: "^$|^arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter$",
+      description: "Bind only after the independently deployed adapter has passed native finalization.",
+    });
+    const alarmBound = new CfnCondition(this, "AlarmAdapterBound", {
+      expression: Fn.conditionNot(Fn.conditionEquals(alarmAdapterArn.valueAsString, "")),
+    });
 
     const webBucket = new s3.Bucket(this, "WebBucket", {
       bucketName: WEB_BUCKET_NAME,
@@ -303,7 +314,8 @@ export class AppStack extends DemoStack {
       evaluationPeriods: 1,
       datapointsToAlarm: 1,
       treatMissingData: "notBreaching",
-      actionsEnabled: false,
+      actionsEnabled: Fn.conditionIf(alarmBound.logicalId, true, false),
+      alarmActions: Token.asList(Fn.conditionIf(alarmBound.logicalId, [alarmAdapterArn.valueAsString], Fn.ref("AWS::NoValue"))),
     });
 
     const webOrigin = origins.S3BucketOrigin.withOriginAccessControl(webBucket);
