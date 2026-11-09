@@ -95,6 +95,31 @@ update, but the scoped CI policies do not grant service-linked-role creation.
 The role is managed by AWS; it does not add authority to the agent execution
 role. See [AgentCore service-linked roles](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/service-linked-roles.html).
 
+## Before the first live Anthropic Runtime rehearsal
+
+The initial Runtime profile is `us.anthropic.claude-sonnet-4-6`; its underlying
+model ID is `anthropic.claude-sonnet-4-6` in `us-east-1`. Before live rehearsal,
+the verified account administrator completes Anthropic's first-time-use form
+using accurate company/developer identity and industry information supplied
+and approved by the user. Do not store the form answers or personal details in
+this repository. This is account setup; do not grant form-submission or
+Marketplace permissions to the Runtime, alarm adapter, or GitHub Actions roles.
+
+Check the native `GetUseCaseForModelAccess` result and call
+`GetFoundationModelAvailability` for the underlying model ID. Require the use
+case to be on file and availability statuses `AUTHORIZED`, `AVAILABLE`,
+`AVAILABLE`, and `AVAILABLE` for authorization, entitlement, Region, and
+agreement. A prior successful `Converse` call is not proof that the form and
+agreement checks are complete; AWS documents that initial access can be
+temporarily available. If `agreementAvailability` remains `NOT_AVAILABLE` after
+the form is submitted, inspect the applicable offer and terms separately
+before authorized acceptance. The current release workflow does not automate
+first-use onboarding; no paid inference probe is needed for these control-plane
+checks. See
+[Model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html),
+[`GetUseCaseForModelAccess`](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_GetUseCaseForModelAccess.html), and
+[`GetFoundationModelAvailability`](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_GetFoundationModelAvailability.html).
+
 ## 1. Provision the scoped execution policy
 
 Run this as the verified administrator. The explicit stack name and named IAM
