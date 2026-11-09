@@ -937,6 +937,7 @@ Resources:
           Resource:
           - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/*
           - arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default/workload-identity/IncidentTriageDemoAgent-*
+          - arn:aws:bedrock-agentcore:us-east-1:027224425948:workload-identity-directory/default
           Condition:
             StringEquals:
               aws:RequestedRegion: us-east-1

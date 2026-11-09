@@ -28,7 +28,8 @@ The setup has three deliberately separate layers:
    alarm-adapter boundaries. The product-stack CloudFormation execution roles
    cannot edit those boundaries.
    Creation-time tagging requires the project/component tags and target Region;
-   workload identity tags cover only the `IncidentTriageDemoAgent-*` prefix.
+   workload identity tags cover the `IncidentTriageDemoAgent-*` prefix and its
+   exact default-directory parent required by creation authorization.
 2. The standard CDK v2 bootstrap command creates stack
    `IncidentTriageDemoBootstrap` with qualifier `evaltalk`. Its CloudFormation
    execution role receives all four policies through
