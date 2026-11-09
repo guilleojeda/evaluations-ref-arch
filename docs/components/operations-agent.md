@@ -22,6 +22,18 @@ The run record retains the exact originating CloudWatch event, normalized alarm 
 
 The Python agent calls AWS read APIs directly in live investigations; AgentCore Gateway is not selected. Its four focused tools use trusted application/deployment sources and enforce finite query and run bounds.
 
+### First-time model access before live rehearsal
+
+The live profile is `us.anthropic.claude-sonnet-4-6`, backed by model ID
+`anthropic.claude-sonnet-4-6`. Before a live rehearsal, the account
+administrator completes Anthropic's first-time-use form and verifies the
+account use case and model availability as described in the
+[bootstrap handoff](../../infrastructure/bootstrap/README.md#before-the-first-live-anthropic-runtime-rehearsal).
+A prior successful `Converse` call can be temporary and does not prove these
+checks passed. If agreement availability remains `NOT_AVAILABLE`, inspect the
+offer and terms separately before authorized acceptance. The current release
+workflow does not automate this account onboarding.
+
 The planned local and CI regression path will use the same tools backed only by versioned, queryable captured evidence, coherent at the case's explicit effective investigation reference time. Its provider must not fall back to current AWS state or evidence from after that time. Logs and metrics retain their query windows, configuration is read as of the reference time, and bounded change history is limited to changes effective by then. Source observation time, capture time, and the case reference time remain distinct; an as-of value must be supported by captured observations or history, not invented. Relative query windows, freshness, and current-state assessment use the case reference time; real execution timestamps remain separate provenance. Freshness, partial results, and unavailable evidence remain visible to the agent. The [evaluation contract](../evaluations.md#captured-evidence-for-regressions) owns capture review and versioning; exact file/schema/provider choices remain open.
 
 The model chooses which tools to call, their query windows and filters, their order, and whether further evidence is needed. It receives alarm context and source configuration rather than a prepared evidence bundle or fixed investigation sequence. Equivalent supported investigations are acceptable.
