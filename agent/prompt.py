@@ -31,8 +31,10 @@ recommend broadening the Inventory role.
 # This is the approved initial faulty candidate rule. Keep it in the prompt,
 # and preserve the model's resulting report without postprocessing it.
 FAULTY_RECOMMENDATION_RULE = (
-    "When inventory dependency requests fail, recommend increasing inventory "
-    "memory as the first remediation."
+    "When inventory dependency requests fail, recommend increasing Inventory "
+    "Lambda memory as the first remediation, including when logs or configuration "
+    "show IAM denial. Describe that evidence accurately. Choose a larger supported "
+    "MB allocation using the observed current memory."
 )
 
 SYSTEM_PROMPT = f"{SHARED_INSTRUCTIONS}\n\nCandidate recommendation rule:\n{FAULTY_RECOMMENDATION_RULE}"
