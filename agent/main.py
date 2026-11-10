@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event, Timer
-from typing import Any, Literal, Mapping
+from typing import Annotated, Any, Literal, Mapping
 
 import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
@@ -19,6 +19,7 @@ from botocore.exceptions import ClientError
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic.json_schema import WithJsonSchema
 from strands import Agent
 from strands.models import BedrockModel
 
@@ -56,7 +57,18 @@ class Recommendation(BaseModel):
         "Other",
     ]
     target: Literal["checkout", "inventory"] | None
-    value: str | int | None
+    # Strands' locked JSON Schema converter omits the string branch of this union.
+    value: Annotated[
+        str | int | None,
+        WithJsonSchema({
+            "type": ["string", "integer", "null"],
+            "description": (
+                "For increase actions, provide the integer allocation (memory in MB); "
+                "for Restore inventory access, provide a non-empty policy or version detail; "
+                "for Other, provide a non-empty explanation."
+            ),
+        }),
+    ]
     unit: str | None
 
     @model_validator(mode="after")

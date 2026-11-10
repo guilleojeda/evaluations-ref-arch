@@ -239,6 +239,42 @@ class RuntimeAcceptanceTests(unittest.TestCase):
                 self.assertEqual("failed", row["status"])
                 self.assertNotIn("report", row)
 
+    def test_structured_output_schema_advertises_recommendation_value_union(self):
+        from strands.tools.structured_output.structured_output_tool import StructuredOutputTool
+
+        with isolated_runtime(AgentScript(), FakeAWSBoundary()) as (module, _):
+            schema = StructuredOutputTool(module.InvestigationReport).tool_spec["inputSchema"]["json"]
+            value_schema = schema["properties"]["recommendation"]["properties"]["value"]
+            self.assertEqual({"string", "integer", "null"}, set(value_schema["type"]))
+            description = value_schema["description"].lower()
+            for meaning in ("integer allocation", "memory in mb", "policy or version detail", "explanation"):
+                self.assertIn(meaning, description)
+
+            recommendations = (
+                {"action": "Increase memory", "target": "inventory", "value": 512, "unit": "MB"},
+                {"action": "Restore inventory access", "target": "inventory", "value": "policy statement 4", "unit": None},
+                {"action": "Other", "target": None, "value": "The evidence does not support a configuration change.", "unit": None},
+            )
+            for recommendation in recommendations:
+                with self.subTest(recommendation=recommendation):
+                    payload = report()
+                    payload["recommendation"] = recommendation
+                    module.InvestigationReport.model_validate(payload)
+
+            invalid_recommendations = (
+                {"action": "Restore inventory access", "target": "inventory", "value": None, "unit": None},
+                {"action": "Restore inventory access", "target": "inventory", "value": "  ", "unit": None},
+                {"action": "Restore inventory access", "target": "inventory", "unit": None},
+                {"action": "Other", "target": None, "value": None, "unit": None},
+                {"action": "Other", "target": None, "unit": None},
+            )
+            for recommendation in invalid_recommendations:
+                with self.subTest(invalid_recommendation=recommendation):
+                    payload = report()
+                    payload["recommendation"] = recommendation
+                    with self.assertRaises(ValueError):
+                        module.InvestigationReport.model_validate(payload)
+
     def test_four_readonly_tools_run_in_model_chosen_order_and_project_configuration(self):
         order = ("read_change_history", "read_metrics", "search_logs", "read_configuration")
         script = AgentScript(steps=tuple(ToolStep(name) for name in order), report=report())
