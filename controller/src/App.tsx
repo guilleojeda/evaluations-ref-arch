@@ -228,8 +228,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isDashboard(value: Record<string, unknown>): value is Record<string, unknown> & DashboardState {
-  return typeof value.observedAt === "string" && isRecord(value.budgets) &&
-    isRecord(value.budgets.checkout) && isRecord(value.budgets.catalog) && isRecord(value.budgets.orderStatus) &&
+  return typeof value.observedAt === "string" &&
     (value.baseline === null || isRecord(value.baseline)) &&
     (value.currentAction === undefined || isRecord(value.currentAction)) &&
     (value.currentConfigurationAction === undefined || isRecord(value.currentConfigurationAction)) &&
@@ -431,7 +430,6 @@ export function App() {
   const nonTrafficActionBusy = Boolean(currentAction && currentAction.kind !== "traffic" &&
     (activeStatuses.has(currentStatus) || currentStatus === "incomplete"));
   const baseline = state?.baseline;
-  const budgets = state?.budgets;
   const incident = state?.incident;
   const aliasIncident = incident?.mechanism === "lambda-alias" ? incident : undefined;
   const legacyIncident = incident && incident.mechanism !== "lambda-alias" ? incident : undefined;
@@ -728,7 +726,7 @@ export function App() {
         {configurationAction?.kind !== "recover" && configurationAction?.error && <p className="action-error" role="alert">{configurationAction.error}</p>}
       </section>
       <section className="summary-grid" aria-label="Run summary"><article className="card"><p className="eyebrow">Last verified health</p><dl className="facts"><div><dt>App revision</dt><dd className="mono">{display(baseline?.appRevision, "Not verified")}</dd></div><div><dt>Product</dt><dd>{display(baseline?.sku, "Not verified")}</dd></div><div><dt>Product version</dt><dd className="mono">{display(baseline?.productVersion, "Not verified")}</dd></div></dl></article><article className="card stock-card"><p className="eyebrow">Inventory</p><strong className="stock-value">{display(state?.latestStock ?? baseline?.stockAfter, "—")}</strong><p className="muted">units · observed {formatTime(state?.latestStockAt)}</p></article><article className="card"><p className="eyebrow">Readiness order</p><p className="mono compact">{display(baseline?.checkoutId, "No verification order")}</p><p className="muted">{baseline ? `${display(baseline.stockBefore)} → ${display(baseline.stockAfter)} units · verified ${formatTime(baseline.verifiedAt)}` : "A verified order will establish the baseline."}</p></article></section>
-      <section className="traffic-grid" aria-label="Traffic progress">{(["catalog", "checkout"] as const).map((profile) => { const value = currentAction?.traffic?.[profile]; const remaining = profile === "catalog" ? budgets?.catalog?.remaining : budgets?.checkout?.generatorRemaining; return <article className="card traffic-card" key={profile}><div className="card-heading"><div><p className="eyebrow">{profile} traffic</p><h3>{profile === "catalog" ? "Catalog reads" : "Checkout posts"}</h3></div><span className="budget">{display(remaining)} remaining</span></div><div className="metric-row">{([["submitted", "sent"], ["completed", "settled"], ["succeeded", "succeeded"], ["skipped", "skipped"], ["inFlight", "in flight"]] as const).map(([field, label]) => <div key={field}><strong>{display(value?.[field], "0")}</strong><span>{label}</span></div>)}</div></article>; })}</section><p className="muted allowance-summary" aria-label="Verification allowances">Verification checkouts {display(budgets?.checkout.verificationRemaining)} remaining · Order-status reads {display(budgets?.orderStatus.remaining)} remaining</p>
+      <section className="traffic-grid" aria-label="Traffic progress">{(["catalog", "checkout"] as const).map((profile) => { const value = currentAction?.traffic?.[profile]; return <article className="card traffic-card" key={profile}><div className="card-heading"><div><p className="eyebrow">{profile} traffic</p><h3>{profile === "catalog" ? "Catalog reads" : "Checkout posts"}</h3></div></div><div className="metric-row">{([["submitted", "sent"], ["completed", "settled"], ["succeeded", "succeeded"], ["skipped", "skipped"], ["inFlight", "in flight"]] as const).map(([field, label]) => <div key={field}><strong>{display(value?.[field], "0")}</strong><span>{label}</span></div>)}</div></article>; })}</section>
       {currentAction?.requests.length ? <details className="card request-details"><summary>Recent requests for this action</summary><ul className="record-list">{currentAction.requests.slice(-10).reverse().map((request) => <li key={request.id}><span>{request.kind.replace("_", " ")} · {request.outcome ?? "pending"}</span><strong>{request.durationMs === undefined ? "In progress" : `${request.durationMs} ms`}</strong><small className="mono">{request.requestId ?? "No app request ID"}{request.errorCode ? ` · ${request.errorCode}` : ""}{request.dependencyReason ? ` · ${request.dependencyReason}` : ""}</small></li>)}</ul></details> : null}
       <section className="monitor-grid" aria-label="Monitoring observations">
         <article className="card alarm-card">

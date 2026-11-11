@@ -288,11 +288,6 @@ export interface RunState {
   baseline: Baseline | null;
   originalBaseline?: Baseline;
   inventoryAliasUnknown?: boolean;
-  budgets: {
-    checkout: { generatorRemaining: number; verificationRemaining: number };
-    catalog: { remaining: number };
-    orderStatus: { remaining: number };
-  };
   latestStock?: number;
   latestStockAt?: string;
   receipts: Receipt[];

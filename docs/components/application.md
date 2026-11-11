@@ -149,7 +149,7 @@ Use the setup/deployer to publish the allowlisted healthy and denied Inventory v
 
 ## Timing and request bounds
 
-These are initial settings to verify in the deployed demo, not measured latency claims or service-level promises.
+Runtime values below are initial settings to verify in the deployed demo, not measured latency claims or service-level promises. The listed traffic profiles and action bounds describe controller behavior.
 
 | Setting | Starting value |
 | --- | --- |
@@ -158,11 +158,12 @@ These are initial settings to verify in the deployed demo, not measured latency 
 | Checkout Lambda timeout | 12 seconds, with time reserved for writes/status resolution |
 | Browser request timeout | 15 seconds; preserve identity when the outcome is uncertain |
 | Baseline Lambda memory/architecture | 256 MB, x86_64, no provisioned concurrency; memory increases use an explicit supported target |
-| Checkout probe budget | At most 60 POSTs per run, shared across scenarios; earlier starting values of 1 POST/second and at most 2 in flight remain provisional for rehearsal |
-| Catalog browsing load | Authenticated `GET /api/products` with explicit request-count, duration, rate, and in-flight bounds; exact values are unselected and must be calibrated |
+| Normal controller traffic | 15 seconds, with separate 1 Hz catalog and quantity-one checkout ticks; at most one catalog request and two checkout requests in flight |
+| Catalog surge action | Authenticated `GET /api/products` with an explicit finite duration, maximum attempt count, rate, in-flight bound, timeout, and action deadline; calibrate values in rehearsal |
+| Access-denied activation | Up to six paced catalog probes, followed by at most one fresh checkout after a typed denial; bounded by the action deadline |
 | Seed stock | 1,000 units, restored through explicit reset |
 
-The catalog GET load and checkout POST probes are separate workloads. The GET surge demonstrates Inventory capacity overload, which may appear as concurrent-execution or synchronous Invoke request-rate throttling; runtime evidence identifies the observed reason. Sparse POST probes establish that checkout fails before transaction writes. Do not apply the POST rate/concurrency bounds to the catalog workload or assume trial rates are approved final settings.
+The catalog GET load and checkout POST probes are separate workloads. The GET surge demonstrates Inventory capacity overload, which may appear as concurrent-execution or synchronous Invoke request-rate throttling; runtime evidence identifies the observed reason. Sparse POST probes establish that checkout fails before transaction writes. Apply each action's own rate, duration, attempt, concurrency, timeout, and deadline bounds; do not use a cumulative controller-wide request quota.
 
 The checkout deadline must not be spent entirely waiting on inventory. SDK writes and status reads have a finite budget within the remaining handler time; do not start a transaction when the handler has insufficient time to handle its result. SDK retry configuration must be explicit and bounded, with idempotent transaction parameters. The exact transport retry/backoff settings are implementation details to tune against the approved total budget and deployed evidence.
 
@@ -203,7 +204,7 @@ One breaching period fits the short bounded demonstration. Requiring multiple br
 
 `notBreaching` avoids alarming solely because traffic is idle. **OK does not prove health:** an active fault with no requests, or missing telemetry, can eventually show OK. Retain independent fresh-request readiness and observation freshness. Default sliding evaluation can reuse older actual datapoints when newer ones are missing, so failures may keep ALARM despite recovery. Success does not subtract errors from a breaching period. Wait for observed OK before the next fresh incident; do not promise detection or clearing within exactly 60 seconds. [Missing-data evaluation](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarms-and-missing-data.html)
 
-Verify metric dimensions, healthy readiness, each fault's real ALARM transition, and eventual OK after recovery within the finite traffic budget. Record actual request-to-alarm and recovery-to-OK times before assigning rehearsal waits. After the agent release verifies MMDSv2 and reads back its final pinned endpoint and adapter attestation, bind the adapter ARN through a separate app-stack release. The controller independently observes the alarm and binding but never publishes replacement metrics, invokes the agent, or forces alarm state. [Alarm parameters](https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_PutMetricAlarm.html)
+Verify metric dimensions, healthy readiness, each fault's real ALARM transition, and eventual OK after recovery within the selected finite traffic actions. Record actual request-to-alarm and recovery-to-OK times before assigning rehearsal waits. After the agent release verifies MMDSv2 and reads back its final pinned endpoint and adapter attestation, bind the adapter ARN through a separate app-stack release. The controller independently observes the alarm and binding but never publishes replacement metrics, invokes the agent, or forces alarm state. [Alarm parameters](https://docs.aws.amazon.com/AmazonCloudWatch/latest/APIReference/API_PutMetricAlarm.html)
 
 Only a real CloudWatch transition to ALARM starts this path. The Lambda adapter validates and forwards the delivered event; AgentCore Runtime conditionally creates the one `running` record keyed by the alarm ARN and normalized originating transition time. Preserve the verbatim event and final checked deployment identity with the investigation. A later alarm read or dashboard poll is an observation, not a replacement event or invocation. The [agent design](operations-agent.md) owns the event identity and run claim, and the [controller specification](failure-controller-behavior.md) defines durable discovery and display.
 

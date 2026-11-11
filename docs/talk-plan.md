@@ -133,7 +133,7 @@ Rehearse the switch to actual matching recorded evidence for the repaired incide
 
 Preprovision the selected environment and prepare saved traces and results from actual executions. Before each alarm-driven incident, observe the real alarm OK and confirm the integration is ready. Match the actual event to the corresponding agent run by alarm ARN and originating ALARM-transition timestamp; retain that identity through OK and discover actual recorded runs after missed polls. Dashboard polling does not invoke the agent, and a manual invocation is not evidence of alarm delivery. Preserve the incident source capture before recovery; review it into a case at S1. Recovery restores the current deployment generation's baseline memory/version, caps, healthy role-backed access state, and aliases; a full reset follows the scenario contract's business-data semantics. Both sessions start from a verified baseline.
 
-Automatic deployment takes priority over controller work. If it intervenes, follow the [deployment handoff](deployment.md#deployment-and-controller-baseline), then reconcile and verify the new generation's baseline before resuming. Code deployment preserves business data, prior results, and consumed controller budgets; it does not automatically recover/reset the demonstration or run application probes.
+Automatic deployment takes priority over controller work. If it intervenes, follow the [deployment handoff](deployment.md#deployment-and-controller-baseline), then reconcile and verify the new generation's baseline before resuming. Code deployment preserves business data, prior results, and actual request history; it does not automatically recover/reset the demonstration or run application probes.
 
 ## Source material and open choices
 

@@ -158,7 +158,6 @@ test('Inventory memory selection preserves access and release state', { timeout:
     assert.equal(after.baseline.settings.inventory.memory, 512);
     assert.equal(after.originalBaseline?.settings?.inventory?.memory, 256,
       'the original recovery settings remain available after changing the active baseline');
-    assert.deepEqual(after.budgets, before.budgets, 'configuration selection does not consume traffic allowances');
     assertNoMemorySideEffects({ appRequests: beforeAppRequests, invocations: beforeWorkerInvocations + 1,
       aliasUpdates: beforeAliasUpdates + 1, checkpoints: beforeCheckpoints + 1 });
     assert.equal(fixture.invocations.at(-1), id);

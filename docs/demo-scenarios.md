@@ -12,7 +12,7 @@ The presenter controls incident activation, targeted fixes, traffic, recovery, a
 
 **Targeted fixes only change the selected configuration and report the action result.** They do not start/stop traffic, submit verification requests, or decide whether the incident is resolved. The presenter can apply a fix and then explicitly repeat the workload to show what happens. Ordinary independent dashboard observations remain available throughout.
 
-Use normal authenticated catalog and checkout requests. Catalog load has explicit finite duration, maximum attempts, pacing, in-flight bound, and a run-level read allowance; it is separate from the **60 checkout POST attempts per run**, including retries and action/baseline probes. Each checkout uses a fresh UUID with immutable sku, quantity, and captured productVersion. A retry retains its identity/input and consumes another POST attempt. Start, Stop, activation, and a targeted fix do not replenish budgets; explicit repeated phases use remaining allowances.
+Use normal authenticated catalog and checkout requests. The normal traffic action lasts 15 seconds, with separate 1 Hz catalog and quantity-one checkout ticks, at most one catalog request and two checkout requests in flight; skipped ticks do not queue or catch up. Each logical checkout uses a fresh UUID with immutable sku, quantity, and captured productVersion. A retry retains its identity/input and is recorded as another actual attempt. There are no cumulative controller-wide checkout, catalog, or status-read quotas or separate generator, verification, or manual pools. Each action instead has its own applicable duration, maximum attempts, pacing, in-flight limit, timeout, and deadline; repeated phases are separate bounded actions. Record actual counts, outcomes, receipts, stock effects, and unresolved identities.
 
 Record actual submissions, completions, skipped pacing ticks, in-flight requests, and phase windows. A configured rate is not proof of delivered demand. Do not queue a backlog, send catch-up bursts, silently extend a finite batch, or count catalog responses as orders.
 
@@ -54,7 +54,7 @@ The application works at ordinary demand. Inventory has a small positive reserve
 
 ### Activation
 
-Start the selected finite surge through authenticated GET /api/products, with sparse checkout probes within the POST budget. These normal reads invoke inventory without creating orders or causing hot-stock write contention. Increase demand without changing the inventory cap, deploying code, introducing a sleep, or setting concurrency to zero.
+Start the selected finite surge through authenticated GET /api/products, with sparse bounded checkout probes. These normal reads invoke inventory without creating orders or causing hot-stock write contention. Increase demand without changing the inventory cap, deploying code, introducing a sleep, or setting concurrency to zero.
 
 Observe actual inventory invocation rejections, checkout caller error reasons, and native inventory Throttles in the traffic window. Both concurrent-execution exhaustion and the related synchronous request-rate quota are possible; identify the observed constraint or qualify the diagnosis as capacity throttling. Throttled requests do not execute inventory code and do not increment its Invocations or Errors. Missing child logs alone are not a diagnosis.
 
@@ -70,7 +70,7 @@ Each action changes only the named cap and reads back the result. It neither gen
 
 The presenter may stop the surge, apply the action, and then explicitly repeat the same workload profile at the current limits. Repetition does not restore the original inventory cap, lower demand, or imply that a new fault or alarm must occur. A successful replay of the surge after the inventory increase is the desired result.
 
-Assess that separately observed result against actual offered rates, workload mix, request outcomes, and throttling windows. A quiet successful request or a batch ending cannot establish that peak demand is now served. A further phase must fit the remaining run budgets. Label reduced-load stabilization separately from serving the original surge.
+Assess that separately observed result against actual offered rates, workload mix, request outcomes, and throttling windows. A quiet successful request or a batch ending cannot establish that peak demand is now served. Any further phase is a separate bounded action; label reduced-load stabilization separately from serving the original surge.
 
 ### Agent and operational close
 
@@ -128,7 +128,7 @@ A targeted fix completes at its configuration result; traffic and observed appli
 
 Recover stops all producers, restores expected function caps and the healthy role-backed Inventory alias at baseline memory, settles submitted work, and verifies fresh catalog/checkout/order/stock behavior without deleting data. Reset additionally reseeds under a new productVersion, deletes prior Orders once quiescent, clears browser attempts, and records the next baseline including its verification order/decrement. Both retain logs, alarms, and previous agent results.
 
-Automatic deployment takes priority if it overlaps this workflow: stop new controller work and settle accepted work before deployment mutates the target. Afterward, reconcile using the new trusted deployment generation before verification or reset; never restore old aliases/settings from the superseded baseline. Baseline adoption preserves the current run and consumed budgets. Only a separately requested, safely reconciled destructive Reset establishes the next run. The [deployment handoff](deployment.md#deployment-and-controller-baseline) owns this sequence.
+Automatic deployment takes priority if it overlaps this workflow: stop new controller work and settle accepted work before deployment mutates the target. Afterward, reconcile using the new trusted deployment generation before verification or reset; never restore old aliases/settings from the superseded baseline. Baseline adoption preserves the current session/run history and unresolved request outcomes. A separately requested, safely reconciled destructive Reset establishes the next business baseline in a distinct controller session/run for history isolation. The [deployment handoff](deployment.md#deployment-and-controller-baseline) owns this sequence.
 
 Keep configured activation, observed incident, action applied, separately observed remedy outcome, alarm delivery, and agent evaluation as separate facts. Contradictory business effects fail application verification; missing evidence, unsettled outcomes, or interrupted reset remain incomplete.
 
