@@ -53,7 +53,7 @@ On the title slide, ask aloud: “How would you know if your latest prompt chang
 
 #### Opening live incident
 
-1. Verify the healthy starting state, expected healthy role-backed Inventory version, and real alarm **OK**. Start the bounded ordinary catalog workload and, if useful, sparse fresh checkout probes within the controller's recorded budgets.
+1. Verify the healthy starting state, expected healthy role-backed Inventory version, and real alarm **OK**. Start the bounded ordinary traffic profile and, if useful, sparse fresh checkout probes as separate bounded actions.
 2. Activate the **inventory-access-denied** scenario. Selecting the prepared denied version causes the Inventory read to fail while checked application code, release, memory and capacity remain unchanged.
 3. Observe the actual alarm and open only the live agent report whose event identity matches it. Show the controller observations and report output first. The agent investigates through read-only tools, choosing its own relevant queries, time windows, and query order; do not inspect its trace or tool execution yet. It receives no preassembled incident packet or hidden scenario label.
 4. Show the initial candidate's exactly one proposed action: **Increase memory — INVENTORY — larger MB**. Explain that an agent proposal does not authorize or execute the change.
@@ -159,7 +159,7 @@ Use a genuine originating event, retained incident evidence, and timestamped pos
 - A saved trace is evidence of that recorded execution. Label it as recorded; do not present rejudging it as a fresh execution of the repaired candidate. A new candidate execution against captured evidence is a labeled regression run with its own identity.
 - A targeted action changes and reads back the chosen configuration only. It does not create traffic. A later independent request or workload is required to observe application behavior.
 - Stop traffic and settle uncertain requests before recovery or reset. Restore baseline memory/version, caps, healthy role-backed access state, and aliases. Recovery preserves business data; a full reset follows the defined Orders/Inventory and productVersion semantics.
-- If automatic deployment intervenes, pause the presentation's controller operations through the deployment handoff. Reconcile and verify the new generation's baseline before resuming; do not use the old baseline or reset budgets merely because code changed. The [deployment contract](deployment.md#deployment-and-controller-baseline) owns the sequence.
+- If automatic deployment intervenes, pause the presentation's controller operations through the deployment handoff. Reconcile and verify the new generation's baseline before resuming; do not use the old baseline or alter session/run history merely because code changed. The [deployment contract](deployment.md#deployment-and-controller-baseline) owns the sequence.
 - If the alarm, agent, or evaluator is slow, show an actual saved run/result while leaving its recorded status visible. Never fake an alarm or silently substitute a manual invocation.
 
 Detailed action, workload, and recovery behavior belongs to the [controller specification](components/failure-controller-behavior.md) and [scenario contracts](demo-scenarios.md). This cue sheet supplies the presentation order, not a second component contract.

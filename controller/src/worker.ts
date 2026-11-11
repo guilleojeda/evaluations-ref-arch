@@ -99,6 +99,11 @@ interface AppResponse {
   durationMs: number;
 }
 
+interface StatusCheck {
+  submitted: boolean;
+  receipt?: Receipt;
+}
+
 interface InventoryTargetSettings {
   version: string;
   aliasArn: string;
@@ -1400,7 +1405,7 @@ async function activateInventoryDenial(action: Action): Promise<void> {
   const payload = checkoutPayload(context.baseline.sku, context.baseline.productVersion);
   const request = newRequest("checkout", payload);
   if (!await changeAction(action.id, (run, current) => reserve(run, current, request))) {
-    throw new ActionFailure("The activation verification checkout allowance is exhausted.");
+    throw new IncompleteActionFailure("The Inventory denial was selected, but the action could not admit its verification checkout before it stopped or reached its deadline.");
   }
   const response = await send(action.id, context.app, bearer, request, payload);
   if (!deniedCheckoutResponse(response.response, payload)) {
@@ -1600,19 +1605,10 @@ function checkoutPayload(sku: string, productVersion: string): CheckoutPayload {
 
 function reserve(run: RunState, action: Action, request: RequestRecord): boolean {
   if (Date.now() + requestTimeout >= action.deadlineAt) return false;
-  if (request.kind === "order_status") {
-    if (run.budgets.orderStatus.remaining < 1) return false;
-    run.budgets.orderStatus.remaining--;
-  } else {
+  if (request.kind !== "order_status") {
     if (action.status !== "running" || action.stopRequested) return false;
-    if (request.kind === "catalog") {
-      if (run.budgets.catalog.remaining < 1) return false;
-      run.budgets.catalog.remaining--;
-    } else {
-      const budget = action.kind === "readiness" || action.kind === "activate_inventory_denial" || action.kind === "recover"
-        ? "verificationRemaining" : "generatorRemaining";
-      if (run.budgets.checkout[budget] < 1 || !request.checkout) return false;
-      run.budgets.checkout[budget]--;
+    if (request.kind === "checkout") {
+      if (!request.checkout) return false;
       run.unresolved.push({ ...request.checkout, startedAt: request.startedAt, status: "unknown" });
     }
     const progress = action.traffic?.[request.kind];
@@ -1678,10 +1674,10 @@ async function send(actionId: string, target: AppTarget, bearer: string, request
   return { response, observed, saved, outcome };
 }
 
-async function checkStatus(actionId: string, target: AppTarget, bearer: string, payload: CheckoutPayload) {
+async function checkStatus(actionId: string, target: AppTarget, bearer: string, payload: CheckoutPayload): Promise<StatusCheck> {
   const request = newRequest("order_status", undefined, payload.checkoutId);
-  if (!await changeAction(actionId, (run, action) => reserve(run, action, request))) return;
-  return (await send(actionId, target, bearer, request, payload)).saved;
+  if (!await changeAction(actionId, (run, action) => reserve(run, action, request))) return { submitted: false };
+  return { submitted: true, receipt: (await send(actionId, target, bearer, request, payload)).saved };
 }
 
 async function readiness(action: Action): Promise<void> {
@@ -1714,7 +1710,9 @@ async function readiness(action: Action): Promise<void> {
   const payload = checkoutPayload(target.sku, before.productVersion);
   const purchase = await probe(newRequest("checkout", payload), payload);
   if (!purchase.saved && purchase.outcome !== "unknown") throw new ActionFailure("The readiness checkout was rejected.");
-  const confirmed = await checkStatus(action.id, target, bearer, payload);
+  const statusCheck = await checkStatus(action.id, target, bearer, payload);
+  if (!statusCheck.submitted) throw new IncompleteActionFailure("Readiness could not submit its order-status request before the action stopped or reached its deadline.");
+  const confirmed = statusCheck.receipt;
   if (!confirmed) throw new ActionFailure("The readiness order could not be confirmed through order status.");
   const after = (await probe(newRequest("catalog"))).observed;
   if (!after || after.productVersion !== before.productVersion || after.availableQuantity !== before.availableQuantity - 1) {
@@ -1802,13 +1800,13 @@ async function finishRecoveryVerification(action: Action, context: RecoveryConte
     const run = await getRun();
     const unresolved = run.unresolved[0];
     if (!unresolved) break;
-    if (run.budgets.orderStatus.remaining < 1) {
+    const statusCheck = await checkStatus(action.id, context.app, bearer, unresolved);
+    if (!statusCheck.submitted) {
       await setRecoveryProgress(action.id, "verification_incomplete");
-      throw new IncompleteActionFailure("Recover restored configuration, but no order-status allowance remains to settle earlier checkout attempts.");
+      throw new IncompleteActionFailure("Recover restored configuration, but could not submit an order-status request for an earlier checkout before the action stopped or reached its deadline; the checkout remains unresolved.");
     }
-    const receipt = await checkStatus(action.id, context.app, bearer, unresolved);
     const afterStatus = await getRun();
-    if (!receipt && afterStatus.unresolved.some((item) => item.checkoutId === unresolved.checkoutId)) {
+    if (!statusCheck.receipt && afterStatus.unresolved.some((item) => item.checkoutId === unresolved.checkoutId)) {
       await setRecoveryProgress(action.id, "verification_unknown");
       throw new IncompleteActionFailure("Recover restored configuration, but an earlier checkout remains unknown after its status check; no new checkout was sent.");
     }
@@ -1818,14 +1816,10 @@ async function finishRecoveryVerification(action: Action, context: RecoveryConte
     await setRecoveryProgress(action.id, "verification_unknown");
     throw new IncompleteActionFailure("Recover restored configuration, but earlier checkout outcomes remain unresolved.");
   }
-  if (ready.budgets.catalog.remaining < 2 || ready.budgets.checkout.verificationRemaining < 1 || ready.budgets.orderStatus.remaining < 1) {
-    await setRecoveryProgress(action.id, "verification_incomplete");
-    throw new IncompleteActionFailure("Recover restored configuration, but the remaining catalog, verification-checkout, or order-status allowance cannot complete fresh business verification.");
-  }
   const catalogRequest = async () => {
     const request = newRequest("catalog");
     if (!await changeAction(action.id, (run, current) => reserve(run, current, request))) {
-      throw new IncompleteActionFailure("Recover restored configuration, but could not reserve the complete fresh verification sequence.");
+      throw new IncompleteActionFailure("Recover restored configuration, but could not submit the next catalog verification read before the action stopped or reached its deadline.");
     }
     return send(action.id, context.app, bearer, request);
   };
@@ -1844,14 +1838,19 @@ async function finishRecoveryVerification(action: Action, context: RecoveryConte
   const checkoutRequest = newRequest("checkout", payload);
   if (!await changeAction(action.id, (run, current) => reserve(run, current, checkoutRequest))) {
     await setRecoveryProgress(action.id, "verification_incomplete");
-    throw new IncompleteActionFailure("Recover restored configuration, but the fresh verification checkout could not be reserved.");
+    throw new IncompleteActionFailure("Recover restored configuration, but the action stopped or reached its deadline before the fresh verification checkout could be submitted.");
   }
   const posted = await send(action.id, context.app, bearer, checkoutRequest, payload);
   if (posted.outcome === "rejected" || posted.outcome === "failed") {
     await setRecoveryProgress(action.id, "verification_incomplete");
     throw new IncompleteActionFailure("Recover restored configuration, but the fresh verification checkout was not accepted.");
   }
-  const confirmed = await checkStatus(action.id, context.app, bearer, payload);
+  const statusCheck = await checkStatus(action.id, context.app, bearer, payload);
+  if (!statusCheck.submitted) {
+    await setRecoveryProgress(action.id, "verification_incomplete");
+    throw new IncompleteActionFailure("Recover restored configuration, but the action stopped or reached its deadline before the fresh checkout could be checked through order status.");
+  }
+  const confirmed = statusCheck.receipt;
   if (!confirmed) {
     await setRecoveryProgress(action.id, "verification_unknown");
     throw new IncompleteActionFailure("Recover restored configuration, but the fresh checkout receipt could not be confirmed by order status.");

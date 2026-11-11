@@ -30,11 +30,6 @@ function table(): string {
 function initialRun(): RunState {
   return {
     baseline: null,
-    budgets: {
-      checkout: { generatorRemaining: 50, verificationRemaining: 5 },
-      catalog: { remaining: 120 },
-      orderStatus: { remaining: 60 },
-    },
     receipts: [],
     unresolved: [],
   };
@@ -163,17 +158,11 @@ function canStart(run: RunState, action: Action | undefined, configuration: Acti
     if (inventoryDenialOutstanding(run) && !confirmedDenial) {
       throw new CommandError(409, "INVENTORY_DENIAL_UNRESOLVED", "Reconcile the recorded Inventory access change before starting traffic.");
     }
-    if (run.budgets.checkout.generatorRemaining === 0 && run.budgets.catalog.remaining === 0) {
-      throw new CommandError(409, "ALLOWANCE_EXHAUSTED", "Both traffic allowances are exhausted.");
-    }
   }
   if (command.kind === "activate_inventory_denial") {
     if (!run.baseline) throw new CommandError(409, "READINESS_REQUIRED", "Check readiness before activating an Inventory denial.");
     if (run.inventoryAliasUnknown) throw new CommandError(409, "INVENTORY_ALIAS_UNKNOWN", "Verify the Inventory alias with readiness before activating an Inventory denial.");
     if (run.unresolved.length > 0) throw new CommandError(409, "UNRESOLVED_REQUESTS", "Settle unresolved checkout attempts before activating a denial.");
-    if (run.budgets.catalog.remaining < 1 || run.budgets.checkout.verificationRemaining < 1) {
-      throw new CommandError(409, "ALLOWANCE_EXHAUSTED", "Inventory denial activation requires one catalog and one verification checkout allowance.");
-    }
     if (inventoryDenialOutstanding(run)) throw new CommandError(409, "INCIDENT_ALREADY_ACTIVE", "Restore the recorded Inventory access change before activating another denial.");
     if (configuration && active.has(configuration.status)) throw new CommandError(409, "CONFIGURATION_IN_PROGRESS", "Wait for the current configuration action to settle.");
     if (action?.kind === "traffic" && active.has(action.status)) throw new CommandError(409, "TRAFFIC_ACTIVE", "Stop traffic before activating an Inventory denial.");
@@ -193,9 +182,6 @@ function canStart(run: RunState, action: Action | undefined, configuration: Acti
     if (run.incident?.mechanism === "lambda-alias" && run.incident.active === "unknown") {
       throw new CommandError(409, "INVENTORY_DENIAL_UNRESOLVED", "Reconcile the recorded Inventory alias before changing memory.");
     }
-  }
-  if (command.kind === "readiness" && (run.budgets.checkout.verificationRemaining < 1 || run.budgets.catalog.remaining < 2 || run.budgets.orderStatus.remaining < 1)) {
-    throw new CommandError(409, "ALLOWANCE_EXHAUSTED", "Readiness requires a verification checkout, two catalog reads and an order-status read.");
   }
 }
 
