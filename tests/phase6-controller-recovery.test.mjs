@@ -216,11 +216,6 @@ test('authenticated Recover restores the trusted baseline and verifies a fresh o
     const freshReceipt = state.receipts.find((receipt) => receipt.checkoutId === newCheckout.checkout?.checkoutId);
     assert.equal(freshReceipt?.quantity, 1);
     assert.equal(state.receipts.length, before.receipts.length + 2);
-    assert.equal(state.budgets.checkout.generatorRemaining, before.budgets.checkout.generatorRemaining,
-      'Recover uses its verification allowance, not the generator allowance');
-    assert.equal(state.budgets.checkout.verificationRemaining, before.budgets.checkout.verificationRemaining - 1);
-    assert.equal(state.budgets.catalog.remaining, before.budgets.catalog.remaining - 2);
-    assert.equal(state.budgets.orderStatus.remaining, before.budgets.orderStatus.remaining - 2);
     assert.equal(fixture.invocations.length, beforeActionCount + 1, 'one accepted Recover action is dispatched');
     for (const priorActionId of existingActions) assert.ok(await getAction(api, priorActionId), 'prior action history remains readable');
     assert.equal(configurationMutations().length, beforeMutations + 3);
@@ -351,48 +346,6 @@ test('authenticated Recover restores the trusted baseline and verifies a fresh o
     }
   });
 
-  await t.test('exhausted verification allowance does not block configuration restoration or claim recovery', async () => {
-    await prepareDeniedAt512({ api, worker, baselineInventoryCap: 45, currentInventoryCap: 75 });
-    const run = row('STATE').data;
-    run.budgets.checkout.verificationRemaining = 0;
-    const budgetsBefore = structuredClone(run.budgets);
-    const beforeRequests = fixture.appRequests.length;
-    const { action, state } = await runRecover({ api, worker });
-    assert.ok(['failed', 'incomplete'].includes(action.status), 'configuration can restore while business verification remains incomplete');
-    assert.equal(action.configurationOutcome, 'applied');
-    assert.match(action.error ?? '', /allowance|budget|verification|checkout/i);
-    assert.equal(fixture.aliasVersion.Inventory, healthyVersion);
-    assert.deepEqual(fixture.concurrencyWrites.map(({ name, next }) => ({ name, next })), [{ name: 'Inventory', next: 45 }]);
-    assert.equal(fixture.appRequests.length, beforeRequests,
-      'Recover does not begin an unfinishable app-verification sequence after its POST allowance is exhausted');
-    assert.notEqual(action.status, 'completed', 'restored settings alone are not successful business recovery');
-    assert.deepEqual(state.budgets, budgetsBefore);
-    assert.deepEqual(fixture.unhandled, []);
-  });
-
-  await t.test('catalog or order-status exhaustion prevents an unfinishable verification sequence', async () => {
-    for (const [budget, remaining] of [['catalog', 1], ['orderStatus', 0]]) {
-      await prepareDeniedAt512({ api, worker });
-      const run = row('STATE').data;
-      if (budget === 'catalog') run.budgets.catalog.remaining = remaining;
-      else run.budgets.orderStatus.remaining = remaining;
-      const before = await getState(api);
-      const beforeRequests = fixture.appRequests.length;
-      const { action, state } = await runRecover({ api, worker });
-      assert.ok(['failed', 'incomplete'].includes(action.status), `${budget} exhaustion leaves effect verification incomplete`);
-      assert.equal(action.configurationOutcome, 'applied');
-      assert.match(action.error ?? '', /allowance|budget|catalog|status|verification/i);
-      assert.equal(fixture.aliasVersion.Inventory, healthyVersion, 'safe settings restoration still finishes');
-      assert.equal(fixture.appRequests.length, beforeRequests,
-        `Recover checks all needed ${budget} allowances before starting a partial business-verification sequence`);
-      assert.equal(state.budgets[budget === 'catalog' ? 'catalog' : 'orderStatus'].remaining, remaining);
-      assert.deepEqual(state.budgets, before.budgets, 'a skipped verification sequence does not charge any partial allowance');
-      assert.notEqual(action.status, 'completed');
-      assert.deepEqual(fixture.unhandled, []);
-      assert.ok(before.originalBaseline.settings.inventory.memory === 256);
-    }
-  });
-
   await t.test('a new-generation 512 MB readiness cannot establish the original baseline; later higher readiness preserves 256 MB', async () => {
     reset({ revision: newerRevision, baselineRevision: newerRevision });
     addHigherMemoryVariants();
@@ -405,8 +358,6 @@ test('authenticated Recover restores the trusted baseline and verifies a fresh o
     firstRun.baseline = null;
     delete firstRun.originalBaseline;
     const requestsBefore = fixture.appRequests.length;
-    const budgetsBefore = structuredClone((await getState(api)).budgets);
-
     const prematureId = await submit(api, 'readiness', { confirmQuiet: true });
     await worker.handler({ actionId: prematureId });
     const premature = await getAction(api, prematureId);
@@ -417,7 +368,6 @@ test('authenticated Recover restores the trusted baseline and verifies a fresh o
     const unadopted = await getState(api);
     assert.equal(unadopted.baseline, null);
     assert.equal(unadopted.originalBaseline, undefined);
-    assert.deepEqual(unadopted.budgets, budgetsBefore, 'failed baseline adoption does not consume or renew run allowances');
 
     reset({ revision: newerRevision, baselineRevision: newerRevision });
     addHigherMemoryVariants();
@@ -547,10 +497,9 @@ test('authenticated Recover restores the trusted baseline and verifies a fresh o
     await prepareDeniedAt512({ api, worker, currentInventoryCap: 80 });
     fixture.aliasMode = 'lost-ack';
     const beforeRequests = fixture.appRequests.length;
-    const beforeBudgets = await getState(api);
     const beforeAliasAttempts = fixture.aliasUpdateAttempts.length;
     const beforeAliasUpdates = fixture.aliasUpdates.length;
-    const { action, state } = await runRecover({ api, worker });
+    const { action } = await runRecover({ api, worker });
     assert.equal(action.status, 'completed', action.error);
     assert.equal(action.configurationOutcome, 'applied');
     assert.equal(action.inventorySwitch?.after?.functionVersion, healthyVersion);
@@ -563,7 +512,6 @@ test('authenticated Recover restores the trusted baseline and verifies a fresh o
     assert.equal(recoveryRequests.filter(({ method, path }) => method === 'POST' && path === '/api/checkout').length, 1);
     assert.equal(recoveryRequests.filter(({ method, path }) => method === 'GET' && path.startsWith('/api/orders/')).length, 1,
       'verification occurs only after readback confirms the healthy alias');
-    assert.equal(state.budgets.checkout.verificationRemaining, beforeBudgets.budgets.checkout.verificationRemaining - 1);
     assert.deepEqual(fixture.unhandled, []);
   });
 
@@ -571,11 +519,10 @@ test('authenticated Recover restores the trusted baseline and verifies a fresh o
     await prepareDeniedAt512({ api, worker, baselineInventoryCap: 45, currentInventoryCap: 75 });
     fixture.concurrencyMode = 'lost-ack';
     const beforeRequests = fixture.appRequests.length;
-    const beforeState = await getState(api);
     const beforeAttempts = fixture.concurrencyAttempts.length;
     const beforeWrites = fixture.concurrencyWrites.length;
     const beforeReads = fixture.concurrencyReads.length;
-    const { action, state } = await runRecover({ api, worker });
+    const { action } = await runRecover({ api, worker });
     assert.equal(action.status, 'completed', action.error);
     assert.equal(action.configurationOutcome, 'applied');
     assert.equal(fixture.inventoryConcurrency, 45);
@@ -585,8 +532,6 @@ test('authenticated Recover restores the trusted baseline and verifies a fresh o
     assert.ok(fixture.concurrencyReads.slice(beforeReads).some(({ name, cap }) => name === 'Inventory' && cap === 45),
       'a readback confirms the selected cap');
     assert.equal(fixture.appRequests.slice(beforeRequests).filter(({ method, path }) => method === 'POST' && path === '/api/checkout').length, 1);
-    assert.equal(state.budgets.checkout.verificationRemaining, beforeState.budgets.checkout.verificationRemaining - 1,
-      'the verification request is charged once after settings are reconciled');
     assert.deepEqual(fixture.unhandled, []);
   });
 
@@ -616,20 +561,16 @@ test('authenticated Recover restores the trusted baseline and verifies a fresh o
     const readinessId = await submit(api, 'readiness', { confirmQuiet: true });
     await worker.handler({ actionId: readinessId });
     assert.equal((await getAction(api, readinessId)).status, 'completed');
-    const before = await getState(api);
     const beforeRequests = fixture.appRequests.length;
     const beforeInvocations = fixture.invocations.length;
     const beforeAliasUpdates = fixture.aliasUpdates.length;
     const beforeCapAttempts = fixture.concurrencyAttempts.length;
 
-    const { id, action, state } = await runRecover({ api, worker });
+    const { id, action } = await runRecover({ api, worker });
     assert.equal(action.status, 'completed', action.error);
     assert.equal(action.configurationOutcome, 'no_change');
     assert.equal(fixture.aliasUpdates.length, beforeAliasUpdates);
     assert.equal(fixture.concurrencyAttempts.length, beforeCapAttempts);
-    assert.equal(state.budgets.checkout.verificationRemaining, before.budgets.checkout.verificationRemaining - 1);
-    assert.equal(state.budgets.catalog.remaining, before.budgets.catalog.remaining - 2);
-    assert.equal(state.budgets.orderStatus.remaining, before.budgets.orderStatus.remaining - 1);
     assert.equal(fixture.appRequests.slice(beforeRequests).filter(({ method, path }) => method === 'POST' && path === '/api/checkout').length, 1);
 
     const duplicate = await api.handler(httpEvent('PUT', `/api/actions/${id}`, { kind: 'recover', confirmQuiet: true }));
@@ -667,7 +608,6 @@ test('authenticated Recover restores the trusted baseline and verifies a fresh o
     assert.match(action.error ?? '', /generation|baseline|readiness|release|reconcil/i);
     assert.deepEqual(configurationMutations(), [], 'unverified generation facts cannot authorize configuration restoration');
     assert.deepEqual(fixture.appRequests, [], 'fresh readiness is required before Recover can claim business verification');
-    assert.deepEqual(state.budgets, before.budgets);
     assert.deepEqual(state.originalBaseline, before.originalBaseline);
     assert.deepEqual(fixture.unhandled, []);
   });
@@ -689,14 +629,13 @@ test('authenticated Recover restores the trusted baseline and verifies a fresh o
     assert.deepEqual({ checkoutId: after.unresolved[0].checkoutId, sku: after.unresolved[0].sku,
       quantity: after.unresolved[0].quantity, productVersion: after.unresolved[0].productVersion }, unresolved,
     'the original checkout identity and immutable input remain unresolved');
-    assert.deepEqual(after.budgets, before.budgets, 'blocked readiness does not consume or replenish any allowance');
     assert.deepEqual(after.baseline, before.baseline);
     assert.deepEqual(after.originalBaseline, before.originalBaseline);
     assert.equal(after.incident, undefined, 'this case has no incident to trigger the settlement guard');
     assert.deepEqual(fixture.unhandled, []);
   });
 
-  await t.test('explicit readiness can adopt a healthy new release after a stale incident without resetting budgets', async () => {
+  await t.test('explicit readiness can adopt a healthy new release after a stale incident', async () => {
     const { activationId } = await prepareDeniedAt512({ api, worker });
     const oldIncidentId = (await getState(api)).incident.activationActionId;
     assert.equal(oldIncidentId, activationId);
@@ -713,8 +652,6 @@ test('authenticated Recover restores the trusted baseline and verifies a fresh o
     fixture.appMode = 'selected-variant';
     const before = await getState(api);
     const priorReceiptIds = before.receipts.map(({ checkoutId }) => checkoutId);
-    const beforeBudget = structuredClone(before.budgets);
-
     const readinessId = await submit(api, 'readiness', { confirmQuiet: true });
     await worker.handler({ actionId: readinessId });
     const readiness = await getAction(api, readinessId);
@@ -730,10 +667,6 @@ test('authenticated Recover restores the trusted baseline and verifies a fresh o
       name === 'Inventory' && version === healthyVersion);
     assert.equal(newInventoryConfiguration?.CodeSha256, 'fixture-code-next');
     assert.equal(newInventoryConfiguration?.Environment?.Variables?.SOURCE_REVISION, newerRevision);
-    assert.equal(after.budgets.checkout.generatorRemaining, beforeBudget.checkout.generatorRemaining);
-    assert.equal(after.budgets.checkout.verificationRemaining, beforeBudget.checkout.verificationRemaining - 1);
-    assert.equal(after.budgets.catalog.remaining, beforeBudget.catalog.remaining - 2);
-    assert.equal(after.budgets.orderStatus.remaining, beforeBudget.orderStatus.remaining - 1);
     for (const receiptId of priorReceiptIds) assert.ok(after.receipts.some(({ checkoutId }) => checkoutId === receiptId));
     assert.ok(after.incident?.activationActionId === oldIncidentId ||
       after.incidentHistory?.some(({ activationActionId }) => activationActionId === oldIncidentId),

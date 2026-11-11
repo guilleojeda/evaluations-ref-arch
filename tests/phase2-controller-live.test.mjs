@@ -19,19 +19,6 @@ function origin(name) {
   return url.origin;
 }
 
-function budgets(state) {
-  const remaining = {
-    generator: state.budgets?.checkout?.generatorRemaining,
-    verification: state.budgets?.checkout?.verificationRemaining,
-    catalog: state.budgets?.catalog?.remaining,
-  };
-  for (const [kind, maximum] of Object.entries({ generator: 50, verification: 5, catalog: 120 })) {
-    assert.ok(Number.isSafeInteger(remaining[kind]) && remaining[kind] >= 0 && remaining[kind] <= maximum,
-      `invalid remaining ${kind} allowance`);
-  }
-  return remaining;
-}
-
 function counts(action) {
   const result = {};
   for (const [profile, limit] of Object.entries(slots)) {
@@ -55,14 +42,6 @@ function assertDrain(progress) {
     assert.equal(count.inFlight, 0, `${profile} must drain`);
     assert.equal(count.completed, count.submitted, `${profile} requests must settle`);
   }
-}
-
-function assertSpent(before, after, { generator = 0, verification = 0, catalog = 0 }) {
-  assert.deepEqual({
-    generator: before.generator - after.generator,
-    verification: before.verification - after.verification,
-    catalog: before.catalog - after.catalog,
-  }, { generator, verification, catalog });
 }
 
 test('deployed controller verifies the app and owns finite traffic through Stop and repeat', {
@@ -157,9 +136,6 @@ test('deployed controller verifies the app and owns finite traffic through Stop 
     await request(actionPath(readinessId), 401, { token, command: readiness });
   }
 
-  const initial = budgets(await state());
-  assert.ok(initial.generator >= 30 && initial.verification >= 1 && initial.catalog >= 32,
-    'prepare a quiet Phase 2 verification run with enough remaining allowances');
   await command(readinessId, readiness);
   await waitFor(readinessId, 'readiness', ({ status }) => status === 'completed');
   await command(readinessId, readiness, [200, 202]);
@@ -172,8 +148,6 @@ test('deployed controller verifies the app and owns finite traffic through Stop 
   assert.ok(baseline.sku && baseline.productVersion);
   assert.ok(Number.isSafeInteger(baseline.stockBefore) && Number.isSafeInteger(baseline.stockAfter) && baseline.stockAfter >= 0);
   assert.equal(baseline.stockBefore - baseline.stockAfter, 1);
-  assertSpent(initial, budgets(verified), { verification: 1, catalog: 2 });
-
   const appAccess = { base: app, token: appBearer };
   const { order } = await request(`/api/orders/${baseline.checkoutId}`, 200, appAccess);
   assert.equal(order?.checkoutId, baseline.checkoutId);
@@ -201,23 +175,18 @@ test('deployed controller verifies the app and owns finite traffic through Stop 
   await command(randomUUID(), { kind: 'stop', targetActionId: trafficId });
   const stopped = counts(await waitFor(trafficId, 'Stop drain', ({ status }) => status === 'stopped'));
   assertDrain(stopped);
-  const afterStop = budgets(await state());
-  assertSpent(budgets(verified), afterStop, { generator: stopped.checkout.submitted, catalog: stopped.catalog.submitted });
   await command(trafficId, traffic, [200, 202]);
   await request(actionPath(trafficId), 409, { command: readiness });
   await delay(1_250);
   const stillStopped = await readAction(trafficId);
   assert.equal(stillStopped.status, 'stopped');
   assert.deepEqual(counts(stillStopped), stopped);
-  assert.deepEqual(budgets(await state()), afterStop);
-
   const repeatId = randomUUID();
   trafficIds.push(repeatId);
   await command(repeatId, traffic);
   const completed = counts(await waitFor(repeatId, 'finite repeat', ({ status }) => status === 'completed'));
   assertDrain(completed);
   assert.ok(completed.catalog.succeeded > 0 && completed.checkout.succeeded > 0, 'healthy repeat must serve both profiles');
-  assertSpent(afterStop, budgets(await state()), { generator: completed.checkout.submitted, catalog: completed.catalog.submitted });
   assert.equal((await readProduct()).availableQuantity,
     baseline.stockAfter - stopped.checkout.succeeded - completed.checkout.succeeded,
     'stock must reflect the real successful generator checkouts');

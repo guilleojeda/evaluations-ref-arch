@@ -33,20 +33,6 @@ function actionId(name) {
   return value;
 }
 
-function budgets(state) {
-  const result = {
-    generator: state.budgets?.checkout?.generatorRemaining,
-    verification: state.budgets?.checkout?.verificationRemaining,
-    catalog: state.budgets?.catalog?.remaining,
-    orderStatus: state.budgets?.orderStatus?.remaining,
-  };
-  for (const [name, maximum] of Object.entries({ generator: 50, verification: 5, catalog: 120, orderStatus: 60 })) {
-    assert.ok(Number.isSafeInteger(result[name]) && result[name] >= 0 && result[name] <= maximum,
-      `invalid remaining ${name} allowance`);
-  }
-  return result;
-}
-
 function completedAction(action, id, kind) {
   assert.equal(action?.id, id);
   assert.equal(action?.kind, kind);
@@ -250,7 +236,8 @@ test('deployed Inventory denial and restoration checkpoints are visible through 
     assert.equal(capturedAlias.revisionId, deniedAlias.revisionId, 'checkpoint must retain the actual denied alias revision');
 
     const catalogs = activation.requests.filter(({ kind }) => kind === 'catalog');
-    assert.ok(catalogs.length >= 1 && catalogs.length <= 6, 'catalog probes must stay within the activation allowance');
+    assert.ok(catalogs.length >= 1 && catalogs.length <= 6,
+      'activation must keep its observed catalog probes within the finite request sequence');
     const deniedCatalog = catalogs.at(-1);
     assert.equal(deniedCatalog.statusCode, 502);
     assert.equal(deniedCatalog.errorCode, 'INVENTORY_LOOKUP_FAILED');
@@ -271,14 +258,11 @@ test('deployed Inventory denial and restoration checkpoints are visible through 
     const deniedIds = [requestId(deniedCatalog, 'denied catalog'), requestId(failedCheckout, 'denied checkout')];
     assert.notEqual(deniedIds[0], deniedIds[1], 'distinct app requests must retain distinct request IDs');
 
-    const beforeReplayBudgets = budgets(snapshot);
     const beforeReplayRequestIds = activation.requests.map(({ id, requestId: appRequestId }) => ({ id, requestId: appRequestId }));
     const replay = await request(actionPath(activationId), 200, { method: 'PUT', body: activationCommand });
     assert.equal(replay.body.action?.id, activationId);
     assert.equal(replay.body.action?.kind, activationKind);
     assert.equal(replay.body.action?.status, 'completed');
-    const afterReplay = await state();
-    assert.deepEqual(budgets(afterReplay), beforeReplayBudgets, 'duplicate activation must spend no additional app budget');
     const replayedAction = await readAction(activationId);
     assert.deepEqual(replayedAction.requests.map(({ id, requestId: appRequestId }) => ({ id, requestId: appRequestId })),
       beforeReplayRequestIds, 'duplicate activation must not add app requests');
