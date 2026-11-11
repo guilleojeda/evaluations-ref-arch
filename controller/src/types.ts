@@ -4,6 +4,7 @@ export type Command =
   | { kind: "increase_memory"; function: "inventory"; memoryMb: number }
   | { kind: "activate_inventory_denial" }
   | { kind: "restore_inventory_access"; restoreWithoutEvidence?: true }
+  | { kind: "recover"; confirmQuiet: true; recoverWithoutEvidence?: true }
   | { kind: "stop" | "discard"; targetActionId: string };
 
 export type ActionStatus =
@@ -43,8 +44,30 @@ export interface Receipt {
   status: "placed";
 }
 
+/** Read-only identity of one successfully deployed app generation and its checked release artifacts. */
+export interface DeploymentIdentity {
+  stackId: string;
+  successfulAt: string;
+  sourceRevision: string;
+  api: string;
+  sku: string;
+  credentialGeneration: string;
+  checkoutVersion: string;
+  checkoutCodeSha256: string;
+  checkoutMemoryMb: number;
+  checkoutTimeoutSeconds: number;
+  checkoutCap: number | "unreserved";
+  inventoryVersion: string;
+  inventoryCodeSha256: string;
+  inventoryManifestSha256: string;
+  inventoryMemoryMb: number;
+  inventoryTimeoutSeconds: number;
+  inventoryCap: number | "unreserved";
+}
+
 export interface Baseline {
   appRevision: string;
+  deploymentIdentity?: DeploymentIdentity;
   checkoutId: string;
   sku: string;
   productVersion: string;
@@ -189,6 +212,7 @@ export interface IncidentState {
   mechanism: "lambda-alias";
   activationActionId: string;
   appRevision?: string;
+  deploymentIdentity?: DeploymentIdentity;
   checkpoint?: ConfigurationCheckpoint;
   policyBefore: InventoryAccessPolicyObservation;
   policy: InventoryAccessPolicyObservation;
@@ -238,7 +262,23 @@ export interface Action {
     after?: InventoryAliasObservation;
   };
   configurationOutcome?: "applied" | "no_change" | "failed" | "unknown";
+  recoveryProgress?: "stopping" | "draining" | "validating" | "capturing" | "restoring" | "verifying"
+    | "verified" | "verification_incomplete" | "verification_unknown";
+  capRestoration?: {
+    checkout?: CapRestoration;
+    inventory?: CapRestoration;
+  };
   error?: string;
+}
+
+export type CapValue = number | "unreserved" | "unknown";
+
+export interface CapRestoration {
+  before: CapValue;
+  target: CapValue;
+  readback?: CapValue;
+  outcome: "pending" | "applied" | "no_change" | "failed" | "unknown";
+  observedAt?: string;
 }
 
 export interface RunState {

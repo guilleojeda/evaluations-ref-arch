@@ -11,7 +11,14 @@ import type {
   InventoryVariant,
   InventoryVersionObservation,
 } from "./types";
-import { currentConfigurationObservation, currentInventoryDisplay } from "./inventory-display.mjs";
+import {
+  capOutcomeLabel,
+  capValueLabel,
+  currentConfigurationObservation,
+  currentInventoryDisplay,
+  recoveryProgressLabel,
+  recoveryVerificationLabel,
+} from "./inventory-display.mjs";
 
 type Notice = { kind: "error" | "success"; message: string } | undefined;
 type PendingCommand = { id: string; command: Command };
@@ -104,6 +111,114 @@ function InvestigationRecord({ run }: { run: InvestigationRun }) {
   </article>;
 }
 
+function recoveryValidationLabel(action: Action): string {
+  if (action.recoveryProgress === "validating") {
+    if (action.status === "failed") return "Failed";
+    if (action.status === "incomplete") return "Incomplete";
+    return "In progress";
+  }
+  if (["capturing", "restoring", "verifying", "verified", "verification_incomplete", "verification_unknown"].includes(action.recoveryProgress ?? "")) {
+    return "Passed";
+  }
+  return action.status === "failed" ? "Failed or not reached" : "Not recorded";
+}
+
+function RecoveryPanel({
+  action,
+  state,
+  trafficAction,
+  currentAlias,
+  currentMemoryMb,
+  currentAccess,
+}: {
+  action: Action;
+  state: DashboardState;
+  trafficAction?: Action;
+  currentAlias?: InventoryAliasObservation;
+  currentMemoryMb?: number;
+  currentAccess: unknown;
+}) {
+  const original = inventoryVersionObservation(state.originalBaseline?.settings?.inventory);
+  const target = action.inventorySwitch?.target;
+  const aliasBefore = action.inventorySwitch?.before;
+  const aliasAfter = action.inventorySwitch?.after;
+  const baselineInventory = inventoryVersionObservation(state.baseline?.settings?.inventory);
+  const manifest = state.baseline?.settings?.inventoryVariantsManifest ?? state.originalBaseline?.settings?.inventoryVariantsManifest;
+  const checkpointRevision = action.configurationCheckpoint?.appRevision;
+  const trustedManifest = isRecord(manifest) && manifest.sourceRevision === checkpointRevision ? manifest : undefined;
+  const beforeVariant = inventoryVariantForVersion(trustedManifest, aliasBefore?.functionVersion);
+  const beforeMatchesCurrent = aliasBefore?.functionVersion === currentAlias?.functionVersion;
+  const beforeMemory = beforeVariant?.memoryMb ?? (beforeMatchesCurrent ? currentMemoryMb : undefined);
+  const beforeAccess = beforeVariant?.access ?? (beforeMatchesCurrent ? currentAccess : undefined);
+  const beforeRole = beforeVariant?.roleArn ?? (beforeMatchesCurrent ? baselineInventory?.role : undefined);
+  const checkpoint = action.configurationCheckpoint;
+  const verificationRequest = [...action.requests].reverse().find(({ kind }) => kind === "checkout");
+  const verificationId = action.baseline?.checkoutId ?? verificationRequest?.checkout?.checkoutId ?? verificationRequest?.checkoutId;
+  const receipt = verificationId ? state.receipts.find(({ checkoutId }) => checkoutId === verificationId) : undefined;
+  const verifiedBaseline = action.baseline?.checkoutId === verificationId ? action.baseline
+    : state.baseline?.checkoutId === verificationId ? state.baseline : undefined;
+  const trafficLabel = !trafficAction ? "No active traffic action"
+    : trafficAction.status === "draining" ? "Draining accepted requests"
+      : trafficAction.status === "stopped" ? "Stopped"
+        : trafficAction.status === "completed" ? "Completed"
+          : trafficAction.status === "running" && trafficAction.stopRequested ? "Stop requested"
+            : trafficAction.status;
+  const capRows = [
+    ["Checkout", action.capRestoration?.checkout],
+    ["Inventory", action.capRestoration?.inventory],
+  ] as const;
+
+  return <section className="card recovery-panel" aria-label="Recovery progress">
+    <div className="card-heading">
+      <div><p className="eyebrow">Recover current release</p><h3 aria-live="polite">{recoveryProgressLabel(action.recoveryProgress)}</h3></div>
+      <span className={`incident-badge ${["failed", "incomplete", "discarded"].includes(action.status) ? "badge-warning" : "badge-neutral"}`}>Action {action.status}</span>
+    </div>
+    <p className="muted recovery-meta">Action {action.id} · started {formatTime(action.startedAt)}{action.finishedAt ? ` · ended ${formatTime(action.finishedAt)}` : ""}</p>
+    {action.error && <p className="action-error" role="alert">{action.error}</p>}
+    <div className="recovery-status-grid">
+      <div><span className="fact-label">Traffic</span><strong>{trafficLabel}</strong><small>{trafficAction ? `${display(trafficAction.traffic?.catalog?.inFlight, "0")} catalog · ${display(trafficAction.traffic?.checkout?.inFlight, "0")} checkout requests in flight` : "No producer needs draining"}</small></div>
+      <div><span className="fact-label">Release validation</span><strong>{recoveryValidationLabel(action)}</strong><small>Current deployed release and prepared settings</small></div>
+      <div><span className="fact-label">Settings capture</span><strong>{checkpoint?.status ?? (action.recoveryProgress === "capturing" ? "In progress" : "Not recorded")}</strong><small>{checkpoint?.createdAt ? `Observed ${formatTime(checkpoint.createdAt)}` : checkpoint?.error ?? ""}</small></div>
+      <div><span className="fact-label">Settings result</span><strong>{resultLabel(action.configurationOutcome)}</strong><small>Recorded independently from business verification</small></div>
+    </div>
+    {checkpoint?.error && <p className="muted recovery-gap" role="status">Capture detail: {checkpoint.error}</p>}
+
+    <h4 className="recovery-subheading">Inventory version and memory</h4>
+    <dl className="recovery-facts">
+      <div><dt>Original healthy target</dt><dd>{original ? `v${original.version} · ${original.memory} MB · ${accessLabel(original.access)} · ${roleLabel(original.role)}` : "Not established"}</dd></div>
+      <div><dt>Before recovery</dt><dd>{aliasBefore ? `v${aliasBefore.functionVersion}` : display(currentAlias?.functionVersion, "Unknown")} · {beforeMemory === undefined ? "memory unknown" : `${beforeMemory} MB`} · {accessLabel(beforeAccess)} · {roleLabel(beforeRole)}</dd></div>
+      <div><dt>Recovery target</dt><dd>{target ? `v${target.version} · ${target.memoryMb} MB · ${accessLabel(target.access)} · ${roleLabel(target.roleArn)}` : "Not recorded"}</dd></div>
+      <div><dt>Alias readback</dt><dd>{aliasAfter ? `v${aliasAfter.functionVersion}${target?.version === aliasAfter.functionVersion ? ` · target ${target.memoryMb} MB ${accessLabel(target.access)} · ${roleLabel(target.roleArn)}` : ""} · ${formatTime(aliasAfter.observedAt)}` : action.recoveryProgress === "restoring" ? "Awaiting readback" : "Not observed"}</dd></div>
+    </dl>
+
+    <h4 className="recovery-subheading">Function concurrency</h4>
+    <div className="recovery-cap-grid">
+      {capRows.map(([name, value]) => <article className="recovery-cap" key={name}>
+        <strong>{name}</strong>
+        {value ? <>
+          <span>Before {capValueLabel(value.before)} · target {capValueLabel(value.target)}</span>
+          <span>Readback {value.readback === undefined ? (value.outcome === "pending" ? "Awaiting readback" : "Not observed") : capValueLabel(value.readback)}</span>
+          <small>{capOutcomeLabel(value.outcome)}{value.observedAt ? ` · ${formatTime(value.observedAt)}` : ""}</small>
+        </> : <span>Not observed</span>}
+      </article>)}
+    </div>
+
+    <h4 className="recovery-subheading">Fresh business verification</h4>
+    <p className="recovery-verification" role="status">{recoveryVerificationLabel(action)}</p>
+    <dl className="recovery-facts">
+      <div><dt>Verification order</dt><dd className="mono">{display(verificationId, "Not sent")}</dd></div>
+      <div><dt>Saved receipt</dt><dd>{display(verifiedBaseline?.receipt?.status ?? receipt?.status, verificationRequest?.outcome === "success" ? "Request succeeded; receipt readback pending" : "Not observed")}</dd></div>
+      <div><dt>Stock check</dt><dd>{verifiedBaseline ? `${verifiedBaseline.stockBefore} → ${verifiedBaseline.stockAfter} units` : "Not verified"}</dd></div>
+      <div><dt>Product version</dt><dd className="mono">{display(verifiedBaseline?.productVersion, "Not verified")}</dd></div>
+    </dl>
+
+    <h4 className="recovery-subheading">Last verified health</h4>
+    {state.baseline
+      ? <p className="recovery-last-health"><span className="mono">{state.baseline.checkoutId}</span> · {state.baseline.stockBefore} → {state.baseline.stockAfter} units · product {state.baseline.productVersion} · verified {formatTime(state.baseline.verifiedAt)}</p>
+      : <p className="recovery-last-health">No successful business verification is recorded.</p>}
+  </section>;
+}
+
 class RequestError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
 }
@@ -141,6 +256,18 @@ function inventoryVersionObservation(value: unknown): InventoryVersionObservatio
       (typeof value.cap !== "number" && value.cap !== "unreserved") || typeof value.codeSha256 !== "string" ||
       typeof value.role !== "string") return undefined;
   return value as unknown as InventoryVersionObservation;
+}
+function inventoryVariantForVersion(value: unknown, version: string | undefined): InventoryVariant | undefined {
+  if (!version || !isRecord(value) || !Array.isArray(value.variants)) return undefined;
+  const variant = value.variants.find((candidate) => isRecord(candidate) && candidate.version === version);
+  if (!isRecord(variant) || typeof variant.memoryMb !== "number" || !Number.isSafeInteger(variant.memoryMb) ||
+      variant.memoryMb < 128 || variant.memoryMb > 10_240 ||
+      (variant.access !== "healthy" && variant.access !== "denied") || typeof variant.roleArn !== "string") return undefined;
+  return { version, memoryMb: variant.memoryMb, access: variant.access, roleArn: variant.roleArn };
+}
+function roleLabel(value: unknown): string {
+  if (typeof value !== "string" || !value) return "Role not recorded";
+  return value.split("/").at(-1) ?? value;
 }
 function inventoryMemoryOptions(value: unknown, releaseRevision: string | undefined,
   healthyRoleArn: unknown, deniedRoleArn: unknown): number[] {
@@ -230,6 +357,7 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [readinessConfirmed, setReadinessConfirmed] = useState(false);
   const [protectiveRestoreConfirmed, setProtectiveRestoreConfirmed] = useState(false);
+  const [protectiveRecoveryConfirmed, setProtectiveRecoveryConfirmed] = useState(false);
   const [inventoryMemorySelection, setInventoryMemorySelection] = useState<number>();
   const [pendingCommand, setPendingCommand] = useState<PendingCommand>();
   const [pendingConfigurationCommand, setPendingConfigurationCommand] = useState<PendingCommand>();
@@ -293,12 +421,15 @@ export function App() {
 
   const currentAction = state?.currentAction;
   const configurationAction = state?.currentConfigurationAction;
+  const recoveryAction = configurationAction?.kind === "recover" ? configurationAction : undefined;
   const currentStatus = currentAction?.status ?? "idle";
   const trafficActive = currentAction?.kind === "traffic" && activeStatuses.has(currentStatus);
   const anyPendingCommand = Boolean(pendingCommand || pendingConfigurationCommand);
   const actionBusy = loading || !state || anyPendingCommand || Boolean(currentAction && activeStatuses.has(currentStatus)) || currentStatus === "incomplete";
   const configurationBusy = loading || anyPendingCommand || Boolean(configurationAction && activeStatuses.has(configurationAction.status)) || configurationAction?.status === "incomplete";
   const restoreBusy = configurationBusy || Boolean(currentAction && activeStatuses.has(currentStatus) && currentAction.kind !== "traffic");
+  const nonTrafficActionBusy = Boolean(currentAction && currentAction.kind !== "traffic" &&
+    (activeStatuses.has(currentStatus) || currentStatus === "incomplete"));
   const baseline = state?.baseline;
   const budgets = state?.budgets;
   const incident = state?.incident;
@@ -316,7 +447,7 @@ export function App() {
     observedAt: baselineInventory.observedAt ?? baseline?.verifiedAt ?? "",
   } : undefined;
   const aliasUnknown = state?.inventoryAliasUnknown === true || aliasIncident?.active === "unknown";
-  const inventoryDisplay = currentInventoryDisplay({ baselineAlias, baselineInventory, aliasIncident, unknown: aliasUnknown });
+  const inventoryDisplay = currentInventoryDisplay({ baselineAlias, baselineInventory, aliasIncident, recoveryAction, unknown: aliasUnknown });
   const { currentAlias, currentVariant, targetVariant } = inventoryDisplay;
   const currentAccess = inventoryDisplay.access;
   const currentAliasStatus = aliasStatus(currentAlias, currentVariant, Boolean(baseline), currentAccess);
@@ -331,7 +462,13 @@ export function App() {
     ? display(aliasIncident?.target.roleArn ?? baselineInventory?.role, "Not observed")
     : currentAccess === "healthy" ? display(baselineInventory?.role ?? baseline?.settings.inventoryRoleArn, "Not observed") : "Unknown";
   const trafficStartAllowed = !incidentActive;
-  const needsProtectiveRestore = checkpoint?.status === "unavailable" || checkpoint?.status === "incomplete";
+  const restoreCheckpoint = configurationAction?.kind === "restore_inventory_access"
+    ? configurationAction.configurationCheckpoint : aliasIncident?.checkpoint;
+  const needsProtectiveRestore = restoreCheckpoint?.status === "unavailable" || restoreCheckpoint?.status === "incomplete";
+  const recoveryCaptureGap = Boolean(recoveryAction && ["failed", "incomplete", "discarded"].includes(recoveryAction.status) &&
+    ["unavailable", "incomplete"].includes(recoveryAction.configurationCheckpoint?.status ?? ""));
+  const recoverDisabled = !state || configurationBusy || nonTrafficActionBusy ||
+    !state.originalBaseline || !readinessConfirmed || (recoveryCaptureGap && !protectiveRecoveryConfirmed);
   const selectedMemoryIsPrepared = selectedMemoryMb !== undefined && inventoryMemoryChoices.includes(selectedMemoryMb);
   const memorySelectionUnavailable = !baseline ? "Check readiness to load verified Inventory memory choices."
     : aliasUnknown ? "Inventory memory is unknown until the alias is read back."
@@ -359,7 +496,7 @@ export function App() {
       : alarm?.alarmBinding?.state === "unexpected" ? "Unexpected action"
         : alarm?.alarmBinding?.state === "unavailable" ? "Unavailable"
           : alarm?.alarmBinding?.state === "unconfigured" ? "Not configured" : "Unknown";
-  const retainedAlarm = checkpoint?.alarm;
+  const retainedAlarm = aliasIncident?.checkpoint?.alarm ?? checkpoint?.alarm;
   const configurationObservation = currentConfigurationObservation(
     currentAction?.kind === "activate_inventory_denial" ? currentAction : undefined,
     configurationAction,
@@ -382,7 +519,7 @@ export function App() {
     const epoch = sessionEpoch.current;
     const callNumber = requestEpoch.current + 1;
     requestEpoch.current = callNumber;
-    const isConfiguration = command.kind === "restore_inventory_access" || command.kind === "increase_memory";
+    const isConfiguration = command.kind === "restore_inventory_access" || command.kind === "increase_memory" || command.kind === "recover";
     const setPending = isConfiguration ? setPendingConfigurationCommand : setPendingCommand;
     if (isConfiguration) setConfigurationSubmitting(true);
     else setLoading(true);
@@ -399,7 +536,8 @@ export function App() {
       }
       if (epoch === sessionEpoch.current) {
         setPending(undefined);
-        if (command.kind === "readiness") setReadinessConfirmed(false);
+        if (command.kind === "readiness" || command.kind === "recover") setReadinessConfirmed(false);
+        if (command.kind === "recover") setProtectiveRecoveryConfirmed(false);
         setNotice({ kind: "success", message: `${String(command.kind)} accepted` });
         setMenuOpen(false);
         await Promise.all([loadState(), loadAlarm()]);
@@ -437,11 +575,19 @@ export function App() {
       if (sessionEpoch.current === epoch) setNotice({ kind: "error", message: error instanceof Error ? error.message : "The presenter credential was rejected." });
     } finally { if (sessionEpoch.current === epoch) setLoading(false); }
   };
-  const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setInvestigations(undefined); setInvestigationReadFailedAt(undefined); setPendingCommand(undefined); setPendingConfigurationCommand(undefined); setConfigurationSubmitting(false); setInventoryMemorySelection(undefined); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
+  const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setInvestigations(undefined); setInvestigationReadFailedAt(undefined); setPendingCommand(undefined); setPendingConfigurationCommand(undefined); setConfigurationSubmitting(false); setInventoryMemorySelection(undefined); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setProtectiveRecoveryConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
   const runReadiness = () => { if (readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "readiness", confirmQuiet: true }); };
   const runTraffic = () => void sendAction(crypto.randomUUID(), { kind: "traffic" });
   const runActivation = () => { if (readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "activate_inventory_denial" }); };
   const runRestore = () => { if (aliasIncident && !restoreBusy && (!needsProtectiveRestore || protectiveRestoreConfirmed)) void sendAction(crypto.randomUUID(), needsProtectiveRestore ? { kind: "restore_inventory_access", restoreWithoutEvidence: true } : { kind: "restore_inventory_access" }); };
+  const runRecovery = () => {
+    if (recoverDisabled || !readinessConfirmed) return;
+    void sendAction(crypto.randomUUID(), {
+      kind: "recover",
+      confirmQuiet: true,
+      ...(recoveryCaptureGap && protectiveRecoveryConfirmed ? { recoverWithoutEvidence: true as const } : {}),
+    });
+  };
   const runMemorySelection = () => {
     if (!memorySelectionDisabled && selectedMemoryMb !== undefined) {
       void sendAction(crypto.randomUUID(), { kind: "increase_memory", function: "inventory", memoryMb: selectedMemoryMb });
@@ -472,17 +618,23 @@ export function App() {
           {currentAction?.error && <p className="action-error" role="alert">{currentAction.error}</p>}
           {currentAction?.discardAfter && currentStatus === "incomplete" && <p className="muted">Discard available after {formatTime(new Date(currentAction.discardAfter).toISOString())}</p>}
           <label className="quiet-check"><input type="checkbox" checked={readinessConfirmed} onChange={(event) => setReadinessConfirmed(event.target.checked)} /> I confirm other checkout writers are paused.</label>
+          {!state?.originalBaseline && <p className="muted recovery-readiness-hint" role="status">Check readiness to establish the original healthy settings before recovery.</p>}
+          {recoveryCaptureGap && <label className="quiet-check recovery-protective-check">
+            <input type="checkbox" checked={protectiveRecoveryConfirmed} onChange={(event) => setProtectiveRecoveryConfirmed(event.target.checked)} />
+            The last Recover could not capture current settings. Allow a protective retry and keep the evidence gap visible.
+          </label>}
         </div>
         <div className="action-controls">
-          <button className="button button-primary" type="button" onClick={runReadiness} disabled={actionBusy || configurationBusy || incidentActive || !readinessConfirmed}>Check readiness</button>
+          <button className="button button-primary" type="button" onClick={runReadiness} disabled={actionBusy || configurationBusy || !readinessConfirmed}>Check readiness</button>
           <button className="button button-secondary" type="button" onClick={runTraffic} disabled={actionBusy || !baseline || !trafficStartAllowed}>Start healthy traffic</button>
           {trafficActive && <button className="button button-stop" type="button" onClick={stopTraffic} disabled={loading || Boolean(pendingCommand) || currentStatus === "draining"}>Stop traffic</button>}
           {(currentAction?.status === "incomplete" || configurationAction?.status === "incomplete") && <button className="button button-secondary" type="button" onClick={discardAction} disabled={loading || anyPendingCommand || Date.now() < (currentAction?.status === "incomplete" ? currentAction.discardAfter : configurationAction!.discardAfter)}>Discard action</button>}
           <div className="menu-wrap">
             <button className="button button-secondary" type="button" aria-haspopup="true" aria-expanded={menuOpen} aria-controls="controller-actions" onClick={() => setMenuOpen((open) => !open)}>Actions <span className="chevron" aria-hidden="true" /></button>
             {menuOpen && <div className="actions-menu" id="controller-actions" role="group" aria-label="Controller actions">
-              <button type="button" onClick={runReadiness} disabled={actionBusy || configurationBusy || incidentActive || !readinessConfirmed}>Check readiness</button>
+              <button type="button" onClick={runReadiness} disabled={actionBusy || configurationBusy || !readinessConfirmed}>Check readiness</button>
               <button type="button" onClick={runTraffic} disabled={actionBusy || !baseline || !trafficStartAllowed}>Start healthy traffic</button>
+              <button type="button" onClick={runRecovery} disabled={recoverDisabled}>Recover</button>
               <button type="button" onClick={runActivation} disabled={actionBusy || configurationBusy || incidentActive || !baseline || !readinessConfirmed}>Activate Inventory denial</button>
               {!legacyIncident && <button type="button" onClick={runRestore} disabled={!aliasIncident || restoreBusy || (needsProtectiveRestore && !protectiveRestoreConfirmed)}>Restore Inventory access</button>}
               <section className="memory-picker" aria-label="Inventory memory selection">
@@ -518,6 +670,9 @@ export function App() {
         <button className="inline-action" type="button" onClick={() => retryPending(pendingConfigurationCommand)} disabled={loading || configurationSubmitting}>Retry {pendingConfigurationCommand.command.kind}</button>
       </div>}
       {pollFailure && <p className="notice notice-error" role="alert">{pollFailure}. The last good cloud observation remains visible.</p>}
+      {recoveryAction && state && <RecoveryPanel action={recoveryAction} state={state}
+        trafficAction={currentAction?.kind === "traffic" ? currentAction : undefined}
+        currentAlias={currentAlias} currentMemoryMb={currentMemoryMb} currentAccess={currentAccess} />}
       <section className="incident-controls card" aria-label="Inventory denial controls">
         <div className="card-heading">
           <div><p className="eyebrow">Prepared version control</p><h3>Inventory access state</h3></div>
@@ -561,7 +716,7 @@ export function App() {
           <div><dt>Prepared policy</dt><dd className="mono">{display(policyObservation.policyName, "Not observed")}</dd></div>
           <div><dt>Policy state</dt><dd>{display(policyObservation.state, "unknown")}</dd></div>
         </dl>}
-        {configurationObservation && <div className="configuration-result" aria-label="Configuration result details">
+        {configurationObservation && configurationObservation.kind !== "recover" && <div className="configuration-result" aria-label="Configuration result details">
           <p><strong>{resultLabel(configurationObservation.configurationOutcome)}</strong> · {configurationObservation.kind === "activate_inventory_denial" ? "Denial activation" : configurationObservation.kind === "increase_memory" ? "Memory selection" : "Access restore"} · {configurationObservation.status}</p>
           <p className="muted">Alias {display(switchBefore?.functionVersion, "unknown")} → {display(switchTarget?.version, "unknown")} {switchAfter ? `· read back ${switchAfter.functionVersion}` : "· awaiting readback"}; {configurationObservation.kind === "activate_inventory_denial" ? "bounded request observations are shown separately below" : configurationObservation.kind === "increase_memory" ? "memory selection sends no app probes" : "restore sends no app probes"}.</p>
         </div>}
@@ -570,9 +725,9 @@ export function App() {
           <input type="checkbox" checked={protectiveRestoreConfirmed} onChange={(event) => setProtectiveRestoreConfirmed(event.target.checked)} />
           Evidence capture is unavailable. Allow protective restore of the recorded alias state.
         </label>}
-        {configurationAction?.error && <p className="action-error" role="alert">{configurationAction.error}</p>}
+        {configurationAction?.kind !== "recover" && configurationAction?.error && <p className="action-error" role="alert">{configurationAction.error}</p>}
       </section>
-      <section className="summary-grid" aria-label="Run summary"><article className="card"><p className="eyebrow">Target baseline</p><dl className="facts"><div><dt>App revision</dt><dd className="mono">{display(baseline?.appRevision, "Not verified")}</dd></div><div><dt>Product</dt><dd>{display(baseline?.sku, "Not verified")}</dd></div><div><dt>Product version</dt><dd className="mono">{display(baseline?.productVersion, "Not verified")}</dd></div></dl></article><article className="card stock-card"><p className="eyebrow">Inventory</p><strong className="stock-value">{display(state?.latestStock ?? baseline?.stockAfter, "—")}</strong><p className="muted">units · observed {formatTime(state?.latestStockAt)}</p></article><article className="card"><p className="eyebrow">Readiness order</p><p className="mono compact">{display(baseline?.checkoutId, "No verification order")}</p><p className="muted">{baseline ? `${display(baseline.stockBefore)} → ${display(baseline.stockAfter)} units` : "A verified order will establish the baseline."}</p></article></section>
+      <section className="summary-grid" aria-label="Run summary"><article className="card"><p className="eyebrow">Last verified health</p><dl className="facts"><div><dt>App revision</dt><dd className="mono">{display(baseline?.appRevision, "Not verified")}</dd></div><div><dt>Product</dt><dd>{display(baseline?.sku, "Not verified")}</dd></div><div><dt>Product version</dt><dd className="mono">{display(baseline?.productVersion, "Not verified")}</dd></div></dl></article><article className="card stock-card"><p className="eyebrow">Inventory</p><strong className="stock-value">{display(state?.latestStock ?? baseline?.stockAfter, "—")}</strong><p className="muted">units · observed {formatTime(state?.latestStockAt)}</p></article><article className="card"><p className="eyebrow">Readiness order</p><p className="mono compact">{display(baseline?.checkoutId, "No verification order")}</p><p className="muted">{baseline ? `${display(baseline.stockBefore)} → ${display(baseline.stockAfter)} units · verified ${formatTime(baseline.verifiedAt)}` : "A verified order will establish the baseline."}</p></article></section>
       <section className="traffic-grid" aria-label="Traffic progress">{(["catalog", "checkout"] as const).map((profile) => { const value = currentAction?.traffic?.[profile]; const remaining = profile === "catalog" ? budgets?.catalog?.remaining : budgets?.checkout?.generatorRemaining; return <article className="card traffic-card" key={profile}><div className="card-heading"><div><p className="eyebrow">{profile} traffic</p><h3>{profile === "catalog" ? "Catalog reads" : "Checkout posts"}</h3></div><span className="budget">{display(remaining)} remaining</span></div><div className="metric-row">{([["submitted", "sent"], ["completed", "settled"], ["succeeded", "succeeded"], ["skipped", "skipped"], ["inFlight", "in flight"]] as const).map(([field, label]) => <div key={field}><strong>{display(value?.[field], "0")}</strong><span>{label}</span></div>)}</div></article>; })}</section><p className="muted allowance-summary" aria-label="Verification allowances">Verification checkouts {display(budgets?.checkout.verificationRemaining)} remaining · Order-status reads {display(budgets?.orderStatus.remaining)} remaining</p>
       {currentAction?.requests.length ? <details className="card request-details"><summary>Recent requests for this action</summary><ul className="record-list">{currentAction.requests.slice(-10).reverse().map((request) => <li key={request.id}><span>{request.kind.replace("_", " ")} · {request.outcome ?? "pending"}</span><strong>{request.durationMs === undefined ? "In progress" : `${request.durationMs} ms`}</strong><small className="mono">{request.requestId ?? "No app request ID"}{request.errorCode ? ` · ${request.errorCode}` : ""}{request.dependencyReason ? ` · ${request.dependencyReason}` : ""}</small></li>)}</ul></details> : null}
       <section className="monitor-grid" aria-label="Monitoring observations">

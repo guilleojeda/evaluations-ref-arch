@@ -126,6 +126,7 @@ jobs:
         if: matrix.component == 'controller'
         run: |
           node --test tests/phase2-controller-deploy.test.mjs tests/phase2-controller-handler.test.mjs tests/phase3-inventory-denial-controller.test.mjs tests/phase5-inventory-memory-controller.test.mjs
+          node --test tests/phase6-controller-recovery.test.mjs tests/phase6-controller-recovery-display.test.mjs tests/phase6-controller-recovery-infrastructure.test.mjs
           node --test --test-name-pattern="^controller evidence" tests/phase3-inventory-denial-infrastructure.test.mjs
           node --test tests/phase4-agent-controller.test.mjs
           node --test --test-name-pattern="^controller can read" tests/phase4-agent-infrastructure.test.mjs
