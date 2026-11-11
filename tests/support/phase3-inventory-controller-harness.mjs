@@ -27,6 +27,9 @@ export const evidenceBucket = 'incident-triage-demo-evidence-027224425948-us-eas
 export const evidencePrefix = 'configuration/';
 export const manifestBucket = 'cdk-evaltalk-assets-027224425948-us-east-1';
 export const manifestKey = `releases/app/${appRevision}/inventory-variants.json`;
+export function currentManifestKey() {
+  return `releases/app/${fixture.revision}/inventory-variants.json`;
+}
 export const healthyVersion = '2';
 export const deniedVersion = '3';
 
@@ -45,9 +48,21 @@ export const fixture = {
   trace: [],
   configurationReads: [],
   concurrencyReads: [],
+  concurrencyAttempts: [],
+  concurrencyWrites: [],
+  concurrencyMode: 'apply',
   alarmReads: [],
   unhandled: [],
   revision: appRevision,
+  stackStatus: 'UPDATE_COMPLETE',
+  stackId: '11111111-1111-4111-8111-111111111111',
+  stackCreatedAt: '2026-11-05T00:00:00.000Z',
+  stackLastUpdatedAt: '2026-11-05T00:00:00.000Z',
+  credentialGeneration: 'fixture-generation',
+  baselineMemoryMb: 256,
+  inventoryExpectedVersion: healthyVersion,
+  inventoryExpectedConcurrency: 'unreserved',
+  checkoutExpectedConcurrency: 'unreserved',
   healthyRoleAttached: false,
   deniedRoleAttached: true,
   iamPolicyDocument: undefined,
@@ -57,6 +72,7 @@ export const fixture = {
   extraVariants: [],
   versionOverrides: {},
   inventoryConcurrency: undefined,
+  checkoutConcurrency: undefined,
   aliasMode: 'apply',
   beforeAliasUpdate: undefined,
   aliasUpdateEntered: false,
@@ -126,9 +142,21 @@ export function reset({ baselineRevision = appRevision, revision = appRevision, 
   fixture.trace.length = 0;
   fixture.configurationReads.length = 0;
   fixture.concurrencyReads.length = 0;
+  fixture.concurrencyAttempts.length = 0;
+  fixture.concurrencyWrites.length = 0;
+  fixture.concurrencyMode = 'apply';
   fixture.alarmReads.length = 0;
   fixture.unhandled.length = 0;
   fixture.revision = revision;
+  fixture.stackStatus = 'UPDATE_COMPLETE';
+  fixture.stackId = '11111111-1111-4111-8111-111111111111';
+  fixture.stackCreatedAt = '2026-11-05T00:00:00.000Z';
+  fixture.stackLastUpdatedAt = '2026-11-05T00:00:00.000Z';
+  fixture.credentialGeneration = 'fixture-generation';
+  fixture.baselineMemoryMb = 256;
+  fixture.inventoryExpectedVersion = healthyVersion;
+  fixture.inventoryExpectedConcurrency = 'unreserved';
+  fixture.checkoutExpectedConcurrency = 'unreserved';
   fixture.healthyRoleAttached = healthyAttached;
   fixture.deniedRoleAttached = deniedAttached;
   fixture.iamPolicyDocument = iamPolicyDocument();
@@ -138,6 +166,7 @@ export function reset({ baselineRevision = appRevision, revision = appRevision, 
   fixture.extraVariants = [];
   fixture.versionOverrides = {};
   fixture.inventoryConcurrency = undefined;
+  fixture.checkoutConcurrency = undefined;
   fixture.manifestMode = 'valid';
   fixture.deniedConfigMode = 'valid';
   fixture.weightedAlias = false;
@@ -151,6 +180,7 @@ export function reset({ baselineRevision = appRevision, revision = appRevision, 
   fixture.aliasVersion = { Checkout: healthyVersion, Inventory: aliasVersion };
   fixture.aliasRevision = aliasRevision;
   fixture.heldRequests.clear();
+  fixture.heldReleaseMode = undefined;
   put({ pk: 'STATE', revision: 1, data: {
     baseline: {
       appRevision: baselineRevision,
@@ -209,18 +239,26 @@ export function stackXml() {
   const outputs = [
     ['SourceRevision', fixture.revision], ['ApiUrl', appApi], ['ProductSku', 'demo-widget'],
     ['CheckoutFunctionName', 'IncidentTriageDemoCheckout'], ['InventoryFunctionName', 'IncidentTriageDemoInventory'],
-    ['InventoryTableName', table], ['InventoryRoleArn', inventoryRoleArn], ['PresenterCredentialGeneration', 'fixture-generation'],
+    ['InventoryTableName', table], ['InventoryRoleArn', inventoryRoleArn], ['PresenterCredentialGeneration', fixture.credentialGeneration],
     ['InventoryDeniedRoleArn', deniedRoleArn],
-    ['InventoryVariantsManifestBucket', manifestBucket], ['InventoryVariantsManifestKey', manifestKey],
-    ['CheckoutLiveVersion', healthyVersion], ['InventoryLiveVersion', healthyVersion],
+    ['InventoryVariantsManifestBucket', manifestBucket], ['InventoryVariantsManifestKey', currentManifestKey()],
+    ['CheckoutLiveVersion', healthyVersion], ['InventoryLiveVersion', fixture.inventoryExpectedVersion],
     ['CheckoutLiveAliasArn', `arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoCheckout:live`],
     ['InventoryLiveAliasArn', `arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoInventory:live`],
-    ['CheckoutMemorySize', '256'], ['InventoryMemorySize', '256'], ['InventorySupportedMemoryMb', supportedMemory],
+    ['CheckoutMemorySize', '256'], ['InventoryMemorySize', String(fixture.baselineMemoryMb)], ['InventorySupportedMemoryMb', supportedMemory],
     ['CheckoutTimeoutSeconds', '12'], ['InventoryTimeoutSeconds', '6'],
-    ['CheckoutReservedConcurrency', 'unreserved'], ['InventoryReservedConcurrency', 'unreserved'],
+    ['CheckoutReservedConcurrency', String(fixture.checkoutExpectedConcurrency)], ['InventoryReservedConcurrency', String(fixture.inventoryExpectedConcurrency)],
     ['InventoryResourcePolicy', 'absent'],
   ].map(([key, value]) => `<member><OutputKey>${key}</OutputKey><OutputValue>${value}</OutputValue></member>`).join('');
-  return `<DescribeStacksResponse xmlns="http://cloudformation.amazonaws.com/doc/2010-09-09/"><DescribeStacksResult><Stacks><member><StackId>arn:aws:cloudformation:${region}:${account}:stack/IncidentTriageDemoApp/11111111-1111-4111-8111-111111111111</StackId><StackName>IncidentTriageDemoApp</StackName><StackStatus>UPDATE_COMPLETE</StackStatus><Outputs>${outputs}</Outputs></member></Stacks></DescribeStacksResult></DescribeStacksResponse>`;
+  return `<DescribeStacksResponse xmlns="http://cloudformation.amazonaws.com/doc/2010-09-09/"><DescribeStacksResult><Stacks><member><StackId>arn:aws:cloudformation:${region}:${account}:stack/IncidentTriageDemoApp/${fixture.stackId}</StackId><StackName>IncidentTriageDemoApp</StackName><StackStatus>${fixture.stackStatus}</StackStatus><CreationTime>${fixture.stackCreatedAt}</CreationTime><LastUpdatedTime>${fixture.stackLastUpdatedAt}</LastUpdatedTime><Outputs>${outputs}</Outputs></member></Stacks></DescribeStacksResult></DescribeStacksResponse>`;
+}
+
+function namedFunctionFromConcurrencyPath(url) {
+  const path = new URL(url, 'http://fixture').pathname;
+  const functionName = decodeURIComponent(path.split('/').filter(Boolean).at(-2) ?? '');
+  assert.ok(['IncidentTriageDemoInventory', 'IncidentTriageDemoCheckout'].includes(functionName),
+    `concurrency operations must target a named demo function, got ${functionName}`);
+  return functionName;
 }
 
 export function resourcesXml() {
@@ -294,7 +332,7 @@ export async function awsProtocol(request, body) {
   if (!target && request.method === 'GET' && request.url.startsWith(`/${manifestBucket}/`)) {
     const key = decodeURIComponent(request.url.slice(`/${manifestBucket}/`.length)).split('?')[0];
     fixture.manifestReads.push({ bucket: manifestBucket, key });
-    if (key !== manifestKey) throw new Error(`unexpected manifest key ${key}`);
+    if (key !== currentManifestKey()) throw new Error(`unexpected manifest key ${key}`);
     if (fixture.manifestMode === 'missing') return { __error: 'NoSuchKey', __errorProtocol: 's3' };
     return { __s3Body: JSON.stringify(variantsManifest()) };
   }
@@ -357,11 +395,33 @@ export async function awsProtocol(request, body) {
     fixture.configurationReads.push({ name, version, ...config });
     return config;
   }
-  if (!target && request.url.includes('/concurrency')) {
-    const name = request.url.includes('IncidentTriageDemoInventory') ? 'Inventory' : 'Checkout';
-    const cap = name === 'Inventory' ? fixture.inventoryConcurrency : undefined;
+  if (!target && request.url.includes('/concurrency') && request.method === 'GET') {
+    const functionName = namedFunctionFromConcurrencyPath(request.url);
+    const name = functionName === 'IncidentTriageDemoInventory' ? 'Inventory' : 'Checkout';
+    const cap = name === 'Inventory' ? fixture.inventoryConcurrency : fixture.checkoutConcurrency;
     fixture.concurrencyReads.push({ name, cap: cap ?? 'unreserved' });
     return cap === undefined ? {} : { ReservedConcurrentExecutions: cap };
+  }
+  if (!target && request.url.includes('/concurrency') && ['PUT', 'DELETE'].includes(request.method)) {
+    const functionName = namedFunctionFromConcurrencyPath(request.url);
+    const name = functionName === 'IncidentTriageDemoInventory' ? 'Inventory' : 'Checkout';
+    const previous = name === 'Inventory' ? fixture.inventoryConcurrency : fixture.checkoutConcurrency;
+    const next = request.method === 'DELETE' ? undefined : Number(body.ReservedConcurrentExecutions);
+    if (request.method === 'PUT') assert.ok(Number.isSafeInteger(next) && next > 0, 'reserved concurrency writes must use a positive integer');
+    fixture.concurrencyAttempts.push({ name, previous: previous ?? 'unreserved', next: next ?? 'unreserved', method: request.method });
+    fixture.trace.push({ type: 'concurrency-attempt', name, previous: previous ?? 'unreserved', next: next ?? 'unreserved', method: request.method });
+    const mode = fixture.concurrencyMode;
+    fixture.concurrencyMode = 'apply';
+    if (mode === 'fail' || mode === 'lost-no-observation') {
+      return { __error: mode === 'fail' ? 'AccessDeniedException' : 'ServiceFailure', __errorProtocol: 'lambda' };
+    }
+    fixture.mutations.push(`${request.method === 'DELETE' ? 'Delete' : 'Put'}FunctionConcurrency ${name} ${next ?? 'unreserved'}`);
+    if (name === 'Inventory') fixture.inventoryConcurrency = next;
+    else fixture.checkoutConcurrency = next;
+    fixture.concurrencyWrites.push({ name, previous: previous ?? 'unreserved', next: next ?? 'unreserved', method: request.method });
+    fixture.trace.push({ type: 'concurrency-update', name, previous: previous ?? 'unreserved', next: next ?? 'unreserved', method: request.method });
+    if (mode === 'lost-ack') return { __error: 'ServiceFailure', __errorProtocol: 'lambda' };
+    return request.method === 'DELETE' ? { __noContent: true } : { ReservedConcurrentExecutions: next };
   }
   if (target.endsWith('GetSecretValue')) {
     return { SecretString: body.SecretId.endsWith(':operator')
@@ -418,6 +478,9 @@ export async function startAwsServer() {
         }
       } else if (result.__accepted) {
         response.writeHead(202);
+        response.end();
+      } else if (result.__noContent) {
+        response.writeHead(204);
         response.end();
       } else if (result.__xml) {
         response.writeHead(200, { 'content-type': 'text/xml' });
@@ -512,7 +575,6 @@ export function appReply(path, method, body) {
     });
   }
   if (method === 'GET' && path.startsWith('/api/orders/')) {
-    if (fixture.appMode !== 'selected-variant' || selectedDenied || selectedUnknown) return appResponse(404, { code: 'ORDER_NOT_FOUND' });
     const checkoutId = path.slice('/api/orders/'.length);
     const order = fixture.appOrders.get(checkoutId);
     return order ? appResponse(200, { order }) : appResponse(404, { code: 'ORDER_NOT_FOUND' });
@@ -534,7 +596,8 @@ export function appFetch(url, init = {}) {
 }
 
 export function releaseHeld() {
-  fixture.appMode = 'healthy';
+  fixture.appMode = fixture.heldReleaseMode ?? 'healthy';
+  fixture.heldReleaseMode = undefined;
   for (const release of fixture.heldRequests) release();
   fixture.heldRequests.clear();
 }
