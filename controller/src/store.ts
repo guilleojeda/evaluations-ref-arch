@@ -110,6 +110,9 @@ function sameCommand(a: Command, b: Command): boolean {
   if (a.kind === "restore_inventory_access" && b.kind === "restore_inventory_access") {
     return Boolean(a.restoreWithoutEvidence) === Boolean(b.restoreWithoutEvidence);
   }
+  if (a.kind === "increase_memory" && b.kind === "increase_memory") {
+    return a.function === b.function && a.memoryMb === b.memoryMb;
+  }
   return true;
 }
 
@@ -135,8 +138,8 @@ function inventoryDenialOutstanding(run: RunState): boolean {
 }
 
 function canStart(run: RunState, action: Action | undefined, configuration: Action | undefined, command: Command): void {
-  const configurationCommand = command.kind === "restore_inventory_access";
-  if (action && active.has(action.status) && !(configurationCommand && action.kind === "traffic")) {
+  const configurationCommand = command.kind === "restore_inventory_access" || command.kind === "increase_memory";
+  if (action && active.has(action.status) && !(command.kind === "restore_inventory_access" && action.kind === "traffic")) {
     throw new CommandError(409, "ACTION_IN_PROGRESS", "Wait for the current action or stop its traffic.");
   }
   if (action?.status === "incomplete") {
@@ -145,11 +148,12 @@ function canStart(run: RunState, action: Action | undefined, configuration: Acti
   if (configuration?.status === "incomplete") {
     throw new CommandError(409, "ACTION_INCOMPLETE", "Inspect and discard the incomplete configuration action before continuing.");
   }
-  if (configuration && active.has(configuration.status) && !configurationCommand) {
+  if (configuration && active.has(configuration.status)) {
     throw new CommandError(409, "CONFIGURATION_IN_PROGRESS", "Wait for the current configuration action to settle.");
   }
   if (command.kind === "traffic") {
     if (!run.baseline) throw new CommandError(409, "READINESS_REQUIRED", "Check readiness before starting traffic.");
+    if (run.inventoryAliasUnknown) throw new CommandError(409, "INVENTORY_ALIAS_UNKNOWN", "Verify the Inventory alias with readiness before starting traffic.");
     const incident = run.incident;
     const confirmedDenial = incident?.mechanism === "lambda-alias" && incident.active === "denied";
     if (inventoryDenialOutstanding(run) && !confirmedDenial) {
@@ -161,6 +165,7 @@ function canStart(run: RunState, action: Action | undefined, configuration: Acti
   }
   if (command.kind === "activate_inventory_denial") {
     if (!run.baseline) throw new CommandError(409, "READINESS_REQUIRED", "Check readiness before activating an Inventory denial.");
+    if (run.inventoryAliasUnknown) throw new CommandError(409, "INVENTORY_ALIAS_UNKNOWN", "Verify the Inventory alias with readiness before activating an Inventory denial.");
     if (run.unresolved.length > 0) throw new CommandError(409, "UNRESOLVED_REQUESTS", "Settle unresolved checkout attempts before activating a denial.");
     if (run.budgets.catalog.remaining < 1 || run.budgets.checkout.verificationRemaining < 1) {
       throw new CommandError(409, "ALLOWANCE_EXHAUSTED", "Inventory denial activation requires one catalog and one verification checkout allowance.");
@@ -172,8 +177,18 @@ function canStart(run: RunState, action: Action | undefined, configuration: Acti
   }
   if (command.kind === "restore_inventory_access") {
     if (run.incident?.mechanism !== "lambda-alias") throw new CommandError(409, "NO_INVENTORY_DENIAL", "There is no recorded Inventory alias denial to restore.");
-    if (configuration && active.has(configuration.status)) throw new CommandError(409, "CONFIGURATION_IN_PROGRESS", "Wait for the current configuration action to settle.");
     if (action && active.has(action.status) && action.kind !== "traffic") throw new CommandError(409, "ACTION_IN_PROGRESS", "Wait for the current primary action to settle before restoring access.");
+  }
+  if (command.kind === "increase_memory") {
+    if (run.inventoryAliasUnknown) throw new CommandError(409, "INVENTORY_ALIAS_UNKNOWN", "Verify the Inventory alias with readiness before changing memory.");
+    if (!run.baseline) throw new CommandError(409, "READINESS_REQUIRED", "Check readiness before changing Inventory memory.");
+    if (run.unresolved.length > 0) throw new CommandError(409, "UNRESOLVED_REQUESTS", "Settle unresolved checkout attempts before changing Inventory memory.");
+    if (run.incident && run.incident.mechanism !== "lambda-alias") {
+      throw new CommandError(409, "INVENTORY_DENIAL_UNRESOLVED", "Reconcile the recorded Inventory access change before changing memory.");
+    }
+    if (run.incident?.mechanism === "lambda-alias" && run.incident.active === "unknown") {
+      throw new CommandError(409, "INVENTORY_DENIAL_UNRESOLVED", "Reconcile the recorded Inventory alias before changing memory.");
+    }
   }
   if (command.kind === "readiness" && (run.budgets.checkout.verificationRemaining < 1 || run.budgets.catalog.remaining < 2 || run.budgets.orderStatus.remaining < 1)) {
     throw new CommandError(409, "ALLOWANCE_EXHAUSTED", "Readiness requires a verification checkout, two catalog reads and an order-status read.");
@@ -227,8 +242,12 @@ export async function applyCommand(id: string, command: Command): Promise<{ acti
       action.finishedAt = action.createdAt;
     } else {
       canStart(run, current && visible(current.data, now), configuration && visible(configuration.data, now), command);
-      if (command.kind === "restore_inventory_access") nextRun = { ...run, configurationActionId: id };
-      else nextRun = { ...run, currentActionId: id, ...(command.kind === "readiness" ? { baseline: null } : {}) };
+      if (command.kind === "restore_inventory_access" || command.kind === "increase_memory") {
+        nextRun = { ...run, configurationActionId: id };
+      } else if (command.kind === "readiness") {
+        nextRun = { ...run, currentActionId: id, baseline: null,
+          ...(!run.originalBaseline && run.baseline ? { originalBaseline: structuredClone(run.baseline) } : {}) };
+      } else nextRun = { ...run, currentActionId: id };
     }
     writes.push(replace(runKey, runRow, nextRun), replace(actionKey(id), undefined, action));
     if (await commit(writes)) return { action, created: true };

@@ -80,9 +80,23 @@ function manifestVariant(manifest, access, label) {
   assert.equal(manifest?.aliasName, 'live');
   assert.ok(Number.isSafeInteger(manifest?.baselineMemoryMb), `${label} must expose baseline memory`);
   assert.equal(typeof manifest?.codeSha256, 'string', `${label} must expose the qualified code hash`);
-  assert.ok(Array.isArray(manifest?.variants) && manifest.variants.length === 2,
-    `${label} must expose exactly the Phase 3 healthy and denied variants`);
-  const matches = manifest.variants.filter((variant) => variant?.access === access);
+  assert.ok(Array.isArray(manifest?.variants) && manifest.variants.length >= 2,
+    `${label} must expose the prepared memory/access variants`);
+  const sizes = new Set(manifest.variants.map(({ memoryMb }) => memoryMb));
+  assert.equal(manifest.variants.length, sizes.size * 2, `${label} must expose one healthy/denied pair per memory`);
+  const versions = new Set();
+  for (const memoryMb of sizes) {
+    assert.ok(Number.isSafeInteger(memoryMb) && memoryMb > 0, `${label} memory must be a positive integer`);
+    for (const variantAccess of ['healthy', 'denied']) {
+      const pair = manifest.variants.filter((variant) => variant?.memoryMb === memoryMb && variant?.access === variantAccess);
+      assert.equal(pair.length, 1, `${label} must contain exactly one ${variantAccess} variant at ${memoryMb} MB`);
+      assert.match(String(pair[0].version ?? ''), VERSION);
+      assert.equal(pair[0].roleArn, variantAccess === 'healthy' ? HEALTHY_ROLE : DENIED_ROLE);
+      assert.equal(versions.has(pair[0].version), false, `${label} qualified versions must be unique`);
+      versions.add(pair[0].version);
+    }
+  }
+  const matches = manifest.variants.filter((variant) => variant?.access === access && variant?.memoryMb === manifest.baselineMemoryMb);
   assert.equal(matches.length, 1, `${label} must contain exactly one ${access} variant`);
   const variant = matches[0];
   assert.match(String(variant.version ?? ''), VERSION, `${label} ${access} variant must use a numeric version`);

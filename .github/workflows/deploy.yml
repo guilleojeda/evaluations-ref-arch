@@ -119,13 +119,13 @@ jobs:
       - name: Run app release acceptance checks
         if: matrix.component == 'app'
         run: |
-          node --test tests/phase1-deploy.test.mjs tests/phase1-checkout-handler.test.mjs tests/phase3-inventory-version-preparation.test.mjs
+          node --test tests/phase1-deploy.test.mjs tests/phase1-checkout-handler.test.mjs tests/phase3-inventory-version-preparation.test.mjs tests/phase5-inventory-memory-preparation.test.mjs
           node --test --test-name-pattern="^app " tests/phase3-inventory-denial-infrastructure.test.mjs
           python -m unittest discover -s tests -p 'phase4_release_bindings_test.py' -k app
       - name: Run controller release acceptance checks
         if: matrix.component == 'controller'
         run: |
-          node --test tests/phase2-controller-deploy.test.mjs tests/phase2-controller-handler.test.mjs tests/phase3-inventory-denial-controller.test.mjs
+          node --test tests/phase2-controller-deploy.test.mjs tests/phase2-controller-handler.test.mjs tests/phase3-inventory-denial-controller.test.mjs tests/phase5-inventory-memory-controller.test.mjs
           node --test --test-name-pattern="^controller evidence" tests/phase3-inventory-denial-infrastructure.test.mjs
           node --test tests/phase4-agent-controller.test.mjs
           node --test --test-name-pattern="^controller can read" tests/phase4-agent-infrastructure.test.mjs

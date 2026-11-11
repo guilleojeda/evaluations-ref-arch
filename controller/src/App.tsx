@@ -11,6 +11,7 @@ import type {
   InventoryVariant,
   InventoryVersionObservation,
 } from "./types";
+import { currentConfigurationObservation, currentInventoryDisplay } from "./inventory-display.mjs";
 
 type Notice = { kind: "error" | "success"; message: string } | undefined;
 type PendingCommand = { id: string; command: Command };
@@ -141,6 +142,30 @@ function inventoryVersionObservation(value: unknown): InventoryVersionObservatio
       typeof value.role !== "string") return undefined;
   return value as unknown as InventoryVersionObservation;
 }
+function inventoryMemoryOptions(value: unknown, releaseRevision: string | undefined,
+  healthyRoleArn: unknown, deniedRoleArn: unknown): number[] {
+  if (!releaseRevision || !isRecord(value) || value.schemaVersion !== 1 || value.sourceRevision !== releaseRevision ||
+      value.functionName !== "IncidentTriageDemoInventory" || value.aliasName !== "live" ||
+      typeof value.codeSha256 !== "string" || !value.codeSha256 || !Array.isArray(value.variants) ||
+      value.variants.length < 2 || value.variants.length > 32) return [];
+  const pairs = new Set<string>();
+  const memories = new Set<number>();
+  const versions = new Set<string>();
+  for (const entry of value.variants) {
+    if (!isRecord(entry) || typeof entry.memoryMb !== "number" || !Number.isSafeInteger(entry.memoryMb) ||
+        entry.memoryMb < 128 || entry.memoryMb > 10_240 ||
+        (entry.access !== "healthy" && entry.access !== "denied") || typeof entry.version !== "string" ||
+        !/^[1-9]\d*$/.test(entry.version) || typeof entry.roleArn !== "string" ||
+        entry.roleArn !== (entry.access === "healthy" ? healthyRoleArn : deniedRoleArn) || versions.has(entry.version)) return [];
+    const key = `${entry.memoryMb}:${entry.access}`;
+    if (pairs.has(key)) return [];
+    pairs.add(key);
+    memories.add(entry.memoryMb);
+    versions.add(entry.version);
+  }
+  const choices = [...memories].filter((memoryMb) => pairs.has(`${memoryMb}:healthy`) && pairs.has(`${memoryMb}:denied`)).sort((a, b) => a - b);
+  return choices.length * 2 === value.variants.length ? choices : [];
+}
 function aliasStatus(
   alias: InventoryAliasObservation | undefined,
   variant: InventoryVariant | undefined,
@@ -205,9 +230,10 @@ export function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [readinessConfirmed, setReadinessConfirmed] = useState(false);
   const [protectiveRestoreConfirmed, setProtectiveRestoreConfirmed] = useState(false);
+  const [inventoryMemorySelection, setInventoryMemorySelection] = useState<number>();
   const [pendingCommand, setPendingCommand] = useState<PendingCommand>();
-  const [pendingRestoreCommand, setPendingRestoreCommand] = useState<PendingCommand>();
-  const [restoreSubmitting, setRestoreSubmitting] = useState(false);
+  const [pendingConfigurationCommand, setPendingConfigurationCommand] = useState<PendingCommand>();
+  const [configurationSubmitting, setConfigurationSubmitting] = useState(false);
   const polling = useRef<number | undefined>(undefined);
   const alarmPolling = useRef<number | undefined>(undefined);
   const investigationPolling = useRef<number | undefined>(undefined);
@@ -225,7 +251,7 @@ export function App() {
         setState(body);
         setLastObservedAt(body.observedAt);
         setPendingCommand((pending) => pending && body.currentAction?.id === pending.id ? undefined : pending);
-        setPendingRestoreCommand((pending) => pending && body.currentConfigurationAction?.id === pending.id ? undefined : pending);
+        setPendingConfigurationCommand((pending) => pending && body.currentConfigurationAction?.id === pending.id ? undefined : pending);
         setPollFailure(undefined);
       }
     } catch (error) {
@@ -269,7 +295,7 @@ export function App() {
   const configurationAction = state?.currentConfigurationAction;
   const currentStatus = currentAction?.status ?? "idle";
   const trafficActive = currentAction?.kind === "traffic" && activeStatuses.has(currentStatus);
-  const anyPendingCommand = Boolean(pendingCommand || pendingRestoreCommand);
+  const anyPendingCommand = Boolean(pendingCommand || pendingConfigurationCommand);
   const actionBusy = loading || !state || anyPendingCommand || Boolean(currentAction && activeStatuses.has(currentStatus)) || currentStatus === "incomplete";
   const configurationBusy = loading || anyPendingCommand || Boolean(configurationAction && activeStatuses.has(configurationAction.status)) || configurationAction?.status === "incomplete";
   const restoreBusy = configurationBusy || Boolean(currentAction && activeStatuses.has(currentStatus) && currentAction.kind !== "traffic");
@@ -278,7 +304,7 @@ export function App() {
   const incident = state?.incident;
   const aliasIncident = incident?.mechanism === "lambda-alias" ? incident : undefined;
   const legacyIncident = incident && incident.mechanism !== "lambda-alias" ? incident : undefined;
-  const checkpoint = incident?.checkpoint;
+  const checkpoint = configurationAction?.configurationCheckpoint ?? incident?.checkpoint;
   const baselineInventory = inventoryVersionObservation(baseline?.settings?.inventory);
   const baselineAlias: InventoryAliasObservation | undefined = baselineInventory ? {
     functionName: "IncidentTriageDemoInventory",
@@ -289,18 +315,15 @@ export function App() {
     routingWeighted: false,
     observedAt: baselineInventory.observedAt ?? baseline?.verifiedAt ?? "",
   } : undefined;
-  const currentAlias = aliasIncident?.alias ?? baselineAlias;
-  const currentAccess = aliasIncident?.active ?? baselineInventory?.access ?? "unknown";
-  const targetVariant = aliasIncident?.target ?? (baselineInventory ? {
-    version: baselineInventory.version,
-    roleArn: baselineInventory.role,
-    memoryMb: baselineInventory.memory,
-    access: baselineInventory.access,
-  } : undefined);
-  const currentVariant = targetVariant && currentAlias && targetVariant.version === currentAlias.functionVersion
-    ? targetVariant
-    : baselineInventory ? { version: baselineInventory.version, roleArn: baselineInventory.role, memoryMb: baselineInventory.memory, access: baselineInventory.access } : undefined;
+  const aliasUnknown = state?.inventoryAliasUnknown === true || aliasIncident?.active === "unknown";
+  const inventoryDisplay = currentInventoryDisplay({ baselineAlias, baselineInventory, aliasIncident, unknown: aliasUnknown });
+  const { currentAlias, currentVariant, targetVariant } = inventoryDisplay;
+  const currentAccess = inventoryDisplay.access;
   const currentAliasStatus = aliasStatus(currentAlias, currentVariant, Boolean(baseline), currentAccess);
+  const currentMemoryMb = aliasUnknown ? undefined : currentVariant?.memoryMb ?? baselineInventory?.memory;
+  const inventoryMemoryChoices = inventoryMemoryOptions(baseline?.settings?.inventoryVariantsManifest, baseline?.appRevision,
+    baseline?.settings?.inventoryRoleArn, baseline?.settings?.inventoryDeniedRoleArn);
+  const selectedMemoryMb = inventoryMemorySelection ?? currentMemoryMb;
   const incidentActive = Boolean(aliasIncident && aliasIncident.active !== "healthy");
   const baselineAccessObservation = isRecord(baseline?.settings?.inventoryAccessPolicy) ? baseline.settings.inventoryAccessPolicy : undefined;
   const policyObservation = aliasIncident?.policy ?? baselineAccessObservation;
@@ -309,6 +332,13 @@ export function App() {
     : currentAccess === "healthy" ? display(baselineInventory?.role ?? baseline?.settings.inventoryRoleArn, "Not observed") : "Unknown";
   const trafficStartAllowed = !incidentActive;
   const needsProtectiveRestore = checkpoint?.status === "unavailable" || checkpoint?.status === "incomplete";
+  const selectedMemoryIsPrepared = selectedMemoryMb !== undefined && inventoryMemoryChoices.includes(selectedMemoryMb);
+  const memorySelectionUnavailable = !baseline ? "Check readiness to load verified Inventory memory choices."
+    : aliasUnknown ? "Inventory memory is unknown until the alias is read back."
+      : inventoryMemoryChoices.length === 0 ? "No verified Inventory memory choices are available for this release."
+        : undefined;
+  const memorySelectionDisabled = actionBusy || configurationBusy || Boolean(legacyIncident) || Boolean(memorySelectionUnavailable) ||
+    currentMemoryMb === undefined || !selectedMemoryIsPrepared || (selectedMemoryMb !== undefined && selectedMemoryMb < currentMemoryMb);
   const alarmObservation = alarm?.alarm;
   const selectedTransition = normalizedTime(alarmObservation?.stateTransitionedAt);
   const exactObservedAlarmRun = alarmObservation?.state === "ALARM" && alarmObservation.arn && selectedTransition
@@ -330,7 +360,10 @@ export function App() {
         : alarm?.alarmBinding?.state === "unavailable" ? "Unavailable"
           : alarm?.alarmBinding?.state === "unconfigured" ? "Not configured" : "Unknown";
   const retainedAlarm = checkpoint?.alarm;
-  const configurationObservation = currentAction?.kind === "activate_inventory_denial" ? currentAction : configurationAction;
+  const configurationObservation = currentConfigurationObservation(
+    currentAction?.kind === "activate_inventory_denial" ? currentAction : undefined,
+    configurationAction,
+  );
   const deniedCheckout = currentAction?.kind === "activate_inventory_denial"
     ? currentAction.requests.find(({ kind, dependencyReason }) => kind === "checkout" && dependencyReason === "inventory_access_denied")
     : undefined;
@@ -349,9 +382,9 @@ export function App() {
     const epoch = sessionEpoch.current;
     const callNumber = requestEpoch.current + 1;
     requestEpoch.current = callNumber;
-    const isRestore = command.kind === "restore_inventory_access";
-    const setPending = isRestore ? setPendingRestoreCommand : setPendingCommand;
-    if (isRestore) setRestoreSubmitting(true);
+    const isConfiguration = command.kind === "restore_inventory_access" || command.kind === "increase_memory";
+    const setPending = isConfiguration ? setPendingConfigurationCommand : setPendingCommand;
+    if (isConfiguration) setConfigurationSubmitting(true);
     else setLoading(true);
     setNotice(undefined);
     setMenuOpen(false);
@@ -362,7 +395,7 @@ export function App() {
       const action = body.action as Action | undefined;
       if (!action || action.id !== id) throw new Error("The controller did not acknowledge this command");
       if (epoch === sessionEpoch.current && response.status === 202 && activeStatuses.has(action.status)) {
-        setState((previous) => previous && (command.kind === "restore_inventory_access" ? { ...previous, currentConfigurationAction: action } : { ...previous, currentAction: action }));
+        setState((previous) => previous && (isConfiguration ? { ...previous, currentConfigurationAction: action } : { ...previous, currentAction: action }));
       }
       if (epoch === sessionEpoch.current) {
         setPending(undefined);
@@ -376,15 +409,18 @@ export function App() {
         if (error instanceof RequestError && error.status < 500) {
           setPending(undefined);
           setNotice({ kind: "error", message: error.message });
-        } else setNotice({ kind: "error", message: "The command outcome is unknown. Retry with the same ID." });
+        } else setNotice({ kind: "error", message: isConfiguration
+          ? "The configuration outcome is unknown. Retry with the same ID."
+          : "The command outcome is unknown. Retry with the same ID." });
       }
     } finally {
-      if (epoch === sessionEpoch.current && isRestore) setRestoreSubmitting(false);
-      if (epoch === sessionEpoch.current && !isRestore && requestEpoch.current === callNumber) setLoading(false);
+      if (epoch === sessionEpoch.current && isConfiguration) setConfigurationSubmitting(false);
+      if (epoch === sessionEpoch.current && !isConfiguration && requestEpoch.current === callNumber) setLoading(false);
     }
   }, [bearer, loadAlarm, loadState]);
 
   useEffect(() => { if (!bearer) return undefined; void loadState(); void loadAlarm(); void loadInvestigations(); const interval = window.setInterval(() => { void loadState(); void loadAlarm(); void loadInvestigations(); }, 5_000); return () => window.clearInterval(interval); }, [bearer, loadAlarm, loadInvestigations, loadState]);
+  useEffect(() => { setInventoryMemorySelection(currentMemoryMb); }, [baseline?.appRevision, currentMemoryMb]);
 
   const signIn = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); const value = credentialInput.trim();
@@ -401,11 +437,16 @@ export function App() {
       if (sessionEpoch.current === epoch) setNotice({ kind: "error", message: error instanceof Error ? error.message : "The presenter credential was rejected." });
     } finally { if (sessionEpoch.current === epoch) setLoading(false); }
   };
-  const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setInvestigations(undefined); setInvestigationReadFailedAt(undefined); setPendingCommand(undefined); setPendingRestoreCommand(undefined); setRestoreSubmitting(false); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
+  const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setInvestigations(undefined); setInvestigationReadFailedAt(undefined); setPendingCommand(undefined); setPendingConfigurationCommand(undefined); setConfigurationSubmitting(false); setInventoryMemorySelection(undefined); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
   const runReadiness = () => { if (readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "readiness", confirmQuiet: true }); };
   const runTraffic = () => void sendAction(crypto.randomUUID(), { kind: "traffic" });
   const runActivation = () => { if (readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "activate_inventory_denial" }); };
   const runRestore = () => { if (aliasIncident && !restoreBusy && (!needsProtectiveRestore || protectiveRestoreConfirmed)) void sendAction(crypto.randomUUID(), needsProtectiveRestore ? { kind: "restore_inventory_access", restoreWithoutEvidence: true } : { kind: "restore_inventory_access" }); };
+  const runMemorySelection = () => {
+    if (!memorySelectionDisabled && selectedMemoryMb !== undefined) {
+      void sendAction(crypto.randomUUID(), { kind: "increase_memory", function: "inventory", memoryMb: selectedMemoryMb });
+    }
+  };
   const stopTraffic = () => currentAction && void sendAction(crypto.randomUUID(), { kind: "stop", targetActionId: currentAction.id });
   const discardAction = () => { const target = currentAction?.status === "incomplete" ? currentAction : configurationAction?.status === "incomplete" ? configurationAction : undefined; if (target) void sendAction(crypto.randomUUID(), { kind: "discard", targetActionId: target.id }); };
   const retryPending = (pending: PendingCommand) => void sendAction(pending.id, pending.command);
@@ -438,13 +479,31 @@ export function App() {
           {trafficActive && <button className="button button-stop" type="button" onClick={stopTraffic} disabled={loading || Boolean(pendingCommand) || currentStatus === "draining"}>Stop traffic</button>}
           {(currentAction?.status === "incomplete" || configurationAction?.status === "incomplete") && <button className="button button-secondary" type="button" onClick={discardAction} disabled={loading || anyPendingCommand || Date.now() < (currentAction?.status === "incomplete" ? currentAction.discardAfter : configurationAction!.discardAfter)}>Discard action</button>}
           <div className="menu-wrap">
-            <button className="button button-secondary" type="button" aria-expanded={menuOpen} onClick={() => setMenuOpen((open) => !open)}>Actions <span className="chevron" aria-hidden="true" /></button>
-            {menuOpen && <div className="actions-menu" role="menu">
-              <button type="button" role="menuitem" onClick={runReadiness} disabled={actionBusy || configurationBusy || incidentActive || !readinessConfirmed}>Check readiness</button>
-              <button type="button" role="menuitem" onClick={runTraffic} disabled={actionBusy || !baseline || !trafficStartAllowed}>Start healthy traffic</button>
-              <button type="button" role="menuitem" onClick={runActivation} disabled={actionBusy || configurationBusy || incidentActive || !baseline || !readinessConfirmed}>Activate Inventory denial</button>
-              {!legacyIncident && <button type="button" role="menuitem" onClick={runRestore} disabled={!aliasIncident || restoreBusy || (needsProtectiveRestore && !protectiveRestoreConfirmed)}>Restore Inventory access</button>}
-              <button type="button" role="menuitem" onClick={stopTraffic} disabled={!trafficActive || loading || Boolean(pendingCommand) || currentStatus === "draining"}>Stop traffic</button>
+            <button className="button button-secondary" type="button" aria-haspopup="true" aria-expanded={menuOpen} aria-controls="controller-actions" onClick={() => setMenuOpen((open) => !open)}>Actions <span className="chevron" aria-hidden="true" /></button>
+            {menuOpen && <div className="actions-menu" id="controller-actions" role="group" aria-label="Controller actions">
+              <button type="button" onClick={runReadiness} disabled={actionBusy || configurationBusy || incidentActive || !readinessConfirmed}>Check readiness</button>
+              <button type="button" onClick={runTraffic} disabled={actionBusy || !baseline || !trafficStartAllowed}>Start healthy traffic</button>
+              <button type="button" onClick={runActivation} disabled={actionBusy || configurationBusy || incidentActive || !baseline || !readinessConfirmed}>Activate Inventory denial</button>
+              {!legacyIncident && <button type="button" onClick={runRestore} disabled={!aliasIncident || restoreBusy || (needsProtectiveRestore && !protectiveRestoreConfirmed)}>Restore Inventory access</button>}
+              <section className="memory-picker" aria-label="Inventory memory selection">
+                <label htmlFor="inventory-memory-selection">Inventory memory</label>
+                <select id="inventory-memory-selection" value={selectedMemoryMb ?? ""}
+                  disabled={Boolean(memorySelectionUnavailable) || configurationBusy || actionBusy}
+                  onChange={(event) => setInventoryMemorySelection(event.target.value ? Number(event.target.value) : undefined)}>
+                  {inventoryMemoryChoices.length === 0
+                    ? <option value="">No verified choices</option>
+                    : inventoryMemoryChoices.map((memoryMb) => <option key={memoryMb} value={memoryMb}
+                      disabled={currentMemoryMb !== undefined && memoryMb < currentMemoryMb}>
+                      {memoryMb} MB{memoryMb === currentMemoryMb ? " · current" : ""}
+                    </option>)}
+                </select>
+                <p className="muted" role="status">{memorySelectionUnavailable ??
+                  `Current memory ${display(currentMemoryMb)} MB · verified for app revision ${display(baseline?.appRevision)} at ${formatTime(baseline?.verifiedAt)}.`}</p>
+                <button className="memory-select-button" type="button" onClick={runMemorySelection} disabled={memorySelectionDisabled}>
+                  Select memory
+                </button>
+              </section>
+              <button type="button" onClick={stopTraffic} disabled={!trafficActive || loading || Boolean(pendingCommand) || currentStatus === "draining"}>Stop traffic</button>
             </div>}
           </div>
         </div>
@@ -454,9 +513,9 @@ export function App() {
         <span>Command outcome unknown. Retry with the original ID.</span>
         <button className="inline-action" type="button" onClick={() => retryPending(pendingCommand)} disabled={loading}>Retry {pendingCommand.command.kind}</button>
       </div>}
-      {pendingRestoreCommand && !restoreSubmitting && <div className="notice notice-error" role="status">
-        <span>Restore outcome unknown. Retry with the original ID.</span>
-        <button className="inline-action" type="button" onClick={() => retryPending(pendingRestoreCommand)} disabled={loading || restoreSubmitting}>Retry restore_inventory_access</button>
+      {pendingConfigurationCommand && !configurationSubmitting && <div className="notice notice-error" role="status">
+        <span>Configuration outcome unknown. Retry with the original ID.</span>
+        <button className="inline-action" type="button" onClick={() => retryPending(pendingConfigurationCommand)} disabled={loading || configurationSubmitting}>Retry {pendingConfigurationCommand.command.kind}</button>
       </div>}
       {pollFailure && <p className="notice notice-error" role="alert">{pollFailure}. The last good cloud observation remains visible.</p>}
       <section className="incident-controls card" aria-label="Inventory denial controls">
@@ -491,6 +550,7 @@ export function App() {
         <dl className="facts">
           <div><dt>Target version</dt><dd className="mono">{display(switchTarget?.version, "No target")}</dd></div>
           <div><dt>Target memory</dt><dd>{switchTarget ? `${display(switchTarget.memoryMb)} MB` : "No target"}</dd></div>
+          <div><dt>Current memory</dt><dd>{aliasUnknown ? "Unknown" : currentMemoryMb === undefined ? "Not observed" : `${currentMemoryMb} MB`}</dd></div>
           <div><dt>Target access</dt><dd>{accessLabel(switchTarget?.access)}</dd></div>
           <div><dt>Target role ARN</dt><dd className="mono">{display(switchTarget?.roleArn, "No target")}</dd></div>
           <div><dt>Current alias ARN</dt><dd className="mono">{display(currentAlias?.aliasArn, "Not observed")}</dd></div>
@@ -502,8 +562,8 @@ export function App() {
           <div><dt>Policy state</dt><dd>{display(policyObservation.state, "unknown")}</dd></div>
         </dl>}
         {configurationObservation && <div className="configuration-result" aria-label="Configuration result details">
-          <p><strong>{resultLabel(configurationObservation.configurationOutcome)}</strong> · {configurationObservation.kind === "activate_inventory_denial" ? "Activation" : "Restore"} completed as a configuration action.</p>
-          <p className="muted">Alias {display(switchBefore?.functionVersion, "unknown")} → {display(switchTarget?.version, "unknown")} {switchAfter ? `· read back ${switchAfter.functionVersion}` : "· awaiting readback"}; {configurationObservation.kind === "activate_inventory_denial" ? "bounded request observations are shown separately below" : "restore submits no app probes"}.</p>
+          <p><strong>{resultLabel(configurationObservation.configurationOutcome)}</strong> · {configurationObservation.kind === "activate_inventory_denial" ? "Denial activation" : configurationObservation.kind === "increase_memory" ? "Memory selection" : "Access restore"} · {configurationObservation.status}</p>
+          <p className="muted">Alias {display(switchBefore?.functionVersion, "unknown")} → {display(switchTarget?.version, "unknown")} {switchAfter ? `· read back ${switchAfter.functionVersion}` : "· awaiting readback"}; {configurationObservation.kind === "activate_inventory_denial" ? "bounded request observations are shown separately below" : configurationObservation.kind === "increase_memory" ? "memory selection sends no app probes" : "restore sends no app probes"}.</p>
         </div>}
         {legacyIncident && <p className="muted">This persisted {legacyIncident.mechanism === "iam-managed-policy" ? "IAM" : "DynamoDB table-policy"} incident remains visible for history only. Prepared-version controls do not mutate or restore it.</p>}
         {aliasIncident && incidentActive && needsProtectiveRestore && <label className="quiet-check protective-check">

@@ -1,6 +1,7 @@
 export type Command =
   | { kind: "readiness"; confirmQuiet: true }
   | { kind: "traffic" }
+  | { kind: "increase_memory"; function: "inventory"; memoryMb: number }
   | { kind: "activate_inventory_denial" }
   | { kind: "restore_inventory_access"; restoreWithoutEvidence?: true }
   | { kind: "stop" | "discard"; targetActionId: string };
@@ -230,6 +231,7 @@ export interface Action {
   traffic?: Record<Profile, Counters>;
   requests: RequestRecord[];
   baseline?: Baseline;
+  configurationCheckpoint?: ConfigurationCheckpoint;
   inventorySwitch?: {
     before: InventoryAliasObservation;
     target: InventoryVariant;
@@ -244,6 +246,8 @@ export interface RunState {
   /** The configuration lane is independent from the primary traffic/readiness lane. */
   configurationActionId?: string;
   baseline: Baseline | null;
+  originalBaseline?: Baseline;
+  inventoryAliasUnknown?: boolean;
   budgets: {
     checkout: { generatorRemaining: number; verificationRemaining: number };
     catalog: { remaining: number };

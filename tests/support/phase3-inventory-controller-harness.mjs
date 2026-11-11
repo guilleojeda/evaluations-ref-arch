@@ -76,6 +76,11 @@ export function row(pk) {
   return records.get(pk);
 }
 
+export function omitOriginalBaseline() {
+  const state = row('STATE');
+  if (state?.data) delete state.data.originalBaseline;
+}
+
 export function put(value) {
   records.set(value.pk, value);
 }
@@ -194,9 +199,13 @@ export function reset({ baselineRevision = appRevision, revision = appRevision, 
     receipts: [],
     unresolved: [],
   } });
+  const run = row('STATE');
+  if (run?.data.baseline) run.data.originalBaseline = structuredClone(run.data.baseline);
 }
 
 export function stackXml() {
+  const supportedMemory = [...new Set([256, ...fixture.extraVariants.map(({ memoryMb }) => memoryMb)])]
+    .sort((a, b) => a - b).join(',');
   const outputs = [
     ['SourceRevision', fixture.revision], ['ApiUrl', appApi], ['ProductSku', 'demo-widget'],
     ['CheckoutFunctionName', 'IncidentTriageDemoCheckout'], ['InventoryFunctionName', 'IncidentTriageDemoInventory'],
@@ -206,7 +215,7 @@ export function stackXml() {
     ['CheckoutLiveVersion', healthyVersion], ['InventoryLiveVersion', healthyVersion],
     ['CheckoutLiveAliasArn', `arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoCheckout:live`],
     ['InventoryLiveAliasArn', `arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoInventory:live`],
-    ['CheckoutMemorySize', '256'], ['InventoryMemorySize', '256'],
+    ['CheckoutMemorySize', '256'], ['InventoryMemorySize', '256'], ['InventorySupportedMemoryMb', supportedMemory],
     ['CheckoutTimeoutSeconds', '12'], ['InventoryTimeoutSeconds', '6'],
     ['CheckoutReservedConcurrency', 'unreserved'], ['InventoryReservedConcurrency', 'unreserved'],
     ['InventoryResourcePolicy', 'absent'],
@@ -307,7 +316,7 @@ export async function awsProtocol(request, body) {
       RoutingConfig: name === 'Inventory' && fixture.weightedAlias ? { AdditionalVersionWeights: { '4': 0.1 } } : {} };
   }
   if (!target && ['POST', 'PUT'].includes(request.method) && request.url.includes('/aliases/live')) {
-    assert.ok(['alias-revision-1', 'alias-revision-2'].includes(body.RevisionId), 'alias update must use the observed revision');
+    assert.match(body.RevisionId, /^alias-revision-[1-9]\d*$/, 'alias update must use the observed revision');
     const version = body.FunctionVersion;
     const allowedVersions = variantsManifest().variants.map(({ version: allowed }) => allowed);
     assert.ok(allowedVersions.includes(version), 'alias update must target an allowlisted version');
@@ -322,7 +331,7 @@ export async function awsProtocol(request, body) {
     fixture.trace.push({ type: 'alias-update', version });
     fixture.mutations.push(`UpdateAlias live ${version}`);
     fixture.aliasVersion.Inventory = version;
-    fixture.aliasRevision = fixture.aliasRevision === 'alias-revision-1' ? 'alias-revision-2' : 'alias-revision-3';
+    fixture.aliasRevision = `alias-revision-${Number(fixture.aliasRevision.slice('alias-revision-'.length)) + 1}`;
     if (fixture.aliasMode === 'lost-ack') return { __error: 'ServiceFailure', __errorProtocol: 'lambda' };
     return { FunctionVersion: version, RevisionId: fixture.aliasRevision, RoutingConfig: {} };
   }
@@ -332,7 +341,7 @@ export async function awsProtocol(request, body) {
     const deniedConfig = name === 'Inventory' && version === deniedVersion;
     const variant = name === 'Inventory'
       ? variantsManifest().variants.find((candidate) => candidate.version === version) : undefined;
-    const override = fixture.versionOverrides[version] ?? {};
+    const override = fixture.versionOverrides[`${name}:${version}`] ?? fixture.versionOverrides[version] ?? {};
     const config = {
       State: 'Active',
       Version: override.version ?? version,

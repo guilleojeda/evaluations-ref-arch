@@ -3,10 +3,11 @@ import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
+import { currentConfigurationObservation, currentInventoryDisplay } from '../controller/src/inventory-display.mjs';
 import {
   appApi, appRevision, appFetch, awsEnvironment, call, deniedRoleArn, deniedRoleName, fixture, getAction, getState,
   healthyVersion, deniedVersion, httpEvent, reset, root, startAwsServer, submit,
-  activateAndConfirm, inventoryRoleArn,
+  activateAndConfirm, inventoryRoleArn, omitOriginalBaseline,
 } from './support/phase3-inventory-controller-harness.mjs';
 
 const higherHealthy = { memoryMb: 512, access: 'healthy', version: '4', roleArn: inventoryRoleArn };
@@ -61,6 +62,48 @@ function assertNoMemorySideEffects({ appRequests, invocations, aliasUpdates, che
   assert.deepEqual(fixture.unhandled, [], 'memory selection must not call an agent or an unconfigured service');
 }
 
+test('the current Inventory view uses a fresher readiness observation without erasing incident history', () => {
+  const incident = {
+    active: 'healthy',
+    alias: { functionName: 'IncidentTriageDemoInventory', aliasName: 'live',
+      aliasArn: 'inventory-live', functionVersion: '4', revisionId: 'alias-2', routingWeighted: false,
+      observedAt: '2026-11-11T10:00:00.000Z' },
+    target: { memoryMb: 512, access: 'denied', version: '5', roleArn: deniedRoleArn },
+  };
+  const baselineAlias = { functionName: 'IncidentTriageDemoInventory', aliasName: 'live',
+    aliasArn: 'inventory-live', functionVersion: healthyVersion, revisionId: 'alias-3', routingWeighted: false,
+    observedAt: '2026-11-11T10:05:00.000Z' };
+  const baselineInventory = { version: healthyVersion, aliasArn: 'inventory-live', memory: 256, timeout: 6,
+    cap: 'unreserved', codeSha256: 'fixture-code', role: inventoryRoleArn, aliasRevision: 'alias-3',
+    access: 'healthy', sourceRevision: appRevision, observedAt: '2026-11-11T10:04:00.000Z' };
+
+  const current = currentInventoryDisplay({ baselineAlias, baselineInventory, aliasIncident: incident });
+  assert.equal(current.baselineSupersedesIncident, true);
+  assert.equal(current.currentAlias?.functionVersion, healthyVersion);
+  assert.equal(current.currentVariant?.memoryMb, 256);
+  assert.equal(current.access, 'healthy');
+  assert.equal(incident.alias.functionVersion, '4', 'the earlier incident observation remains intact');
+
+  const olderBaseline = currentInventoryDisplay({
+    baselineAlias: { ...baselineAlias, observedAt: '2026-11-11T09:00:00.000Z' },
+    baselineInventory: { ...baselineInventory, observedAt: '2026-11-11T08:59:00.000Z', version: '4', memory: 512 },
+    aliasIncident: incident,
+  });
+  assert.equal(olderBaseline.currentAlias?.functionVersion, '4');
+  assert.equal(olderBaseline.currentVariant?.memoryMb, 512);
+});
+
+test('the configuration panel follows the latest alias operation while retaining activation history', () => {
+  const activation = { id: 'activation', kind: 'activate_inventory_denial', createdAt: '2026-11-11T10:00:00.000Z' };
+  const memory = { id: 'memory', kind: 'increase_memory', createdAt: '2026-11-11T10:01:00.000Z' };
+  const restore = { id: 'restore', kind: 'restore_inventory_access', createdAt: '2026-11-11T10:02:00.000Z' };
+  assert.equal(currentConfigurationObservation(activation, memory), memory);
+  assert.equal(currentConfigurationObservation(activation, restore), restore);
+  assert.equal(currentConfigurationObservation(activation, undefined), activation);
+  assert.equal(currentConfigurationObservation(activation,
+    { ...memory, createdAt: '2026-11-11T09:59:00.000Z' }), activation);
+});
+
 test('Inventory memory selection preserves access and release state', { timeout: 90_000 }, async (t) => {
   const server = await startAwsServer();
   const originalFetch = globalThis.fetch;
@@ -112,12 +155,25 @@ test('Inventory memory selection preserves access and release state', { timeout:
     assert.deepEqual(after.baseline.settings.checkout, before.baseline.settings.checkout);
     assert.equal(after.baseline.settings.credentialGeneration, before.baseline.settings.credentialGeneration);
     assert.equal(after.baseline.settings.inventoryPolicy, before.baseline.settings.inventoryPolicy);
+    assert.equal(after.baseline.settings.inventory.memory, 512);
+    assert.equal(after.originalBaseline?.settings?.inventory?.memory, 256,
+      'the original recovery settings remain available after changing the active baseline');
     assert.deepEqual(after.budgets, before.budgets, 'configuration selection does not consume traffic allowances');
     assertNoMemorySideEffects({ appRequests: beforeAppRequests, invocations: beforeWorkerInvocations + 1,
       aliasUpdates: beforeAliasUpdates + 1, checkpoints: beforeCheckpoints + 1 });
     assert.equal(fixture.invocations.at(-1), id);
     assert.deepEqual(fixture.mutations.slice(-2).map((item) => item.startsWith('PutObject') ? 'checkpoint' : item),
       ['checkpoint', `UpdateAlias live ${higherHealthy.version}`]);
+
+    const activationId = await submit(api, 'activate_inventory_denial');
+    await worker.handler({ actionId: activationId });
+    const activation = await getAction(api, activationId);
+    assert.equal(activation.status, 'completed');
+    assert.equal(activation.inventorySwitch?.target?.version, higherDenied.version,
+      'denial activation selects the denied version at the current higher memory');
+    assert.equal(activation.inventorySwitch?.target?.memoryMb, 512);
+    assert.equal(fixture.aliasVersion.Inventory, higherDenied.version);
+    assert.equal((await getState(api)).incident?.active, 'denied');
   });
 
   await t.test('denial remains active at higher memory and Restore access keeps that memory', async () => {
@@ -152,7 +208,7 @@ test('Inventory memory selection preserves access and release state', { timeout:
     const restoreId = await submit(api, 'restore_inventory_access');
     await worker.handler({ actionId: restoreId });
     const restore = await getAction(api, restoreId);
-    assert.equal(restore.status, 'completed');
+    assert.equal(restore.status, 'completed', restore.error);
     assert.equal(restore.configurationOutcome, 'applied');
     assert.deepEqual(restore.inventorySwitch?.target, higherHealthy,
       'access restoration must choose the healthy version at the alias current memory');
@@ -181,6 +237,10 @@ test('Inventory memory selection preserves access and release state', { timeout:
     assert.equal(readiness.baseline?.settings?.inventory?.codeSha256, fixture.manifestCodeSha256);
     assert.equal(readiness.baseline?.settings?.inventory?.cap, 'unreserved');
     assert.equal(readiness.baseline?.settings?.credentialGeneration, 'fixture-generation');
+    const recoveredRun = await getState(api);
+    assert.equal(recoveredRun.baseline?.settings?.inventory?.memory, 512);
+    assert.equal(recoveredRun.originalBaseline?.settings?.inventory?.memory, 256,
+      'higher-memory readiness does not replace the separately retained original baseline');
   });
 
   await t.test('duplicate IDs are idempotent and selecting the active size is a no-op', async () => {
@@ -216,6 +276,20 @@ test('Inventory memory selection preserves access and release state', { timeout:
     assert.deepEqual(fixture.unhandled, []);
   });
 
+  await t.test('first memory change retains a legacy verified baseline as the original baseline', async () => {
+    reset();
+    omitOriginalBaseline();
+    addHigherMemoryVariants();
+    fixture.appMode = 'selected-variant';
+    assert.equal((await getState(api)).originalBaseline, undefined);
+    const { action } = await runMemory(api, worker);
+    assert.equal(action.status, 'completed', action.error);
+    const state = await getState(api);
+    assert.equal(state.baseline?.settings?.inventory?.memory, 512);
+    assert.equal(state.originalBaseline?.settings?.inventory?.memory, 256,
+      'the current verified baseline must be retained before the memory change replaces it');
+  });
+
   await t.test('stale, unlisted and drifted variants fail before checkpoint or alias mutation', async () => {
     async function rejectedMemory({ prepare = true, configure = () => {}, expectedError = /variant|manifest|release|version|configuration|memory|role|code|environment|stale|drift/i } = {}) {
       reset();
@@ -235,21 +309,21 @@ test('Inventory memory selection preserves access and release state', { timeout:
     await rejectedMemory({ configure: () => { fixture.weightedAlias = true; }, expectedError: /weighted|alias|version/i });
     await rejectedMemory({ configure: () => { fixture.aliasVersion.Inventory = '99'; }, expectedError: /alias|version|variant|baseline/i });
     await rejectedMemory({ configure: () => {
-      fixture.versionOverrides[healthyVersion] = { version: '99' };
+      fixture.versionOverrides[`Inventory:${healthyVersion}`] = { version: '99' };
     }, expectedError: /version|configuration|alias|variant/i });
     await rejectedMemory({ configure: () => {
-      fixture.versionOverrides[healthyVersion] = { codeSha256: 'current-code-drift' };
+      fixture.versionOverrides[`Inventory:${healthyVersion}`] = { codeSha256: 'current-code-drift' };
     }, expectedError: /code|configuration|variant|manifest/i });
     await rejectedMemory({ configure: () => {
-      fixture.versionOverrides[healthyVersion] = { sourceRevision: '8e5a48bc0edcd7a65b9cc857ea2d17d4f5da2a90' };
+      fixture.versionOverrides[`Inventory:${healthyVersion}`] = { sourceRevision: '8e5a48bc0edcd7a65b9cc857ea2d17d4f5da2a90' };
     }, expectedError: /environment|release|revision|configuration/i });
     await rejectedMemory({ prepare: false, expectedError: /variant|memory|manifest|prepared|allow/i });
-    await rejectedMemory({ configure: () => { fixture.versionOverrides[higherHealthy.version] = { memoryMb: 256 }; }, expectedError: /memory|configuration|variant|manifest/i });
+    await rejectedMemory({ configure: () => { fixture.versionOverrides[`Inventory:${higherHealthy.version}`] = { memoryMb: 256 }; }, expectedError: /memory|configuration|variant|manifest/i });
     await rejectedMemory({ configure: () => {
-      fixture.versionOverrides[higherHealthy.version] = { codeSha256: 'higher-code-drift' };
+      fixture.versionOverrides[`Inventory:${higherHealthy.version}`] = { codeSha256: 'higher-code-drift' };
     }, expectedError: /code|configuration|variant|manifest/i });
     await rejectedMemory({ configure: () => {
-      fixture.versionOverrides[higherHealthy.version] = { inventoryTableArn: 'arn:aws:dynamodb:us-east-1:027224425948:table/WrongInventory' };
+      fixture.versionOverrides[`Inventory:${higherHealthy.version}`] = { inventoryTableArn: 'arn:aws:dynamodb:us-east-1:027224425948:table/WrongInventory' };
     }, expectedError: /environment|table|configuration|variant|manifest/i });
 
     reset();
@@ -257,7 +331,7 @@ test('Inventory memory selection preserves access and release state', { timeout:
     const activation = await activateAndConfirm({ api, worker });
     assert.equal(activation.action.status, 'completed');
     addHigherMemoryVariants();
-    fixture.versionOverrides[higherDenied.version] = { roleArn: inventoryRoleArn };
+    fixture.versionOverrides[`Inventory:${higherDenied.version}`] = { roleArn: inventoryRoleArn };
     const requestsBefore = fixture.appRequests.length;
     const rejected = await runMemory(api, worker);
     assert.ok(['failed', 'incomplete'].includes(rejected.action.status));

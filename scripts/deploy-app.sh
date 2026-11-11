@@ -61,7 +61,7 @@ verify_aliases() {
 }
 
 prepare_inventory_versions() {
-  local function_name healthy_version healthy_role denied_role manifest_bucket manifest_key table_name
+  local function_name healthy_version healthy_role denied_role manifest_bucket manifest_key table_name supported_memory_mb
   function_name="$(stack_output InventoryFunctionName <<<"$stack_state")"
   healthy_version="$(stack_output InventoryLiveVersion <<<"$stack_state")"
   healthy_role="$(stack_output InventoryRoleArn <<<"$stack_state")"
@@ -69,12 +69,14 @@ prepare_inventory_versions() {
   manifest_bucket="$(stack_output InventoryVariantsManifestBucket <<<"$stack_state")"
   manifest_key="$(stack_output InventoryVariantsManifestKey <<<"$stack_state")"
   table_name="$(stack_output InventoryTableName <<<"$stack_state")"
+  supported_memory_mb="$(stack_output InventorySupportedMemoryMb <<<"$stack_state")"
   [[ -n "$function_name" && "$healthy_version" =~ ^[1-9][0-9]*$ &&
      "$healthy_role" =~ ^arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryRole$ &&
      "$denied_role" =~ ^arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryDeniedRole$ &&
      "$manifest_bucket" == cdk-evaltalk-assets-027224425948-us-east-1 &&
      "$manifest_key" == "releases/app/$GITHUB_SHA/inventory-variants.json" &&
-     "$table_name" == IncidentTriageDemoInventory ]]
+     "$table_name" == IncidentTriageDemoInventory &&
+     "$supported_memory_mb" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]]
   AWS_ACCESS_KEY_ID="$access_key" AWS_SECRET_ACCESS_KEY="$secret_key" AWS_SESSION_TOKEN="$session_token" \
     AWS_REGION="$AWS_REGION" AWS_ACCOUNT_ID="$AWS_ACCOUNT_ID" \
     node scripts/prepare-inventory-versions.mjs \
@@ -84,13 +86,14 @@ prepare_inventory_versions() {
       --healthy-role-arn "$healthy_role" \
       --denied-role-arn "$denied_role" \
       --baseline-memory "$(stack_output InventoryMemorySize <<<"$stack_state")" \
+      --supported-memory-mb "$supported_memory_mb" \
       --inventory-table-arn "arn:aws:dynamodb:$AWS_REGION:$AWS_ACCOUNT_ID:table/$table_name" \
       --manifest-bucket "$manifest_bucket" \
       --manifest-key "$manifest_key"
 }
 
 restore_previous_inventory_staging() {
-  local previous_revision function_name healthy_version healthy_role denied_role table_name
+  local previous_revision function_name healthy_version healthy_role denied_role table_name supported_memory_mb
   previous_revision="$(stack_output SourceRevision <<<"$stack_state")"
   denied_role="$(stack_output InventoryDeniedRoleArn <<<"$stack_state")"
   # Pre-Phase-3 app stacks have no denied-role output and cannot have left
@@ -99,12 +102,17 @@ restore_previous_inventory_staging() {
   function_name="$(stack_output InventoryFunctionName <<<"$stack_state")"
   healthy_version="$(stack_output InventoryLiveVersion <<<"$stack_state")"
   healthy_role="$(stack_output InventoryRoleArn <<<"$stack_state")"
+  supported_memory_mb="$(stack_output InventorySupportedMemoryMb <<<"$stack_state")"
+  # Older app stacks only published their baseline and cannot have staged a
+  # higher-memory variant; retain the baseline-only recovery path for them.
+  [[ -n "$supported_memory_mb" ]] || supported_memory_mb="$(stack_output InventoryMemorySize <<<"$stack_state")"
   table_name="$(stack_output InventoryTableName <<<"$stack_state")"
   [[ "$previous_revision" =~ ^[a-f0-9]{40}$ && "$function_name" == IncidentTriageDemoInventory &&
      "$healthy_version" =~ ^[1-9][0-9]*$ &&
      "$healthy_role" =~ ^arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryRole$ &&
      "$denied_role" =~ ^arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryDeniedRole$ &&
-     "$table_name" == IncidentTriageDemoInventory ]]
+     "$table_name" == IncidentTriageDemoInventory &&
+     "$supported_memory_mb" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]]
   AWS_ACCESS_KEY_ID="$access_key" AWS_SECRET_ACCESS_KEY="$secret_key" AWS_SESSION_TOKEN="$session_token" \
     AWS_REGION="$AWS_REGION" AWS_ACCOUNT_ID="$AWS_ACCOUNT_ID" \
     node scripts/prepare-inventory-versions.mjs \
@@ -115,6 +123,7 @@ restore_previous_inventory_staging() {
       --healthy-role-arn "$healthy_role" \
       --denied-role-arn "$denied_role" \
       --baseline-memory "$(stack_output InventoryMemorySize <<<"$stack_state")" \
+      --supported-memory-mb "$supported_memory_mb" \
       --inventory-table-arn "arn:aws:dynamodb:$AWS_REGION:$AWS_ACCOUNT_ID:table/$table_name"
 }
 

@@ -81,27 +81,46 @@ export async function readInventoryVariantsManifest(bucket: string, key: string)
   const input = value as Record<string, unknown>;
   const sourceRevision = typeof input.sourceRevision === "string" && /^[0-9a-f]{40}$/.test(input.sourceRevision) ? input.sourceRevision : undefined;
   const codeSha256 = typeof input.codeSha256 === "string" && input.codeSha256.length > 0 && input.codeSha256.length <= 256 ? input.codeSha256 : undefined;
+  const baselineMemoryMb = typeof input.baselineMemoryMb === "number" && Number.isSafeInteger(input.baselineMemoryMb) &&
+    input.baselineMemoryMb >= 128 && input.baselineMemoryMb <= 10_240 ? input.baselineMemoryMb : undefined;
   if (input.schemaVersion !== 1 || !sourceRevision || input.functionName !== "IncidentTriageDemoInventory" ||
-      input.aliasName !== "live" || input.baselineMemoryMb !== 256 || !codeSha256 || !Array.isArray(input.variants) || input.variants.length !== 2) {
+      input.aliasName !== "live" || baselineMemoryMb === undefined || !codeSha256 || !Array.isArray(input.variants) ||
+      input.variants.length < 2 || input.variants.length > 32) {
     throw new Error("The Inventory variants manifest schema is invalid.");
   }
-  const variants = input.variants.map((entry): InventoryVariantsManifest["variants"][number] | undefined => {
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
+  const variants: InventoryVariantsManifest["variants"] = [];
+  const memories = new Set<number>();
+  const versions = new Set<string>();
+  const pairs = new Set<string>();
+  for (const entry of input.variants) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error("The Inventory variants manifest contains an invalid variant.");
+    }
     const item = entry as Record<string, unknown>;
     const access = item.access === "healthy" || item.access === "denied" ? item.access : undefined;
     const version = typeof item.version === "string" && /^[1-9]\d*$/.test(item.version) ? item.version : undefined;
     const roleArn = item.roleArn === inventoryRoleArn || item.roleArn === inventoryDeniedRoleArn ? item.roleArn : undefined;
-    if (!access || item.memoryMb !== 256 || !version || !roleArn) return;
+    const memoryMb = typeof item.memoryMb === "number" && Number.isSafeInteger(item.memoryMb) &&
+      item.memoryMb >= 128 && item.memoryMb <= 10_240 ? item.memoryMb : undefined;
+    if (!access || memoryMb === undefined || !version || !roleArn || versions.has(version)) {
+      throw new Error("The Inventory variants manifest contains an invalid variant.");
+    }
     const expectedRole = access === "healthy" ? inventoryRoleArn : inventoryDeniedRoleArn;
-    if (roleArn !== expectedRole) return;
-    return { memoryMb: 256, access, version, roleArn };
-  });
-  if (variants.some((entry) => !entry) || new Set(variants.map((entry) => entry?.access)).size !== 2 ||
-      new Set(variants.map((entry) => entry?.version)).size !== 2) {
-    throw new Error("The Inventory variants manifest must contain one distinct healthy and denied pair.");
+    const pair = `${memoryMb}:${access}`;
+    if (roleArn !== expectedRole || pairs.has(pair)) {
+      throw new Error("The Inventory variants manifest contains a duplicated or mismatched access variant.");
+    }
+    versions.add(version);
+    memories.add(memoryMb);
+    pairs.add(pair);
+    variants.push({ memoryMb, access, version, roleArn });
+  }
+  if (!memories.has(baselineMemoryMb) || [...memories].some((memoryMb) =>
+    !pairs.has(`${memoryMb}:healthy`) || !pairs.has(`${memoryMb}:denied`))) {
+    throw new Error("The Inventory variants manifest must contain a healthy and denied version for every memory size.");
   }
   return { schemaVersion: 1, sourceRevision, functionName: "IncidentTriageDemoInventory", aliasName: "live",
-    baselineMemoryMb: 256, codeSha256, variants: variants as InventoryVariantsManifest["variants"] };
+    baselineMemoryMb, codeSha256, variants };
 }
 
 export function expectedInventoryPolicyArn(): string {

@@ -36,6 +36,20 @@ test('Inventory denial alias activation and restoration fail closed', { timeout:
     assert.ok(action.finishedAt, 'the stale-baseline rejection must be durably settled');
   });
 
+  await t.test('readiness rejects Inventory concurrency that differs from the deployed output', async () => {
+    reset();
+    fixture.appMode = 'selected-variant';
+    fixture.inventoryConcurrency = 8;
+    const id = await submit(api, 'readiness', { confirmQuiet: true });
+    await worker.handler({ actionId: id });
+    const action = await getAction(api, id);
+    assert.ok(['failed', 'incomplete'].includes(action.status));
+    assert.match(action.error ?? '', /concurrency/i);
+    assert.equal(fixture.appRequests.length, 0, 'readiness must reject the release drift before app probes');
+    assert.equal(fixture.aliasUpdates.length, 0);
+    assert.deepEqual(fixture.unhandled, []);
+  });
+
   await t.test('a changed denied-role attachment fails closed before alias mutation', async () => {
     reset({ deniedAttached: false });
     const id = await submit(api, 'activate_inventory_denial');
@@ -225,7 +239,7 @@ test('Inventory denial alias activation and restoration fail closed', { timeout:
     const restoreId = await submit(api, 'restore_inventory_access');
     await worker.handler({ actionId: restoreId });
     const restore = await getAction(api, restoreId);
-    assert.equal(restore.status, 'completed');
+    assert.equal(restore.status, 'completed', restore.error);
     assert.equal(fixture.aliasUpdates.length, beforeUpdates, 'healthy alias must not issue a duplicate UpdateAlias');
     assert.equal(fixture.aliasVersion.Inventory, healthyVersion);
     assert.equal(fixture.appRequests.length, beforeRequests, 'no-op restore must not send app probes');

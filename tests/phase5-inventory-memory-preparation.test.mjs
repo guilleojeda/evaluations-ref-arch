@@ -1,7 +1,9 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { prepareInventoryVersions } from '../scripts/prepare-inventory-versions.mjs';
+import { prepareInventoryVersions, restoreRecognizedInventoryStaging } from '../scripts/prepare-inventory-versions.mjs';
 
 const sourceRevision = '0123456789abcdef0123456789abcdef01234567';
 const functionName = 'IncidentTriageDemoInventory';
@@ -106,6 +108,7 @@ function objectFor(manifest) {
 
 function createAws({
   existingManifest,
+  preexistingVariants = [],
   failureBefore,
   lostResponseAfterPublish,
   qualifiedOverrides = {},
@@ -124,12 +127,14 @@ function createAws({
     qualified: new Map([['10', qualified('10', healthyRoleArn, 256)]]),
     nextVersion: 11,
   };
-  if (existingManifest) {
-    state.qualified.set('11', qualified('11', deniedRoleArn, 256));
-    state.qualified.set('12', qualified('12', healthyRoleArn, 512));
-    state.qualified.set('13', qualified('13', deniedRoleArn, 512));
-    state.nextVersion = 14;
+  for (const [index, variant] of expectedVariants().entries()) {
+    if (variant.memoryMb === 256 && variant.access === 'healthy') continue;
+    if (existingManifest || preexistingVariants.some((candidate) => pairKey(candidate) === pairKey(variant))) {
+      const version = String(index + 10);
+      state.qualified.set(version, qualified(version, variant.roleArn, variant.memoryMb));
+    }
   }
+  state.nextVersion = Math.max(...[...state.qualified.keys()].map(Number)) + 1;
   for (const [version, override] of Object.entries(qualifiedOverrides)) {
     const current = state.qualified.get(String(version));
     state.qualified.set(String(version), { ...current, ...copy(override) });
@@ -358,6 +363,24 @@ test('reconciles a lost higher-memory publication response and restores the comp
   );
 });
 
+test('reuses checked versions from an interrupted matrix before publishing only the missing variant', async () => {
+  const aws = createAws({
+    preexistingVariants: [
+      { memoryMb: 256, access: 'denied' },
+      { memoryMb: 512, access: 'healthy' },
+    ],
+  });
+
+  const result = await prepareInventoryVersions({ config: config(), aws });
+
+  assertManifestVariants(result.manifest, aws);
+  assert.deepEqual(
+    aws.calls.filter(([name]) => name === 'publishVersion').map(([, , , , variant]) => pairKey(variant)),
+    ['512:denied'],
+  );
+  assertLatestAndAliasRestored(aws);
+});
+
 test('rejects a missing, invalid-role, or configuration-mismatched prepared variant before mutation', async (t) => {
   const good = preparedManifest();
   const cases = [
@@ -390,4 +413,72 @@ test('rejects a missing, invalid-role, or configuration-mismatched prepared vari
       assertNoPublicationOrMutation(aws);
     });
   }
+});
+
+test('rejects invalid supported-memory sets before reading or mutating AWS state', async (t) => {
+  for (const [name, supported] of [
+    ['duplicate sizes', [256, 256]],
+    ['omitted baseline', [512]],
+    ['non-integer size', [256, 512.5]],
+  ]) {
+    await t.test(name, async () => {
+      const aws = createAws();
+      await assert.rejects(
+        () => prepareInventoryVersions({ config: config({ supportedMemoryMb: supported }), aws }),
+        /supported memory/i,
+      );
+      assert.deepEqual(aws.calls, [], 'invalid memory configuration must fail before AWS reads');
+    });
+  }
+});
+
+test('recovers only recognized current-release role/memory staging to the healthy baseline', async () => {
+  const aws = createAws();
+  aws.state.latest = { ...aws.state.latest, Role: deniedRoleArn, MemorySize: 512, RevisionId: 'interrupted-high-memory-stage' };
+
+  const recovered = await restoreRecognizedInventoryStaging({ config: config(), aws });
+
+  assert.equal(recovered.restored, true);
+  assert.equal(aws.state.latest.Role, healthyRoleArn);
+  assert.equal(aws.state.latest.MemorySize, 256);
+  assert.equal(aws.calls.filter(([name]) => name === 'updateFunctionConfiguration').length, 1);
+  assert.deepEqual(aws.calls.find(([name]) => name === 'updateFunctionConfiguration'), [
+    'updateFunctionConfiguration', healthyRoleArn, 256, 'interrupted-high-memory-stage',
+  ]);
+  assert.deepEqual(aws.state.alias, aws.initialAlias, 'staging recovery must not move the live alias');
+
+  const unsupported = createAws();
+  unsupported.state.latest = { ...unsupported.state.latest, MemorySize: 768 };
+  await assert.rejects(() => restoreRecognizedInventoryStaging({ config: config(), aws: unsupported }), /staged memory/i);
+  assert.equal(unsupported.calls.some(([name]) => name === 'updateFunctionConfiguration'), false);
+});
+
+test('CLI and deployment pass the selected memory list instead of inventing it in the preparer', () => {
+  const deploy = readFileSync(new URL('../scripts/deploy-app.sh', import.meta.url), 'utf8');
+  const stack = readFileSync(new URL('../infrastructure/app/stack.ts', import.meta.url), 'utf8');
+  assert.match(stack, /SUPPORTED_INVENTORY_MEMORY_MB = \[BASELINE_MEMORY_MB, 512\]/);
+  assert.match(stack, /InventorySupportedMemoryMb[\s\S]*SUPPORTED_INVENTORY_MEMORY_MB\.join\(","\)/);
+  assert.match(deploy, /stack_output InventorySupportedMemoryMb/);
+  assert.equal((deploy.match(/--supported-memory-mb "\$supported_memory_mb"/g) ?? []).length, 2);
+
+  assert.throws(
+    () => execFileSync(process.execPath, [
+      new URL('../scripts/prepare-inventory-versions.mjs', import.meta.url).pathname,
+      '--function-name', functionName,
+      '--source-revision', sourceRevision,
+      '--healthy-version', '10',
+      '--healthy-role-arn', healthyRoleArn,
+      '--denied-role-arn', deniedRoleArn,
+      '--inventory-table-arn', tableArn,
+      '--manifest-bucket', manifestBucket,
+      '--manifest-key', manifestKey,
+      '--baseline-memory', '256',
+      '--supported-memory-mb', '256,256',
+    ], { encoding: 'utf8' }),
+    (error) => {
+      assert.equal(error.status, 1);
+      assert.match(error.stderr, /supported-memory-mb must not contain duplicates/);
+      return true;
+    },
+  );
 });
