@@ -19,6 +19,14 @@ The controller supports increasing reserved concurrency, increasing Lambda memor
 
 **Increase Lambda memory** selects a prepared qualified version at the requested supported size in MB through a revision-guarded `live` alias update. It preserves application code and all other settings, records the previous and resulting memory/version state, and reads back the configuration of the version invoked through the alias. Recover and Reset restore the captured baseline memory and version state. The [specification](failure-controller-behavior.md#increase-function-memory) defines the action contract and published-version constraint.
 
+The implemented memory command targets Inventory. Use the supported-memory dropdown or the authenticated `PUT /api/actions/<action UUID>` interface:
+
+```json
+{"kind":"increase_memory","function":"inventory","memoryMb":512}
+```
+
+Choices come from the current release manifest. An equal active size completes as no change; a lower size, unsupported function/value, stale release or incompatible version is rejected. Reusing the same UUID/input returns its recorded outcome. Before a change, the worker saves configuration and guards the alias switch with its observed revision. Lost acknowledgement is reconciled by readback; an unconfirmed result remains unknown. The action sends no app requests and establishes no recovery. Higher memory preserves denial; **Restore Inventory access** selects the matching healthy version at that memory. Readiness accepts a supported higher healthy variant and separately verifies an order/decrement.
+
 The agent investigates ordinary logs, metrics, and relevant configuration evidence and merely recommends an action, another response, or no remediation. It has no mutation tools or controller authority. The presenter independently selects a shortcut and its target/value. Controller actions do not depend on parsing or executing an agent report, and an action can be used without an agent run.
 
 A shortcut changes only its selected setting and reports applied, no change, failed, or unknown from configuration acknowledgement/readback. It does not start or stop traffic, submit application probes, or judge incident resolution. It must not silently call Recover, fix another component, or substitute the controller's known cause for the presenter's choice. Application outcomes remain separate observations.

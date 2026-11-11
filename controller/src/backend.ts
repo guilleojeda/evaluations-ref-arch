@@ -98,6 +98,10 @@ function command(value: unknown): Command | undefined {
     return { kind: "readiness", confirmQuiet: true };
   }
   if (input.kind === "traffic" && keys.length === 1) return { kind: "traffic" };
+  if (input.kind === "increase_memory" && keys.length === 3 && input.function === "inventory" &&
+      typeof input.memoryMb === "number" && Number.isSafeInteger(input.memoryMb) && input.memoryMb >= 128 && input.memoryMb <= 10_240) {
+    return { kind: "increase_memory", function: "inventory", memoryMb: input.memoryMb };
+  }
   if (input.kind === "activate_inventory_denial" && keys.length === 1) return { kind: "activate_inventory_denial" };
   if (input.kind === "restore_inventory_access" && (keys.length === 1 || (keys.length === 2 && input.restoreWithoutEvidence === true))) {
     return input.restoreWithoutEvidence === true ? { kind: "restore_inventory_access", restoreWithoutEvidence: true } : { kind: "restore_inventory_access" };
