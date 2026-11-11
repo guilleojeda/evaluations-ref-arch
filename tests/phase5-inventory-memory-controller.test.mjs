@@ -177,9 +177,15 @@ test('Inventory memory selection preserves access and release state', { timeout:
   });
 
   await t.test('denial remains active at higher memory and Restore access keeps that memory', async () => {
-    const activation = await activateAndConfirm({ api, worker });
+    reset();
     addHigherMemoryVariants();
     fixture.appMode = 'selected-variant';
+    const initialReadinessId = await submit(api, 'readiness', { confirmQuiet: true });
+    await worker.handler({ actionId: initialReadinessId });
+    assert.equal((await getAction(api, initialReadinessId)).status, 'completed');
+    const id = await submit(api, 'activate_inventory_denial');
+    await worker.handler({ actionId: id });
+    const activation = { id, action: await getAction(api, id), state: await getState(api) };
     assert.equal(activation.state.incident?.active, 'denied');
     const requestsBeforeSelection = fixture.appRequests.length;
     const { action: increase } = await runMemory(api, worker);

@@ -239,7 +239,7 @@ export function stackXml() {
   const outputs = [
     ['SourceRevision', fixture.revision], ['ApiUrl', appApi], ['ProductSku', 'demo-widget'],
     ['CheckoutFunctionName', 'IncidentTriageDemoCheckout'], ['InventoryFunctionName', 'IncidentTriageDemoInventory'],
-    ['InventoryTableName', table], ['InventoryRoleArn', inventoryRoleArn], ['PresenterCredentialGeneration', fixture.credentialGeneration],
+    ['OrdersTableName', 'IncidentTriageDemoOrders'], ['InventoryTableName', table], ['InventoryRoleArn', inventoryRoleArn], ['PresenterCredentialGeneration', fixture.credentialGeneration],
     ['InventoryDeniedRoleArn', deniedRoleArn],
     ['InventoryVariantsManifestBucket', manifestBucket], ['InventoryVariantsManifestKey', currentManifestKey()],
     ['CheckoutLiveVersion', healthyVersion], ['InventoryLiveVersion', fixture.inventoryExpectedVersion],
@@ -388,7 +388,11 @@ export async function awsProtocol(request, body) {
       CodeSha256: override.codeSha256 ?? (deniedConfig && fixture.deniedConfigMode === 'code' ? 'wrong-code' : fixture.manifestCodeSha256),
       Role: name === 'Checkout' ? checkoutRoleArn : override.roleArn ?? variant?.roleArn ?? inventoryRoleArn,
       Environment: { Variables: name === 'Checkout'
-        ? { APP_ENVIRONMENT: 'demo', SOURCE_REVISION: fixture.revision, ORDERS_TABLE_NAME: 'IncidentTriageDemoOrders', INVENTORY_TABLE_NAME: table, PRODUCT_SKU: 'demo-widget' }
+        ? { APP_ENVIRONMENT: 'demo', SOURCE_REVISION: fixture.revision,
+          PRESENTER_CREDENTIAL_DIGEST: createHash('sha256').update(appBearer).digest('hex'),
+          PRESENTER_CREDENTIAL_GENERATION: fixture.credentialGeneration, ORDERS_TABLE_NAME: 'IncidentTriageDemoOrders',
+          INVENTORY_TABLE_NAME: table, INVENTORY_FUNCTION_NAME: `arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoInventory:live`,
+          PRODUCT_SKU: 'demo-widget' }
         : { APP_ENVIRONMENT: 'demo', SOURCE_REVISION: override.sourceRevision ?? (deniedConfig && fixture.deniedConfigMode === 'env' ? newerRevision : fixture.revision), INVENTORY_TABLE_NAME: override.inventoryTableArn ?? tableArn, PRODUCT_SKU: 'demo-widget' } },
       Architectures: override.architectures ?? ['x86_64'],
     };

@@ -672,6 +672,30 @@ test('authenticated Recover restores the trusted baseline and verifies a fresh o
     assert.deepEqual(fixture.unhandled, []);
   });
 
+  await t.test('readiness cannot adopt a new release while a checkout remains unknown without an incident', async () => {
+    reset({ baselineRevision: newerRevision, revision: newerRevision });
+    fixture.stackId = '55555555-5555-4555-8555-555555555555';
+    fixture.stackLastUpdatedAt = '2026-11-11T02:00:00.000Z';
+    const unresolved = seedMissingUnknownCheckout();
+    const before = await getState(api);
+    const readinessId = await submit(api, 'readiness', { confirmQuiet: true });
+    await worker.handler({ actionId: readinessId });
+    const readiness = await getAction(api, readinessId);
+    assert.ok(['failed', 'incomplete'].includes(readiness.status));
+    assert.match(readiness.error ?? '', /settle|unknown|checkout/i);
+    assert.deepEqual(fixture.appRequests, [], 'readiness sends no new business request while an earlier checkout is unresolved');
+    const after = await getState(api);
+    assert.equal(after.unresolved.length, 1);
+    assert.deepEqual({ checkoutId: after.unresolved[0].checkoutId, sku: after.unresolved[0].sku,
+      quantity: after.unresolved[0].quantity, productVersion: after.unresolved[0].productVersion }, unresolved,
+    'the original checkout identity and immutable input remain unresolved');
+    assert.deepEqual(after.budgets, before.budgets, 'blocked readiness does not consume or replenish any allowance');
+    assert.deepEqual(after.baseline, before.baseline);
+    assert.deepEqual(after.originalBaseline, before.originalBaseline);
+    assert.equal(after.incident, undefined, 'this case has no incident to trigger the settlement guard');
+    assert.deepEqual(fixture.unhandled, []);
+  });
+
   await t.test('explicit readiness can adopt a healthy new release after a stale incident without resetting budgets', async () => {
     const { activationId } = await prepareDeniedAt512({ api, worker });
     const oldIncidentId = (await getState(api)).incident.activationActionId;

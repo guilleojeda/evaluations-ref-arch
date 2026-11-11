@@ -110,6 +110,9 @@ function sameCommand(a: Command, b: Command): boolean {
   if (a.kind === "restore_inventory_access" && b.kind === "restore_inventory_access") {
     return Boolean(a.restoreWithoutEvidence) === Boolean(b.restoreWithoutEvidence);
   }
+  if (a.kind === "recover" && b.kind === "recover") {
+    return a.confirmQuiet === b.confirmQuiet && Boolean(a.recoverWithoutEvidence) === Boolean(b.recoverWithoutEvidence);
+  }
   if (a.kind === "increase_memory" && b.kind === "increase_memory") {
     return a.function === b.function && a.memoryMb === b.memoryMb;
   }
@@ -127,6 +130,7 @@ function newAction(id: string, command: Command, now: number): Action {
     claimBy: now + 30_000, deadlineAt: now + 75_000, discardAfter: now + 105_000,
     requests: [],
     ...(command.kind === "traffic" ? { traffic: { catalog: counters(), checkout: counters() } } : {}),
+    ...(command.kind === "recover" ? { recoveryProgress: "stopping" as const } : {}),
   };
 }
 
@@ -138,8 +142,8 @@ function inventoryDenialOutstanding(run: RunState): boolean {
 }
 
 function canStart(run: RunState, action: Action | undefined, configuration: Action | undefined, command: Command): void {
-  const configurationCommand = command.kind === "restore_inventory_access" || command.kind === "increase_memory";
-  if (action && active.has(action.status) && !(command.kind === "restore_inventory_access" && action.kind === "traffic")) {
+  const canRecoverTraffic = command.kind === "recover" && action?.kind === "traffic";
+  if (action && active.has(action.status) && !(command.kind === "restore_inventory_access" && action.kind === "traffic") && !canRecoverTraffic) {
     throw new CommandError(409, "ACTION_IN_PROGRESS", "Wait for the current action or stop its traffic.");
   }
   if (action?.status === "incomplete") {
@@ -193,9 +197,6 @@ function canStart(run: RunState, action: Action | undefined, configuration: Acti
   if (command.kind === "readiness" && (run.budgets.checkout.verificationRemaining < 1 || run.budgets.catalog.remaining < 2 || run.budgets.orderStatus.remaining < 1)) {
     throw new CommandError(409, "ALLOWANCE_EXHAUSTED", "Readiness requires a verification checkout, two catalog reads and an order-status read.");
   }
-  if (command.kind === "readiness" && inventoryDenialOutstanding(run)) {
-    throw new CommandError(409, "INVENTORY_DENIAL_ACTIVE", "Restore the recorded Inventory access change before establishing a new readiness baseline.");
-  }
 }
 
 function controlled(target: Action, command: Extract<Command, { targetActionId: string }>, now: number): Action {
@@ -242,11 +243,14 @@ export async function applyCommand(id: string, command: Command): Promise<{ acti
       action.finishedAt = action.createdAt;
     } else {
       canStart(run, current && visible(current.data, now), configuration && visible(configuration.data, now), command);
-      if (command.kind === "restore_inventory_access" || command.kind === "increase_memory") {
+      if (command.kind === "recover" && current?.data.kind === "traffic" && active.has(visible(current.data, now).status)) {
+        writes.push(replace(current.pk, current, controlled(current.data,
+          { kind: "stop", targetActionId: current.data.id }, now)));
+      }
+      if (command.kind === "restore_inventory_access" || command.kind === "increase_memory" || command.kind === "recover") {
         nextRun = { ...run, configurationActionId: id };
       } else if (command.kind === "readiness") {
-        nextRun = { ...run, currentActionId: id, baseline: null,
-          ...(!run.originalBaseline && run.baseline ? { originalBaseline: structuredClone(run.baseline) } : {}) };
+        nextRun = { ...run, currentActionId: id };
       } else nextRun = { ...run, currentActionId: id };
     }
     writes.push(replace(runKey, runRow, nextRun), replace(actionKey(id), undefined, action));

@@ -1,6 +1,6 @@
 # Failure Controller
 
-The failure controller is a cloud-hosted presenter dashboard. It verifies the checkout baseline, runs bounded traffic, and lets the presenter observe or stop the same run from another browser. It selects and restores the prepared Inventory access-state versions through the single-target `live` alias, records request evidence, and displays the actual app alarm separately. Phase 4 adds durable read-only investigation discovery, source-cited reports, actual trace references, and independent agent endpoint/alarm-binding readiness observations.
+The failure controller is a cloud-hosted presenter dashboard. It verifies the checkout baseline, runs bounded traffic, selects prepared Inventory memory/access versions, and recovers the current release without deleting orders. Another authenticated browser can observe or stop the same run. Native alarm state, durable agent investigations, source-cited reports, trace references and endpoint readiness remain independent observations.
 
 The [controller specification](failure-controller-behavior.md) owns action behavior, traffic bounds, observations, private records, and interruptions. The [scenario contracts](../demo-scenarios.md) own inventory capacity overload, denied inventory access, and the recovered/stale-alarm condition. The [demo script](../demo-script.md) places these controls in the talk. The [agent design](operations-agent.md) defines the alarm-to-Runtime path and durable run/report records.
 
@@ -15,7 +15,7 @@ Both incidents start from healthy application code and do not require a faulty c
 
 ## Configuration actions
 
-The controller supports increasing reserved concurrency, increasing Lambda memory, and restoring Inventory access by selecting an allowlisted `live` alias target. For capacity, the operator selects a function and permitted cap. For memory, it shows only variants prepared for the current app release; the demo needs baseline and higher Inventory sizes. These capabilities are available independently of incident selection or an agent report.
+The implemented controls select prepared Inventory memory variants, restore Inventory access, and Recover the current release. Readiness, normal traffic, Stop and inspection remain available. The capacity-increase, overload and Reset contracts below describe the remaining intended controls. Memory choices come from the current release manifest and are independent of an agent report.
 
 **Increase Lambda memory** selects a prepared qualified version at the requested supported size in MB through a revision-guarded `live` alias update. It preserves application code and all other settings, records the previous and resulting memory/version state, and reads back the configuration of the version invoked through the alias. Recover and Reset restore the captured baseline memory and version state. The [specification](failure-controller-behavior.md#increase-function-memory) defines the action contract and published-version constraint.
 
@@ -25,11 +25,27 @@ The implemented memory command targets Inventory. Use the supported-memory dropd
 {"kind":"increase_memory","function":"inventory","memoryMb":512}
 ```
 
-Choices come from the current release manifest. An equal active size completes as no change; a lower size, unsupported function/value, stale release or incompatible version is rejected. Reusing the same UUID/input returns its recorded outcome. Before a change, the worker saves configuration and guards the alias switch with its observed revision. Lost acknowledgement is reconciled by readback; an unconfirmed result remains unknown. The action sends no app requests and establishes no recovery. Higher memory preserves denial; **Restore Inventory access** selects the matching healthy version at that memory. Readiness accepts a supported higher healthy variant and separately verifies an order/decrement.
+Choices come from the current release manifest. An equal active size completes as no change; a lower size, unsupported function/value, stale release or incompatible version is rejected. Reusing the same UUID/input returns its recorded outcome. Before a change, the worker saves configuration and guards the alias switch with its observed revision. Lost acknowledgement is reconciled by readback; an unconfirmed result remains unknown. The action sends no app requests and establishes no recovery. Higher memory preserves denial; **Restore Inventory access** selects the matching healthy version at that memory. After the original baseline for the successful deployment is established, readiness accepts a supported higher healthy variant and separately verifies an order/decrement. First adoption requires the release's original healthy baseline settings.
 
 The agent investigates ordinary logs, metrics, and relevant configuration evidence and merely recommends an action, another response, or no remediation. It has no mutation tools or controller authority. The presenter independently selects a shortcut and its target/value. Controller actions do not depend on parsing or executing an agent report, and an action can be used without an agent run.
 
 A shortcut changes only its selected setting and reports applied, no change, failed, or unknown from configuration acknowledgement/readback. It does not start or stop traffic, submit application probes, or judge incident resolution. It must not silently call Recover, fix another component, or substitute the controller's known cause for the presenter's choice. Application outcomes remain separate observations.
+
+## Recover the current release
+
+Pause other browser/manual checkout writers, select the existing quiet-writers confirmation, then choose **Recover**. Recover stops both producers itself and drains submitted work. It restores the original healthy Inventory version and memory for the same successful app deployment, together with both expected function caps. A previous memory increase does not replace this restore target. Orders, productVersion, consumed allowances, incident/source history and agent results are preserved; traffic remains stopped.
+
+The authenticated command uses a new action UUID:
+
+```json
+{"kind":"recover","confirmQuiet":true}
+```
+
+Configuration restoration and business verification have separate results. A complete recovery verifies a fresh quantity-one checkout, its saved receipt through status, and its same-productVersion stock decrement. The POST uses verification allowance. Existing ambiguous attempts are checked through status without resubmitting them; an absent order does not settle an uncertain write. Missing catalog, status or checkout allowance leaves verification incomplete even when settings are restored. Inspect the recorded configuration result and last independently verified health instead of interpreting a configuration acknowledgement or alarm OK as fresh business proof.
+
+Fresh readiness binds the original baseline to the successful stack generation, immutable versions and artifact/settings identities. Missing legacy facts, another deployment, unexpected code/role/policy drift or an unknown alias blocks Recover until reconciled. After a successful new deployment, explicit readiness can preserve the prior incident history and establish the new original baseline; it does not renew request allowances.
+
+Recover stores ordinary configuration evidence before changing settings. If that capture is unavailable, the UI can request separate confirmation to proceed protectively using `recoverWithoutEvidence:true`. This retains the evidence gap and still requires all target checks and fresh business proof. Reusing an action UUID returns its recorded input/result; changed confirmation is conflicting reuse, and a failed/unknown AWS acknowledgement is reconciled by readback without blind retries.
 
 ## Presenter experience
 

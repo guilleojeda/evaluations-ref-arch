@@ -106,6 +106,13 @@ function command(value: unknown): Command | undefined {
   if (input.kind === "restore_inventory_access" && (keys.length === 1 || (keys.length === 2 && input.restoreWithoutEvidence === true))) {
     return input.restoreWithoutEvidence === true ? { kind: "restore_inventory_access", restoreWithoutEvidence: true } : { kind: "restore_inventory_access" };
   }
+  if (input.kind === "recover" && input.confirmQuiet === true &&
+      (keys.length === 2 || (keys.length === 3 && input.recoverWithoutEvidence === true)) &&
+      keys.every((key) => ["kind", "confirmQuiet", "recoverWithoutEvidence"].includes(key))) {
+    return input.recoverWithoutEvidence === true
+      ? { kind: "recover", confirmQuiet: true, recoverWithoutEvidence: true }
+      : { kind: "recover", confirmQuiet: true };
+  }
   if ((input.kind === "stop" || input.kind === "discard") && keys.every((key) => ["kind", "targetActionId"].includes(key))
       && typeof input.targetActionId === "string" && UUID.test(input.targetActionId)) {
     return { kind: input.kind, targetActionId: input.targetActionId };
