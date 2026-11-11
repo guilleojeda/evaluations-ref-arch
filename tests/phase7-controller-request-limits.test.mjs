@@ -138,8 +138,11 @@ test('controller request quotas are not cumulative run gates', { timeout: 180_00
   await t.test('legacy zero allowances allow readiness and Recover while preserving observed orders', async () => {
     reset();
     zeroLegacyBudgets();
+    const legacyBudgets = structuredClone(row('STATE').data.budgets);
     fixture.appMode = 'selected-variant';
     const readiness = await assertReadiness({ api, worker });
+    assert.deepEqual(row('STATE').data.budgets, legacyBudgets,
+      'readiness preserves inert legacy fields without charging or replenishing them');
     const readyReceiptId = readiness.state.baseline.checkoutId;
     const stockBeforeRecover = fixture.appStock;
     const receiptsBeforeRecover = (await getState(api)).receipts.length;
@@ -148,6 +151,8 @@ test('controller request quotas are not cumulative run gates', { timeout: 180_00
     const recovery = await runAction(api, worker, 'recover', { confirmQuiet: true });
     assert.equal(recovery.action.status, 'completed', recovery.action.error);
     assert.equal(recovery.action.configurationOutcome, 'no_change');
+    assert.deepEqual(row('STATE').data.budgets, legacyBudgets,
+      'Recover preserves the original exhausted legacy fields unchanged');
     assert.equal(checkoutPosts(requestDelta(requestStart)).length, 1,
       'Recover makes one fresh checkout instead of treating old allowance values as a send gate');
     assert.ok(recovery.action.requests.some(({ kind, outcome, completedAt, checkout }) =>
@@ -186,6 +191,8 @@ test('controller request quotas are not cumulative run gates', { timeout: 180_00
     const readiness = await assertReadiness({ api, worker });
     assert.equal(readiness.action.status, 'completed', readiness.action.error);
     assert.ok(readiness.state.baseline?.deploymentIdentity?.stackId);
+    assert.equal(Object.hasOwn(row('STATE').data, 'budgets'), false,
+      'readiness does not recreate cumulative allowance fields');
     const priorReceiptId = readiness.state.baseline.checkoutId;
     const beforeRecoverStock = fixture.appStock;
     const beforeRecoverReceipts = readiness.state.receipts.length;
@@ -194,6 +201,8 @@ test('controller request quotas are not cumulative run gates', { timeout: 180_00
     assert.equal(recovery.action.status, 'completed', recovery.action.error);
     assert.equal(checkoutPosts(requestDelta(requestStart)).length, 1,
       'Recover completes fresh verification when old allowance fields are absent');
+    assert.equal(Object.hasOwn(row('STATE').data, 'budgets'), false,
+      'Recover does not recreate cumulative allowance fields');
     assert.equal(recovery.state.receipts.length, beforeRecoverReceipts + 1);
     assert.ok(recovery.state.receipts.some(({ checkoutId }) => checkoutId === priorReceiptId));
     assert.equal(recovery.state.latestStock, beforeRecoverStock - 1);
