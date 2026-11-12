@@ -359,7 +359,8 @@ test('Reset creates a verified new session while preserving old operational hist
       const result = await runReset({ api, worker });
       assert.equal(result.action.status, 'completed', result.action.error);
       assert.equal(result.state.baseline.appRevision, newerRevision);
-      assert.equal(result.state.baseline.deploymentIdentity?.stackId, fixture.stackId);
+      assert.equal(result.state.baseline.deploymentIdentity?.stackId,
+        `arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoApp/${fixture.stackId}`);
       assert.equal(fixture.aliasVersion.Inventory, '2', 'Reset uses the current release healthy variant, not stale v4');
       assert.equal(fixture.inventoryConcurrency, undefined);
       assert.equal(fixture.checkoutConcurrency, undefined);
