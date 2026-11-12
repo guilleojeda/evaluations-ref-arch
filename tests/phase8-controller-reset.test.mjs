@@ -368,6 +368,39 @@ test('Reset creates a verified new session while preserving old operational hist
       assert.equal((await appStatus(oldOrder.checkoutId)).status, 404);
       assert.deepEqual(fixture.unhandled, []);
     });
+
+    await t.test('a denied higher-memory alias restores the current healthy baseline before new verification', async () => {
+      reset({ revision: newerRevision, baselineRevision: appRevision });
+      fixture.stackId = '33333333-3333-4333-8333-333333333333';
+      fixture.stackLastUpdatedAt = '2026-11-13T00:00:00.000Z';
+      fixture.extraVariants = [
+        { memoryMb: 512, access: 'healthy', version: '4', roleArn: 'arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryRole' },
+        { memoryMb: 512, access: 'denied', version: '5', roleArn: 'arn:aws:iam::027224425948:role/IncidentTriageDemoAppInventoryDeniedRole' },
+      ];
+      fixture.inventoryConcurrency = 75;
+      fixture.checkoutConcurrency = 40;
+      fixture.appMode = 'selected-variant';
+      const oldOrder = await addPriorOrder();
+      fixture.aliasVersion.Inventory = '5';
+      fixture.aliasRevision = 'alias-revision-3';
+
+      const result = await runReset({ api, worker });
+      assert.equal(result.action.status, 'completed', result.action.error);
+      assert.equal(result.action.configurationCheckpoint?.inventoryAliasBefore.functionVersion, '5');
+      assert.equal(result.action.configurationCheckpoint?.inventoryPolicyAtCapture.state, 'present',
+        'the pre-change capture records the active denied-role policy');
+      assert.deepEqual(fixture.aliasUpdates.map(({ version }) => version), ['2'],
+        'Reset selects the allowlisted current-release healthy baseline variant');
+      assert.equal(fixture.aliasVersion.Inventory, '2');
+      assert.equal(fixture.inventoryConcurrency, undefined);
+      assert.equal(fixture.checkoutConcurrency, undefined);
+      assert.equal(result.state.baseline.settings.inventory.version, '2');
+      assert.equal(result.state.baseline.settings.inventory.access, 'healthy');
+      assert.equal(result.state.baseline.settings.inventory.memory, 256);
+      assert.equal((await appStatus(oldOrder.checkoutId)).status, 404);
+      assert.equal(fixture.appStock, 999);
+      assert.deepEqual(fixture.unhandled, []);
+    });
   });
 
   await t.test('Reset rejects failed deployments and unavailable required capture before data mutation', async (t) => {
@@ -398,6 +431,26 @@ test('Reset creates a verified new session while preserving old operational hist
         assert.deepEqual(fixture.unhandled, []);
       });
     }
+  });
+
+  await t.test('Inventory cap drift after capture fails before any configuration or business mutation', async () => {
+    reset();
+    fixture.appMode = 'selected-variant';
+    fixture.inventoryConcurrency = 75;
+    fixture.afterCheckpoint = () => { fixture.inventoryConcurrency = 90; };
+
+    const result = await runReset({ api, worker });
+    assert.equal(result.action.status, 'failed', result.action.error);
+    assert.equal(result.state.resetRequired, true);
+    const captured = fixture.checkpointObjects[0].body;
+    assert.equal(captured.settings.inventory.cap, 75, 'the checkpoint records the observed pre-change cap');
+    assert.equal(fixture.inventoryConcurrency, 90);
+    assert.equal(fixture.aliasUpdates.length, 0);
+    assert.equal(fixture.concurrencyWrites.length, 0,
+      'Reset does not overwrite a cap that changed after its capture');
+    assert.equal(fixture.businessMutations.length, 0);
+    assert.equal(row('RUN#legacy'), undefined);
+    assert.deepEqual(fixture.unhandled, []);
   });
 
   await t.test('Reset waits for held traffic to drain before changing business data', async () => {
@@ -447,6 +500,49 @@ test('Reset creates a verified new session while preserving old operational hist
       releaseHeld();
       await Promise.all([trafficRun, resetWorker].filter(Boolean));
     }
+  });
+
+  await t.test('Reset does not treat a 404 or settled client request as the end of a server Checkout execution', async () => {
+    reset();
+    fixture.appMode = 'selected-variant';
+    const readiness = await readyCurrentRelease(api, worker);
+    const unknownId = randomUUID();
+    const unknown = unresolvedAttempt(unknownId, readiness.state.baseline.productVersion);
+    const requestsBeforeReset = fixture.appRequests.length;
+    row('STATE').data.unresolved.push(unknown);
+
+    const firstId = randomUUID();
+    await acceptReset(api, firstId);
+    const firstActionRow = row(`ACTION#${firstId}`);
+    firstActionRow.data.deadlineAt = Date.now() + 10_000;
+    firstActionRow.data.discardAfter = firstActionRow.data.deadlineAt + 30_000;
+    await worker.handler({ actionId: firstId });
+    const incomplete = await getAction(api, firstId);
+    assert.equal(incomplete.status, 'incomplete', incomplete.error);
+    assert.equal((await getState(api)).resetRequired, true);
+    assert.equal(row(`RUN#${readiness.state.runId ?? 'legacy'}`), undefined,
+      'the old session is not archived before its server-side execution fence');
+    assert.equal(fixture.appRequests.length, requestsBeforeReset,
+      'Reset does not use an immediate 404 as proof that Checkout stopped');
+    assert.deepEqual(fixture.businessMutations, [], 'Reset does not change business data before the execution fence');
+    assert.equal(fixture.checkpointObjects.length, 0, 'Reset makes no configuration capture or change before quiescence');
+
+    const resumed = await withElapsed(45_000, async () => {
+      const discardId = randomUUID();
+      await call(api, 'PUT', `/api/actions/${discardId}`, { kind: 'discard', targetActionId: firstId }, 202);
+      assert.equal((await getAction(api, firstId)).status, 'discarded');
+      fixture.appRequests.length = 0;
+      return runReset({ api, worker });
+    });
+    assert.equal(resumed.action.status, 'completed', resumed.action.error);
+    assert.equal(resumed.state.resetRequired, false);
+    assert.ok(fixture.appRequests.some(({ method, path }) => method === 'GET' && path === `/api/orders/${unknownId}`),
+      'the new Reset checks the old receipt after its server execution and drain window');
+    assert.ok(fixture.businessMutations.length > 0);
+    const archived = await getRun(api, readiness.state.runId ?? 'legacy');
+    assert.ok(archived.unresolved.some(({ checkoutId }) => checkoutId === unknownId),
+      'a 404 keeps the prior checkout unknown in archived history');
+    assert.deepEqual(fixture.unhandled, []);
   });
 
   await t.test('seed failures stay incomplete, applied lost acknowledgements use readback, and failed completion cannot certify health', async (t) => {

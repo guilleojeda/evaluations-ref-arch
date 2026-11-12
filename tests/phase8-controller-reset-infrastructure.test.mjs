@@ -211,7 +211,15 @@ test('worker Reset permissions are limited to the app output tables, selected SK
   const sku = app.Outputs?.ProductSku?.Value;
   assert.equal(typeof sku, 'string', 'missing synthesized app ProductSku output');
 
-  assertWorkerDynamoDbEnvelope(allRoleStatements(resources, workerId), tableNames, sku,
+  // CDK may express this stack's own table ARN as GetAtt rather than a literal ARN.
+  // Resolve only the exact output-bound table; other references remain unexpected resources.
+  const runArnReference = JSON.stringify({ 'Fn::GetAtt': [controller.Outputs.RunTableName.Value.Ref, 'Arn'] });
+  const workerStatements = allRoleStatements(resources, workerId).map((statement) => ({
+    ...statement,
+    Resource: resourceList(statement).map((resource) =>
+      JSON.stringify(resource) === runArnReference ? tableNames.run : resource),
+  }));
+  assertWorkerDynamoDbEnvelope(workerStatements, tableNames, sku,
     `${workerRoleName}`);
 
   const workerBoundary = bootstrapPolicy(bootstrap.Resources, workerBoundaryName);

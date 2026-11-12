@@ -55,6 +55,7 @@ export const fixture = {
   aliasUpdates: [],
   aliasUpdateAttempts: [],
   checkpointObjects: [],
+  afterCheckpoint: undefined,
   trace: [],
   configurationReads: [],
   concurrencyReads: [],
@@ -160,6 +161,7 @@ export function reset({ baselineRevision = appRevision, revision = appRevision, 
   fixture.aliasUpdates.length = 0;
   fixture.aliasUpdateAttempts.length = 0;
   fixture.checkpointObjects.length = 0;
+  fixture.afterCheckpoint = undefined;
   fixture.trace.length = 0;
   fixture.configurationReads.length = 0;
   fixture.concurrencyReads.length = 0;
@@ -658,6 +660,7 @@ export async function awsProtocol(request, body) {
       if (fixture.checkpointMode === 'fail') return { __error: 'AccessDenied' };
       fixture.checkpointObjects.push({ bucket, key, body });
       fixture.trace.push({ type: 'checkpoint-stored', key, body });
+      if (typeof fixture.afterCheckpoint === 'function') await fixture.afterCheckpoint({ bucket, key, body });
       return {};
     }
   }
