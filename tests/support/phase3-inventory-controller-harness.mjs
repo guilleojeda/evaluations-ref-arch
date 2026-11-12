@@ -23,6 +23,7 @@ export const appApi = 'https://fixtureapi.execute-api.us-east-1.amazonaws.com';
 export const operatorBearer = 'fixture-operator';
 export const appBearer = 'fixture-app';
 export const runTable = 'ControllerRunFixture';
+export const ordersTable = 'IncidentTriageDemoOrders';
 export const evidenceBucket = 'incident-triage-demo-evidence-027224425948-us-east-1';
 export const evidencePrefix = 'configuration/';
 export const manifestBucket = 'cdk-evaltalk-assets-027224425948-us-east-1';
@@ -36,6 +37,15 @@ export const deniedVersion = '3';
 export const records = new Map();
 export const fixture = {
   appRequests: [],
+  businessRequests: [],
+  businessMutations: [],
+  businessOperationCounts: new Map(),
+  businessFailure: undefined,
+  beforeBusinessRequest: undefined,
+  afterBusinessRequest: undefined,
+  failResetCompletion: false,
+  ordersScanPageSize: 1000,
+  ordersScanPages: 0,
   invocations: [],
   mutations: [],
   dynamoPolicyReads: [],
@@ -45,6 +55,7 @@ export const fixture = {
   aliasUpdates: [],
   aliasUpdateAttempts: [],
   checkpointObjects: [],
+  afterCheckpoint: undefined,
   trace: [],
   configurationReads: [],
   concurrencyReads: [],
@@ -84,7 +95,9 @@ export const fixture = {
   weightedAlias: false,
   appMode: 'denied',
   appStock: 99,
+  appProductVersion: 'fixture-product-v1',
   appOrders: new Map(),
+  appOrderIds: new Map(),
   heldRequests: new Set(),
 };
 
@@ -130,6 +143,15 @@ export function reset({ baselineRevision = appRevision, revision = appRevision, 
   aliasRevision = 'alias-revision-1' } = {}) {
   records.clear();
   fixture.appRequests.length = 0;
+  fixture.businessRequests.length = 0;
+  fixture.businessMutations.length = 0;
+  fixture.businessOperationCounts.clear();
+  fixture.businessFailure = undefined;
+  fixture.beforeBusinessRequest = undefined;
+  fixture.afterBusinessRequest = undefined;
+  fixture.failResetCompletion = false;
+  fixture.ordersScanPageSize = 1000;
+  fixture.ordersScanPages = 0;
   fixture.invocations.length = 0;
   fixture.mutations.length = 0;
   fixture.dynamoPolicyReads.length = 0;
@@ -139,6 +161,7 @@ export function reset({ baselineRevision = appRevision, revision = appRevision, 
   fixture.aliasUpdates.length = 0;
   fixture.aliasUpdateAttempts.length = 0;
   fixture.checkpointObjects.length = 0;
+  fixture.afterCheckpoint = undefined;
   fixture.trace.length = 0;
   fixture.configurationReads.length = 0;
   fixture.concurrencyReads.length = 0;
@@ -176,7 +199,9 @@ export function reset({ baselineRevision = appRevision, revision = appRevision, 
   fixture.checkpointMode = 'store';
   fixture.appMode = 'denied';
   fixture.appStock = 99;
+  fixture.appProductVersion = 'fixture-product-v1';
   fixture.appOrders = new Map();
+  fixture.appOrderIds = new Map();
   fixture.aliasVersion = { Checkout: healthyVersion, Inventory: aliasVersion };
   fixture.aliasRevision = aliasRevision;
   fixture.heldRequests.clear();
@@ -280,12 +305,123 @@ export async function requestBody(request) {
   }
 }
 
+function noteBusinessRequest(operation, body) {
+  const count = (fixture.businessOperationCounts.get(operation) ?? 0) + 1;
+  fixture.businessOperationCounts.set(operation, count);
+  const entry = { operation, count, tableName: body.TableName, body: structuredClone(body) };
+  fixture.businessRequests.push(entry);
+  return entry;
+}
+
+function businessFailure(operation, count) {
+  const failure = fixture.businessFailure;
+  if (!failure || failure.operation !== operation || failure.occurrence !== count) return undefined;
+  fixture.businessFailure = undefined;
+  return failure.errorCode ?? 'AccessDeniedException';
+}
+
+async function afterBusinessRequest(call, outcome) {
+  if (typeof fixture.afterBusinessRequest === 'function') {
+    await fixture.afterBusinessRequest({ ...call, outcome });
+  }
+}
+
+async function beforeBusinessRequest(call) {
+  if (typeof fixture.beforeBusinessRequest === 'function') {
+    await fixture.beforeBusinessRequest(call);
+  }
+}
+
+function inventoryVersionCondition(body) {
+  if (body.ConditionExpression === undefined) return { present: false, supported: true, matches: true };
+  if (typeof body.ConditionExpression !== 'string') return { present: true, supported: false, matches: false };
+  const match = /^\s*(#[A-Za-z0-9_]+|[A-Za-z][A-Za-z0-9_]*)\s*=\s*(:[A-Za-z0-9_]+)\s*$/.exec(body.ConditionExpression);
+  if (!match) return { present: true, supported: false, matches: false };
+  const attribute = body.ExpressionAttributeNames?.[match[1]] ?? match[1];
+  const expectedVersion = body.ExpressionAttributeValues?.[match[2]]?.S;
+  if (attribute !== 'productVersion' || typeof expectedVersion !== 'string') {
+    return { present: true, supported: false, matches: false };
+  }
+  return { present: true, supported: true, matches: expectedVersion === fixture.appProductVersion };
+}
+
+function inventoryItem() {
+  return marshall({
+    sku: 'demo-widget',
+    name: 'Demo Widget',
+    unitPriceCents: 1299,
+    currency: 'USD',
+    availableQuantity: fixture.appStock,
+    productVersion: fixture.appProductVersion,
+    updatedAt: new Date().toISOString(),
+  }, { removeUndefinedValues: true });
+}
+
+function orderRows() {
+  return [...fixture.appOrders.entries()].map(([checkoutId, order]) => {
+    let orderId = fixture.appOrderIds.get(checkoutId);
+    if (!orderId) {
+      orderId = `fixture-order-${checkoutId}`;
+      fixture.appOrderIds.set(checkoutId, orderId);
+    }
+    return { checkoutId, orderId, order };
+  }).sort((left, right) => left.orderId.localeCompare(right.orderId));
+}
+
+async function businessScan(body) {
+  if (body.TableName !== ordersTable) {
+    fixture.unhandled.push(`DynamoDB.Scan ${body.TableName}`);
+    throw new Error(`Unexpected business Scan table ${body.TableName}`);
+  }
+  const call = noteBusinessRequest('Scan', body);
+  await beforeBusinessRequest(call);
+  fixture.ordersScanPages++;
+  const failure = businessFailure('Scan', call.count);
+  if (failure) {
+    await afterBusinessRequest(call, 'failed');
+    return { __error: failure };
+  }
+
+  const exclusive = body.ExclusiveStartKey?.orderId?.S;
+  const remaining = orderRows().filter(({ orderId }) => !exclusive || orderId > exclusive);
+  const requestedLimit = Number.isSafeInteger(body.Limit) && body.Limit > 0 ? body.Limit : Number.POSITIVE_INFINITY;
+  const pageSize = Math.max(1, Math.min(requestedLimit, fixture.ordersScanPageSize));
+  const page = remaining.slice(0, pageSize);
+  const last = page.at(-1);
+  const result = {
+    Items: page.map(({ orderId, order }) => marshall({ orderId, ...order }, { removeUndefinedValues: true })),
+    ...(remaining.length > page.length && last ? { LastEvaluatedKey: { orderId: { S: last.orderId } } } : {}),
+  };
+  await afterBusinessRequest(call, 'completed');
+  return result;
+}
+
 export async function awsProtocol(request, body) {
   const action = typeof body.Action === 'string' ? body.Action : '';
   const target = request.headers['x-amz-target'] ?? (action ? `CloudFormation_${action}` : '');
   if (target.endsWith('GetItem')) {
-    const item = row(body.Key?.pk?.S);
-    return item ? { Item: marshall(item, { removeUndefinedValues: true }) } : {};
+    if (body.TableName === runTable) {
+      const item = row(body.Key?.pk?.S);
+      return item ? { Item: marshall(item, { removeUndefinedValues: true }) } : {};
+    }
+    if (body.TableName === table) {
+      const call = noteBusinessRequest('GetItem', body);
+      await beforeBusinessRequest(call);
+      if (body.ConsistentRead !== true || body.Key?.sku?.S !== 'demo-widget') {
+        fixture.unhandled.push(`DynamoDB.GetItem ${body.TableName}`);
+        throw new Error('Inventory reset reads must be strong and use the seeded SKU');
+      }
+      const failure = businessFailure('GetItem', call.count);
+      if (failure) {
+        await afterBusinessRequest(call, 'failed');
+        return { __error: failure };
+      }
+      const result = { Item: inventoryItem() };
+      await afterBusinessRequest(call, 'completed');
+      return result;
+    }
+    fixture.unhandled.push(`DynamoDB.GetItem ${body.TableName}`);
+    throw new Error(`Unexpected GetItem table ${body.TableName}`);
   }
   if (target.endsWith('TransactWriteItems')) {
     const writes = body.TransactItems?.map(({ Put }) => Put).filter(Boolean) ?? [];
@@ -302,7 +438,89 @@ export async function awsProtocol(request, body) {
         return { __error: 'TransactionCanceledException' };
       }
     }
+    if (fixture.failResetCompletion) {
+      const stateWrite = writes.map((write) => unmarshall(write.Item)).find(({ pk }) => pk === 'STATE');
+      const currentState = row('STATE')?.data;
+      if (currentState?.resetRequired === true && stateWrite?.data?.resetRequired !== true &&
+          stateWrite?.data?.baseline !== null && stateWrite?.data?.baseline !== undefined) {
+        return { __error: 'AccessDeniedException' };
+      }
+    }
     for (const write of writes) put(unmarshall(write.Item));
+    return {};
+  }
+  if (target.endsWith('PutItem')) {
+    if (body.TableName !== table) {
+      fixture.businessMutations.push({ operation: 'PutItem', tableName: body.TableName, body: structuredClone(body), outcome: 'rejected' });
+      fixture.unhandled.push(`DynamoDB.PutItem ${body.TableName}`);
+      throw new Error('Reset may only seed the selected Inventory row; Orders PutItem is not allowed');
+    }
+    const call = noteBusinessRequest('PutItem', body);
+    const mutation = { operation: 'PutItem', tableName: body.TableName, body: structuredClone(body), outcome: 'attempted' };
+    fixture.businessMutations.push(mutation);
+    await beforeBusinessRequest(call);
+    const item = unmarshall(body.Item ?? {});
+    if (item.sku !== 'demo-widget' || typeof item.productVersion !== 'string' ||
+        !Number.isSafeInteger(item.availableQuantity) || item.availableQuantity !== 1000) {
+      mutation.outcome = 'rejected';
+      fixture.unhandled.push(`DynamoDB.PutItem ${body.TableName}`);
+      throw new Error('Reset must seed only the demo SKU with the approved stock value and a product version');
+    }
+    const condition = inventoryVersionCondition(body);
+    if (!condition.supported) {
+      mutation.outcome = 'rejected';
+      fixture.unhandled.push(`DynamoDB.PutItem condition ${body.ConditionExpression}`);
+      throw new Error('Fixture supports only a simple Inventory productVersion equality condition');
+    }
+    if (!condition.matches) {
+      mutation.outcome = 'conditional_failed';
+      await afterBusinessRequest(call, 'conditional_failed');
+      return { __error: 'ConditionalCheckFailedException' };
+    }
+    const failure = businessFailure('PutItem', call.count);
+    if (failure) {
+      mutation.outcome = 'failed';
+      await afterBusinessRequest(call, 'failed');
+      return { __error: failure };
+    }
+    fixture.appStock = item.availableQuantity;
+    fixture.appProductVersion = item.productVersion;
+    mutation.outcome = 'applied';
+    await afterBusinessRequest(call, 'applied');
+    return {};
+  }
+  if (target.endsWith('Scan')) return businessScan(body);
+  if (target.endsWith('DeleteItem')) {
+    if (body.TableName !== ordersTable) {
+      fixture.businessMutations.push({ operation: 'DeleteItem', tableName: body.TableName, body: structuredClone(body), outcome: 'rejected' });
+      fixture.unhandled.push(`DynamoDB.DeleteItem ${body.TableName}`);
+      throw new Error(`Reset may only delete prior Orders rows, not ${body.TableName}`);
+    }
+    const call = noteBusinessRequest('DeleteItem', body);
+    const orderId = body.Key?.orderId?.S;
+    const knownOrder = orderRows().find(({ orderId: known }) => known === orderId);
+    const mutation = { operation: 'DeleteItem', tableName: body.TableName, orderId,
+      checkoutId: knownOrder?.checkoutId ?? orderId?.replace(/^fixture-order-/, ''),
+      body: structuredClone(body), outcome: 'attempted' };
+    fixture.businessMutations.push(mutation);
+    await beforeBusinessRequest(call);
+    if (typeof orderId !== 'string' || !/^fixture-order-[A-Za-z0-9_-]+$/.test(orderId)) {
+      mutation.outcome = 'rejected';
+      fixture.unhandled.push(`DynamoDB.DeleteItem ${body.TableName}`);
+      throw new Error('Reset DeleteItem must target a valid Orders key');
+    }
+    const failure = businessFailure('DeleteItem', call.count);
+    if (failure) {
+      mutation.outcome = 'failed';
+      await afterBusinessRequest(call, 'failed');
+      return { __error: failure };
+    }
+    if (knownOrder) {
+      fixture.appOrders.delete(knownOrder.checkoutId);
+      fixture.appOrderIds.delete(knownOrder.checkoutId);
+    }
+    mutation.outcome = 'applied';
+    await afterBusinessRequest(call, 'applied');
     return {};
   }
   if (target.endsWith('GetResourcePolicy')) {
@@ -442,6 +660,7 @@ export async function awsProtocol(request, body) {
       if (fixture.checkpointMode === 'fail') return { __error: 'AccessDenied' };
       fixture.checkpointObjects.push({ bucket, key, body });
       fixture.trace.push({ type: 'checkpoint-stored', key, body });
+      if (typeof fixture.afterCheckpoint === 'function') await fixture.afterCheckpoint({ bucket, key, body });
       return {};
     }
   }
@@ -556,8 +775,8 @@ export function appReply(path, method, body) {
     });
     return appResponse(200, {
       observedAt: new Date().toISOString(),
-      products: [{ sku: 'demo-widget', productVersion: 'fixture-product-v1',
-        availableQuantity: fixture.appMode === 'selected-variant' ? fixture.appStock : 99 }],
+      products: [{ sku: 'demo-widget', productVersion: fixture.appProductVersion,
+        availableQuantity: fixture.appStock }],
     });
   }
   if (method === 'POST' && path === '/api/checkout') {
@@ -566,10 +785,14 @@ export function appReply(path, method, body) {
       code: 'INVENTORY_LOOKUP_FAILED', dependencyReason: 'inventory_access_denied', checkoutId: body.checkoutId,
     });
     if (fixture.appMode === 'selected-variant') {
+      if (body.productVersion !== fixture.appProductVersion) {
+        return appResponse(409, { code: 'STALE_PRODUCT_VERSION', checkoutId: body.checkoutId });
+      }
       fixture.appStock -= 1;
       const order = { checkoutId: body.checkoutId, sku: 'demo-widget', quantity: 1, unitPriceCents: 1299,
         totalPriceCents: 1299, currency: 'USD', createdAt: new Date().toISOString(), status: 'placed' };
       fixture.appOrders.set(body.checkoutId, order);
+      fixture.appOrderIds.set(body.checkoutId, `fixture-order-${body.checkoutId}`);
       return appResponse(201, { requestId: `fixture-${randomUUID()}`, order });
     }
     return appResponse(201, {

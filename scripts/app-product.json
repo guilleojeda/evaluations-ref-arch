@@ -1,0 +1,7 @@
+{
+  "sku": "demo-widget",
+  "name": "Demo Widget",
+  "unitPriceCents": 1299,
+  "currency": "USD",
+  "availableQuantity": 1000
+}

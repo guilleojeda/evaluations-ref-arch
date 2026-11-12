@@ -219,6 +219,8 @@ test('authenticated Recover restores the trusted baseline and verifies a fresh o
     assert.equal(fixture.invocations.length, beforeActionCount + 1, 'one accepted Recover action is dispatched');
     for (const priorActionId of existingActions) assert.ok(await getAction(api, priorActionId), 'prior action history remains readable');
     assert.equal(configurationMutations().length, beforeMutations + 3);
+    assert.deepEqual(fixture.businessMutations, [],
+      'Recover preserves business data through the app API and never uses privileged Reset writes');
     assert.deepEqual(fixture.unhandled, []);
 
     const requestCountAfterRecovery = fixture.appRequests.length;

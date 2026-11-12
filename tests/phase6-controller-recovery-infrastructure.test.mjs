@@ -15,10 +15,6 @@ const httpBoundaryName = 'IncidentTriageDemoControllerHttpRuntimeBoundary';
 const functions = ['IncidentTriageDemoCheckout', 'IncidentTriageDemoInventory'];
 const functionArns = functions.map((name) => `arn:aws:lambda:${region}:${account}:function:${name}`);
 const inventoryFunctionArn = functionArns[1];
-const businessTables = [
-  `arn:aws:dynamodb:${region}:${account}:table/IncidentTriageDemoOrders`,
-  `arn:aws:dynamodb:${region}:${account}:table/IncidentTriageDemoInventory`,
-];
 
 // Reuse the YAML parser shipped with the repository's pinned aws-cdk-lib dependency.
 const require = createRequire(import.meta.url);
@@ -168,24 +164,42 @@ test('worker role scopes concurrency mutation to the two application functions a
   ], 'HTTP role must not mutate application Lambda functions');
 });
 
-test('worker role cannot write business DynamoDB tables, mutate IAM, pass roles, or operate AgentCore', () => {
+test('worker role cannot perform non-Reset business writes, mutate IAM, pass roles, or operate AgentCore', () => {
   const { Resources } = template();
   const [workerId] = namedRole(Resources, workerRoleName);
   const workerStatements = allRoleStatements(Resources, workerId);
-  const businessWriteActions = [
+  const appTemplatePath = new URL('../.artifacts/app/cdk/IncidentTriageDemoApp.template.json', import.meta.url);
+  assert.ok(existsSync(appTemplatePath),
+    'app synthesized template is missing; run the pinned app check/synth first');
+  const appTemplate = JSON.parse(readFileSync(appTemplatePath, 'utf8'));
+  const tableArnFromOutput = (outputName) => {
+    const tableRef = appTemplate.Outputs?.[outputName]?.Value?.Ref;
+    assert.equal(typeof tableRef, 'string', `missing synthesized app table output ${outputName}`);
+    const table = appTemplate.Resources?.[tableRef];
+    assert.equal(table?.Type, 'AWS::DynamoDB::Table', `${outputName} must reference an app table`);
+    const logicalIdOutput = outputName.replace(/Name$/, 'LogicalId');
+    assert.equal(tableRef, appTemplate.Outputs[logicalIdOutput]?.Value,
+      `${outputName} must agree with its logical ID output`);
+    return `arn:aws:dynamodb:${region}:${account}:table/${table.Properties.TableName}`;
+  };
+  const ordersTable = tableArnFromOutput('OrdersTableName');
+  const inventoryTable = tableArnFromOutput('InventoryTableName');
+  const destructiveTableActions = [
     'dynamodb:BatchWriteItem',
     'dynamodb:CreateTable',
-    'dynamodb:DeleteItem',
     'dynamodb:DeleteResourcePolicy',
     'dynamodb:DeleteTable',
-    'dynamodb:PutItem',
     'dynamodb:PutResourcePolicy',
-    'dynamodb:TransactWriteItems',
-    'dynamodb:UpdateItem',
     'dynamodb:UpdateTable',
   ];
-  assertNoGrant(workerStatements, businessWriteActions, businessTables,
-    'recovery may not reset, delete, or write business data');
+  assertNoGrant(workerStatements, destructiveTableActions, [ordersTable, inventoryTable],
+    'Reset may not replace, alter, or manage either business table');
+  assertNoGrant(workerStatements,
+    ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:ConditionCheckItem'], [ordersTable],
+    'Reset must not insert, update, or condition-check Orders items');
+  assertNoGrant(workerStatements,
+    ['dynamodb:DeleteItem', 'dynamodb:Scan', 'dynamodb:UpdateItem', 'dynamodb:ConditionCheckItem'], [inventoryTable],
+    'Reset must not delete, scan, or update Inventory items');
 
   assert.deepEqual(grantedActionPatterns(workerStatements, 'iam:'), [
     'iam:GetPolicy',

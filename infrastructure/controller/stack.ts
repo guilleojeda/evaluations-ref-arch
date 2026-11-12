@@ -26,7 +26,9 @@ const WORKER_LOG_GROUP_NAME = `/aws/lambda/${WORKER_FUNCTION_NAME}`;
 const GATEWAY_LOG_GROUP_NAME = "/aws/apigateway/IncidentTriageDemoController";
 const APP_STACK_NAME = "IncidentTriageDemoApp";
 const INVENTORY_FUNCTION_NAME = "IncidentTriageDemoInventory";
+const ORDERS_TABLE_NAME = "IncidentTriageDemoOrders";
 const INVENTORY_TABLE_NAME = "IncidentTriageDemoInventory";
+const PRODUCT_SKU = "demo-widget";
 const INVENTORY_ROLE_ARN = `arn:aws:iam::${ACCOUNT}:role/IncidentTriageDemoAppInventoryRole`;
 const INVENTORY_DENIED_ROLE_ARN = `arn:aws:iam::${ACCOUNT}:role/IncidentTriageDemoAppInventoryDeniedRole`;
 const INVENTORY_READ_DENY_POLICY_ARN = `arn:aws:iam::${ACCOUNT}:policy/IncidentTriageDemoInventoryReadDeny`;
@@ -77,6 +79,8 @@ export class ControllerStack extends DemoStack {
     const workerRole = new iam.Role(this, "WorkerRole", { roleName: WORKER_ROLE_NAME, assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"), permissionsBoundary: iam.ManagedPolicy.fromManagedPolicyArn(this, "WorkerBoundary", WORKER_BOUNDARY_ARN), description: "Action worker role for the Incident Triage controller." });
     workerLogGroup.grantWrite(workerRole);
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ControllerRunTable", actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"], resources: [runTable.tableArn] }));
+    workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ControllerWorkerResetInventorySeed", actions: ["dynamodb:GetItem", "dynamodb:PutItem"], resources: [`arn:aws:dynamodb:${REGION}:${ACCOUNT}:table/${INVENTORY_TABLE_NAME}`], conditions: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [PRODUCT_SKU] } } }));
+    workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ControllerWorkerResetOrdersCleanup", actions: ["dynamodb:Scan", "dynamodb:DeleteItem"], resources: [`arn:aws:dynamodb:${REGION}:${ACCOUNT}:table/${ORDERS_TABLE_NAME}`] }));
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadCheckoutSecret", actions: ["secretsmanager:GetSecretValue"], resources: [appSecretArn.valueAsString] }));
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadAppRelease", actions: ["cloudformation:DescribeStacks", "cloudformation:ListStackResources"], resources: [`arn:aws:cloudformation:${REGION}:${ACCOUNT}:stack/${APP_STACK_NAME}/*`] }));
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadAppFunctionSettings", actions: ["lambda:GetAlias", "lambda:GetFunctionConfiguration", "lambda:GetFunctionConcurrency"], resources: [`arn:aws:lambda:${REGION}:${ACCOUNT}:function:IncidentTriageDemoCheckout`, `arn:aws:lambda:${REGION}:${ACCOUNT}:function:IncidentTriageDemoCheckout:*`, `arn:aws:lambda:${REGION}:${ACCOUNT}:function:IncidentTriageDemoInventory`, `arn:aws:lambda:${REGION}:${ACCOUNT}:function:IncidentTriageDemoInventory:*`] }));

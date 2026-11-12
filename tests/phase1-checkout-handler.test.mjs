@@ -25,6 +25,18 @@ const product = Object.freeze({
   currency: "USD", availableQuantity: 17, productVersion: VERSION,
 });
 
+function inventoryItem({ productVersion = VERSION, availableQuantity = product.availableQuantity } = {}) {
+  return {
+    sku: { S: SKU },
+    name: { S: product.name },
+    unitPriceCents: { N: String(product.unitPriceCents) },
+    currency: { S: product.currency },
+    availableQuantity: { N: String(availableQuantity) },
+    productVersion: { S: productVersion },
+    updatedAt: { S: "2026-01-01T00:00:00.000Z" },
+  };
+}
+
 const envNames = [
   "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE",
   "AWS_REGION", "AWS_DEFAULT_REGION", "AWS_ENDPOINT_URL", "AWS_ENDPOINT_URL_LAMBDA",
@@ -95,6 +107,8 @@ class AwsFixture {
     this.lambdaResults = [];
     this.mode = { inventory: "lookup", transaction: "success" };
     this.orderItems = [];
+    this.inventoryItem = inventoryItem();
+    this.transactionPause = undefined;
     this.sockets = new Set();
     this.server = createServer((request, response) => {
       void this.handle(request, response).catch((error) => {
@@ -132,6 +146,31 @@ class AwsFixture {
     this.lambdaResults = [];
     this.mode = { inventory, transaction };
     this.orderItems = [];
+    this.inventoryItem = inventoryItem();
+    this.transactionPause = undefined;
+  }
+
+  simulateResetReseed({ productVersion, availableQuantity = product.availableQuantity }) {
+    assert.ok(productVersion && productVersion !== this.inventoryItem.productVersion.S);
+    this.inventoryItem = inventoryItem({ productVersion, availableQuantity });
+    this.orderItems = [];
+  }
+
+  inventoryState() {
+    return {
+      productVersion: this.inventoryItem.productVersion.S,
+      availableQuantity: Number(this.inventoryItem.availableQuantity.N),
+    };
+  }
+
+  pauseNextTransaction() {
+    assert.equal(this.transactionPause, undefined, "only one transaction pause may be active");
+    let start;
+    let resume;
+    const started = new Promise((resolvePromise) => { start = resolvePromise; });
+    const resumed = new Promise((resolvePromise) => { resume = resolvePromise; });
+    this.transactionPause = { start, resumed };
+    return { started, resume };
   }
 
   callsFor(service, operation) {
@@ -152,16 +191,19 @@ class AwsFixture {
 
   getItem(body, response) {
     this.calls.push({ service: "dynamodb", operation: "GetItem", body });
-    if (body.TableName === INVENTORY && this.mode.inventory === "access-denied") {
+    if (body.TableName === INVENTORY) {
       assert.equal(body.ConsistentRead, true, "inventory reads must be strong");
       assert.equal(body.Key?.sku?.S, SKU);
-      return this.json(response, {
-        __type: "com.amazonaws.dynamodb.v20120810#AccessDeniedException",
-        message: `User: arn:aws:sts::027224425948:assumed-role/phase3-denied/fixture is not authorized to perform dynamodb:GetItem on resource: ${INVENTORY_RESOURCE} because no identity-based policy allows the action`,
-      }, 400, {
-        "x-amzn-errortype": "AccessDeniedException",
-        "x-amzn-requestid": DYNAMO_DENIAL_REQUEST_ID,
-      });
+      if (this.mode.inventory === "access-denied") {
+        return this.json(response, {
+          __type: "com.amazonaws.dynamodb.v20120810#AccessDeniedException",
+          message: `User: arn:aws:sts::027224425948:assumed-role/phase3-denied/fixture is not authorized to perform dynamodb:GetItem on resource: ${INVENTORY_RESOURCE} because no identity-based policy allows the action`,
+        }, 400, {
+          "x-amzn-errortype": "AccessDeniedException",
+          "x-amzn-requestid": DYNAMO_DENIAL_REQUEST_ID,
+        });
+      }
+      return this.json(response, { Item: this.inventoryItem });
     }
     assert.equal(body.TableName, ORDERS);
     assert.equal(body.ConsistentRead, true, "order reads must be strong");
@@ -171,14 +213,55 @@ class AwsFixture {
     this.json(response, item ? { Item: item } : {});
   }
 
-  transaction(body, response) {
+  async transaction(body, response) {
     this.calls.push({ service: "dynamodb", operation: "TransactWriteItems", body });
     assert.equal(body.TransactItems?.length, 2);
     const put = body.TransactItems.find((entry) => entry.Put)?.Put;
     assert.ok(put, "transaction must contain an order Put");
     assert.equal(put.TableName, ORDERS);
-    assert.equal(body.TransactItems.find((entry) => entry.Update)?.Update.TableName, INVENTORY);
-    if (this.mode.transaction === "ack-timeout-commit") this.orderItems.push(put.Item);
+    const update = body.TransactItems.find((entry) => entry.Update)?.Update;
+    assert.equal(update?.TableName, INVENTORY);
+
+    const pause = this.transactionPause;
+    if (pause) {
+      this.transactionPause = undefined;
+      pause.start();
+      await pause.resumed;
+    }
+
+    const orderExists = this.orderItems.some((item) => item.orderId?.S === put.Item.orderId?.S);
+    const values = update.ExpressionAttributeValues ?? {};
+    const versionGuard = /productVersion\s*=\s*:productVersion/.test(update.ConditionExpression ?? "");
+    const stockGuard = /availableQuantity\s*>=\s*:quantity/.test(update.ConditionExpression ?? "");
+    const itemExistsGuard = /attribute_exists\(sku\)/.test(update.ConditionExpression ?? "");
+    const currentQuantity = Number(this.inventoryItem.availableQuantity.N);
+    const requestedQuantity = Number(values[":quantity"]?.N);
+    const requestedVersion = values[":productVersion"]?.S;
+    const updateAllowed = (!itemExistsGuard || this.inventoryItem.sku?.S === update.Key?.sku?.S) &&
+      (!versionGuard || this.inventoryItem.productVersion?.S === requestedVersion) &&
+      (!stockGuard || currentQuantity >= requestedQuantity);
+
+    if (this.mode.transaction === "ack-timeout-unknown") return this.destroyAfterReceiving(response);
+    if (orderExists || !updateAllowed) {
+      const reasons = [
+        { Code: orderExists ? "ConditionalCheckFailed" : "None" },
+        { Code: updateAllowed ? "None" : "ConditionalCheckFailed", ...(updateAllowed ? {} : { Item: this.inventoryItem }) },
+      ];
+      return this.json(response, {
+        __type: "com.amazonaws.dynamodb.v20120810#TransactionCanceledException",
+        message: "Transaction cancelled because a condition was not met",
+        CancellationReasons: reasons,
+      }, 400, { "x-amzn-errortype": "TransactionCanceledException" });
+    }
+
+    this.orderItems.push(put.Item);
+    const updateTimestamp = values[":updatedAt"]?.S ?? this.inventoryItem.updatedAt?.S;
+    this.inventoryItem = {
+      ...this.inventoryItem,
+      availableQuantity: { N: String(currentQuantity - requestedQuantity) },
+      updatedAt: { S: updateTimestamp },
+    };
+    if (this.mode.transaction === "ack-timeout-commit") return this.destroyAfterReceiving(response);
     if (this.mode.transaction.startsWith("ack-timeout-")) return this.destroyAfterReceiving(response);
     this.json(response, {});
   }
@@ -233,8 +316,19 @@ class AwsFixture {
         "x-amzn-requestid": INVENTORY_LAMBDA_REQUEST_ID,
       });
     }
-    const list = this.mode.inventory === "list" || body.action === "list" || body.operation === "list";
-    this.payload(response, JSON.stringify(list ? { products: [product] } : { product }));
+    const { value, logs } = await captureLogs(async () => {
+      let result;
+      await captureEmf(async () => {
+        result = await this.inventoryHandler(body, {
+          awsRequestId: INVENTORY_LAMBDA_REQUEST_ID,
+          functionVersion: INVENTORY_EXECUTED_VERSION,
+          invokedFunctionArn: `arn:aws:lambda:${REGION}:027224425948:function:${INVENTORY_FUNCTION}`,
+        });
+      });
+      return result;
+    });
+    this.childLogs.push(...logs);
+    this.payload(response, JSON.stringify(value), { "x-amz-executed-version": INVENTORY_EXECUTED_VERSION });
   }
 
   destroyAfterReceiving(response) {
@@ -392,6 +486,8 @@ test("healthy catalog and checkout return documented envelopes", async () => {
   receiptOf(response, 201, "phase1-checkout", input);
   assert.equal(fixture.callsFor("lambda", "Invoke").length, 1);
   assert.equal(fixture.callsFor("dynamodb", "TransactWriteItems").length, 1);
+  assert.equal(fixture.orderItems.length, 1);
+  assert.deepEqual(fixture.inventoryState(), { productVersion: VERSION, availableQuantity: 15 });
 });
 
 test("auth and validation reject before any provider call", async () => {
@@ -515,6 +611,56 @@ test("inventory deadline returns 504 before transaction", { timeout: 5_000 }, as
   assert.equal(fixture.callsFor("dynamodb", "TransactWriteItems").length, 0);
 });
 
+test("an immutable checkout payload from before reset is rejected without writing an order or stock", async () => {
+  fixture.reset();
+  const resetVersion = "phase8-reset-version-2";
+  const resetQuantity = 23;
+  fixture.simulateResetReseed({ productVersion: resetVersion, availableQuantity: resetQuantity });
+
+  const id = "88888888-8888-4888-8888-888888888888";
+  const requestId = "phase8-old-payload-after-reset";
+  const rejected = errorOf(await handler(checkout(id, requestId, 2, { productVersion: VERSION })), 409, requestId, id);
+  assert.equal(rejected.code, "STALE_PRODUCT_VERSION");
+  assert.equal(fixture.callsFor("lambda", "Invoke").length, 1);
+  assert.equal(fixture.callsFor("dynamodb", "TransactWriteItems").length, 0, "a stale lookup must be rejected before the transaction");
+
+  const statusRequestId = "phase8-old-payload-status";
+  errorOf(await handler(apiEvent("GET", `/api/orders/${id}`, statusRequestId)), 404, statusRequestId, id);
+  const catalog = bodyOf(await handler(apiEvent("GET", "/api/products", "phase8-reset-catalog")));
+  assert.deepEqual(catalog.products, [{ ...product, productVersion: resetVersion, availableQuantity: resetQuantity }]);
+  assert.equal(fixture.orderItems.length, 0);
+});
+
+test("a transaction that read the old product version cannot commit after reset replaces inventory", { timeout: 5_000 }, async () => {
+  fixture.reset();
+  const oldInventory = fixture.inventoryState();
+  const pause = fixture.pauseNextTransaction();
+  const id = "99999999-9999-4999-8999-999999999999";
+  const requestId = "phase8-reset-during-checkout";
+  const pendingCheckout = handler(checkout(id, requestId, 2));
+
+  await pause.started;
+  assert.deepEqual(fixture.inventoryState(), oldInventory, "checkout has read Inventory and reached its transaction without changing stock");
+  assert.equal(fixture.callsFor("lambda", "Invoke").length, 1);
+  const transaction = fixture.callsFor("dynamodb", "TransactWriteItems")[0]?.body;
+  const update = transaction?.TransactItems?.find((item) => item.Update)?.Update;
+  assert.match(update?.ConditionExpression ?? "", /productVersion\s*=\s*:productVersion/, "the stock transaction must compare the version read by checkout");
+
+  const resetVersion = "phase8-reset-version-race";
+  const resetQuantity = 29;
+  fixture.simulateResetReseed({ productVersion: resetVersion, availableQuantity: resetQuantity });
+  pause.resume();
+
+  const rejected = errorOf(await pendingCheckout, 409, requestId, id);
+  assert.equal(rejected.code, "STALE_PRODUCT_VERSION");
+  assert.equal(fixture.callsFor("dynamodb", "TransactWriteItems").length, 1);
+  assert.equal(fixture.orderItems.length, 0, "the rejected transaction must not save the order");
+  const statusRequestId = "phase8-reset-race-status";
+  errorOf(await handler(apiEvent("GET", `/api/orders/${id}`, statusRequestId)), 404, statusRequestId, id);
+  const catalog = bodyOf(await handler(apiEvent("GET", "/api/products", "phase8-reset-race-catalog")));
+  assert.deepEqual(catalog.products, [{ ...product, productVersion: resetVersion, availableQuantity: resetQuantity }]);
+});
+
 test("saved uncertain order is returned by status and same-ID retry without new providers", async () => {
   fixture.reset({ transaction: "ack-timeout-commit" });
   const id = "aaaaaaaa-4444-4444-8444-444444444444";
@@ -527,6 +673,8 @@ test("saved uncertain order is returned by status and same-ID retry without new 
   assert.equal(invokes, 1);
   assert.equal(writes, 1);
   assert.ok(fixture.callsFor("dynamodb", "GetItem").length >= 2);
+  assert.equal(fixture.orderItems.length, 1);
+  assert.deepEqual(fixture.inventoryState(), { productVersion: VERSION, availableQuantity: 14 });
   const status = await handler(apiEvent("GET", `/api/orders/${id}`, "phase1-ack-status"));
   const statusReceipt = receiptOf(status, 200, "phase1-ack-status", input);
   fixture.mode.inventory = "function-error";
@@ -538,6 +686,8 @@ test("saved uncertain order is returned by status and same-ID retry without new 
   assert.deepEqual(receiptOf(equivalentId, 200, "phase1-ack-equivalent-id", input).order, receipt.order);
   assert.equal(fixture.callsFor("lambda", "Invoke").length, invokes, "saved retry must not invoke Inventory");
   assert.equal(fixture.callsFor("dynamodb", "TransactWriteItems").length, writes, "saved retry must not write again");
+  assert.equal(fixture.orderItems.length, 1, "status and matching retries must retain one order");
+  assert.deepEqual(fixture.inventoryState(), { productVersion: VERSION, availableQuantity: 14 }, "status and matching retries must not decrement stock again");
   assert.ok(fixture.callsFor("dynamodb", "GetItem").every((call) => call.body.ConsistentRead === true));
 });
 
