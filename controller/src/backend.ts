@@ -10,7 +10,7 @@ import {
   parseInvestigationQuery,
   readInvestigations,
 } from "./investigations.js";
-import { applyCommand, getAction, getDashboard, CommandError } from "./store.js";
+import { applyCommand, getAction, getDashboard, getRunById, CommandError } from "./store.js";
 import type { Action, Command } from "./types.js";
 
 export interface BackendEvent {
@@ -98,6 +98,11 @@ function command(value: unknown): Command | undefined {
     return { kind: "readiness", confirmQuiet: true };
   }
   if (input.kind === "traffic" && keys.length === 1) return { kind: "traffic" };
+  if (input.kind === "reset" && keys.length === 4 && input.confirmQuiet === true &&
+      input.confirmReset === true && input.confirmCheckoutClosed === true &&
+      keys.every((key) => ["kind", "confirmQuiet", "confirmReset", "confirmCheckoutClosed"].includes(key))) {
+    return { kind: "reset", confirmQuiet: true, confirmReset: true, confirmCheckoutClosed: true };
+  }
   if (input.kind === "increase_memory" && keys.length === 3 && input.function === "inventory" &&
       typeof input.memoryMb === "number" && Number.isSafeInteger(input.memoryMb) && input.memoryMb >= 128 && input.memoryMb <= 10_240) {
     return { kind: "increase_memory", function: "inventory", memoryMb: input.memoryMb };
@@ -175,6 +180,15 @@ export async function handler(event: BackendEvent = {}): Promise<BackendResponse
 
   try {
     if (method === "GET" && path === "/api/state") return json(200, await getDashboard());
+    const runMatch = path.match(/^\/api\/runs\/([^/]+)$/);
+    if (method === "GET" && runMatch) {
+      let runId: string;
+      try { runId = decodeURIComponent(runMatch[1]); }
+      catch { return json(404, { code: "RUN_NOT_FOUND", message: "Run not found" }); }
+      if (!(runId === "legacy" || UUID.test(runId))) return json(404, { code: "RUN_NOT_FOUND", message: "Run not found" });
+      const run = await getRunById(runId);
+      return run ? json(200, { run }) : json(404, { code: "RUN_NOT_FOUND", message: "Run not found" });
+    }
     if (method === "GET" && path === "/api/alarm") return json(200, await readAlarm());
     if (method === "GET" && path === "/api/investigations") {
       return json(200, await readInvestigations(parseInvestigationQuery(event.rawQueryString, event.queryStringParameters)));

@@ -570,6 +570,22 @@ Resources:
               - dynamodb:PutItem
               - dynamodb:UpdateItem
             Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoControllerRun
+          - Sid: ControllerWorkerResetInventorySeed
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoInventory
+            Condition:
+              ForAllValues:StringEquals:
+                dynamodb:LeadingKeys:
+                  - demo-widget
+          - Sid: ControllerWorkerResetOrdersCleanup
+            Effect: Allow
+            Action:
+              - dynamodb:Scan
+              - dynamodb:DeleteItem
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoOrders
           - Sid: ControllerWorkerSecret
             Effect: Allow
             Action: secretsmanager:GetSecretValue

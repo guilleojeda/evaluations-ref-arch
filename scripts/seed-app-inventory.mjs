@@ -1,12 +1,11 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import product from "./app-product.json" with { type: "json" };
 
 const account = "027224425948";
 const region = "us-east-1";
 const profile = "reinvent-2026-talk";
 const stackName = "IncidentTriageDemoApp";
-const product = { sku: "demo-widget", name: "Demo Widget", unitPriceCents: 1299, currency: "USD" };
-
 function aws(...args) {
   const result = spawnSync("aws", [...args, "--profile", profile, "--region", region, "--output", "json"], {
     encoding: "utf8",
@@ -45,7 +44,7 @@ function seed() {
     name: { S: product.name },
     unitPriceCents: { N: String(product.unitPriceCents) },
     currency: { S: product.currency },
-    availableQuantity: { N: "1000" },
+    availableQuantity: { N: String(product.availableQuantity) },
     productVersion: { S: randomUUID() },
     updatedAt: { S: new Date().toISOString() },
   };

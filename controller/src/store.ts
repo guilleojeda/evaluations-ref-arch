@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { DynamoDBClient, GetItemCommand, TransactWriteItemsCommand, type TransactWriteItem } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { setTimeout as delay } from "node:timers/promises";
@@ -29,10 +30,17 @@ function table(): string {
 
 function initialRun(): RunState {
   return {
+    runId: "legacy",
+    resetRequired: false,
     baseline: null,
     receipts: [],
     unresolved: [],
   };
+}
+
+function normalizeRun(run: RunState | undefined): RunState {
+  if (!run) return initialRun();
+  return { ...run, runId: run.runId ?? "legacy", resetRequired: run.resetRequired ?? false };
 }
 
 async function read<T>(pk: string): Promise<Row<T> | undefined> {
@@ -83,7 +91,15 @@ function visible(action: Action, now = Date.now()): Action {
 }
 
 export async function getRun(): Promise<RunState> {
-  return (await read<RunState>(runKey))?.data ?? initialRun();
+  return normalizeRun((await read<RunState>(runKey))?.data);
+}
+
+export async function getRunById(id: string): Promise<RunState | undefined> {
+  const current = await read<RunState>(runKey);
+  if (normalizeRun(current?.data).runId === id) return normalizeRun(current?.data);
+  const archived = await read<RunState>(`RUN#${id}`);
+  if (!archived) return undefined;
+  return normalizeRun(archived.data);
 }
 
 export async function getAction(id: string): Promise<Action | undefined> {
@@ -108,6 +124,10 @@ function sameCommand(a: Command, b: Command): boolean {
   if (a.kind === "recover" && b.kind === "recover") {
     return a.confirmQuiet === b.confirmQuiet && Boolean(a.recoverWithoutEvidence) === Boolean(b.recoverWithoutEvidence);
   }
+  if (a.kind === "reset" && b.kind === "reset") {
+    return a.confirmQuiet === b.confirmQuiet && a.confirmReset === b.confirmReset &&
+      a.confirmCheckoutClosed === b.confirmCheckoutClosed;
+  }
   if (a.kind === "increase_memory" && b.kind === "increase_memory") {
     return a.function === b.function && a.memoryMb === b.memoryMb;
   }
@@ -126,6 +146,13 @@ function newAction(id: string, command: Command, now: number): Action {
     requests: [],
     ...(command.kind === "traffic" ? { traffic: { catalog: counters(), checkout: counters() } } : {}),
     ...(command.kind === "recover" ? { recoveryProgress: "stopping" as const } : {}),
+    ...(command.kind === "reset" ? { reset: {
+      runId: id,
+      previousRunId: "legacy",
+      productVersion: randomUUID(),
+      seedQuantity: 1000 as const,
+      phase: "stopping" as const,
+    } } : {}),
   };
 }
 
@@ -138,7 +165,12 @@ function inventoryDenialOutstanding(run: RunState): boolean {
 
 function canStart(run: RunState, action: Action | undefined, configuration: Action | undefined, command: Command): void {
   const canRecoverTraffic = command.kind === "recover" && action?.kind === "traffic";
-  if (action && active.has(action.status) && !(command.kind === "restore_inventory_access" && action.kind === "traffic") && !canRecoverTraffic) {
+  const canResetTraffic = command.kind === "reset" && action?.kind === "traffic";
+  if (run.resetRequired && command.kind !== "reset") {
+    throw new CommandError(409, "RESET_REQUIRED", "Start a new confirmed Reset before using the incomplete session.");
+  }
+  if (action && active.has(action.status) && !(command.kind === "restore_inventory_access" && action.kind === "traffic") &&
+      !canRecoverTraffic && !canResetTraffic) {
     throw new CommandError(409, "ACTION_IN_PROGRESS", "Wait for the current action or stop its traffic.");
   }
   if (action?.status === "incomplete") {
@@ -158,6 +190,9 @@ function canStart(run: RunState, action: Action | undefined, configuration: Acti
     if (inventoryDenialOutstanding(run) && !confirmedDenial) {
       throw new CommandError(409, "INVENTORY_DENIAL_UNRESOLVED", "Reconcile the recorded Inventory access change before starting traffic.");
     }
+  }
+  if (command.kind === "reset" && configuration && active.has(configuration.status)) {
+    throw new CommandError(409, "CONFIGURATION_IN_PROGRESS", "Wait for the current configuration action to settle before Reset.");
   }
   if (command.kind === "activate_inventory_denial") {
     if (!run.baseline) throw new CommandError(409, "READINESS_REQUIRED", "Check readiness before activating an Inventory denial.");
@@ -210,16 +245,32 @@ export async function applyCommand(id: string, command: Command): Promise<{ acti
       if (!sameCommand(prior.data.command, command)) throw new CommandError(409, "ACTION_ID_CONFLICT", "This action ID is already used by a different command.");
       return { action: visible(prior.data), created: false };
     }
-    const run = runRow?.data ?? initialRun();
+    const run = normalizeRun(runRow?.data);
+    const storedRun = runRow?.data;
     const [current, configuration] = await Promise.all([
       run.currentActionId ? read<Action>(actionKey(run.currentActionId)) : Promise.resolve(undefined),
       run.configurationActionId ? read<Action>(actionKey(run.configurationActionId)) : Promise.resolve(undefined),
     ]);
     if ((run.currentActionId && !current) || (run.configurationActionId && !configuration)) throw new Error("The current action record is unavailable");
+    const inheritedTrafficId = current?.data.kind === "traffic" ? current.data.id
+      : current?.data.kind === "reset" ? current.data.reset?.trafficActionId : undefined;
+    const linkedTraffic = inheritedTrafficId && inheritedTrafficId !== current?.data.id
+      ? await read<Action>(actionKey(inheritedTrafficId))
+      : current;
 
     const now = Date.now();
     const action = newAction(id, command, now);
-    let nextRun = run;
+    if (command.kind === "reset") {
+      action.reset = {
+        ...action.reset!,
+        previousRunId: run.runId,
+        ...(run.currentActionId ? { previousCurrentActionId: run.currentActionId } : {}),
+        ...(run.configurationActionId ? { previousConfigurationActionId: run.configurationActionId } : {}),
+        ...(linkedTraffic?.data.kind === "traffic" && active.has(visible(linkedTraffic.data, now).status)
+          ? { trafficActionId: linkedTraffic.data.id } : {}),
+      };
+    }
+    let nextRun = storedRun ?? initialRun();
     const writes: TransactWriteItem[] = [];
     if ("targetActionId" in command) {
       const target = (current?.data.id === command.targetActionId ? current : undefined) ?? (configuration?.data.id === command.targetActionId ? configuration : undefined);
@@ -233,11 +284,11 @@ export async function applyCommand(id: string, command: Command): Promise<{ acti
         writes.push(replace(current.pk, current, controlled(current.data,
           { kind: "stop", targetActionId: current.data.id }, now)));
       }
-      if (command.kind === "restore_inventory_access" || command.kind === "increase_memory" || command.kind === "recover") {
-        nextRun = { ...run, configurationActionId: id };
+      if (command.kind === "reset" || command.kind === "restore_inventory_access" || command.kind === "increase_memory" || command.kind === "recover") {
+        nextRun = { ...nextRun, configurationActionId: id };
       } else if (command.kind === "readiness") {
-        nextRun = { ...run, currentActionId: id };
-      } else nextRun = { ...run, currentActionId: id };
+        nextRun = { ...nextRun, currentActionId: id };
+      } else nextRun = { ...nextRun, currentActionId: id };
     }
     writes.push(replace(runKey, runRow, nextRun), replace(actionKey(id), undefined, action));
     if (await commit(writes)) return { action, created: true };
@@ -246,10 +297,56 @@ export async function applyCommand(id: string, command: Command): Promise<{ acti
   throw new CommandError(409, "ACTION_CHANGED", "The run changed while accepting this command. Read its state and retry the same command.");
 }
 
+/** Archives the quiescent session and makes the new unusable-until-verified session durable. */
+export async function beginReset(actionId: string): Promise<{ run: RunState; action: Action } | undefined> {
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const [runRow, actionRow] = await Promise.all([read<RunState>(runKey), read<Action>(actionKey(actionId))]);
+    if (!actionRow || actionRow.data.kind !== "reset" || actionRow.data.status !== "running" || !actionRow.data.reset ||
+        !runRow || runRow.data.configurationActionId !== actionId) return;
+
+    const currentRun = normalizeRun(runRow.data);
+    const action = structuredClone(actionRow.data);
+    const metadata = action.reset!;
+    if (metadata.runId !== actionId || metadata.previousRunId !== currentRun.runId || currentRun.runId === actionId) return;
+    const archived = structuredClone(runRow.data);
+    archived.runId = metadata.previousRunId;
+    archived.resetRequired = currentRun.resetRequired;
+    if (archived.currentActionId === actionId) {
+      if (metadata.previousCurrentActionId) archived.currentActionId = metadata.previousCurrentActionId;
+      else delete archived.currentActionId;
+    }
+    if (metadata.previousConfigurationActionId) archived.configurationActionId = metadata.previousConfigurationActionId;
+    else delete archived.configurationActionId;
+    const archiveRow = await read<RunState>(`RUN#${metadata.previousRunId}`);
+    if (archiveRow) throw new Error("The previous controller session is already archived");
+
+    const nextRun: RunState = {
+      runId: metadata.runId,
+      previousRunId: metadata.previousRunId,
+      resetRequired: true,
+      currentActionId: actionId,
+      baseline: null,
+      receipts: [],
+      unresolved: [],
+    };
+    metadata.phase = "validating";
+    action.updatedAt = timestamp();
+    const writes = [
+      replace(`RUN#${metadata.previousRunId}`, undefined, archived),
+      replace(runKey, runRow, nextRun),
+      replace(actionKey(actionId), actionRow, action),
+    ];
+    if (await commit(writes)) return { run: nextRun, action };
+    await delay(25 * (attempt + 1));
+  }
+  throw new CommandError(409, "ACTION_CHANGED", "The run changed before Reset could archive it. Read its state and retry with a new confirmed Reset.");
+}
+
 export async function changeAction(actionId: string, mutate: (run: RunState, action: Action) => boolean): Promise<{ run: RunState; action: Action } | undefined> {
   for (let attempt = 0; attempt < 8; attempt++) {
     const [runRow, actionRow] = await Promise.all([read<RunState>(runKey), read<Action>(actionKey(actionId))]);
-    if (!runRow || !pointerFor(runRow.data, actionId) || !actionRow || !active.has(actionRow.data.status)) return;
+    if (!runRow || !actionRow || !active.has(actionRow.data.status)) return;
+    if (!pointerFor(runRow.data, actionId)) return;
     const run = structuredClone(runRow.data);
     const action = structuredClone(actionRow.data);
     if (!mutate(run, action)) return;

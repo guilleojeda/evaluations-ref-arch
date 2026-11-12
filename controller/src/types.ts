@@ -1,6 +1,7 @@
 export type Command =
   | { kind: "readiness"; confirmQuiet: true }
   | { kind: "traffic" }
+  | { kind: "reset"; confirmQuiet: true; confirmReset: true; confirmCheckoutClosed: true }
   | { kind: "increase_memory"; function: "inventory"; memoryMb: number }
   | { kind: "activate_inventory_denial" }
   | { kind: "restore_inventory_access"; restoreWithoutEvidence?: true }
@@ -16,6 +17,8 @@ export type ActionStatus =
   | "failed"
   | "incomplete"
   | "discarded";
+export type ResetPhase = "stopping" | "draining" | "validating" | "capturing" | "restoring"
+  | "seeding" | "deleting" | "verifying" | "verified";
 export type Profile = "catalog" | "checkout";
 
 export interface Counters {
@@ -264,6 +267,16 @@ export interface Action {
   configurationOutcome?: "applied" | "no_change" | "failed" | "unknown";
   recoveryProgress?: "stopping" | "draining" | "validating" | "capturing" | "restoring" | "verifying"
     | "verified" | "verification_incomplete" | "verification_unknown";
+  reset?: {
+    runId: string;
+    previousRunId: string;
+    productVersion: string;
+    seedQuantity: 1000;
+    previousCurrentActionId?: string;
+    previousConfigurationActionId?: string;
+    trafficActionId?: string;
+    phase?: ResetPhase;
+  };
   capRestoration?: {
     checkout?: CapRestoration;
     inventory?: CapRestoration;
@@ -282,6 +295,9 @@ export interface CapRestoration {
 }
 
 export interface RunState {
+  runId: string;
+  previousRunId?: string;
+  resetRequired: boolean;
   currentActionId?: string;
   /** The configuration lane is independent from the primary traffic/readiness lane. */
   configurationActionId?: string;

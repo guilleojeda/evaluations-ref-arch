@@ -10,6 +10,7 @@ import type {
   InventoryAliasObservation,
   InventoryVariant,
   InventoryVersionObservation,
+  RunState,
 } from "./types";
 import {
   capOutcomeLabel,
@@ -228,11 +229,17 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isDashboard(value: Record<string, unknown>): value is Record<string, unknown> & DashboardState {
-  return typeof value.observedAt === "string" &&
+  return typeof value.observedAt === "string" && typeof value.runId === "string" && typeof value.resetRequired === "boolean" &&
     (value.baseline === null || isRecord(value.baseline)) &&
     (value.currentAction === undefined || isRecord(value.currentAction)) &&
     (value.currentConfigurationAction === undefined || isRecord(value.currentConfigurationAction)) &&
     Array.isArray(value.receipts) && value.receipts.every(isRecord) &&
+    Array.isArray(value.unresolved) && value.unresolved.every(isRecord);
+}
+
+function isRunState(value: unknown): value is RunState {
+  return isRecord(value) && typeof value.runId === "string" && typeof value.resetRequired === "boolean" &&
+    (value.baseline === null || isRecord(value.baseline)) && Array.isArray(value.receipts) && value.receipts.every(isRecord) &&
     Array.isArray(value.unresolved) && value.unresolved.every(isRecord);
 }
 
@@ -341,6 +348,208 @@ async function readJson(response: Response): Promise<Record<string, unknown>> {
   return body as Record<string, unknown>;
 }
 
+type HistoricalActionReference = { id: string; label: string };
+
+function historicalActionReferences(run: RunState): HistoricalActionReference[] {
+  const references: HistoricalActionReference[] = [];
+  const add = (id: unknown, label: string) => {
+    if (typeof id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) return;
+    if (references.some((reference) => reference.id === id)) return;
+    references.push({ id, label });
+  };
+  add(run.currentActionId, "Run action");
+  add(run.configurationActionId, "Configuration action");
+  const addIncident = (value: unknown, label: string) => {
+    if (!isRecord(value)) return;
+    add(value.activationActionId, `${label} activation`);
+    add(value.restoreActionId, `${label} restore`);
+  };
+  addIncident(run.incident, "Incident");
+  if (Array.isArray(run.incidentHistory)) run.incidentHistory.forEach((incident, index) => addIncident(incident, `Incident ${index + 1}`));
+  return references;
+}
+
+type ArchivedIncidentRecord = { summary: string; sourceReference?: string };
+
+function archivedIncidentRecords(run: RunState): ArchivedIncidentRecord[] {
+  const values = [...(Array.isArray(run.incidentHistory) ? run.incidentHistory : []), ...(run.incident ? [run.incident] : [])];
+  return values.flatMap((value) => {
+    if (!isRecord(value)) return [];
+    const mechanism = value.mechanism === "lambda-alias" ? "Inventory access incident" : "Retained legacy incident";
+    const state = value.active === "denied" ? "denial recorded" : value.active === "healthy" ? "access restored" : value.active === "unknown" ? "outcome unknown" : "record retained";
+    const updatedAt = typeof value.updatedAt === "string" ? ` · updated ${formatTime(value.updatedAt)}` : "";
+    const checkpoint = isRecord(value.checkpoint) ? value.checkpoint : undefined;
+    return [{ summary: `${mechanism} · ${state}${updatedAt}`, sourceReference: typeof checkpoint?.key === "string" ? checkpoint.key : undefined }];
+  });
+}
+
+function RunHistoryPanel({ currentRunId, previousRunId, currentResetRequired, bearer }: { currentRunId: string; previousRunId?: string; currentResetRequired: boolean; bearer: string }) {
+  const [archiveId, setArchiveId] = useState<string>();
+  const [archive, setArchive] = useState<{ run: RunState; loadedAt: string }>();
+  const [archiveLoading, setArchiveLoading] = useState(false);
+  const [archiveError, setArchiveError] = useState<string>();
+  const [historyNow, setHistoryNow] = useState(Date.now());
+  const [selectedActionId, setSelectedActionId] = useState<string>();
+  const [selectedAction, setSelectedAction] = useState<Action>();
+  const [actionLoading, setActionLoading] = useState(false);
+  const [actionError, setActionError] = useState<string>();
+  const archiveRequest = useRef(0);
+  const actionRequest = useRef(0);
+  const selectedArchive = archiveId !== undefined && archive?.run.runId === archiveId ? archive : undefined;
+  const archiveMatchesSelection = selectedArchive !== undefined;
+  const archiveAgeMs = selectedArchive ? historyNow - Date.parse(selectedArchive.loadedAt) : Number.POSITIVE_INFINITY;
+  const archiveFreshness = archiveLoading ? selectedArchive ? "Refreshing archived snapshot" : "Loading archived run"
+    : archiveError ? selectedArchive ? "Refresh failed · last snapshot shown" : "Unavailable"
+      : !selectedArchive ? "Not loaded"
+        : !Number.isFinite(archiveAgeMs) || archiveAgeMs >= 60_000 ? "Stale · refresh available" : "Loaded";
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setHistoryNow(Date.now()), 15_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const loadRun = useCallback(async (id: string) => {
+    const request = archiveRequest.current + 1;
+    archiveRequest.current = request;
+    if (id !== archiveId) {
+      actionRequest.current += 1;
+      setSelectedActionId(undefined);
+      setSelectedAction(undefined);
+      setActionLoading(false);
+      setActionError(undefined);
+    }
+    setArchiveId(id);
+    setArchiveLoading(true);
+    setArchiveError(undefined);
+    try {
+      const response = await fetch(`/api/runs/${encodeURIComponent(id)}`, {
+        headers: { Authorization: `Bearer ${bearer}`, Accept: "application/json" },
+        cache: "no-store",
+        signal: AbortSignal.timeout(8_000),
+      });
+      const body = await readJson(response);
+      if (!isRunState(body.run) || body.run.runId !== id) throw new Error("The controller returned an invalid archived run");
+      if (archiveRequest.current === request) {
+        setArchive({ run: body.run, loadedAt: new Date().toISOString() });
+        setHistoryNow(Date.now());
+      }
+    } catch (error) {
+      if (archiveRequest.current === request) setArchiveError(error instanceof Error ? error.message : "The archived run could not be read");
+    } finally {
+      if (archiveRequest.current === request) setArchiveLoading(false);
+    }
+  }, [archiveId, bearer]);
+
+  const loadAction = useCallback(async (id: string) => {
+    const request = actionRequest.current + 1;
+    actionRequest.current = request;
+    setSelectedActionId(id);
+    setSelectedAction(undefined);
+    setActionLoading(true);
+    setActionError(undefined);
+    try {
+      const response = await fetch(`/api/actions/${encodeURIComponent(id)}`, {
+        headers: { Authorization: `Bearer ${bearer}`, Accept: "application/json" },
+        cache: "no-store",
+        signal: AbortSignal.timeout(8_000),
+      });
+      const body = await readJson(response);
+      if (!isRecord(body.action) || body.action.id !== id || typeof body.action.kind !== "string" ||
+          typeof body.action.status !== "string" || !Array.isArray(body.action.requests)) {
+        throw new Error("The controller returned an invalid action record");
+      }
+      if (actionRequest.current === request) setSelectedAction(body.action as unknown as Action);
+    } catch (error) {
+      if (actionRequest.current === request) setActionError(error instanceof Error ? error.message : "The action record could not be read");
+    } finally {
+      if (actionRequest.current === request) setActionLoading(false);
+    }
+  }, [bearer]);
+
+  const closeArchive = () => {
+    archiveRequest.current += 1;
+    actionRequest.current += 1;
+    setArchiveId(undefined);
+    setArchiveLoading(false);
+    setArchiveError(undefined);
+    setSelectedActionId(undefined);
+    setSelectedAction(undefined);
+    setActionLoading(false);
+    setActionError(undefined);
+  };
+  const run = selectedArchive?.run;
+  const actionReferences = run ? historicalActionReferences(run) : [];
+  const incidents = run ? archivedIncidentRecords(run) : [];
+
+  return <>
+    <section className="card session-card" aria-label="Current demo run">
+      <div className="card-heading">
+        <div><p className="eyebrow">Current session</p><h3>Run {currentRunId}</h3></div>
+        <span className={`incident-badge ${currentResetRequired ? "badge-warning" : "badge-neutral"}`}>{currentResetRequired ? "Reset required" : "Current"}</span>
+      </div>
+      <p className="muted">Traffic belongs to the current session. Alarm and investigation history retain their own timestamps and identities.</p>
+      {previousRunId
+        ? <button className="button button-secondary history-link" type="button" onClick={() => void loadRun(previousRunId)}>View previous run · {previousRunId}</button>
+        : <p className="muted empty-state">No previous run is recorded.</p>}
+    </section>
+    {archiveId && <section className="card archived-run" aria-label={`Archived run ${archiveId}`}>
+      <div className="card-heading">
+        <div><p className="eyebrow">Archived session · read only</p><h3>Run {archiveId}</h3></div>
+        <div className="archived-heading-actions"><span className="incident-badge badge-neutral">History</span><button className="button button-secondary" type="button" onClick={closeArchive}>Return to current run</button></div>
+      </div>
+      <p className="source-time" role="status">{archiveFreshness}{selectedArchive ? ` · loaded ${formatTime(selectedArchive.loadedAt)}` : ""}</p>
+      {archiveError && <p className="notice notice-error" role="alert">{archiveMatchesSelection ? "Refresh failed; showing the last loaded snapshot. " : "Run history is unavailable. "}{archiveError}</p>}
+      {archiveLoading && !archiveMatchesSelection && <p className="muted" role="status">Loading archived run…</p>}
+      {!archiveLoading && !archiveMatchesSelection && !archiveError && <p className="muted empty-state">No archived run is loaded.</p>}
+      {run && <>
+        <div className="archived-run-actions">
+          <button className="button button-secondary" type="button" onClick={() => void loadRun(run.runId)} disabled={archiveLoading}>Refresh archived snapshot</button>
+          {run.previousRunId && <button className="button button-secondary" type="button" onClick={() => void loadRun(run.previousRunId!)} disabled={archiveLoading}>View earlier run · {run.previousRunId}</button>}
+        </div>
+        <dl className="archived-facts">
+          <div><dt>Run identity</dt><dd className="mono">{run.runId}{run.previousRunId ? ` · previous ${run.previousRunId}` : ""}</dd></div>
+          <div><dt>Reset state when archived</dt><dd>{run.resetRequired ? "Reset was still required" : "Run was usable"}</dd></div>
+          <div><dt>Last verified baseline</dt><dd>{run.baseline ? `${run.baseline.stockBefore} → ${run.baseline.stockAfter} units · product ${run.baseline.productVersion} · verified ${formatTime(run.baseline.verifiedAt)}` : "No verified baseline in this run"}</dd></div>
+          {run.originalBaseline && <div><dt>Original healthy baseline</dt><dd>{`${run.originalBaseline.stockBefore} → ${run.originalBaseline.stockAfter} units · product ${run.originalBaseline.productVersion} · verified ${formatTime(run.originalBaseline.verifiedAt)}`}</dd></div>}
+          <div><dt>Retained records</dt><dd>{run.receipts.length} receipts · {run.unresolved.length} unresolved attempts · {actionReferences.length} action references</dd></div>
+        </dl>
+
+        <div className="archive-content-grid">
+          <section aria-label="Archived receipts">
+            <h4 className="recovery-subheading">Retained receipts</h4>
+            {run.receipts.length ? <ul className="record-list">{run.receipts.map((receipt, index) => <li key={`${receipt.checkoutId}-${index}`}><span className="mono">{display(receipt.checkoutId)}</span><strong>{display(receipt.quantity, "?")} units</strong><small>{formatTime(receipt.createdAt)} · {display(receipt.status, "unknown")}</small></li>)}</ul> : <p className="muted empty-state">No receipts were recorded in this run.</p>}
+          </section>
+          <section aria-label="Archived unresolved attempts">
+            <h4 className="recovery-subheading">Unresolved attempts</h4>
+            {run.unresolved.length ? <ul className="record-list">{run.unresolved.map((attempt) => <li key={attempt.checkoutId}><span className="mono">{attempt.checkoutId}</span><strong>Outcome unknown</strong><small>Started {formatTime(attempt.startedAt)} · retained, not resolved by Reset</small></li>)}</ul> : <p className="muted empty-state">No unresolved attempts.</p>}
+          </section>
+        </div>
+        <section className="archived-incidents" aria-label="Archived incident records">
+          <h4 className="recovery-subheading">Retained incident records</h4>
+          {incidents.length ? <ul className="history-list">{incidents.map((incident, index) => <li key={`${incident.summary}-${index}`}><span>{incident.summary}</span>{incident.sourceReference && <small>Source capture reference · <span className="mono">{incident.sourceReference}</span></small>}</li>)}</ul> : <p className="muted empty-state">No incident records were recorded in this run.</p>}
+          <p className="muted archive-health-note">Alarm and agent panels show live observations for the current run only; they are not presented as health for this archived run.</p>
+        </section>
+        <section className="archived-actions" aria-label="Archived actions">
+          <h4 className="recovery-subheading">Action records</h4>
+          {actionReferences.length ? <ul className="archived-action-list">{actionReferences.map((reference) => <li key={reference.id}><span>{reference.label}</span><button className="button button-secondary" type="button" onClick={() => void loadAction(reference.id)}>{reference.id}</button></li>)}</ul> : <p className="muted empty-state">No action references were recorded for this run.</p>}
+          {selectedActionId && <div className="archived-action-detail" aria-live="polite">
+            <div className="card-heading"><h5>Action {selectedActionId}</h5><span className="incident-badge badge-neutral">Read only</span></div>
+            {actionLoading && <p className="muted" role="status">Loading action record…</p>}
+            {actionError && <p className="action-error" role="alert">{actionError}</p>}
+            {selectedAction && <>
+              <p><strong>{selectedAction.kind.replaceAll("_", " ")} · {selectedAction.status}</strong></p>
+              <dl className="archived-facts"><div><dt>Created</dt><dd>{formatTime(selectedAction.createdAt)}</dd></div><div><dt>Started / finished</dt><dd>{formatTime(selectedAction.startedAt)} · {formatTime(selectedAction.finishedAt)}</dd></div><div><dt>Requests</dt><dd>{selectedAction.requests.length} recorded</dd></div></dl>
+              {selectedAction.reset && <dl className="archived-facts reset-action-facts"><div><dt>Fresh product version</dt><dd className="mono">{selectedAction.reset.productVersion}</dd></div><div><dt>Seed quantity</dt><dd>{selectedAction.reset.seedQuantity}</dd></div><div><dt>Run link</dt><dd className="mono">{selectedAction.reset.runId} ← {selectedAction.reset.previousRunId}</dd></div></dl>}
+              {selectedAction.error && <p className="action-error" role="status">{selectedAction.error}</p>}
+              {selectedAction.requests.length > 0 && <details className="request-details"><summary>Recorded requests</summary><ul className="record-list">{selectedAction.requests.map((request, index) => <li key={`${request.id}-${index}`}><span>{request.kind.replaceAll("_", " ")} · {request.outcome ?? "pending"}</span><strong>{request.durationMs === undefined ? "No duration recorded" : `${request.durationMs} ms`}</strong><small className="mono">{request.requestId ?? request.checkoutId ?? request.id}{request.errorCode ? ` · ${request.errorCode}` : ""}</small></li>)}</ul></details>}
+            </>}
+          </div>}
+        </section>
+      </>}
+    </section>}
+  </>;
+}
+
 export function App() {
   const [bearer, setBearer] = useState("");
   const [credentialInput, setCredentialInput] = useState("");
@@ -357,6 +566,10 @@ export function App() {
   const [readinessConfirmed, setReadinessConfirmed] = useState(false);
   const [protectiveRestoreConfirmed, setProtectiveRestoreConfirmed] = useState(false);
   const [protectiveRecoveryConfirmed, setProtectiveRecoveryConfirmed] = useState(false);
+  const [resetConfirmationOpen, setResetConfirmationOpen] = useState(false);
+  const [resetQuietConfirmed, setResetQuietConfirmed] = useState(false);
+  const [resetDataConfirmed, setResetDataConfirmed] = useState(false);
+  const [resetCheckoutClosedConfirmed, setResetCheckoutClosedConfirmed] = useState(false);
   const [inventoryMemorySelection, setInventoryMemorySelection] = useState<number>();
   const [pendingCommand, setPendingCommand] = useState<PendingCommand>();
   const [pendingConfigurationCommand, setPendingConfigurationCommand] = useState<PendingCommand>();
@@ -364,6 +577,11 @@ export function App() {
   const polling = useRef<number | undefined>(undefined);
   const alarmPolling = useRef<number | undefined>(undefined);
   const investigationPolling = useRef<number | undefined>(undefined);
+  const resetPanelHeading = useRef<HTMLHeadingElement>(null);
+  const resetStatusHeading = useRef<HTMLHeadingElement>(null);
+  const resetTrigger = useRef<HTMLButtonElement>(null);
+  const resetFocusTarget = useRef<HTMLInputElement>(null);
+  const resetConfirmationWasOpen = useRef(false);
   const sessionEpoch = useRef(0);
   const requestEpoch = useRef(0);
 
@@ -377,8 +595,9 @@ export function App() {
       if (epoch === sessionEpoch.current) {
         setState(body);
         setLastObservedAt(body.observedAt);
-        setPendingCommand((pending) => pending && body.currentAction?.id === pending.id ? undefined : pending);
-        setPendingConfigurationCommand((pending) => pending && body.currentConfigurationAction?.id === pending.id ? undefined : pending);
+        const visibleActionIds = [body.currentAction?.id, body.currentConfigurationAction?.id];
+        setPendingCommand((pending) => pending && visibleActionIds.includes(pending.id) ? undefined : pending);
+        setPendingConfigurationCommand((pending) => pending && visibleActionIds.includes(pending.id) ? undefined : pending);
         setPollFailure(undefined);
       }
     } catch (error) {
@@ -420,6 +639,10 @@ export function App() {
 
   const currentAction = state?.currentAction;
   const configurationAction = state?.currentConfigurationAction;
+  const resetRequired = state?.resetRequired === true;
+  const resetAction = currentAction?.kind === "reset" ? currentAction
+    : configurationAction?.kind === "reset" ? configurationAction : undefined;
+  const resetInProgress = Boolean(resetAction && activeStatuses.has(resetAction.status));
   const recoveryAction = configurationAction?.kind === "recover" ? configurationAction : undefined;
   const currentStatus = currentAction?.status ?? "idle";
   const trafficActive = currentAction?.kind === "traffic" && activeStatuses.has(currentStatus);
@@ -459,21 +682,49 @@ export function App() {
   const inventoryRoleArn = currentAccess === "denied"
     ? display(aliasIncident?.target.roleArn ?? baselineInventory?.role, "Not observed")
     : currentAccess === "healthy" ? display(baselineInventory?.role ?? baseline?.settings.inventoryRoleArn, "Not observed") : "Unknown";
-  const trafficStartAllowed = !incidentActive;
+  const trafficStartAllowed = !incidentActive && !resetRequired && !resetInProgress;
   const restoreCheckpoint = configurationAction?.kind === "restore_inventory_access"
     ? configurationAction.configurationCheckpoint : aliasIncident?.checkpoint;
   const needsProtectiveRestore = restoreCheckpoint?.status === "unavailable" || restoreCheckpoint?.status === "incomplete";
   const recoveryCaptureGap = Boolean(recoveryAction && ["failed", "incomplete", "discarded"].includes(recoveryAction.status) &&
     ["unavailable", "incomplete"].includes(recoveryAction.configurationCheckpoint?.status ?? ""));
-  const recoverDisabled = !state || configurationBusy || nonTrafficActionBusy ||
+  const recoverDisabled = !state || resetRequired || configurationBusy || nonTrafficActionBusy ||
     !state.originalBaseline || !readinessConfirmed || (recoveryCaptureGap && !protectiveRecoveryConfirmed);
   const selectedMemoryIsPrepared = selectedMemoryMb !== undefined && inventoryMemoryChoices.includes(selectedMemoryMb);
   const memorySelectionUnavailable = !baseline ? "Check readiness to load verified Inventory memory choices."
     : aliasUnknown ? "Inventory memory is unknown until the alias is read back."
       : inventoryMemoryChoices.length === 0 ? "No verified Inventory memory choices are available for this release."
         : undefined;
-  const memorySelectionDisabled = actionBusy || configurationBusy || Boolean(legacyIncident) || Boolean(memorySelectionUnavailable) ||
+  const memorySelectionDisabled = resetRequired || actionBusy || configurationBusy || Boolean(legacyIncident) || Boolean(memorySelectionUnavailable) ||
     currentMemoryMb === undefined || !selectedMemoryIsPrepared || (selectedMemoryMb !== undefined && selectedMemoryMb < currentMemoryMb);
+  const incompleteAction = currentAction?.status === "incomplete" ? currentAction
+    : configurationAction?.status === "incomplete" ? configurationAction : undefined;
+  const incompleteActionMustBeDiscarded = Boolean(incompleteAction);
+  const resetDisabled = loading || anyPendingCommand || configurationBusy || incompleteActionMustBeDiscarded ||
+    Boolean(currentAction && currentAction.kind !== "traffic" && activeStatuses.has(currentAction.status));
+  const resetAcknowledged = resetQuietConfirmed && resetDataConfirmed && resetCheckoutClosedConfirmed;
+  const resetStatusText = resetAction?.status === "queued" ? "Reset accepted · waiting to start"
+    : resetAction?.status === "draining" ? "Stopping traffic and draining accepted work"
+      : resetAction?.status === "running" ? "Reset running"
+        : resetAction?.status === "completed" ? "Reset completed"
+          : resetAction?.status === "incomplete" ? "Reset incomplete"
+            : resetAction?.status === "failed" ? "Reset failed"
+              : resetAction?.status === "discarded" ? "Reset discarded · a new confirmation is required"
+                : undefined;
+  const resetPhaseText = resetAction?.reset?.phase ? ({
+    stopping: "Stopping demo traffic",
+    draining: "Draining accepted requests",
+    validating: "Checking the current release",
+    capturing: "Saving incident observations",
+    restoring: "Restoring healthy settings",
+    seeding: "Seeding the fresh product version",
+    deleting: "Removing prior orders",
+    verifying: "Verifying the new run",
+    verified: "Fresh business verification recorded",
+  } as const)[resetAction.reset.phase] : undefined;
+  const dashboardAgeMs = lastObservedAt ? Date.now() - Date.parse(lastObservedAt) : Number.POSITIVE_INFINITY;
+  const dashboardFreshness = pollFailure ? "Refresh failed" : !state ? "Loading cloud state"
+    : !Number.isFinite(dashboardAgeMs) || dashboardAgeMs >= 15_000 ? "Stale cloud state" : "Cloud state current";
   const alarmObservation = alarm?.alarm;
   const selectedTransition = normalizedTime(alarmObservation?.stateTransitionedAt);
   const exactObservedAlarmRun = alarmObservation?.state === "ALARM" && alarmObservation.arn && selectedTransition
@@ -497,7 +748,7 @@ export function App() {
   const retainedAlarm = aliasIncident?.checkpoint?.alarm ?? checkpoint?.alarm;
   const configurationObservation = currentConfigurationObservation(
     currentAction?.kind === "activate_inventory_denial" ? currentAction : undefined,
-    configurationAction,
+    configurationAction?.kind === "reset" ? undefined : configurationAction,
   );
   const deniedCheckout = currentAction?.kind === "activate_inventory_denial"
     ? currentAction.requests.find(({ kind, dependencyReason }) => kind === "checkout" && dependencyReason === "inventory_access_denied")
@@ -517,7 +768,7 @@ export function App() {
     const epoch = sessionEpoch.current;
     const callNumber = requestEpoch.current + 1;
     requestEpoch.current = callNumber;
-    const isConfiguration = command.kind === "restore_inventory_access" || command.kind === "increase_memory" || command.kind === "recover";
+    const isConfiguration = command.kind === "reset" || command.kind === "restore_inventory_access" || command.kind === "increase_memory" || command.kind === "recover";
     const setPending = isConfiguration ? setPendingConfigurationCommand : setPendingCommand;
     if (isConfiguration) setConfigurationSubmitting(true);
     else setLoading(true);
@@ -557,6 +808,32 @@ export function App() {
 
   useEffect(() => { if (!bearer) return undefined; void loadState(); void loadAlarm(); void loadInvestigations(); const interval = window.setInterval(() => { void loadState(); void loadAlarm(); void loadInvestigations(); }, 5_000); return () => window.clearInterval(interval); }, [bearer, loadAlarm, loadInvestigations, loadState]);
   useEffect(() => { setInventoryMemorySelection(currentMemoryMb); }, [baseline?.appRevision, currentMemoryMb]);
+  useEffect(() => {
+    if (resetConfirmationOpen) {
+      resetConfirmationWasOpen.current = true;
+      resetFocusTarget.current?.focus();
+      const onKeyDown = (event: KeyboardEvent) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setResetConfirmationOpen(false);
+          setResetQuietConfirmed(false);
+          setResetDataConfirmed(false);
+          setResetCheckoutClosedConfirmed(false);
+        }
+      };
+      window.addEventListener("keydown", onKeyDown);
+      return () => window.removeEventListener("keydown", onKeyDown);
+    }
+    if (resetConfirmationWasOpen.current) {
+      resetConfirmationWasOpen.current = false;
+      if (resetTrigger.current?.disabled) {
+        if (resetStatusHeading.current) resetStatusHeading.current.focus();
+        else resetPanelHeading.current?.focus();
+      }
+      else resetTrigger.current?.focus();
+    }
+    return undefined;
+  }, [resetConfirmationOpen]);
 
   const signIn = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault(); const value = credentialInput.trim();
@@ -573,11 +850,11 @@ export function App() {
       if (sessionEpoch.current === epoch) setNotice({ kind: "error", message: error instanceof Error ? error.message : "The presenter credential was rejected." });
     } finally { if (sessionEpoch.current === epoch) setLoading(false); }
   };
-  const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setInvestigations(undefined); setInvestigationReadFailedAt(undefined); setPendingCommand(undefined); setPendingConfigurationCommand(undefined); setConfigurationSubmitting(false); setInventoryMemorySelection(undefined); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setProtectiveRecoveryConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
-  const runReadiness = () => { if (readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "readiness", confirmQuiet: true }); };
-  const runTraffic = () => void sendAction(crypto.randomUUID(), { kind: "traffic" });
-  const runActivation = () => { if (readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "activate_inventory_denial" }); };
-  const runRestore = () => { if (aliasIncident && !restoreBusy && (!needsProtectiveRestore || protectiveRestoreConfirmed)) void sendAction(crypto.randomUUID(), needsProtectiveRestore ? { kind: "restore_inventory_access", restoreWithoutEvidence: true } : { kind: "restore_inventory_access" }); };
+  const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setInvestigations(undefined); setInvestigationReadFailedAt(undefined); setPendingCommand(undefined); setPendingConfigurationCommand(undefined); setConfigurationSubmitting(false); setInventoryMemorySelection(undefined); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setProtectiveRecoveryConfirmed(false); setResetConfirmationOpen(false); setResetQuietConfirmed(false); setResetDataConfirmed(false); setResetCheckoutClosedConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
+  const runReadiness = () => { if (!resetRequired && readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "readiness", confirmQuiet: true }); };
+  const runTraffic = () => { if (!resetRequired && !resetInProgress && trafficStartAllowed) void sendAction(crypto.randomUUID(), { kind: "traffic" }); };
+  const runActivation = () => { if (!resetRequired && readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "activate_inventory_denial" }); };
+  const runRestore = () => { if (!resetRequired && aliasIncident && !restoreBusy && (!needsProtectiveRestore || protectiveRestoreConfirmed)) void sendAction(crypto.randomUUID(), needsProtectiveRestore ? { kind: "restore_inventory_access", restoreWithoutEvidence: true } : { kind: "restore_inventory_access" }); };
   const runRecovery = () => {
     if (recoverDisabled || !readinessConfirmed) return;
     void sendAction(crypto.randomUUID(), {
@@ -591,10 +868,36 @@ export function App() {
       void sendAction(crypto.randomUUID(), { kind: "increase_memory", function: "inventory", memoryMb: selectedMemoryMb });
     }
   };
+  const openResetConfirmation = () => {
+    if (resetDisabled) return;
+    setResetQuietConfirmed(false);
+    setResetDataConfirmed(false);
+    setResetCheckoutClosedConfirmed(false);
+    setResetConfirmationOpen(true);
+  };
+  const cancelResetConfirmation = () => {
+    setResetConfirmationOpen(false);
+    setResetQuietConfirmed(false);
+    setResetDataConfirmed(false);
+    setResetCheckoutClosedConfirmed(false);
+  };
+  const runReset = () => {
+    if (resetDisabled || !resetAcknowledged) return;
+    void sendAction(crypto.randomUUID(), {
+      kind: "reset",
+      confirmQuiet: true,
+      confirmReset: true,
+      confirmCheckoutClosed: true,
+    });
+    setResetConfirmationOpen(false);
+    setResetQuietConfirmed(false);
+    setResetDataConfirmed(false);
+    setResetCheckoutClosedConfirmed(false);
+  };
   const stopTraffic = () => currentAction && void sendAction(crypto.randomUUID(), { kind: "stop", targetActionId: currentAction.id });
   const discardAction = () => { const target = currentAction?.status === "incomplete" ? currentAction : configurationAction?.status === "incomplete" ? configurationAction : undefined; if (target) void sendAction(crypto.randomUUID(), { kind: "discard", targetActionId: target.id }); };
   const retryPending = (pending: PendingCommand) => void sendAction(pending.id, pending.command);
-  const actionLabel = currentAction ? `${currentAction.kind} · ${currentAction.status}` : "No action running";
+  const actionLabel = currentAction ? `${currentAction.kind} · ${currentAction.status}` : resetAction ? `${resetAction.kind} · ${resetAction.status}` : "No action running";
 
   if (!bearer) return (
     <main className="controller-shell controller-sign-in"><section className="sign-in-card" aria-labelledby="sign-in-title">
@@ -607,14 +910,31 @@ export function App() {
 
   return (
     <main className="controller-shell" aria-label="Incident triage failure controller">
-      <header className="topbar"><div className="brand"><div className="brand-mark" aria-hidden="true">IT</div><div><p className="eyebrow">Incident triage demo</p><h1>Failure controller</h1></div></div><div className="top-actions"><span className="connection-pill"><span className="status-dot" aria-hidden="true" /> Cloud state</span><button className="button button-secondary" type="button" onClick={signOut}>Sign out</button></div></header>
+      <header className="topbar"><div className="brand"><div className="brand-mark" aria-hidden="true">IT</div><div><p className="eyebrow">Incident triage demo</p><h1>Failure controller</h1></div></div><div className="top-actions"><span className={`connection-pill ${pollFailure || dashboardFreshness.includes("Stale") ? "connection-stale" : ""}`} role="status"><span className="status-dot" aria-hidden="true" /> {dashboardFreshness}</span><button className="button button-secondary" type="button" onClick={signOut}>Sign out</button></div></header>
       <section className="hero-panel">
         <div className="hero-copy">
           <p className="eyebrow">Current action</p><h2>{actionLabel}</h2>{currentAction && <p className="mono muted compact">{currentAction.id}</p>}
           <p className="muted">Last observation {formatTime(lastObservedAt)}{pollFailure ? ` · ${pollFailure}` : ""}</p>
           {currentAction?.startedAt && <p className="muted">Started {formatTime(currentAction.startedAt)}{currentAction.finishedAt ? ` · Ended ${formatTime(currentAction.finishedAt)}` : ""}</p>}
           {currentAction?.error && <p className="action-error" role="alert">{currentAction.error}</p>}
-          {currentAction?.discardAfter && currentStatus === "incomplete" && <p className="muted">Discard available after {formatTime(new Date(currentAction.discardAfter).toISOString())}</p>}
+            {resetAction?.error && resetAction.id !== currentAction?.id && <p className="action-error" role="alert">{resetAction.error}</p>}
+          {resetRequired && <p className="reset-required-message" role="alert">This run is not usable. Ordinary actions stay blocked until a new Reset completes; discarding an incomplete action does not clear this requirement.</p>}
+          {resetStatusText && <div className={`reset-progress reset-progress-${resetAction?.status}`} role="status">
+            <h3 ref={resetStatusHeading} tabIndex={-1}>Reset progress</h3>
+            <strong>{resetStatusText}</strong>
+            {resetPhaseText && <p>Current step: {resetPhaseText}.</p>}
+            {resetAction?.status === "draining" && !resetPhaseText && <p>Traffic is stopping; accepted requests are being drained before business data changes.</p>}
+            {resetAction?.status === "queued" && <p>The request is recorded. Reset is not complete while its status is pending.</p>}
+            {resetAction?.status === "running" && <p>Reset is running. The run remains blocked until fresh business verification finishes.</p>}
+            {resetAction?.status === "completed" && !resetRequired && <p>Run {display(state?.runId)} is ready. The verification checkout is part of this run; traffic remains stopped.</p>}
+            {resetAction?.status === "completed" && resetRequired && <p>The action reports completion, but the current state still requires Reset. Ordinary actions remain blocked.</p>}
+            {resetAction?.status === "incomplete" && <p>This Reset cannot resume. Wait for prior work to stop, discard this incomplete action, then confirm a new Reset with a fresh action ID.</p>}
+            {resetAction?.status === "failed" && <p>Reset did not establish a usable run. Confirm a new Reset after prior work has stopped.</p>}
+            {resetAction?.startedAt && <p>Reset started {formatTime(resetAction.startedAt)}{resetAction.finishedAt ? ` · ended ${formatTime(resetAction.finishedAt)}` : ""}</p>}
+            {resetAction && <p className="mono">Action {resetAction.id}</p>}
+            {resetAction?.reset && <p className="mono">Run {resetAction.reset.runId} · product version {resetAction.reset.productVersion} · seed {resetAction.reset.seedQuantity}</p>}
+          </div>}
+          {incompleteAction && <p className="muted">Discard available after {formatTime(new Date(incompleteAction.discardAfter).toISOString())}</p>}
           <label className="quiet-check"><input type="checkbox" checked={readinessConfirmed} onChange={(event) => setReadinessConfirmed(event.target.checked)} /> I confirm other checkout writers are paused.</label>
           {!state?.originalBaseline && <p className="muted recovery-readiness-hint" role="status">Check readiness to establish the original healthy settings before recovery.</p>}
           {recoveryCaptureGap && <label className="quiet-check recovery-protective-check">
@@ -623,22 +943,22 @@ export function App() {
           </label>}
         </div>
         <div className="action-controls">
-          <button className="button button-primary" type="button" onClick={runReadiness} disabled={actionBusy || configurationBusy || !readinessConfirmed}>Check readiness</button>
-          <button className="button button-secondary" type="button" onClick={runTraffic} disabled={actionBusy || !baseline || !trafficStartAllowed}>Start healthy traffic</button>
+          <button className="button button-primary" type="button" onClick={runReadiness} disabled={resetRequired || actionBusy || configurationBusy || !readinessConfirmed}>Check readiness</button>
+          <button className="button button-secondary" type="button" onClick={runTraffic} disabled={resetRequired || actionBusy || !baseline || !trafficStartAllowed}>Start healthy traffic</button>
           {trafficActive && <button className="button button-stop" type="button" onClick={stopTraffic} disabled={loading || Boolean(pendingCommand) || currentStatus === "draining"}>Stop traffic</button>}
           {(currentAction?.status === "incomplete" || configurationAction?.status === "incomplete") && <button className="button button-secondary" type="button" onClick={discardAction} disabled={loading || anyPendingCommand || Date.now() < (currentAction?.status === "incomplete" ? currentAction.discardAfter : configurationAction!.discardAfter)}>Discard action</button>}
           <div className="menu-wrap">
             <button className="button button-secondary" type="button" aria-haspopup="true" aria-expanded={menuOpen} aria-controls="controller-actions" onClick={() => setMenuOpen((open) => !open)}>Actions <span className="chevron" aria-hidden="true" /></button>
             {menuOpen && <div className="actions-menu" id="controller-actions" role="group" aria-label="Controller actions">
-              <button type="button" onClick={runReadiness} disabled={actionBusy || configurationBusy || !readinessConfirmed}>Check readiness</button>
-              <button type="button" onClick={runTraffic} disabled={actionBusy || !baseline || !trafficStartAllowed}>Start healthy traffic</button>
+              <button type="button" onClick={runReadiness} disabled={resetRequired || actionBusy || configurationBusy || !readinessConfirmed}>Check readiness</button>
+              <button type="button" onClick={runTraffic} disabled={resetRequired || actionBusy || !baseline || !trafficStartAllowed}>Start healthy traffic</button>
               <button type="button" onClick={runRecovery} disabled={recoverDisabled}>Recover</button>
-              <button type="button" onClick={runActivation} disabled={actionBusy || configurationBusy || incidentActive || !baseline || !readinessConfirmed}>Activate Inventory denial</button>
-              {!legacyIncident && <button type="button" onClick={runRestore} disabled={!aliasIncident || restoreBusy || (needsProtectiveRestore && !protectiveRestoreConfirmed)}>Restore Inventory access</button>}
+              <button type="button" onClick={runActivation} disabled={resetRequired || actionBusy || configurationBusy || incidentActive || !baseline || !readinessConfirmed}>Activate Inventory denial</button>
+              {!legacyIncident && <button type="button" onClick={runRestore} disabled={resetRequired || !aliasIncident || restoreBusy || (needsProtectiveRestore && !protectiveRestoreConfirmed)}>Restore Inventory access</button>}
               <section className="memory-picker" aria-label="Inventory memory selection">
                 <label htmlFor="inventory-memory-selection">Inventory memory</label>
                 <select id="inventory-memory-selection" value={selectedMemoryMb ?? ""}
-                  disabled={Boolean(memorySelectionUnavailable) || configurationBusy || actionBusy}
+                  disabled={resetRequired || Boolean(memorySelectionUnavailable) || configurationBusy || actionBusy}
                   onChange={(event) => setInventoryMemorySelection(event.target.value ? Number(event.target.value) : undefined)}>
                   {inventoryMemoryChoices.length === 0
                     ? <option value="">No verified choices</option>
@@ -657,6 +977,35 @@ export function App() {
             </div>}
           </div>
         </div>
+      </section>
+      {state && <RunHistoryPanel currentRunId={state.runId} previousRunId={state.previousRunId} currentResetRequired={resetRequired} bearer={bearer} />}
+      <section className="card reset-card" aria-label="Reset demo data">
+        <div className="card-heading">
+          <div><p className="eyebrow">New demo session</p><h3 ref={resetPanelHeading} tabIndex={-1}>Reset business data</h3></div>
+          <button ref={resetTrigger} className="button button-danger" type="button" onClick={openResetConfirmation} disabled={resetDisabled}>
+            {resetRequired ? "Start a new Reset" : "Reset demo"}
+          </button>
+        </div>
+        <p className="muted">Reset stops and drains scripted traffic, restores the current release’s healthy settings, replaces disposable orders, and verifies a fresh run. Prior session receipts and incident/source history remain available above.</p>
+        {incompleteActionMustBeDiscarded && <p className="notice notice-warning" role="status">Discard the incomplete action after its drain window before starting another Reset. Discarding keeps Reset required; it does not make this run usable.</p>}
+        {resetRequired && <p className="reset-required-message" role="status">The current run stays blocked until a newly confirmed Reset completes. A completed or discarded earlier action cannot clear this requirement.</p>}
+        {resetAction?.status === "incomplete" && <p className="reset-required-message" role="status">Do not resume this Reset with its old action ID. After prior work has stopped and the action is discarded, confirm another Reset to create a fresh run and product version.</p>}
+        {resetAction?.status === "completed" && !resetRequired && <p className="notice notice-success" role="status">Reset completed. The new run is usable with its verified baseline; scripted traffic remains stopped.</p>}
+        {resetConfirmationOpen && <section className="reset-confirmation" aria-labelledby="reset-confirmation-title">
+          <h4 id="reset-confirmation-title" tabIndex={-1}>Confirm destructive Reset</h4>
+          <p>Reset will stop demo traffic, drain accepted work, seed the product at 1,000 units with a fresh version, delete prior Orders, and make one verification order that leaves 999 units. Close old checkout pages first so they cannot submit stale product versions.</p>
+          <p className="muted">The previous run’s baseline, receipts, unresolved attempts, incident/source pointers, and action records are retained in read-only history.</p>
+          <fieldset className="reset-acknowledgements">
+            <legend>Confirm the required conditions</legend>
+            <label><input ref={resetFocusTarget} type="checkbox" checked={resetQuietConfirmed} onChange={(event) => setResetQuietConfirmed(event.target.checked)} /> I have paused other checkout writers; Reset will stop demo traffic and drain accepted work.</label>
+            <label><input type="checkbox" checked={resetDataConfirmed} onChange={(event) => setResetDataConfirmed(event.target.checked)} /> I understand Reset reseeds demo-widget to 1000 units under a fresh product version and deletes previous Orders. Its verification checkout leaves 999 units.</label>
+            <label><input type="checkbox" checked={resetCheckoutClosedConfirmed} onChange={(event) => setResetCheckoutClosedConfirmed(event.target.checked)} /> I have closed old checkout pages so they cannot submit old product version.</label>
+          </fieldset>
+          <div className="reset-confirmation-actions">
+            <button className="button button-danger" type="button" onClick={runReset} disabled={resetDisabled || !resetAcknowledged}>Confirm Reset</button>
+            <button className="button button-secondary" type="button" onClick={cancelResetConfirmation}>Cancel</button>
+          </div>
+        </section>}
       </section>
       {notice && <p className={`notice notice-${notice.kind}`} role={notice.kind === "error" ? "alert" : "status"}>{notice.message}</p>}
       {pendingCommand && !loading && <div className="notice notice-error" role="status">
@@ -725,7 +1074,7 @@ export function App() {
         </label>}
         {configurationAction?.kind !== "recover" && configurationAction?.error && <p className="action-error" role="alert">{configurationAction.error}</p>}
       </section>
-      <section className="summary-grid" aria-label="Run summary"><article className="card"><p className="eyebrow">Last verified health</p><dl className="facts"><div><dt>App revision</dt><dd className="mono">{display(baseline?.appRevision, "Not verified")}</dd></div><div><dt>Product</dt><dd>{display(baseline?.sku, "Not verified")}</dd></div><div><dt>Product version</dt><dd className="mono">{display(baseline?.productVersion, "Not verified")}</dd></div></dl></article><article className="card stock-card"><p className="eyebrow">Inventory</p><strong className="stock-value">{display(state?.latestStock ?? baseline?.stockAfter, "—")}</strong><p className="muted">units · observed {formatTime(state?.latestStockAt)}</p></article><article className="card"><p className="eyebrow">Readiness order</p><p className="mono compact">{display(baseline?.checkoutId, "No verification order")}</p><p className="muted">{baseline ? `${display(baseline.stockBefore)} → ${display(baseline.stockAfter)} units · verified ${formatTime(baseline.verifiedAt)}` : "A verified order will establish the baseline."}</p></article></section>
+      <section className="summary-grid" aria-label="Run summary"><article className="card"><p className="eyebrow">Last verified health</p><dl className="facts"><div><dt>App revision</dt><dd className="mono">{display(baseline?.appRevision, "Not verified")}</dd></div><div><dt>Product</dt><dd>{display(baseline?.sku, "Not verified")}</dd></div><div><dt>Product version</dt><dd className="mono">{display(baseline?.productVersion, "Not verified")}</dd></div></dl></article><article className="card stock-card"><p className="eyebrow">Inventory</p><strong className="stock-value">{resetRequired ? "—" : display(state?.latestStock ?? baseline?.stockAfter, "—")}</strong><p className="muted">{resetRequired ? "Current run is unusable; stock is not shown as verified." : `units · observed ${formatTime(state?.latestStockAt)}`}</p></article><article className="card"><p className="eyebrow">Readiness order</p><p className="mono compact">{display(baseline?.checkoutId, "No verification order")}</p><p className="muted">{resetRequired ? "Reset required; this run has no verified order." : baseline ? `${display(baseline.stockBefore)} → ${display(baseline.stockAfter)} units · verified ${formatTime(baseline.verifiedAt)}` : "A verified order will establish the baseline."}</p></article></section>
       <section className="traffic-grid" aria-label="Traffic progress">{(["catalog", "checkout"] as const).map((profile) => { const value = currentAction?.traffic?.[profile]; return <article className="card traffic-card" key={profile}><div className="card-heading"><div><p className="eyebrow">{profile} traffic</p><h3>{profile === "catalog" ? "Catalog reads" : "Checkout posts"}</h3></div></div><div className="metric-row">{([["submitted", "sent"], ["completed", "settled"], ["succeeded", "succeeded"], ["skipped", "skipped"], ["inFlight", "in flight"]] as const).map(([field, label]) => <div key={field}><strong>{display(value?.[field], "0")}</strong><span>{label}</span></div>)}</div></article>; })}</section>
       {currentAction?.requests.length ? <details className="card request-details"><summary>Recent requests for this action</summary><ul className="record-list">{currentAction.requests.slice(-10).reverse().map((request) => <li key={request.id}><span>{request.kind.replace("_", " ")} · {request.outcome ?? "pending"}</span><strong>{request.durationMs === undefined ? "In progress" : `${request.durationMs} ms`}</strong><small className="mono">{request.requestId ?? "No app request ID"}{request.errorCode ? ` · ${request.errorCode}` : ""}{request.dependencyReason ? ` · ${request.dependencyReason}` : ""}</small></li>)}</ul></details> : null}
       <section className="monitor-grid" aria-label="Monitoring observations">

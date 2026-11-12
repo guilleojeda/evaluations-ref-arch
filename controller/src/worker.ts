@@ -1,11 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 import { CloudFormationClient, DescribeStacksCommand, ListStackResourcesCommand } from "@aws-sdk/client-cloudformation";
+import { DeleteItemCommand, DynamoDBClient, GetItemCommand, PutItemCommand, ScanCommand,
+  type AttributeValue, type ScanCommandInput, type ScanCommandOutput } from "@aws-sdk/client-dynamodb";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { DeleteFunctionConcurrencyCommand, GetAliasCommand, GetFunctionConfigurationCommand, GetFunctionConcurrencyCommand,
   LambdaClient, PutFunctionConcurrencyCommand, UpdateAliasCommand } from "@aws-sdk/client-lambda";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { readCurrentAlarm, readOriginatingAlarm } from "./alarm.js";
+import seedProduct from "../../scripts/app-product.json";
 import {
   expectedInventoryTarget,
   expectedInventoryDeniedRoleArn,
@@ -19,7 +22,7 @@ import {
   type InventoryPolicyTarget,
   type InventoryTablePolicyRead,
 } from "./inventory-access.js";
-import { changeAction, getAction, getRun } from "./store.js";
+import { beginReset, changeAction, getAction, getRun } from "./store.js";
 import type {
   Action,
   Baseline,
@@ -61,6 +64,7 @@ const lambda = new LambdaClient(clientOptions);
 const secrets = new SecretsManagerClient(clientOptions);
 const evidenceEndpoint = process.env.AWS_ENDPOINT_URL_S3 ?? process.env.AWS_ENDPOINT_URL;
 const s3 = new S3Client({ ...clientOptions, forcePathStyle: true, ...(evidenceEndpoint ? { endpoint: evidenceEndpoint } : {}) });
+const dynamo = new DynamoDBClient(clientOptions);
 
 class ActionFailure extends Error {}
 class IncompleteActionFailure extends ActionFailure {
@@ -187,6 +191,8 @@ interface RecoveryContext {
   targetInventory: InventoryContextSettings;
   targetCheckout: InventoryTargetSettings;
 }
+
+interface CurrentReleaseContext extends Omit<RecoveryContext, "baseline"> {}
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -753,20 +759,8 @@ async function restoreContext(): Promise<RestoreContext> {
     manifest, tablePolicy, policy: deniedPolicy, healthyPolicy: policy, deniedPolicy, incident };
 }
 
-async function recoverContext(bearer: string): Promise<RecoveryContext> {
-  const run = await getRun();
-  const baseline = run.baseline;
-  const original = run.originalBaseline;
-  if (!original?.deploymentIdentity || !baseline?.deploymentIdentity) {
-    throw new ActionFailure("Fresh readiness is required because the saved baseline has no verified deployment-generation identity.");
-  }
-  if (baseline.productVersion !== original.productVersion || baseline.sku !== original.sku) {
-    throw new ActionFailure("The active and original readiness baselines do not describe the same preserved product generation.");
-  }
+async function currentReleaseContext(bearer: string): Promise<CurrentReleaseContext> {
   const target = await appTarget();
-  if (original.appRevision !== target.revision || baseline.appRevision !== target.revision || original.sku !== target.sku) {
-    throw new ActionFailure("The saved readiness target is stale for the successfully deployed app release.");
-  }
   if (target.outputs.get("InventoryResourcePolicy") !== "absent" ||
       target.outputs.get("InventoryDeniedRoleArn") !== expectedInventoryDeniedRoleArn()) {
     throw new ActionFailure("The current app release does not identify the expected Inventory access configuration.");
@@ -785,25 +779,6 @@ async function recoverContext(bearer: string): Promise<RecoveryContext> {
   const targetCheckout = { ...checkout, cap: expectedCap(target, "Checkout") };
   const targetInventorySettings = { ...targetInventory, cap: expectedCap(target, "Inventory") };
   const identity = await deploymentIdentity(target, manifest, checkout, true);
-  if (!sameDeploymentIdentity(original.deploymentIdentity, identity) ||
-      !sameDeploymentIdentity(baseline.deploymentIdentity, identity)) {
-    throw new ActionFailure("The current successful app generation does not match the trusted readiness baseline; run readiness to reconcile it.");
-  }
-  const originalSettings = record(original.settings);
-  const originalCheckout = originalSettings && record(originalSettings.checkout);
-  const originalInventory = originalSettings && record(originalSettings.inventory);
-  const currentSettings = record(baseline.settings);
-  if (!originalSettings || !originalCheckout || !originalInventory || !currentSettings ||
-      originalSettings.credentialGeneration !== target.outputs.get("PresenterCredentialGeneration") ||
-      originalSettings.inventoryRoleArn !== target.inventoryRoleArn || originalSettings.inventoryTableArn !== target.inventoryTableArn ||
-      !sameInventorySettings(originalCheckout, targetCheckout) ||
-      !sameInventorySettings(originalInventory, targetInventorySettings) ||
-      originalInventory.access !== "healthy" || originalInventory.sourceRevision !== target.revision ||
-      originalInventory.memory !== manifest.baselineMemoryMb || originalInventory.version !== targetVariant.version ||
-      currentSettings.credentialGeneration !== target.outputs.get("PresenterCredentialGeneration") ||
-      !sameInventorySettings(record(currentSettings.checkout) ?? {}, targetCheckout)) {
-    throw new ActionFailure("The original readiness baseline does not contain the trusted current-release settings.");
-  }
   const healthyTarget = expectedInventoryTarget(target.inventoryTableArn, target.inventoryRoleArn);
   const deniedRoleArn = target.outputs.get("InventoryDeniedRoleArn") ?? "";
   const deniedTarget = expectedInventoryTarget(target.inventoryTableArn, deniedRoleArn);
@@ -818,17 +793,55 @@ async function recoverContext(bearer: string): Promise<RecoveryContext> {
       !healthyPolicy.document || !deniedPolicy.document) {
     throw new ActionFailure("The current Inventory role or policy state is not the trusted healthy/denied release configuration.");
   }
+  const policy = currentVariant.access === "healthy" ? healthyPolicy : deniedPolicy;
+  return { app: target, target: healthyTarget, appRevision: target.revision, checkout, inventory, inventoryAlias: alias,
+    manifest, tablePolicy, policy, healthyPolicy, deniedPolicy, deploymentIdentity: identity,
+    targetVariant, targetInventory: targetInventorySettings, targetCheckout };
+}
+
+async function recoverContext(bearer: string): Promise<RecoveryContext> {
+  const run = await getRun();
+  const baseline = run.baseline;
+  const original = run.originalBaseline;
+  if (!original?.deploymentIdentity || !baseline?.deploymentIdentity) {
+    throw new ActionFailure("Fresh readiness is required because the saved baseline has no verified deployment-generation identity.");
+  }
+  if (baseline.productVersion !== original.productVersion || baseline.sku !== original.sku) {
+    throw new ActionFailure("The active and original readiness baselines do not describe the same preserved product generation.");
+  }
+  const current = await currentReleaseContext(bearer);
+  const target = current.app;
+  if (original.appRevision !== target.revision || baseline.appRevision !== target.revision || original.sku !== target.sku) {
+    throw new ActionFailure("The saved readiness target is stale for the successfully deployed app release.");
+  }
+  const identity = current.deploymentIdentity;
+  if (!sameDeploymentIdentity(original.deploymentIdentity, identity) ||
+      !sameDeploymentIdentity(baseline.deploymentIdentity, identity)) {
+    throw new ActionFailure("The current successful app generation does not match the trusted readiness baseline; run readiness to reconcile it.");
+  }
+  const originalSettings = record(original.settings);
+  const originalCheckout = originalSettings && record(originalSettings.checkout);
+  const originalInventory = originalSettings && record(originalSettings.inventory);
+  const currentSettings = record(baseline.settings);
+  if (!originalSettings || !originalCheckout || !originalInventory || !currentSettings ||
+      originalSettings.credentialGeneration !== target.outputs.get("PresenterCredentialGeneration") ||
+      originalSettings.inventoryRoleArn !== target.inventoryRoleArn || originalSettings.inventoryTableArn !== target.inventoryTableArn ||
+      !sameInventorySettings(originalCheckout, current.targetCheckout) ||
+      !sameInventorySettings(originalInventory, current.targetInventory) ||
+      originalInventory.access !== "healthy" || originalInventory.sourceRevision !== target.revision ||
+      originalInventory.memory !== current.manifest.baselineMemoryMb || originalInventory.version !== current.targetVariant.version ||
+      currentSettings.credentialGeneration !== target.outputs.get("PresenterCredentialGeneration") ||
+      !sameInventorySettings(record(currentSettings.checkout) ?? {}, current.targetCheckout)) {
+    throw new ActionFailure("The original readiness baseline does not contain the trusted current-release settings.");
+  }
   const baselineHealthyPolicy = originalSettings.inventoryAccessPolicy;
   const baselineDeniedPolicy = originalSettings.inventoryDeniedAccessPolicy;
   if (!record(baselineHealthyPolicy) || !record(baselineDeniedPolicy) ||
-      !sameInventoryPolicyVersion(healthyPolicy.observation, baselineHealthyPolicy as InventoryAccessPolicyObservation) ||
-      !sameInventoryPolicyVersion(deniedPolicy.observation, baselineDeniedPolicy as InventoryAccessPolicyObservation)) {
+      !sameInventoryPolicyVersion(current.healthyPolicy.observation, baselineHealthyPolicy as InventoryAccessPolicyObservation) ||
+      !sameInventoryPolicyVersion(current.deniedPolicy.observation, baselineDeniedPolicy as InventoryAccessPolicyObservation)) {
     throw new ActionFailure("The Inventory role policy changed after the trusted readiness baseline.");
   }
-  const policy = currentVariant.access === "healthy" ? healthyPolicy : deniedPolicy;
-  return { app: target, target: healthyTarget, appRevision: target.revision, checkout, inventory, inventoryAlias: alias,
-    manifest, tablePolicy, policy, healthyPolicy, deniedPolicy, deploymentIdentity: identity, baseline,
-    targetVariant, targetInventory: targetInventorySettings, targetCheckout };
+  return { ...current, baseline };
 }
 
 function incidentRecord(run: RunState): IncidentState | undefined {
@@ -979,6 +992,11 @@ async function recordCheckpoint(actionId: string, checkpointValue: Configuration
 async function recordAliasOutcome(actionId: string, outcome: IncidentState["aliasOutcome"]): Promise<void> {
   const result = await changeAction(actionId, (run, current) => {
     const incident = incidentRecord(run);
+    if (current.kind === "reset") {
+      current.configurationOutcome = outcome === "conflict" ? "failed" : "unknown";
+      run.inventoryAliasUnknown = outcome !== "conflict";
+      return true;
+    }
     if (current.kind === "recover") {
       current.configurationOutcome = outcome === "conflict" ? "failed" : "unknown";
       run.inventoryAliasUnknown = outcome !== "conflict";
@@ -1010,6 +1028,12 @@ function deniedCheckoutResponse(response: AppResponse, payload: CheckoutPayload)
 async function recordAliasReadback(actionId: string, alias: InventoryAliasObservation, active: IncidentState["active"]): Promise<void> {
   const result = await changeAction(actionId, (run, current) => {
     const incident = incidentRecord(run);
+    if (current.kind === "reset") {
+      if (current.inventorySwitch) current.inventorySwitch = { ...current.inventorySwitch, after: alias };
+      if (active === "unknown") current.configurationOutcome = "unknown";
+      run.inventoryAliasUnknown = active === "unknown";
+      return true;
+    }
     if (current.kind === "recover") {
       if (current.inventorySwitch) current.inventorySwitch = { ...current.inventorySwitch, after: alias };
       if (active === "unknown") current.configurationOutcome = "unknown";
@@ -1089,6 +1113,15 @@ async function setRecoveryProgress(actionId: string, progress: NonNullable<Actio
     return true;
   });
   if (!result) throw new IncompleteActionFailure("The Recover progress could not be recorded.");
+}
+
+async function setResetPhase(actionId: string, phase: NonNullable<Action["reset"]>["phase"]): Promise<void> {
+  const result = await changeAction(actionId, (_run, current) => {
+    if (current.kind !== "reset" || !current.reset) return false;
+    current.reset.phase = phase;
+    return true;
+  });
+  if (!result) throw new IncompleteActionFailure("The Reset progress could not be recorded.");
 }
 
 async function stopAndDrainTraffic(action: Action): Promise<void> {
@@ -1179,7 +1212,7 @@ async function assertRecoveryBoundary(action: Action, before: RecoveryContext, b
 
 async function recordCapRestoration(actionId: string, name: "checkout" | "inventory", update: CapRestoration): Promise<void> {
   const result = await changeAction(actionId, (_run, current) => {
-    if (current.kind !== "recover" || !current.capRestoration?.[name]) return false;
+    if ((current.kind !== "recover" && current.kind !== "reset") || !current.capRestoration?.[name]) return false;
     current.capRestoration[name] = { ...current.capRestoration[name], ...update };
     return true;
   });
@@ -1770,7 +1803,7 @@ async function recordRecoveredConfiguration(action: Action, context: RecoveryCon
   if (!result) throw new IncompleteActionFailure("The restored application settings could not be recorded.");
 }
 
-async function recoverySettings(context: RecoveryContext, alias: InventoryAliasObservation): Promise<VerifiedSettings> {
+async function recoverySettings(context: CurrentReleaseContext, alias: InventoryAliasObservation): Promise<VerifiedSettings> {
   const inventory = { ...context.targetInventory, aliasRevision: alias.revisionId, access: "healthy" as const,
     sourceRevision: context.manifest.sourceRevision, cap: context.targetInventory.cap };
   return {
@@ -1791,6 +1824,40 @@ async function recoverySettings(context: RecoveryContext, alias: InventoryAliasO
     inventoryDeniedRoleArn: context.app.outputs.get("InventoryDeniedRoleArn"),
     inventoryVariantsManifest: context.manifest,
   };
+}
+
+function sameCurrentReleaseContext(left: CurrentReleaseContext, right: CurrentReleaseContext): boolean {
+  return sameDeploymentIdentity(left.deploymentIdentity, right.deploymentIdentity) &&
+    left.app.stackId === right.app.stackId && left.app.successfulAt === right.app.successfulAt &&
+    left.inventoryAlias.functionVersion === right.inventoryAlias.functionVersion &&
+    left.inventoryAlias.revisionId === right.inventoryAlias.revisionId &&
+    sameInventorySettings({ ...left.checkout }, right.checkout) &&
+    sameInventoryContextSettings(left.inventory, right.inventory) &&
+    sameInventoryPolicyVersion(left.healthyPolicy.observation, right.healthyPolicy.observation) &&
+    sameInventoryPolicyVersion(left.deniedPolicy.observation, right.deniedPolicy.observation);
+}
+
+async function recordResetIntent(action: Action, context: CurrentReleaseContext): Promise<void> {
+  const result = await changeAction(action.id, (_run, current) => {
+    if (current.kind !== "reset" || !current.reset) return false;
+    current.inventorySwitch = { before: context.inventoryAlias, target: context.targetVariant };
+    current.capRestoration = {
+      checkout: { before: context.checkout.cap, target: context.targetCheckout.cap, outcome: "pending" },
+      inventory: { before: context.inventory.cap, target: context.targetInventory.cap, outcome: "pending" },
+    };
+    current.configurationOutcome = "unknown";
+    return true;
+  });
+  if (!result) throw new IncompleteActionFailure("The Reset restoration targets could not be recorded before configuration changes.");
+}
+
+async function linkResetCheckpoint(actionId: string, value: ConfigurationCheckpoint): Promise<void> {
+  const result = await changeAction(actionId, (_run, current) => {
+    if (current.kind !== "reset") return false;
+    current.configurationCheckpoint = value;
+    return true;
+  });
+  if (!result) throw new IncompleteActionFailure("The Reset configuration checkpoint could not be linked to its action.");
 }
 
 async function finishRecoveryVerification(action: Action, context: RecoveryContext, bearer: string,
@@ -1919,6 +1986,374 @@ async function recover(action: Action): Promise<void> {
   await finishRecoveryVerification(action, current, bearer, alias);
 }
 
+function itemString(item: Record<string, AttributeValue> | undefined, key: string): string | undefined {
+  const value = item?.[key];
+  return value && "S" in value && typeof value.S === "string" ? value.S : undefined;
+}
+
+function itemNumber(item: Record<string, AttributeValue> | undefined, key: string): number | undefined {
+  const attribute = item?.[key];
+  const raw = attribute && "N" in attribute && typeof attribute.N === "string" ? attribute.N : undefined;
+  if (typeof raw !== "string") return undefined;
+  const numeric = Number(raw);
+  return Number.isSafeInteger(numeric) ? numeric : undefined;
+}
+
+interface InventorySeedRow {
+  sku: string;
+  productVersion: string;
+  availableQuantity: number;
+  item: Record<string, AttributeValue>;
+}
+
+async function readInventorySeedRow(action: Action, tableName: string, sku: string): Promise<InventorySeedRow> {
+  ensureActionDeadline(action, "Inventory read");
+  const result = await dynamo.send(new GetItemCommand({
+    TableName: tableName,
+    Key: { sku: { S: sku } },
+    ConsistentRead: true,
+  }), providerTimeout());
+  const item = result.Item;
+  const observed = {
+    sku: itemString(item, "sku"),
+    productVersion: itemString(item, "productVersion"),
+    availableQuantity: itemNumber(item, "availableQuantity"),
+  };
+  if (!item || observed.sku !== sku || !observed.productVersion || observed.availableQuantity === undefined || observed.availableQuantity < 0) {
+    throw new ActionFailure("The selected Inventory SKU has no valid, strongly read product version and quantity.");
+  }
+  return { sku, productVersion: observed.productVersion, availableQuantity: observed.availableQuantity, item };
+}
+
+function matchesSeed(row: Record<string, AttributeValue> | undefined, productVersion: string): boolean {
+  return itemString(row, "sku") === seedProduct.sku &&
+    itemString(row, "name") === seedProduct.name &&
+    itemNumber(row, "unitPriceCents") === seedProduct.unitPriceCents &&
+    itemString(row, "currency") === seedProduct.currency &&
+    itemNumber(row, "availableQuantity") === seedProduct.availableQuantity &&
+    itemString(row, "productVersion") === productVersion;
+}
+
+async function seedInventory(action: Action, context: CurrentReleaseContext): Promise<void> {
+  const metadata = action.reset;
+  if (action.kind !== "reset" || !metadata || metadata.seedQuantity !== seedProduct.availableQuantity ||
+      context.app.sku !== seedProduct.sku || context.target.tableArn !== `arn:aws:dynamodb:${region}:${account}:table/${inventoryTable}`) {
+    throw new ActionFailure("The current release does not match the canonical Reset product target.");
+  }
+  const before = await readInventorySeedRow(action, inventoryTable, seedProduct.sku);
+  if (before.productVersion === metadata.productVersion) {
+    throw new ActionFailure("The Reset productVersion is not fresh for the strongly read Inventory row.");
+  }
+  ensureActionDeadline(action, "Inventory seed");
+  const updatedAt = new Date().toISOString();
+  let writeError: unknown;
+  try {
+    await dynamo.send(new PutItemCommand({
+      TableName: inventoryTable,
+      Item: {
+        sku: { S: seedProduct.sku },
+        name: { S: seedProduct.name },
+        unitPriceCents: { N: String(seedProduct.unitPriceCents) },
+        currency: { S: seedProduct.currency },
+        availableQuantity: { N: String(metadata.seedQuantity) },
+        productVersion: { S: metadata.productVersion },
+        updatedAt: { S: updatedAt },
+      },
+      ConditionExpression: "#productVersion = :previousVersion",
+      ExpressionAttributeNames: { "#productVersion": "productVersion" },
+      ExpressionAttributeValues: { ":previousVersion": { S: before.productVersion } },
+    }), providerTimeout());
+  } catch (error) {
+    writeError = error;
+  }
+
+  let after: InventorySeedRow | undefined;
+  try {
+    after = await readInventorySeedRow(action, inventoryTable, seedProduct.sku);
+  } catch (error) {
+    throw new IncompleteActionFailure("Reset could not strongly read the Inventory seed after its conditional write.");
+  }
+  if (!matchesSeed(after.item, metadata.productVersion) || after.productVersion !== metadata.productVersion ||
+      after.availableQuantity !== seedProduct.availableQuantity) {
+    const detail = writeError instanceof Error && writeError.name === "ConditionalCheckFailedException"
+      ? "The Inventory product changed during Reset."
+      : "The conditional Inventory seed did not produce the requested product version and quantity.";
+    throw new IncompleteActionFailure(detail);
+  }
+}
+
+async function deleteAllOrders(action: Action, tableName: string): Promise<void> {
+  let startKey: ScanCommandInput["ExclusiveStartKey"];
+  do {
+    ensureActionDeadline(action, "Orders scan");
+    let page: ScanCommandOutput;
+    try {
+      page = await dynamo.send(new ScanCommand({
+        TableName: tableName,
+        ConsistentRead: true,
+        ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+      }), providerTimeout());
+    } catch {
+      throw new IncompleteActionFailure("Reset could not scan the Orders table before its deadline.");
+    }
+    for (const item of page.Items ?? []) {
+      const orderId = itemString(item, "orderId");
+      if (!orderId) throw new IncompleteActionFailure("Reset found an Orders row without its expected primary key.");
+      ensureActionDeadline(action, "Orders deletion");
+      try {
+        await dynamo.send(new DeleteItemCommand({ TableName: tableName, Key: { orderId: { S: orderId } } }), providerTimeout());
+      } catch {
+        throw new IncompleteActionFailure("Reset could not delete every old Orders row.");
+      }
+    }
+    startKey = page.LastEvaluatedKey;
+  } while (startKey);
+
+  startKey = undefined;
+  do {
+    ensureActionDeadline(action, "Orders verification scan");
+    let page: ScanCommandOutput;
+    try {
+      page = await dynamo.send(new ScanCommand({
+        TableName: tableName,
+        ConsistentRead: true,
+        ...(startKey ? { ExclusiveStartKey: startKey } : {}),
+      }), providerTimeout());
+    } catch {
+      throw new IncompleteActionFailure("Reset could not verify the Orders deletion before its deadline.");
+    }
+    if ((page.Items ?? []).length > 0) throw new IncompleteActionFailure("Reset could not verify that all prior Orders were deleted.");
+    startKey = page.LastEvaluatedKey;
+  } while (startKey);
+}
+
+async function stopAndDrainResetTraffic(action: Action): Promise<void> {
+  const trafficId = action.reset?.trafficActionId;
+  if (!trafficId) return;
+  const traffic = await getAction(trafficId);
+  if (!traffic || traffic.kind !== "traffic") {
+    throw new IncompleteActionFailure("Reset could not read the traffic action it must drain.");
+  }
+  if (["queued", "running", "draining"].includes(traffic.status)) {
+    const stopped = await changeAction(trafficId, (_run, current) => {
+      if (current.kind !== "traffic" || !["queued", "running", "draining"].includes(current.status)) return false;
+      current.stopRequested = true;
+      if (current.status === "queued") {
+        current.status = "stopped";
+        current.finishedAt = new Date().toISOString();
+      } else {
+        current.status = "draining";
+      }
+      return true;
+    });
+    if (!stopped) throw new IncompleteActionFailure("Reset could not request the accepted traffic to stop.");
+    await setResetPhase(action.id, "draining");
+  }
+  while (Date.now() + 250 < action.deadlineAt) {
+    const current = await getAction(trafficId);
+    if (!current || current.kind !== "traffic") {
+      throw new IncompleteActionFailure("Reset could not read the accepted traffic while it was draining.");
+    }
+    if (current.status === "incomplete") {
+      throw new IncompleteActionFailure("The accepted traffic action did not settle before its drain window ended.");
+    }
+    const inFlight = Boolean(current.traffic &&
+      (current.traffic.catalog.inFlight > 0 || current.traffic.checkout.inFlight > 0));
+    if (!inFlight && !["queued", "running", "draining"].includes(current.status)) return;
+    await delay(Math.min(100, Math.max(1, action.deadlineAt - Date.now() - 250)));
+  }
+  throw new IncompleteActionFailure("Reset reached its deadline while accepted traffic was still draining.");
+}
+
+function savedCheckoutTimeout(baseline: Baseline | null | undefined): number | undefined {
+  const settings = baseline && record(baseline.settings);
+  const checkout = settings && record(settings.checkout);
+  const timeout = checkout?.timeout;
+  return typeof timeout === "number" && Number.isSafeInteger(timeout) && timeout > 0 && timeout <= 900
+    ? timeout : undefined;
+}
+
+async function waitForCheckoutExecutionWindow(action: Action, context: CurrentReleaseContext): Promise<void> {
+  const run = await getRun();
+  const timeoutSeconds = Math.max(context.checkout.timeout,
+    savedCheckoutTimeout(run.baseline) ?? 0,
+    savedCheckoutTimeout(run.originalBaseline) ?? 0);
+  const actionIds = new Set([
+    run.currentActionId,
+    run.configurationActionId,
+    action.reset?.previousCurrentActionId,
+    action.reset?.previousConfigurationActionId,
+    action.reset?.trafficActionId,
+  ].filter((id): id is string => typeof id === "string"));
+  const sourceActions = (await Promise.all([...actionIds].map(getAction))).filter((value): value is Action => Boolean(value));
+  const attempts = [...run.unresolved.map(({ checkoutId, startedAt }) => ({ checkoutId, startedAt }))];
+  for (const source of sourceActions) {
+    for (const request of source.requests) {
+      if (request.kind === "checkout" && request.checkout &&
+          (request.outcome === "unknown" || !request.completedAt)) {
+        attempts.push({ checkoutId: request.checkout.checkoutId, startedAt: request.startedAt });
+      }
+    }
+  }
+  const latestFence = attempts.reduce((latest, attempt) => {
+    const startedAt = Date.parse(attempt.startedAt);
+    if (!Number.isFinite(startedAt)) return Number.NaN;
+    const requestFence = startedAt + timeoutSeconds * 1_000 + 30_000;
+    const sourceFence = Math.max(0, ...sourceActions
+      .filter((source) => source.requests.some((request) => request.kind === "checkout" &&
+        request.checkout?.checkoutId === attempt.checkoutId))
+      .map((source) => source.discardAfter));
+    return Math.max(latest, requestFence, sourceFence);
+  }, 0);
+  if (!Number.isFinite(latestFence)) {
+    throw new IncompleteActionFailure("Reset cannot establish when a prior Checkout execution left its server-side execution window.");
+  }
+  if (latestFence <= Date.now()) return;
+  if (latestFence + requestTimeout >= action.deadlineAt) {
+    throw new IncompleteActionFailure("Reset cannot cover the prior Checkout execution and drain window before its deadline; wait, discard this attempt, then start Reset again.");
+  }
+  await delay(latestFence - Date.now());
+  ensureActionDeadline(action, "prior Checkout execution drain");
+}
+
+async function reset(action: Action): Promise<void> {
+  if (action.kind !== "reset" || action.command.kind !== "reset" || !action.reset) {
+    throw new ActionFailure("The Reset command is invalid.");
+  }
+  const metadata = action.reset;
+  await stopAndDrainResetTraffic(action);
+  await setResetPhase(action.id, "validating");
+  const bearer = await loadBearer();
+  const run = await getRun();
+  if (run.runId !== metadata.previousRunId) throw new ActionFailure("The Reset session changed before validation could begin.");
+  let context = await currentReleaseContext(bearer);
+  if (context.app.sku !== seedProduct.sku || context.app.outputs.get("OrdersTableName") !== "IncidentTriageDemoOrders") {
+    throw new ActionFailure("The current app release does not identify the approved demo product and Orders table.");
+  }
+  await waitForCheckoutExecutionWindow(action, context);
+  const oldUnknowns = (await getRun()).unresolved;
+  for (const unresolved of oldUnknowns) {
+    ensureActionDeadline(action, "prior checkout reconciliation");
+    const checked = await checkStatus(action.id, context.app, bearer, unresolved);
+    if (!checked.submitted) throw new IncompleteActionFailure("Reset could not check the status of a prior checkout before its deadline.");
+  }
+
+  await setResetPhase(action.id, "capturing");
+  try {
+    const saved = await checkpoint(action, context, context.policy.observation, context.policy);
+    await linkResetCheckpoint(action.id, saved);
+  } catch (error) {
+    if (error instanceof IncompleteActionFailure && error.checkpoint) await linkResetCheckpoint(action.id, error.checkpoint);
+    throw error;
+  }
+
+  const freshBearer = await loadBearer();
+  if (createHash("sha256").update(bearer).digest("hex") !== createHash("sha256").update(freshBearer).digest("hex")) {
+    throw new ActionFailure("The Checkout credential changed after Reset captured the current release.");
+  }
+  const current = await currentReleaseContext(freshBearer);
+  if (!sameCurrentReleaseContext(context, current)) {
+    throw new ActionFailure("The app generation or observed settings changed after Reset capture; inspect the release before proceeding.");
+  }
+  context = current;
+  const begun = await beginReset(action.id);
+  if (!begun) throw new IncompleteActionFailure("Reset could not archive the quiescent prior session and persist its safety marker.");
+
+  await setResetPhase(action.id, "restoring");
+  await recordResetIntent(action, context);
+  const healthyAlias = await updateInventoryAlias(action, context.app, context.inventoryAlias,
+    context.targetVariant, "healthy");
+  if (healthyAlias.functionVersion !== context.targetVariant.version || healthyAlias.routingWeighted) {
+    throw new IncompleteActionFailure("Reset could not confirm the current release's healthy baseline Inventory alias.");
+  }
+  const capResults: Array<"applied" | "no_change"> = [];
+  capResults.push(await restoreFunctionCap(action, "Checkout", context.checkout.cap, context.targetCheckout.cap));
+  capResults.push(await restoreFunctionCap(action, "Inventory", context.inventory.cap, context.targetInventory.cap));
+  const restored = await currentReleaseContext(freshBearer);
+  if (!sameDeploymentIdentity(context.deploymentIdentity, restored.deploymentIdentity) ||
+      restored.inventoryAlias.functionVersion !== context.targetVariant.version || restored.inventoryAlias.routingWeighted ||
+      !sameInventorySettings({ ...context.targetCheckout }, restored.checkout) ||
+      !sameInventoryVariantConfiguration(context.targetInventory, restored.inventory) ||
+      restored.checkout.cap !== context.targetCheckout.cap || restored.inventory.cap !== context.targetInventory.cap) {
+    throw new IncompleteActionFailure("Reset could not independently read back the current release's healthy baseline settings.");
+  }
+  const changed = healthyAlias.functionVersion !== context.inventoryAlias.functionVersion || capResults.includes("applied");
+  await changeAction(action.id, (_run, currentAction) => {
+    if (currentAction.kind !== "reset") return false;
+    currentAction.configurationOutcome = changed ? "applied" : "no_change";
+    return true;
+  });
+
+  await setResetPhase(action.id, "seeding");
+  ensureActionDeadline(action, "Inventory seed");
+  await seedInventory(action, context);
+  await setResetPhase(action.id, "deleting");
+  await deleteAllOrders(action, context.app.outputs.get("OrdersTableName") ?? "");
+
+  await setResetPhase(action.id, "verifying");
+  const catalog = async (): Promise<Product> => {
+    const request = newRequest("catalog");
+    if (!await changeAction(action.id, (currentRun, currentAction) => reserve(currentRun, currentAction, request))) {
+      throw new IncompleteActionFailure("Reset reached its deadline before the next catalog verification request.");
+    }
+    const result = await send(action.id, context.app, freshBearer, request);
+    if (!result.observed) throw new IncompleteActionFailure("Reset could not read the fresh product through the app API.");
+    return result.observed;
+  };
+  const before = await catalog();
+  if (before.productVersion !== metadata.productVersion || before.availableQuantity !== metadata.seedQuantity) {
+    throw new IncompleteActionFailure("The fresh catalog did not show the Reset productVersion and seed quantity.");
+  }
+  const payload = checkoutPayload(context.app.sku, metadata.productVersion);
+  const checkoutRequest = newRequest("checkout", payload);
+  if (!await changeAction(action.id, (currentRun, currentAction) => reserve(currentRun, currentAction, checkoutRequest))) {
+    throw new IncompleteActionFailure("Reset reached its deadline before the fresh verification checkout.");
+  }
+  const submitted = await send(action.id, context.app, freshBearer, checkoutRequest, payload);
+  if (submitted.outcome === "rejected" || submitted.outcome === "failed") {
+    throw new IncompleteActionFailure("Reset's fresh verification checkout was not accepted.");
+  }
+  const checked = await checkStatus(action.id, context.app, freshBearer, payload);
+  if (!checked.submitted) throw new IncompleteActionFailure("Reset reached its deadline before checking the fresh order status.");
+  const confirmed = checked.receipt;
+  if (!confirmed || confirmed.checkoutId !== payload.checkoutId || confirmed.sku !== payload.sku || confirmed.quantity !== 1) {
+    throw new IncompleteActionFailure("Reset could not confirm the fresh quantity-one checkout through order status.");
+  }
+  const after = await catalog();
+  if (after.productVersion !== before.productVersion || after.availableQuantity !== before.availableQuantity - 1) {
+    throw new IncompleteActionFailure("The fresh verification order did not produce an exact same-version one-unit stock decrement.");
+  }
+  const verifiedAt = new Date().toISOString();
+  const baseline: Baseline = {
+    appRevision: context.appRevision,
+    deploymentIdentity: context.deploymentIdentity,
+    sku: payload.sku,
+    checkoutId: payload.checkoutId,
+    productVersion: payload.productVersion,
+    stockBefore: before.availableQuantity,
+    stockAfter: after.availableQuantity,
+    verifiedAt,
+    receipt: confirmed,
+    settings: await recoverySettings(restored, healthyAlias),
+  };
+  const completed = await changeAction(action.id, (currentRun, currentAction) => {
+    if (currentAction.kind !== "reset" || !currentAction.reset || currentRun.runId !== currentAction.reset.runId ||
+        !currentRun.resetRequired || currentRun.unresolved.length > 0) return false;
+    currentRun.baseline = baseline;
+    currentRun.originalBaseline = structuredClone(baseline);
+    currentRun.latestStock = after.availableQuantity;
+    currentRun.latestStockAt = after.observedAt;
+    currentRun.inventoryAliasUnknown = false;
+    currentRun.resetRequired = false;
+    currentAction.baseline = baseline;
+    currentAction.reset.phase = "verified";
+    currentAction.status = "completed";
+    currentAction.finishedAt = verifiedAt;
+    return true;
+  });
+  if (!completed) throw new IncompleteActionFailure("The verified Reset baseline could not be committed to the current session.");
+}
+
 async function traffic(action: Action): Promise<void> {
   const target = await appTarget();
   const { baseline } = await getRun();
@@ -1984,11 +2419,13 @@ export async function handler(event: { actionId?: string } = {}): Promise<void> 
     if (claim.action.kind === "activate_inventory_denial") await activateInventoryDenial(claim.action);
     if (claim.action.kind === "restore_inventory_access") await restoreInventoryAccess(claim.action);
     if (claim.action.kind === "recover") await recover(claim.action);
+    if (claim.action.kind === "reset") await reset(claim.action);
   } catch (error) {
     await changeAction(actionId, (run, current) => {
       const unrecorded = current.requests.some((request) => !request.completedAt);
       current.status = error instanceof IncompleteActionFailure || unrecorded || Date.now() >= current.deadlineAt
         ? "incomplete" : "failed";
+      if (current.kind === "reset") run.resetRequired = true;
       if (current.kind === "restore_inventory_access") {
         current.configurationOutcome = current.status === "incomplete" ? "unknown" : "failed";
       } else if (current.kind === "increase_memory") {
