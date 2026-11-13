@@ -59,9 +59,16 @@ export const fixture = {
   trace: [],
   configurationReads: [],
   concurrencyReads: [],
+  concurrencyReadFailures: [],
   concurrencyAttempts: [],
   concurrencyWrites: [],
   concurrencyMode: 'apply',
+  beforeConcurrencyAttempt: undefined,
+  concurrencyReadMode: 'apply',
+  accountSettingsReads: [],
+  accountSettingsMode: 'apply',
+  accountConcurrentExecutions: 1000,
+  accountOtherReservedConcurrency: 0,
   alarmReads: [],
   unhandled: [],
   revision: appRevision,
@@ -165,9 +172,16 @@ export function reset({ baselineRevision = appRevision, revision = appRevision, 
   fixture.trace.length = 0;
   fixture.configurationReads.length = 0;
   fixture.concurrencyReads.length = 0;
+  fixture.concurrencyReadFailures.length = 0;
   fixture.concurrencyAttempts.length = 0;
   fixture.concurrencyWrites.length = 0;
   fixture.concurrencyMode = 'apply';
+  fixture.beforeConcurrencyAttempt = undefined;
+  fixture.concurrencyReadMode = 'apply';
+  fixture.accountSettingsReads.length = 0;
+  fixture.accountSettingsMode = 'apply';
+  fixture.accountConcurrentExecutions = 1000;
+  fixture.accountOtherReservedConcurrency = 0;
   fixture.alarmReads.length = 0;
   fixture.unhandled.length = 0;
   fixture.revision = revision;
@@ -399,6 +413,24 @@ async function businessScan(body) {
 export async function awsProtocol(request, body) {
   const action = typeof body.Action === 'string' ? body.Action : '';
   const target = request.headers['x-amz-target'] ?? (action ? `CloudFormation_${action}` : '');
+  if (!target && request.method === 'GET' && request.url.includes('/account-settings')) {
+    const reserved = [fixture.inventoryConcurrency, fixture.checkoutConcurrency]
+      .filter((value) => Number.isSafeInteger(value) && value > 0)
+      .reduce((sum, value) => sum + value, 0);
+    const unreserved = Math.max(0, fixture.accountConcurrentExecutions - reserved - fixture.accountOtherReservedConcurrency);
+    const outcome = fixture.accountSettingsMode === 'fail' ? 'failed' : 'read';
+    fixture.accountSettingsReads.push({ concurrentExecutions: fixture.accountConcurrentExecutions, unreservedConcurrentExecutions: unreserved, outcome });
+    fixture.trace.push({ type: 'account-settings-read', concurrentExecutions: fixture.accountConcurrentExecutions,
+      unreservedConcurrentExecutions: unreserved, outcome });
+    if (fixture.accountSettingsMode === 'fail') return { __error: 'ServiceFailure', __errorProtocol: 'lambda' };
+    return {
+      AccountLimit: {
+        ConcurrentExecutions: fixture.accountConcurrentExecutions,
+        UnreservedConcurrentExecutions: unreserved,
+      },
+      AccountUsage: { FunctionCount: 2, TotalCodeSize: 0 },
+    };
+  }
   if (target.endsWith('GetItem')) {
     if (body.TableName === runTable) {
       const item = row(body.Key?.pk?.S);
@@ -620,8 +652,15 @@ export async function awsProtocol(request, body) {
   if (!target && request.url.includes('/concurrency') && request.method === 'GET') {
     const functionName = namedFunctionFromConcurrencyPath(request.url);
     const name = functionName === 'IncidentTriageDemoInventory' ? 'Inventory' : 'Checkout';
+    if (fixture.concurrencyReadMode === 'fail' ||
+        (fixture.concurrencyReadMode === 'fail-after-attempt' && fixture.concurrencyAttempts.length > 0)) {
+      fixture.concurrencyReadFailures.push({ name });
+      fixture.trace.push({ type: 'concurrency-read-failed', name });
+      return { __error: 'ServiceFailure', __errorProtocol: 'lambda' };
+    }
     const cap = name === 'Inventory' ? fixture.inventoryConcurrency : fixture.checkoutConcurrency;
     fixture.concurrencyReads.push({ name, cap: cap ?? 'unreserved' });
+    fixture.trace.push({ type: 'concurrency-read', name, cap: cap ?? 'unreserved' });
     return cap === undefined ? {} : { ReservedConcurrentExecutions: cap };
   }
   if (!target && request.url.includes('/concurrency') && ['PUT', 'DELETE'].includes(request.method)) {
@@ -632,6 +671,11 @@ export async function awsProtocol(request, body) {
     if (request.method === 'PUT') assert.ok(Number.isSafeInteger(next) && next > 0, 'reserved concurrency writes must use a positive integer');
     fixture.concurrencyAttempts.push({ name, previous: previous ?? 'unreserved', next: next ?? 'unreserved', method: request.method });
     fixture.trace.push({ type: 'concurrency-attempt', name, previous: previous ?? 'unreserved', next: next ?? 'unreserved', method: request.method });
+    if (typeof fixture.beforeConcurrencyAttempt === 'function') {
+      const beforeAttempt = fixture.beforeConcurrencyAttempt;
+      fixture.beforeConcurrencyAttempt = undefined;
+      await beforeAttempt({ name, previous: previous ?? 'unreserved', next: next ?? 'unreserved', method: request.method });
+    }
     const mode = fixture.concurrencyMode;
     fixture.concurrencyMode = 'apply';
     if (mode === 'fail' || mode === 'lost-no-observation') {
