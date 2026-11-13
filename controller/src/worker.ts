@@ -4,7 +4,7 @@ import { CloudFormationClient, DescribeStacksCommand, ListStackResourcesCommand 
 import { DeleteItemCommand, DynamoDBClient, GetItemCommand, PutItemCommand, ScanCommand,
   type AttributeValue, type ScanCommandInput, type ScanCommandOutput } from "@aws-sdk/client-dynamodb";
 import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
-import { DeleteFunctionConcurrencyCommand, GetAliasCommand, GetFunctionConfigurationCommand, GetFunctionConcurrencyCommand,
+import { DeleteFunctionConcurrencyCommand, GetAccountSettingsCommand, GetAliasCommand, GetFunctionConfigurationCommand, GetFunctionConcurrencyCommand,
   LambdaClient, PutFunctionConcurrencyCommand, UpdateAliasCommand } from "@aws-sdk/client-lambda";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { readCurrentAlarm, readOriginatingAlarm } from "./alarm.js";
@@ -119,6 +119,8 @@ interface InventoryTargetSettings {
   observedAt: string;
 }
 
+type InventoryCapExpectation = number | "unreserved";
+
 interface InventoryContextSettings extends InventoryTargetSettings {
   aliasRevision: string;
   access: "healthy" | "denied";
@@ -193,6 +195,10 @@ interface RecoveryContext {
 }
 
 interface CurrentReleaseContext extends Omit<RecoveryContext, "baseline"> {}
+
+interface CapacityContext extends CurrentReleaseContext {
+  baseline: Baseline;
+}
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return typeof value === "object" && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -418,7 +424,8 @@ function incidentMatchesDeployment(incident: StoredIncidentState | undefined, id
 }
 
 async function readInventoryVariantSettings(target: AppTarget, manifest: InventoryVariantsManifest,
-  variant: InventoryVariant, allowCapDrift = false): Promise<InventoryContextSettings> {
+  variant: InventoryVariant, allowCapDrift = false,
+  inventoryCapExpectation?: InventoryCapExpectation): Promise<InventoryContextSettings> {
   const config = await lambda.send(new GetFunctionConfigurationCommand({ FunctionName: inventoryFunction, Qualifier: variant.version }), providerTimeout());
   const aliasArn = `arn:aws:lambda:${region}:${account}:function:${inventoryFunction}:live`;
   const expectedCap = target.outputs.get("InventoryReservedConcurrency");
@@ -436,7 +443,8 @@ async function readInventoryVariantSettings(target: AppTarget, manifest: Invento
   }
   const concurrency = await lambda.send(new GetFunctionConcurrencyCommand({ FunctionName: inventoryFunction }), providerTimeout());
   const cap = concurrency.ReservedConcurrentExecutions;
-  if (!allowCapDrift && cap !== (expectedCap === "unreserved" ? undefined : Number(expectedCap))) {
+  const expectedObservedCap = inventoryCapExpectation ?? (expectedCap === "unreserved" ? "unreserved" : Number(expectedCap));
+  if (!allowCapDrift && cap !== (expectedObservedCap === "unreserved" ? undefined : expectedObservedCap)) {
     throw new ActionFailure("The Inventory concurrency does not match the app release settings.");
   }
   return { version: variant.version, aliasArn, memory: config.MemorySize, timeout: config.Timeout,
@@ -445,7 +453,8 @@ async function readInventoryVariantSettings(target: AppTarget, manifest: Invento
     sourceRevision: manifest.sourceRevision, observedAt: new Date().toISOString() };
 }
 
-async function settings(target: AppTarget, bearer: string): Promise<VerifiedSettings> {
+async function settings(target: AppTarget, bearer: string,
+  inventoryCapExpectation?: InventoryCapExpectation): Promise<VerifiedSettings> {
   if (target.outputs.get("InventoryResourcePolicy") !== "absent") {
     throw new ActionFailure("The app release does not declare the expected absent Inventory policy.");
   }
@@ -463,8 +472,8 @@ async function settings(target: AppTarget, bearer: string): Promise<VerifiedSett
   const healthy = activeVariant;
   const denied = manifestVariant(manifest, healthy.memoryMb, "denied");
   const [inventory, deniedSettings] = await Promise.all([
-    readInventoryVariantSettings(target, manifest, healthy),
-    readInventoryVariantSettings(target, manifest, denied),
+    readInventoryVariantSettings(target, manifest, healthy, false, inventoryCapExpectation),
+    readInventoryVariantSettings(target, manifest, denied, false, inventoryCapExpectation),
   ]);
   if (deniedSettings.memory !== inventory.memory || deniedSettings.timeout !== inventory.timeout ||
       deniedSettings.cap !== inventory.cap || deniedSettings.codeSha256 !== inventory.codeSha256 ||
@@ -512,6 +521,13 @@ function baselineInventorySettings(baseline: Baseline): Record<string, unknown> 
   return inventory;
 }
 
+function baselineInventoryCap(baseline: Baseline): InventoryCapExpectation {
+  const cap = baselineInventorySettings(baseline).cap;
+  if (cap === "unreserved") return cap;
+  if (typeof cap === "number" && Number.isSafeInteger(cap) && cap > 0) return cap;
+  throw new ActionFailure("The readiness baseline does not contain a valid positive Inventory cap.");
+}
+
 function sameInventorySettings(expected: Record<string, unknown>, actual: InventoryTargetSettings): boolean {
   return expected.version === actual.version && expected.codeSha256 === actual.codeSha256 &&
     expected.memory === actual.memory && expected.timeout === actual.timeout && expected.cap === actual.cap &&
@@ -554,7 +570,10 @@ async function incidentContext(): Promise<IncidentContext> {
   const baselineSettings = record(baseline.settings);
   const expectedCheckout = baselineSettings && record(baselineSettings.checkout);
   if (!expectedCheckout) throw new ActionFailure("The readiness baseline does not contain the expected Checkout target.");
-  const checkout = await functionSettings(target, "Checkout", checkoutFunction);
+  const currentCap = baselineInventoryCap(baseline);
+  const bearer = await loadBearer();
+  const checkout = await functionSettings(target, "Checkout", checkoutFunction, undefined, undefined, false,
+    requiredCheckoutEnvironment(target, bearer));
   if (!sameInventorySettings(expectedCheckout, checkout)) {
     throw new ActionFailure("The deployed Checkout settings changed after readiness.");
   }
@@ -562,14 +581,19 @@ async function incidentContext(): Promise<IncidentContext> {
   if (deniedRoleArn !== expectedInventoryDeniedRoleArn()) throw new ActionFailure("The Inventory release manifest outputs are unavailable.");
   const manifest = await readManifest(target);
   validateInventoryReleaseManifest(target, manifest);
+  const identity = await deploymentIdentity(target, manifest, checkout, true);
+  if ((baseline.deploymentIdentity && !sameDeploymentIdentity(baseline.deploymentIdentity, identity)) ||
+      (run.originalBaseline?.deploymentIdentity && !sameDeploymentIdentity(run.originalBaseline.deploymentIdentity, identity))) {
+    throw new ActionFailure("The current app generation does not match the trusted readiness identity.");
+  }
   if (typeof expectedInventory.memory !== "number" || !Number.isSafeInteger(expectedInventory.memory)) {
     throw new ActionFailure("The readiness baseline does not contain a valid Inventory memory setting.");
   }
   const healthy = manifestVariant(manifest, expectedInventory.memory, "healthy");
   const denied = manifestVariant(manifest, expectedInventory.memory, "denied");
   const [inventory, deniedSettings, alias] = await Promise.all([
-    readInventoryVariantSettings(target, manifest, healthy),
-    readInventoryVariantSettings(target, manifest, denied),
+    readInventoryVariantSettings(target, manifest, healthy, false, currentCap),
+    readInventoryVariantSettings(target, manifest, denied, false, currentCap),
     inventoryAlias(target),
   ]);
   if (!sameInventorySettings(expectedInventory, inventory)) {
@@ -620,10 +644,13 @@ async function inventoryMemoryContext(action: Action): Promise<InventoryMemoryCo
       baseline.settings.credentialGeneration !== target.outputs.get("PresenterCredentialGeneration")) {
     throw new ActionFailure("The readiness target or presenter credential generation changed.");
   }
+  const currentCap = baselineInventoryCap(baseline);
   const baselineSettings = record(baseline.settings);
   const expectedCheckout = baselineSettings && record(baselineSettings.checkout);
   if (!expectedCheckout) throw new ActionFailure("The readiness baseline does not contain the expected Checkout target.");
-  const checkout = await functionSettings(target, "Checkout", checkoutFunction);
+  const bearer = await loadBearer();
+  const checkout = await functionSettings(target, "Checkout", checkoutFunction, undefined, undefined, false,
+    requiredCheckoutEnvironment(target, bearer));
   if (!sameInventorySettings(expectedCheckout, checkout)) throw new ActionFailure("The deployed Checkout settings changed after readiness.");
   const expectedInventory = baselineInventorySettings(baseline);
   if (typeof expectedInventory.memory !== "number" || !Number.isSafeInteger(expectedInventory.memory)) {
@@ -633,6 +660,11 @@ async function inventoryMemoryContext(action: Action): Promise<InventoryMemoryCo
   if (deniedRoleArn !== expectedInventoryDeniedRoleArn()) throw new ActionFailure("The Inventory release manifest outputs are unavailable.");
   const manifest = await readManifest(target);
   validateInventoryReleaseManifest(target, manifest);
+  const identity = await deploymentIdentity(target, manifest, checkout, true);
+  if ((baseline.deploymentIdentity && !sameDeploymentIdentity(baseline.deploymentIdentity, identity)) ||
+      (run.originalBaseline?.deploymentIdentity && !sameDeploymentIdentity(run.originalBaseline.deploymentIdentity, identity))) {
+    throw new ActionFailure("The current app generation does not match the trusted readiness identity.");
+  }
   const baselineManifest = record(baselineSettings.inventoryVariantsManifest);
   if (!baselineManifest || baselineManifest.sourceRevision !== manifest.sourceRevision || baselineManifest.codeSha256 !== manifest.codeSha256) {
     throw new ActionFailure("The verified readiness baseline does not match the current Inventory release manifest.");
@@ -656,14 +688,14 @@ async function inventoryMemoryContext(action: Action): Promise<InventoryMemoryCo
   if (!incident && currentVariant.access !== "healthy") {
     throw new ActionFailure("The Inventory live alias is denied without a matching incident record.");
   }
-  const healthyInventory = await readInventoryVariantSettings(target, manifest, healthy);
+  const healthyInventory = await readInventoryVariantSettings(target, manifest, healthy, false, currentCap);
   if (!sameInventorySettings(expectedInventory, healthyInventory)) {
     throw new ActionFailure("The healthy Inventory settings changed after readiness.");
   }
   const currentInventory = currentVariant.version === healthy.version
-    ? healthyInventory : await readInventoryVariantSettings(target, manifest, currentVariant);
+    ? healthyInventory : await readInventoryVariantSettings(target, manifest, currentVariant, false, currentCap);
   const deniedInventory = currentVariant.version === denied.version
-    ? currentInventory : await readInventoryVariantSettings(target, manifest, denied);
+    ? currentInventory : await readInventoryVariantSettings(target, manifest, denied, false, currentCap);
   if (deniedInventory.memory !== healthyInventory.memory || deniedInventory.timeout !== healthyInventory.timeout ||
       deniedInventory.cap !== healthyInventory.cap || deniedInventory.codeSha256 !== healthyInventory.codeSha256 ||
       deniedInventory.sourceRevision !== healthyInventory.sourceRevision) {
@@ -676,8 +708,8 @@ async function inventoryMemoryContext(action: Action): Promise<InventoryMemoryCo
   const targetHealthy = manifestVariant(manifest, requestedMemory, "healthy");
   const targetDenied = manifestVariant(manifest, requestedMemory, "denied");
   const [targetHealthyInventory, targetDeniedInventory] = await Promise.all([
-    targetHealthy.version === currentVariant.version ? currentInventory : readInventoryVariantSettings(target, manifest, targetHealthy),
-    targetDenied.version === currentVariant.version ? currentInventory : readInventoryVariantSettings(target, manifest, targetDenied),
+    targetHealthy.version === currentVariant.version ? currentInventory : readInventoryVariantSettings(target, manifest, targetHealthy, false, currentCap),
+    targetDenied.version === currentVariant.version ? currentInventory : readInventoryVariantSettings(target, manifest, targetDenied, false, currentCap),
   ]);
   if (!sameInventoryReleaseSettings(targetHealthyInventory, targetDeniedInventory)) {
     throw new ActionFailure("The prepared Inventory access variants differ beyond their execution role.");
@@ -715,8 +747,9 @@ async function inventoryMemoryContext(action: Action): Promise<InventoryMemoryCo
 
 async function restoreContext(): Promise<RestoreContext> {
   const run = await getRun();
+  const baseline = run.baseline;
   const incident = incidentRecord(run);
-  if (!incident || !incident.policy || !incident.alias) throw new ActionFailure("The recorded Inventory denial is unavailable.");
+  if (!baseline || !incident || !incident.policy || !incident.alias) throw new ActionFailure("The recorded Inventory denial is unavailable.");
   const appRevision = incident.appRevision;
   const { policyArn } = incident.policy;
   if (!appRevision || !policyArn || policyArn !== `arn:aws:iam::${account}:policy/IncidentTriageDemoInventoryReadDeny`) {
@@ -729,7 +762,16 @@ async function restoreContext(): Promise<RestoreContext> {
   const manifest = await readManifest(target);
   validateInventoryReleaseManifest(target, manifest);
   if (manifest.sourceRevision !== appRevision) throw new ActionFailure("The Inventory variants manifest is stale after the denial.");
-  const checkout = await functionSettings(target, "Checkout", checkoutFunction);
+  const currentCap = baselineInventoryCap(baseline);
+  const bearer = await loadBearer();
+  const checkout = await functionSettings(target, "Checkout", checkoutFunction, undefined, undefined, false,
+    requiredCheckoutEnvironment(target, bearer));
+  const identity = await deploymentIdentity(target, manifest, checkout, true);
+  if ((baseline.deploymentIdentity && !sameDeploymentIdentity(baseline.deploymentIdentity, identity)) ||
+      (run.originalBaseline?.deploymentIdentity && !sameDeploymentIdentity(run.originalBaseline.deploymentIdentity, identity)) ||
+      (incident.deploymentIdentity && !sameDeploymentIdentity(incident.deploymentIdentity, identity))) {
+    throw new ActionFailure("The current app generation does not match the trusted readiness identity.");
+  }
   const alias = await inventoryAlias(target);
   const currentVariant = manifestVariantByVersion(manifest, alias.functionVersion);
   const recordedTarget = manifestVariantByVersion(manifest, incident.target.version);
@@ -744,7 +786,7 @@ async function restoreContext(): Promise<RestoreContext> {
   if (incident.active === "healthy" && currentVariant.access !== "healthy") {
     throw new ActionFailure("The Inventory alias changed away from the recorded healthy variant.");
   }
-  const inventory = await readInventoryVariantSettings(target, manifest, currentVariant);
+  const inventory = await readInventoryVariantSettings(target, manifest, currentVariant, false, currentCap);
   const policyTarget = expectedInventoryTarget(target.inventoryTableArn, target.inventoryRoleArn);
   const deniedPolicyTarget = expectedInventoryTarget(target.inventoryTableArn, deniedRoleArn);
   const [tablePolicy, policy, deniedPolicy] = await Promise.all([
@@ -797,6 +839,75 @@ async function currentReleaseContext(bearer: string): Promise<CurrentReleaseCont
   return { app: target, target: healthyTarget, appRevision: target.revision, checkout, inventory, inventoryAlias: alias,
     manifest, tablePolicy, policy, healthyPolicy, deniedPolicy, deploymentIdentity: identity,
     targetVariant, targetInventory: targetInventorySettings, targetCheckout };
+}
+
+async function capacityContext(action: Action, bearer: string): Promise<CapacityContext> {
+  const run = await getRun();
+  const baseline = run.baseline;
+  const original = run.originalBaseline;
+  if (run.resetRequired || !baseline || !original || !baseline.deploymentIdentity || !original.deploymentIdentity) {
+    throw new ActionFailure("Fresh readiness against the current successful app release is required before changing capacity.");
+  }
+  if (run.configurationActionId !== action.id || run.inventoryAliasUnknown || run.unresolved.length > 0) {
+    throw new ActionFailure("Inventory capacity requires a settled run with a known alias and no unresolved checkout.");
+  }
+  const release = await currentReleaseContext(bearer);
+  if (baseline.appRevision !== release.appRevision || original.appRevision !== release.appRevision ||
+      baseline.sku !== release.app.sku || original.sku !== release.app.sku ||
+      !sameDeploymentIdentity(baseline.deploymentIdentity, release.deploymentIdentity) ||
+      !sameDeploymentIdentity(original.deploymentIdentity, release.deploymentIdentity)) {
+    throw new ActionFailure("The current successful app release generation does not match the trusted readiness identity.");
+  }
+  const expectedInventory = baselineInventorySettings(baseline);
+  const expectedOriginalInventory = baselineInventorySettings(original);
+  const currentCap = baselineInventoryCap(baseline);
+  const originalCheckout = record(record(original.settings)?.checkout);
+  const currentCheckout = record(record(baseline.settings)?.checkout);
+  const expectedHealthyVariant = typeof expectedInventory.memory === "number" && Number.isSafeInteger(expectedInventory.memory)
+    ? manifestVariant(release.manifest, expectedInventory.memory, "healthy") : undefined;
+  if (!currentCheckout || !originalCheckout || !sameInventorySettings(currentCheckout, release.checkout) ||
+      !sameInventorySettings(originalCheckout, release.targetCheckout) ||
+      !expectedHealthyVariant || expectedInventory.version !== expectedHealthyVariant.version ||
+      expectedInventory.role !== expectedHealthyVariant.roleArn || expectedInventory.memory !== release.inventory.memory ||
+      expectedInventory.timeout !== release.inventory.timeout || expectedInventory.codeSha256 !== release.inventory.codeSha256 ||
+      !sameInventorySettings(expectedOriginalInventory, release.targetInventory)) {
+    throw new ActionFailure("The saved current settings or original release target do not match the verified Inventory configuration.");
+  }
+  if (expectedInventory.cap !== currentCap || release.inventory.cap !== currentCap) {
+    throw new ActionFailure("The observed Inventory concurrency cap changed from the controller-confirmed current value.");
+  }
+  const incident = incidentRecord(run);
+  if (run.incident && !incident) {
+    throw new ActionFailure("Reconcile the recorded Inventory access change before changing capacity.");
+  }
+  if (incident?.active === "unknown" || (incident && !incidentMatchesDeployment(incident, release.deploymentIdentity))) {
+    throw new ActionFailure("Reconcile the recorded Inventory alias before changing capacity.");
+  }
+  if (incident?.active === "denied" && (release.inventory.access !== "denied" ||
+      release.inventory.version !== incident.target.version)) {
+    throw new ActionFailure("The Inventory alias no longer matches the recorded denied version.");
+  }
+  if ((incident?.active === "healthy" || !incident) && release.inventory.access !== "healthy") {
+    throw new ActionFailure("The Inventory live alias is not in its recorded healthy state.");
+  }
+  return { ...release, baseline };
+}
+
+function sameCapacityContext(left: CapacityContext, right: CapacityContext): boolean {
+  const samePolicy = (a: InventoryAccessPolicyObservation, b: InventoryAccessPolicyObservation) =>
+    a.state === b.state && a.policyArn === b.policyArn && a.policyName === b.policyName && a.roleArn === b.roleArn &&
+    a.defaultVersionId === b.defaultVersionId && a.documentMatches === b.documentMatches;
+  return sameDeploymentIdentity(left.deploymentIdentity, right.deploymentIdentity) &&
+    left.inventoryAlias.functionVersion === right.inventoryAlias.functionVersion &&
+    left.inventoryAlias.revisionId === right.inventoryAlias.revisionId &&
+    left.inventoryAlias.routingWeighted === right.inventoryAlias.routingWeighted &&
+    left.checkout.aliasRevision === right.checkout.aliasRevision &&
+    sameInventorySettings({ ...left.checkout }, right.checkout) &&
+    sameInventoryContextSettings(left.inventory, right.inventory) &&
+    samePolicy(left.policy.observation, right.policy.observation) &&
+    left.tablePolicy.observation.state === right.tablePolicy.observation.state &&
+    left.tablePolicy.observation.tableArn === right.tablePolicy.observation.tableArn &&
+    left.tablePolicy.observation.revision === right.tablePolicy.observation.revision;
 }
 
 async function recoverContext(bearer: string): Promise<RecoveryContext> {
@@ -1228,6 +1339,26 @@ async function readFunctionCap(functionName: string): Promise<number | "unreserv
 }
 
 const capReadbackDelays = [0, 250, 500, 1_000];
+const minimumUnreservedConcurrency = 100;
+
+async function requireCapacityHeadroom(before: number, target: number): Promise<void> {
+  const settings = await lambda.send(new GetAccountSettingsCommand({}), providerTimeout());
+  const quota = settings.AccountLimit?.ConcurrentExecutions;
+  const unreserved = settings.AccountLimit?.UnreservedConcurrentExecutions;
+  if (!Number.isSafeInteger(quota) || !Number.isSafeInteger(unreserved) ||
+      Number(quota) < 1 || Number(unreserved) < 0 || Number(unreserved) > Number(quota)) {
+    throw new ActionFailure("Fresh Lambda account concurrency headroom is unavailable or invalid.");
+  }
+  const needed = target - before + minimumUnreservedConcurrency;
+  if (Number(unreserved) < needed) {
+    throw new ActionFailure(`Insufficient Lambda account headroom: the increase needs ${needed} unreserved executions including the ${minimumUnreservedConcurrency}-unit floor.`);
+  }
+}
+
+function definiteCapacityRejection(error: unknown): boolean {
+  return error instanceof Error && ["AccessDeniedException", "InvalidParameterValueException", "ResourceNotFoundException"]
+    .includes(error.name);
+}
 
 async function restoreFunctionCap(action: Action, label: "Checkout" | "Inventory", before: CapValue,
   target: CapValue): Promise<"applied" | "no_change"> {
@@ -1311,6 +1442,157 @@ async function linkInventoryMemoryCheckpoint(actionId: string, value: Configurat
   if (!result) throw new IncompleteActionFailure("The Inventory memory checkpoint could not be linked to its action.");
 }
 
+async function recordCapacityIntent(action: Action, before: number, target: number): Promise<void> {
+  const result = await changeAction(action.id, (_run, current) => {
+    if (current.kind !== "increase_capacity") return false;
+    current.capacityChange = { function: "inventory", before, target };
+    current.configurationOutcome = "unknown";
+    return true;
+  });
+  if (!result) throw new IncompleteActionFailure("The Inventory capacity intent could not be recorded before mutation.");
+}
+
+async function linkCapacityCheckpoint(actionId: string, value: ConfigurationCheckpoint): Promise<void> {
+  const result = await changeAction(actionId, (_run, current) => {
+    if (current.kind !== "increase_capacity") return false;
+    current.configurationCheckpoint = value;
+    return true;
+  });
+  if (!result) throw new IncompleteActionFailure("The Inventory capacity checkpoint could not be linked to its action.");
+}
+
+async function recordCapacityObservation(actionId: string, acknowledgement: NonNullable<Action["capacityChange"]>["acknowledgement"],
+  readback: CapValue, observedAt: string, outcome: "failed" | "unknown"): Promise<void> {
+  const result = await changeAction(actionId, (_run, current) => {
+    if (current.kind !== "increase_capacity" || !current.capacityChange) return false;
+    current.capacityChange = { ...current.capacityChange, acknowledgement, readback, observedAt };
+    current.configurationOutcome = outcome;
+    return true;
+  });
+  if (!result) throw new IncompleteActionFailure("The Inventory capacity acknowledgement and readback could not be recorded.");
+}
+
+async function completeCapacityChange(action: Action, context: CapacityContext, before: number, target: number,
+  acknowledgement: NonNullable<Action["capacityChange"]>["acknowledgement"], readback: number,
+  observedAt: string, outcome: "applied" | "no_change"): Promise<void> {
+  const finishedAt = new Date().toISOString();
+  const result = await changeAction(action.id, (run, current) => {
+    const baseline = run.baseline;
+    if (current.kind !== "increase_capacity" || !current.capacityChange || !baseline || !run.originalBaseline ||
+        baseline.appRevision !== context.appRevision ||
+        !sameDeploymentIdentity(baseline.deploymentIdentity, context.deploymentIdentity) ||
+        !sameDeploymentIdentity(run.originalBaseline.deploymentIdentity, context.deploymentIdentity) ||
+        baselineInventoryCap(baseline) !== before ||
+        current.capacityChange.before !== before || current.capacityChange.target !== target ||
+        readback !== target) return false;
+
+    if (outcome === "applied") {
+      const settings = record(baseline.settings);
+      const inventory = settings && record(settings.inventory);
+      if (!settings || !inventory) return false;
+      const updatedBaseline: Baseline = { ...baseline, settings: {
+        ...settings,
+        inventory: { ...inventory, cap: target, observedAt },
+      } };
+      run.baseline = updatedBaseline;
+      current.baseline = updatedBaseline;
+    }
+    current.capacityChange = { ...current.capacityChange, acknowledgement, readback, observedAt };
+    current.configurationOutcome = outcome;
+    current.status = "completed";
+    current.finishedAt = finishedAt;
+    return true;
+  });
+  if (!result) throw new IncompleteActionFailure("The confirmed Inventory capacity result could not be saved with the readiness baseline.");
+}
+
+async function increaseInventoryCapacity(action: Action): Promise<void> {
+  if (action.command.kind !== "increase_capacity" || action.command.function !== "inventory") {
+    throw new ActionFailure("The Inventory capacity command is invalid.");
+  }
+  const bearer = await loadBearer();
+  const context = await capacityContext(action, bearer);
+  const before = context.inventory.cap;
+  if (typeof before !== "number" || !Number.isSafeInteger(before) || before < 1) {
+    throw new ActionFailure("Inventory capacity can only increase from an existing positive reserved cap.");
+  }
+  const target = action.command.reservedConcurrency;
+  await recordCapacityIntent(action, before, target);
+  if (target < before) throw new ActionFailure("Inventory capacity can only increase to a value at least as large as its current cap.");
+  if (target === before) {
+    await completeCapacityChange(action, context, before, target, undefined, before, context.inventory.observedAt, "no_change");
+    return;
+  }
+
+  ensureActionDeadline(action, "Inventory account headroom read");
+  await requireCapacityHeadroom(before, target);
+  ensureActionDeadline(action, "Inventory capacity checkpoint");
+  let saved: ConfigurationCheckpoint;
+  try {
+    saved = await checkpoint(action, context, context.policy.observation, context.policy);
+  } catch (error) {
+    if (error instanceof IncompleteActionFailure && error.checkpoint) {
+      await linkCapacityCheckpoint(action.id, error.checkpoint);
+    }
+    throw error;
+  }
+  await linkCapacityCheckpoint(action.id, saved);
+
+  const currentBearer = await loadBearer();
+  const initialCredential = createHash("sha256").update(bearer).digest("hex");
+  const currentCredential = createHash("sha256").update(currentBearer).digest("hex");
+  if (initialCredential !== currentCredential) {
+    throw new ActionFailure("The Checkout credential changed after configuration capture; inspect the current app release before changing capacity.");
+  }
+  const current = await capacityContext(action, currentBearer);
+  if (!sameCapacityContext(context, current) || current.inventory.cap !== before) {
+    throw new ActionFailure("The app generation or Inventory settings changed after capture; inspect the current release before changing capacity.");
+  }
+  ensureActionDeadline(action, "Inventory account headroom recheck");
+  await requireCapacityHeadroom(before, target);
+
+  ensureActionDeadline(action, "Inventory capacity increase");
+  let acknowledgement: "acknowledged" | "ambiguous" | "rejected";
+  let mutationError: unknown;
+  try {
+    await lambda.send(new PutFunctionConcurrencyCommand({
+      FunctionName: inventoryFunction,
+      ReservedConcurrentExecutions: target,
+    }), providerTimeout());
+    acknowledgement = "acknowledged";
+  } catch (error) {
+    mutationError = error;
+    acknowledgement = definiteCapacityRejection(error) ? "rejected" : "ambiguous";
+  }
+
+  let readback: number | "unreserved" | undefined;
+  for (const wait of capReadbackDelays) {
+    if (wait > 0) {
+      if (Date.now() + wait + requestTimeout >= action.deadlineAt) break;
+      await delay(wait);
+    }
+    if (Date.now() + requestTimeout >= action.deadlineAt) break;
+    try {
+      readback = await readFunctionCap(inventoryFunction);
+    } catch {
+      continue;
+    }
+    if (readback === target || (acknowledgement === "rejected" && readback === before)) break;
+  }
+  const observedAt = new Date().toISOString();
+  if (readback === target && acknowledgement !== "rejected") {
+    await completeCapacityChange(action, context, before, target, acknowledgement, target, observedAt, "applied");
+    return;
+  }
+  if (acknowledgement === "rejected" && readback === before) {
+    await recordCapacityObservation(action.id, acknowledgement, readback, observedAt, "failed");
+    throw new ActionFailure("The Inventory capacity write was rejected and readback confirms the prior cap.");
+  }
+  await recordCapacityObservation(action.id, acknowledgement, readback ?? "unknown", observedAt, "unknown");
+  const detail = mutationError instanceof Error ? ` ${mutationError.name}.` : "";
+  throw new IncompleteActionFailure(`The Inventory capacity change could not be reconciled through readback.${detail}`);
+}
+
 async function completeInventoryMemorySelection(action: Action, context: InventoryMemoryContext,
   alias: InventoryAliasObservation, outcome: "applied" | "no_change"): Promise<void> {
   const finishedAt = new Date().toISOString();
@@ -1367,7 +1649,7 @@ async function increaseInventoryMemory(action: Action): Promise<void> {
   }
   await linkInventoryMemoryCheckpoint(action.id, saved);
   const selectedAlias = await updateInventoryAlias(action, context.app, before, target, target.access);
-  const selectedSettings = await readInventoryVariantSettings(context.app, context.manifest, target);
+  const selectedSettings = await readInventoryVariantSettings(context.app, context.manifest, target, false, context.inventory.cap);
   if (!sameInventoryContextSettings(context.targetSettings, selectedSettings)) {
     throw new IncompleteActionFailure("The selected Inventory version did not match its qualified configuration readback.");
   }
@@ -1400,7 +1682,7 @@ async function activateInventoryDenial(action: Action): Promise<void> {
     current.inventorySwitch = { before: context.inventoryAlias, target: targetVariant, after: alias };
     return true;
   });
-  const deniedInventory = await readInventoryVariantSettings(context.app, context.manifest, targetVariant);
+  const deniedInventory = await readInventoryVariantSettings(context.app, context.manifest, targetVariant, false, context.inventory.cap);
   const deniedContext: IncidentContext = { ...context, inventory: deniedInventory, inventoryAlias: alias };
   let stored: ConfigurationCheckpoint;
   try {
@@ -1570,6 +1852,12 @@ async function restoreInventoryAccess(action: Action): Promise<void> {
   const before = context.inventoryAlias;
   await recordRestoreIntent(action, incident.activationActionId, context.policy.observation, before, healthy);
   const restored = await updateInventoryAlias(action, context.app, before, healthy, "healthy");
+  const restoredInventory = await readInventoryVariantSettings(context.app, context.manifest, healthy, false, context.inventory.cap);
+  if (restoredInventory.memory !== context.inventory.memory || restoredInventory.timeout !== context.inventory.timeout ||
+      restoredInventory.cap !== context.inventory.cap || restoredInventory.codeSha256 !== context.inventory.codeSha256 ||
+      restoredInventory.sourceRevision !== context.manifest.sourceRevision) {
+    throw new IncompleteActionFailure("The restored healthy Inventory variant did not match the confirmed current settings.");
+  }
   const finishedAt = new Date().toISOString();
   const done = await changeAction(action.id, (run, current) => {
     const currentIncident = incidentRecord(run);
@@ -1716,16 +2004,29 @@ async function checkStatus(actionId: string, target: AppTarget, bearer: string, 
 async function readiness(action: Action): Promise<void> {
   const target = await appTarget();
   const bearer = await loadBearer();
-  const expected = await settings(target, bearer);
-  const manifest = expected.inventoryVariantsManifest;
-  const identity = await deploymentIdentity(target, manifest, expected.checkout);
+  const manifest = await readManifest(target);
+  validateInventoryReleaseManifest(target, manifest);
+  const checkout = await functionSettings(target, "Checkout", checkoutFunction, undefined, undefined, false,
+    requiredCheckoutEnvironment(target, bearer));
+  const identity = await deploymentIdentity(target, manifest, checkout, true);
   const beforeRun = await getRun();
+  const sameGeneration = sameDeploymentIdentity(beforeRun.originalBaseline?.deploymentIdentity, identity);
+  if (sameGeneration && !sameDeploymentIdentity(beforeRun.baseline?.deploymentIdentity, identity)) {
+    throw new ActionFailure("The active readiness baseline does not match its original deployment identity.");
+  }
+  const currentCap = sameGeneration && beforeRun.baseline
+    ? baselineInventoryCap(beforeRun.baseline) : expectedCap(target, "Inventory");
+  const expected = await settings(target, bearer, currentCap);
+  const verifiedIdentity = await deploymentIdentity(target, expected.inventoryVariantsManifest, expected.checkout, true);
+  if (!sameDeploymentIdentity(identity, verifiedIdentity)) {
+    throw new ActionFailure("The successful app generation changed while Readiness was validating its settings.");
+  }
+  const verifiedManifest = expected.inventoryVariantsManifest;
   if (beforeRun.unresolved.length > 0) {
     throw new ActionFailure("Settle all previously submitted checkout attempts before readiness sends a new verification checkout.");
   }
-  const sameGeneration = sameDeploymentIdentity(beforeRun.originalBaseline?.deploymentIdentity, identity);
-  if (!sameGeneration && expected.inventory.memory !== manifest.baselineMemoryMb) {
-    throw new ActionFailure(`Readiness cannot adopt this app generation from ${expected.inventory.memory} MB; its trusted original baseline is ${manifest.baselineMemoryMb} MB.`);
+  if (!sameGeneration && expected.inventory.memory !== verifiedManifest.baselineMemoryMb) {
+    throw new ActionFailure(`Readiness cannot adopt this app generation from ${expected.inventory.memory} MB; its trusted original baseline is ${verifiedManifest.baselineMemoryMb} MB.`);
   }
   const currentIncident = incidentRecord(beforeRun);
   if (currentIncident && currentIncident.active !== "healthy" &&
@@ -2415,6 +2716,7 @@ export async function handler(event: { actionId?: string } = {}): Promise<void> 
   try {
     if (claim.action.kind === "readiness") await readiness(claim.action);
     if (claim.action.kind === "traffic") await traffic(claim.action);
+    if (claim.action.kind === "increase_capacity") await increaseInventoryCapacity(claim.action);
     if (claim.action.kind === "increase_memory") await increaseInventoryMemory(claim.action);
     if (claim.action.kind === "activate_inventory_denial") await activateInventoryDenial(claim.action);
     if (claim.action.kind === "restore_inventory_access") await restoreInventoryAccess(claim.action);
@@ -2427,6 +2729,8 @@ export async function handler(event: { actionId?: string } = {}): Promise<void> 
         ? "incomplete" : "failed";
       if (current.kind === "reset") run.resetRequired = true;
       if (current.kind === "restore_inventory_access") {
+        current.configurationOutcome = current.status === "incomplete" ? "unknown" : "failed";
+      } else if (current.kind === "increase_capacity") {
         current.configurationOutcome = current.status === "incomplete" ? "unknown" : "failed";
       } else if (current.kind === "increase_memory") {
         current.configurationOutcome = current.configurationOutcome === "unknown" || current.status === "incomplete"

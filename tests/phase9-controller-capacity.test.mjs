@@ -294,7 +294,7 @@ test('Inventory capacity controls are bounded, captured, reconciled, and recover
   });
 
   await t.test('a positive Inventory cap increases only that function after durable capture and headroom check', async () => {
-    const { state: ready } = await prepareReady({}, context);
+    const { state: ready, readinessId } = await prepareReady({}, context);
     const before = sideEffectSnapshot();
     const deploymentIdentity = structuredClone(ready.baseline.deploymentIdentity);
     const originalBaseline = structuredClone(ready.originalBaseline);
@@ -318,7 +318,7 @@ test('Inventory capacity controls are bounded, captured, reconciled, and recover
       acknowledgement: 'acknowledged', readback: higherInventoryCap,
     });
     assert.equal(state.configurationActionId, id, 'capacity uses the configuration-action lane');
-    assert.equal(state.currentActionId, ready.readinessId, 'capacity leaves the prior readiness action in the primary lane');
+    assert.equal(state.currentActionId, readinessId, 'capacity leaves the prior readiness action in the primary lane');
     assert.equal(fixture.inventoryConcurrency, higherInventoryCap);
     assert.deepEqual(fixture.concurrencyAttempts.slice(-1), [
       { name: 'Inventory', previous: inventoryReleaseCap, next: higherInventoryCap, method: 'PUT' },

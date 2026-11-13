@@ -256,6 +256,42 @@ function accessLabel(access: unknown): string {
 function resultLabel(result: Action["configurationOutcome"] | undefined): string {
   return result === "applied" ? "Success" : result === "no_change" ? "No-op" : result === "unknown" ? "Unknown" : result === "failed" ? "Failed" : "Not attempted";
 }
+function capacityValueLabel(value: unknown): string {
+  if (typeof value === "number" && Number.isSafeInteger(value)) return `${value} executions`;
+  if (value === "unreserved" || value === "unknown") return capValueLabel(value);
+  return "Not observed";
+}
+function capacityAcknowledgementLabel(value: "acknowledged" | "ambiguous" | "rejected" | undefined): string {
+  return value === "acknowledged" ? "Acknowledged" : value === "ambiguous" ? "Ambiguous" : value === "rejected" ? "Rejected" : "Not recorded";
+}
+function actionStatusLabel(status: Action["status"]): string {
+  return status === "queued" ? "Queued" : status === "running" || status === "draining" ? "In progress"
+    : status === "completed" ? "Completed" : status === "incomplete" ? "Incomplete"
+      : status === "failed" ? "Failed" : status === "discarded" ? "Discarded" : "Stopped";
+}
+function CapacityChangeResult({ action, archived = false }: { action: Action; archived?: boolean }) {
+  const change = action.capacityChange;
+  return <section className={`capacity-result${archived ? " capacity-result-archived" : ""}`} aria-label={archived ? "Archived capacity action result" : "Capacity action result"}>
+    <div className="capacity-result-heading">
+      <h4>{archived ? change ? "Recorded Inventory capacity change" : "Inventory capacity action record" : "Latest Inventory capacity action"}</h4>
+      <span className={`incident-badge ${["failed", "incomplete", "discarded"].includes(action.status) || action.configurationOutcome === "failed" || action.configurationOutcome === "unknown" ? "badge-warning" : "badge-neutral"}`}>{actionStatusLabel(action.status)}</span>
+    </div>
+    <dl className="capacity-result-grid">
+      <div><dt>Before → target</dt><dd>{change ? `${change.before} → ${change.target} executions` : "Not recorded"}</dd></div>
+      <div><dt>Mutation acknowledgement</dt><dd>{capacityAcknowledgementLabel(change?.acknowledgement)}</dd></div>
+      <div><dt>Setting readback</dt><dd>{!change ? "Not recorded" : change.readback === undefined ? activeStatuses.has(action.status) ? "Awaiting readback" : "Not observed" : capacityValueLabel(change.readback)}</dd></div>
+      <div><dt>Readback time</dt><dd>{change?.observedAt ? formatTime(change.observedAt) : "No readback time recorded"}</dd></div>
+      <div><dt>Configuration outcome</dt><dd>{action.configurationOutcome ? resultLabel(action.configurationOutcome) : activeStatuses.has(action.status) ? "Pending" : "Not recorded"}</dd></div>
+      <div><dt>Action</dt><dd className="mono">{action.id}</dd></div>
+    </dl>
+    {action.error && <p className="action-error" role={action.status === "failed" ? "alert" : "status"}>{action.error}</p>}
+    <p className="capacity-result-note">{change
+      ? "This records the Inventory setting change only. It sends no business request and does not verify business recovery."
+      : activeStatuses.has(action.status)
+        ? "Capacity checks are still running; details appear after their preconditions pass. This action sends no business request."
+        : "No capacity-change details were recorded for this action. Review its status and error before deciding what to do next."}</p>
+  </section>;
+}
 function inventoryVersionObservation(value: unknown): InventoryVersionObservation | undefined {
   if (!isRecord(value) || typeof value.version !== "string" || typeof value.aliasArn !== "string" ||
       typeof value.memory !== "number" || typeof value.timeout !== "number" ||
@@ -540,7 +576,8 @@ function RunHistoryPanel({ currentRunId, previousRunId, currentResetRequired, be
               <p><strong>{selectedAction.kind.replaceAll("_", " ")} · {selectedAction.status}</strong></p>
               <dl className="archived-facts"><div><dt>Created</dt><dd>{formatTime(selectedAction.createdAt)}</dd></div><div><dt>Started / finished</dt><dd>{formatTime(selectedAction.startedAt)} · {formatTime(selectedAction.finishedAt)}</dd></div><div><dt>Requests</dt><dd>{selectedAction.requests.length} recorded</dd></div></dl>
               {selectedAction.reset && <dl className="archived-facts reset-action-facts"><div><dt>Fresh product version</dt><dd className="mono">{selectedAction.reset.productVersion}</dd></div><div><dt>Seed quantity</dt><dd>{selectedAction.reset.seedQuantity}</dd></div><div><dt>Run link</dt><dd className="mono">{selectedAction.reset.runId} ← {selectedAction.reset.previousRunId}</dd></div></dl>}
-              {selectedAction.error && <p className="action-error" role="status">{selectedAction.error}</p>}
+              {selectedAction.capacityChange && <CapacityChangeResult action={selectedAction} archived />}
+              {selectedAction.error && !selectedAction.capacityChange && <p className="action-error" role="status">{selectedAction.error}</p>}
               {selectedAction.requests.length > 0 && <details className="request-details"><summary>Recorded requests</summary><ul className="record-list">{selectedAction.requests.map((request, index) => <li key={`${request.id}-${index}`}><span>{request.kind.replaceAll("_", " ")} · {request.outcome ?? "pending"}</span><strong>{request.durationMs === undefined ? "No duration recorded" : `${request.durationMs} ms`}</strong><small className="mono">{request.requestId ?? request.checkoutId ?? request.id}{request.errorCode ? ` · ${request.errorCode}` : ""}</small></li>)}</ul></details>}
             </>}
           </div>}
@@ -571,6 +608,7 @@ export function App() {
   const [resetDataConfirmed, setResetDataConfirmed] = useState(false);
   const [resetCheckoutClosedConfirmed, setResetCheckoutClosedConfirmed] = useState(false);
   const [inventoryMemorySelection, setInventoryMemorySelection] = useState<number>();
+  const [inventoryCapacityTarget, setInventoryCapacityTarget] = useState("32");
   const [pendingCommand, setPendingCommand] = useState<PendingCommand>();
   const [pendingConfigurationCommand, setPendingConfigurationCommand] = useState<PendingCommand>();
   const [configurationSubmitting, setConfigurationSubmitting] = useState(false);
@@ -656,8 +694,15 @@ export function App() {
   const incident = state?.incident;
   const aliasIncident = incident?.mechanism === "lambda-alias" ? incident : undefined;
   const legacyIncident = incident && incident.mechanism !== "lambda-alias" ? incident : undefined;
-  const checkpoint = configurationAction?.configurationCheckpoint ?? incident?.checkpoint;
+  const checkpoint = configurationAction?.kind === "increase_capacity" ? incident?.checkpoint
+    : configurationAction?.configurationCheckpoint ?? incident?.checkpoint;
   const baselineInventory = inventoryVersionObservation(baseline?.settings?.inventory);
+  const capacityAction = configurationAction?.kind === "increase_capacity" ? configurationAction : undefined;
+  const releaseInventoryCap = baseline?.deploymentIdentity?.inventoryCap;
+  const currentInventoryCap = typeof baselineInventory?.cap === "number" && Number.isSafeInteger(baselineInventory.cap)
+    ? baselineInventory.cap : undefined;
+  const capacityReleaseReady = Boolean(baseline?.deploymentIdentity && releaseInventoryCap === 16 &&
+    baseline.deploymentIdentity.sourceRevision === baseline.appRevision && baselineInventory?.sourceRevision === baseline.appRevision);
   const baselineAlias: InventoryAliasObservation | undefined = baselineInventory ? {
     functionName: "IncidentTriageDemoInventory",
     aliasName: "live",
@@ -697,6 +742,22 @@ export function App() {
         : undefined;
   const memorySelectionDisabled = resetRequired || actionBusy || configurationBusy || Boolean(legacyIncident) || Boolean(memorySelectionUnavailable) ||
     currentMemoryMb === undefined || !selectedMemoryIsPrepared || (selectedMemoryMb !== undefined && selectedMemoryMb < currentMemoryMb);
+  const proposedInventoryCapacity = inventoryCapacityTarget.trim() ? Number(inventoryCapacityTarget) : Number.NaN;
+  const capacityInputValid = Number.isSafeInteger(proposedInventoryCapacity) && proposedInventoryCapacity >= 16 && proposedInventoryCapacity <= 64;
+  const staleCloudObservation = !lastObservedAt || !Number.isFinite(Date.parse(lastObservedAt)) || Date.now() - Date.parse(lastObservedAt) >= 15_000;
+  const capacityUnavailableReason = resetRequired ? "Reset is required before changing Inventory capacity."
+    : !baseline ? "Check readiness to establish the current release settings."
+      : !capacityReleaseReady ? "A verified Inventory release with baseline 16 is required."
+        : currentInventoryCap === undefined || currentInventoryCap < 16 ? "The current Inventory cap is not confirmed."
+          : aliasUnknown ? "Inventory configuration is unknown until it is read back."
+            : incidentActive || Boolean(legacyIncident) ? "Restore the Inventory access state before changing capacity."
+              : trafficActive ? "Stop traffic and wait for accepted requests to settle."
+                : configurationBusy ? "Wait for the configuration action to finish; discard an incomplete action after its drain window."
+                  : actionBusy ? "Wait for the current action to finish."
+                    : pollFailure || staleCloudObservation ? "Cloud state is stale; wait for a successful refresh before changing capacity."
+                      : undefined;
+  const capacityTargetBelowCurrent = currentInventoryCap !== undefined && capacityInputValid && proposedInventoryCapacity < currentInventoryCap;
+  const capacitySelectionDisabled = Boolean(capacityUnavailableReason) || !capacityInputValid || capacityTargetBelowCurrent;
   const incompleteAction = currentAction?.status === "incomplete" ? currentAction
     : configurationAction?.status === "incomplete" ? configurationAction : undefined;
   const incompleteActionMustBeDiscarded = Boolean(incompleteAction);
@@ -748,7 +809,7 @@ export function App() {
   const retainedAlarm = aliasIncident?.checkpoint?.alarm ?? checkpoint?.alarm;
   const configurationObservation = currentConfigurationObservation(
     currentAction?.kind === "activate_inventory_denial" ? currentAction : undefined,
-    configurationAction?.kind === "reset" ? undefined : configurationAction,
+    configurationAction?.kind === "reset" || configurationAction?.kind === "increase_capacity" ? undefined : configurationAction,
   );
   const deniedCheckout = currentAction?.kind === "activate_inventory_denial"
     ? currentAction.requests.find(({ kind, dependencyReason }) => kind === "checkout" && dependencyReason === "inventory_access_denied")
@@ -768,7 +829,7 @@ export function App() {
     const epoch = sessionEpoch.current;
     const callNumber = requestEpoch.current + 1;
     requestEpoch.current = callNumber;
-    const isConfiguration = command.kind === "reset" || command.kind === "restore_inventory_access" || command.kind === "increase_memory" || command.kind === "recover";
+    const isConfiguration = command.kind === "reset" || command.kind === "restore_inventory_access" || command.kind === "increase_memory" || command.kind === "increase_capacity" || command.kind === "recover";
     const setPending = isConfiguration ? setPendingConfigurationCommand : setPendingCommand;
     if (isConfiguration) setConfigurationSubmitting(true);
     else setLoading(true);
@@ -808,6 +869,7 @@ export function App() {
 
   useEffect(() => { if (!bearer) return undefined; void loadState(); void loadAlarm(); void loadInvestigations(); const interval = window.setInterval(() => { void loadState(); void loadAlarm(); void loadInvestigations(); }, 5_000); return () => window.clearInterval(interval); }, [bearer, loadAlarm, loadInvestigations, loadState]);
   useEffect(() => { setInventoryMemorySelection(currentMemoryMb); }, [baseline?.appRevision, currentMemoryMb]);
+  useEffect(() => { setInventoryCapacityTarget("32"); }, [baseline?.appRevision]);
   useEffect(() => {
     if (resetConfirmationOpen) {
       resetConfirmationWasOpen.current = true;
@@ -850,7 +912,7 @@ export function App() {
       if (sessionEpoch.current === epoch) setNotice({ kind: "error", message: error instanceof Error ? error.message : "The presenter credential was rejected." });
     } finally { if (sessionEpoch.current === epoch) setLoading(false); }
   };
-  const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setInvestigations(undefined); setInvestigationReadFailedAt(undefined); setPendingCommand(undefined); setPendingConfigurationCommand(undefined); setConfigurationSubmitting(false); setInventoryMemorySelection(undefined); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setProtectiveRecoveryConfirmed(false); setResetConfirmationOpen(false); setResetQuietConfirmed(false); setResetDataConfirmed(false); setResetCheckoutClosedConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
+  const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setInvestigations(undefined); setInvestigationReadFailedAt(undefined); setPendingCommand(undefined); setPendingConfigurationCommand(undefined); setConfigurationSubmitting(false); setInventoryMemorySelection(undefined); setInventoryCapacityTarget("32"); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setProtectiveRecoveryConfirmed(false); setResetConfirmationOpen(false); setResetQuietConfirmed(false); setResetDataConfirmed(false); setResetCheckoutClosedConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
   const runReadiness = () => { if (!resetRequired && readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "readiness", confirmQuiet: true }); };
   const runTraffic = () => { if (!resetRequired && !resetInProgress && trafficStartAllowed) void sendAction(crypto.randomUUID(), { kind: "traffic" }); };
   const runActivation = () => { if (!resetRequired && readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "activate_inventory_denial" }); };
@@ -867,6 +929,10 @@ export function App() {
     if (!memorySelectionDisabled && selectedMemoryMb !== undefined) {
       void sendAction(crypto.randomUUID(), { kind: "increase_memory", function: "inventory", memoryMb: selectedMemoryMb });
     }
+  };
+  const runCapacityIncrease = () => {
+    if (capacitySelectionDisabled || !capacityInputValid) return;
+    void sendAction(crypto.randomUUID(), { kind: "increase_capacity", function: "inventory", reservedConcurrency: proposedInventoryCapacity });
   };
   const openResetConfirmation = () => {
     if (resetDisabled) return;
@@ -973,6 +1039,24 @@ export function App() {
                   Select memory
                 </button>
               </section>
+              <form className="capacity-picker" aria-label="Increase Inventory capacity" onSubmit={(event) => { event.preventDefault(); runCapacityIncrease(); }}>
+                <label htmlFor="inventory-capacity-target">Inventory reserved concurrency</label>
+                <div className="capacity-input-row">
+                  <input id="inventory-capacity-target" type="number" min="16" max="64" step="1" inputMode="numeric"
+                    value={inventoryCapacityTarget} disabled={Boolean(capacityUnavailableReason)}
+                    aria-describedby="inventory-capacity-help" onChange={(event) => setInventoryCapacityTarget(event.target.value)} />
+                  <span>executions</span>
+                </div>
+                <p id="inventory-capacity-help" className="muted" role="status">
+                  {capacityUnavailableReason ?? (!capacityInputValid ? "Enter a whole number from 16 to 64."
+                    : capacityTargetBelowCurrent ? `The target must be at least the current cap of ${currentInventoryCap}.`
+                      : proposedInventoryCapacity === currentInventoryCap ? "This equals the current cap; submitting records no setting change."
+                        : `Current cap ${currentInventoryCap} · release baseline ${capValueLabel(releaseInventoryCap)}.`)}
+                </p>
+                <button className="capacity-submit-button" type="submit" disabled={capacitySelectionDisabled}>
+                  Increase Inventory capacity
+                </button>
+              </form>
               <button type="button" onClick={stopTraffic} disabled={!trafficActive || loading || Boolean(pendingCommand) || currentStatus === "draining"}>Stop traffic</button>
             </div>}
           </div>
@@ -1020,6 +1104,22 @@ export function App() {
       {recoveryAction && state && <RecoveryPanel action={recoveryAction} state={state}
         trafficAction={currentAction?.kind === "traffic" ? currentAction : undefined}
         currentAlias={currentAlias} currentMemoryMb={currentMemoryMb} currentAccess={currentAccess} />}
+      <section className="card capacity-panel" aria-label="Inventory reserved concurrency status">
+        <div className="card-heading">
+          <div><p className="eyebrow">Capacity configuration</p><h3>Inventory reserved concurrency</h3></div>
+          <span className={`incident-badge ${capacityUnavailableReason ? "badge-warning" : "badge-neutral"}`}>{capacityUnavailableReason ? "Unavailable" : "Ready"}</span>
+        </div>
+        <p className="muted capacity-description">This setting-only action changes the Inventory cap. It does not send business traffic or claim recovery; Readiness checks business behavior separately.</p>
+        <dl className="capacity-settings">
+          <div><dt>Release recovery baseline</dt><dd>{releaseInventoryCap === undefined ? "Not established" : capacityValueLabel(releaseInventoryCap)}</dd></div>
+          <div><dt>Last controller-confirmed cap</dt><dd>{currentInventoryCap === undefined ? capacityValueLabel(baselineInventory?.cap) : capacityValueLabel(currentInventoryCap)}</dd></div>
+          <div><dt>Setting observation</dt><dd>{baselineInventory?.observedAt ? `${formatTime(baselineInventory.observedAt)} · ${freshness(baselineInventory.observedAt).toLowerCase()}` : "No setting readback time recorded"}</dd></div>
+          <div><dt>Verified release</dt><dd className="mono">{display(baseline?.deploymentIdentity?.sourceRevision, "Not established")}</dd></div>
+        </dl>
+        {capacityAction
+          ? <CapacityChangeResult action={capacityAction} />
+          : <p className="capacity-empty-state" role="status">No capacity action is the current configuration action. The saved setting observation above remains the last confirmed value.</p>}
+      </section>
       <section className="incident-controls card" aria-label="Inventory denial controls">
         <div className="card-heading">
           <div><p className="eyebrow">Prepared version control</p><h3>Inventory access state</h3></div>
@@ -1072,7 +1172,7 @@ export function App() {
           <input type="checkbox" checked={protectiveRestoreConfirmed} onChange={(event) => setProtectiveRestoreConfirmed(event.target.checked)} />
           Evidence capture is unavailable. Allow protective restore of the recorded alias state.
         </label>}
-        {configurationAction?.kind !== "recover" && configurationAction?.error && <p className="action-error" role="alert">{configurationAction.error}</p>}
+        {configurationAction?.kind !== "recover" && configurationAction?.kind !== "increase_capacity" && configurationAction?.error && <p className="action-error" role="alert">{configurationAction.error}</p>}
       </section>
       <section className="summary-grid" aria-label="Run summary"><article className="card"><p className="eyebrow">Last verified health</p><dl className="facts"><div><dt>App revision</dt><dd className="mono">{display(baseline?.appRevision, "Not verified")}</dd></div><div><dt>Product</dt><dd>{display(baseline?.sku, "Not verified")}</dd></div><div><dt>Product version</dt><dd className="mono">{display(baseline?.productVersion, "Not verified")}</dd></div></dl></article><article className="card stock-card"><p className="eyebrow">Inventory</p><strong className="stock-value">{resetRequired ? "—" : display(state?.latestStock ?? baseline?.stockAfter, "—")}</strong><p className="muted">{resetRequired ? "Current run is unusable; stock is not shown as verified." : `units · observed ${formatTime(state?.latestStockAt)}`}</p></article><article className="card"><p className="eyebrow">Readiness order</p><p className="mono compact">{display(baseline?.checkoutId, "No verification order")}</p><p className="muted">{resetRequired ? "Reset required; this run has no verified order." : baseline ? `${display(baseline.stockBefore)} → ${display(baseline.stockAfter)} units · verified ${formatTime(baseline.verifiedAt)}` : "A verified order will establish the baseline."}</p></article></section>
       <section className="traffic-grid" aria-label="Traffic progress">{(["catalog", "checkout"] as const).map((profile) => { const value = currentAction?.traffic?.[profile]; return <article className="card traffic-card" key={profile}><div className="card-heading"><div><p className="eyebrow">{profile} traffic</p><h3>{profile === "catalog" ? "Catalog reads" : "Checkout posts"}</h3></div></div><div className="metric-row">{([["submitted", "sent"], ["completed", "settled"], ["succeeded", "succeeded"], ["skipped", "skipped"], ["inFlight", "in flight"]] as const).map(([field, label]) => <div key={field}><strong>{display(value?.[field], "0")}</strong><span>{label}</span></div>)}</div></article>; })}</section>

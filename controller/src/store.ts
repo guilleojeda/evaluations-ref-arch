@@ -131,6 +131,9 @@ function sameCommand(a: Command, b: Command): boolean {
   if (a.kind === "increase_memory" && b.kind === "increase_memory") {
     return a.function === b.function && a.memoryMb === b.memoryMb;
   }
+  if (a.kind === "increase_capacity" && b.kind === "increase_capacity") {
+    return a.function === b.function && a.reservedConcurrency === b.reservedConcurrency;
+  }
   return true;
 }
 
@@ -218,6 +221,23 @@ function canStart(run: RunState, action: Action | undefined, configuration: Acti
       throw new CommandError(409, "INVENTORY_DENIAL_UNRESOLVED", "Reconcile the recorded Inventory alias before changing memory.");
     }
   }
+  if (command.kind === "increase_capacity") {
+    if (!run.baseline?.deploymentIdentity || !run.originalBaseline?.deploymentIdentity) {
+      throw new CommandError(409, "READINESS_REQUIRED", "Check readiness against the current app release before changing capacity.");
+    }
+    if (run.inventoryAliasUnknown) {
+      throw new CommandError(409, "INVENTORY_ALIAS_UNKNOWN", "Verify the Inventory alias with readiness before changing capacity.");
+    }
+    if (run.unresolved.length > 0) {
+      throw new CommandError(409, "UNRESOLVED_REQUESTS", "Settle unresolved checkout attempts before changing capacity.");
+    }
+    if (run.incident && run.incident.mechanism !== "lambda-alias") {
+      throw new CommandError(409, "INVENTORY_DENIAL_UNRESOLVED", "Reconcile the recorded Inventory access change before changing capacity.");
+    }
+    if (run.incident?.mechanism === "lambda-alias" && run.incident.active === "unknown") {
+      throw new CommandError(409, "INVENTORY_DENIAL_UNRESOLVED", "Reconcile the recorded Inventory alias before changing capacity.");
+    }
+  }
 }
 
 function controlled(target: Action, command: Extract<Command, { targetActionId: string }>, now: number): Action {
@@ -284,7 +304,8 @@ export async function applyCommand(id: string, command: Command): Promise<{ acti
         writes.push(replace(current.pk, current, controlled(current.data,
           { kind: "stop", targetActionId: current.data.id }, now)));
       }
-      if (command.kind === "reset" || command.kind === "restore_inventory_access" || command.kind === "increase_memory" || command.kind === "recover") {
+      if (command.kind === "reset" || command.kind === "restore_inventory_access" || command.kind === "increase_memory" ||
+          command.kind === "increase_capacity" || command.kind === "recover") {
         nextRun = { ...nextRun, configurationActionId: id };
       } else if (command.kind === "readiness") {
         nextRun = { ...nextRun, currentActionId: id };

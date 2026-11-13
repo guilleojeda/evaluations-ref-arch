@@ -103,6 +103,11 @@ function command(value: unknown): Command | undefined {
       keys.every((key) => ["kind", "confirmQuiet", "confirmReset", "confirmCheckoutClosed"].includes(key))) {
     return { kind: "reset", confirmQuiet: true, confirmReset: true, confirmCheckoutClosed: true };
   }
+  if (input.kind === "increase_capacity" && keys.length === 3 && input.function === "inventory" &&
+      typeof input.reservedConcurrency === "number" && Number.isSafeInteger(input.reservedConcurrency) &&
+      input.reservedConcurrency >= 16 && input.reservedConcurrency <= 64) {
+    return { kind: "increase_capacity", function: "inventory", reservedConcurrency: input.reservedConcurrency };
+  }
   if (input.kind === "increase_memory" && keys.length === 3 && input.function === "inventory" &&
       typeof input.memoryMb === "number" && Number.isSafeInteger(input.memoryMb) && input.memoryMb >= 128 && input.memoryMb <= 10_240) {
     return { kind: "increase_memory", function: "inventory", memoryMb: input.memoryMb };

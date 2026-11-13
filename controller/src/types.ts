@@ -2,6 +2,7 @@ export type Command =
   | { kind: "readiness"; confirmQuiet: true }
   | { kind: "traffic" }
   | { kind: "reset"; confirmQuiet: true; confirmReset: true; confirmCheckoutClosed: true }
+  | { kind: "increase_capacity"; function: "inventory"; reservedConcurrency: number }
   | { kind: "increase_memory"; function: "inventory"; memoryMb: number }
   | { kind: "activate_inventory_denial" }
   | { kind: "restore_inventory_access"; restoreWithoutEvidence?: true }
@@ -264,6 +265,7 @@ export interface Action {
     target: InventoryVariant;
     after?: InventoryAliasObservation;
   };
+  capacityChange?: CapacityChange;
   configurationOutcome?: "applied" | "no_change" | "failed" | "unknown";
   recoveryProgress?: "stopping" | "draining" | "validating" | "capturing" | "restoring" | "verifying"
     | "verified" | "verification_incomplete" | "verification_unknown";
@@ -291,6 +293,15 @@ export interface CapRestoration {
   target: CapValue;
   readback?: CapValue;
   outcome: "pending" | "applied" | "no_change" | "failed" | "unknown";
+  observedAt?: string;
+}
+
+export interface CapacityChange {
+  function: "inventory";
+  before: number;
+  target: number;
+  acknowledgement?: "acknowledged" | "ambiguous" | "rejected";
+  readback?: CapValue;
   observedAt?: string;
 }
 
