@@ -43,6 +43,7 @@ const CHECKOUT_LOG_GROUP_NAME = `/aws/lambda/${CHECKOUT_FUNCTION_NAME}`;
 const INVENTORY_LOG_GROUP_NAME = `/aws/lambda/${INVENTORY_FUNCTION_NAME}`;
 const GATEWAY_LOG_GROUP_NAME = "/aws/apigateway/IncidentTriageDemoApp";
 const BASELINE_MEMORY_MB = 256;
+const INVENTORY_RESERVED_CONCURRENCY = 16;
 const SUPPORTED_INVENTORY_MEMORY_MB = [BASELINE_MEMORY_MB, 512];
 const CHECKOUT_TIMEOUT_SECONDS = 12;
 const INVENTORY_TIMEOUT_SECONDS = 6;
@@ -209,6 +210,7 @@ export class AppStack extends DemoStack {
       handler: "inventory.handler",
       role: inventoryRole,
       memorySize: BASELINE_MEMORY_MB,
+      reservedConcurrentExecutions: INVENTORY_RESERVED_CONCURRENCY,
       timeout: Duration.seconds(INVENTORY_TIMEOUT_SECONDS),
       environment: {
         APP_ENVIRONMENT: "demo",
@@ -395,7 +397,7 @@ export class AppStack extends DemoStack {
     new CfnOutput(this, "CheckoutTimeoutSeconds", { value: String(CHECKOUT_TIMEOUT_SECONDS) });
     new CfnOutput(this, "InventoryTimeoutSeconds", { value: String(INVENTORY_TIMEOUT_SECONDS) });
     new CfnOutput(this, "CheckoutReservedConcurrency", { value: "unreserved" });
-    new CfnOutput(this, "InventoryReservedConcurrency", { value: "unreserved" });
+    new CfnOutput(this, "InventoryReservedConcurrency", { value: String(INVENTORY_RESERVED_CONCURRENCY) });
     new CfnOutput(this, "InventoryResourcePolicy", { value: "absent" });
     new CfnOutput(this, "StageAlarmName", { value: stageAlarm.ref });
     new CfnOutput(this, "StageAlarmArn", { value: stageAlarm.attrArn });

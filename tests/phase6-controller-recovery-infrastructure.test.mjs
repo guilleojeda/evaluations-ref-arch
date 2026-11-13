@@ -293,3 +293,52 @@ test('bootstrap lets CloudFormation install only boundary-protected controller r
       `${action} must remain covered by the GitHub deployment role's non-app action deny`);
   }
 });
+
+test('app release binds its positive Inventory baseline cap to the deployed function setting', () => {
+  const path = new URL('../.artifacts/app/cdk/IncidentTriageDemoApp.template.json', import.meta.url);
+  assert.ok(existsSync(path), 'run the pinned app check/synth before capacity infrastructure acceptance');
+  const app = JSON.parse(readFileSync(path, 'utf8'));
+  const [, inventory] = findOne(resourcesOf(app.Resources, 'AWS::Lambda::Function'),
+    (resource) => resource.Properties.FunctionName === 'IncidentTriageDemoInventory',
+    'the app must own exactly one named Inventory function');
+  const cap = inventory.Properties.ReservedConcurrentExecutions;
+  assert.equal(cap, 16, 'the released Inventory function uses the operator-selected positive baseline of 16');
+  assert.equal(String(app.Outputs.InventoryReservedConcurrency.Value), '16',
+    'the release-owned recovery target exposes that exact baseline');
+  assert.equal(String(app.Outputs.InventoryReservedConcurrency.Value), String(cap),
+    'the release-owned recovery target must agree with the actual function reservation');
+  const [, checkout] = findOne(resourcesOf(app.Resources, 'AWS::Lambda::Function'),
+    (resource) => resource.Properties.FunctionName === 'IncidentTriageDemoCheckout',
+    'the app must own exactly one named Checkout function');
+  assert.equal(checkout.Properties.ReservedConcurrentExecutions, undefined,
+    'Inventory-only capacity controls do not introduce a Checkout baseline reservation');
+  assert.equal(app.Outputs.CheckoutReservedConcurrency.Value, 'unreserved');
+});
+
+test('capacity headroom observation is a region-scoped worker read in both role and boundary', () => {
+  const { Resources } = template();
+  const [workerId] = namedRole(Resources, workerRoleName);
+  const workerStatements = allRoleStatements(Resources, workerId);
+  const bootstrap = bootstrapTemplate(cfnExecutionPath);
+  const workerBoundary = bootstrapPolicy(bootstrap.Resources, workerBoundaryName);
+  for (const [label, statements] of [['worker', workerStatements], ['worker boundary', workerBoundary]]) {
+    const grants = allowedStatements(statements).filter((statement) =>
+      actionList(statement).some((pattern) => iamPatternMatches(pattern, 'lambda:GetAccountSettings')));
+    assert.equal(grants.length, 1, `${label} needs one Lambda account-settings read for reserved-concurrency headroom`);
+    assert.deepEqual(resourceList(grants[0]), ['*'], 'GetAccountSettings has no function resource scope');
+    assert.equal(grants[0].Condition?.StringEquals?.['aws:RequestedRegion'], region,
+      'the account-level read remains limited to the demo Region');
+    assertNoActionGrant(statements, ['servicequotas:RequestServiceQuotaIncrease'],
+      'the runtime must not request account quota increases');
+  }
+});
+
+test('app CloudFormation manages reservations within its existing two app function resource families', () => {
+  const bootstrap = bootstrapTemplate(cfnExecutionPath);
+  const appExecution = bootstrapPolicy(bootstrap.Resources, 'IncidentTriageDemoBootstrapCfnExecution');
+  for (const action of ['lambda:PutFunctionConcurrency', 'lambda:DeleteFunctionConcurrency']) {
+    assert.deepEqual(grantedResources(appExecution, action),
+      [...functionArns, ...functionArns.map((arn) => `${arn}:*`)].sort(),
+      'reuse the existing named-function deployment scope for positive caps and rollback; no other function is granted');
+  }
+});

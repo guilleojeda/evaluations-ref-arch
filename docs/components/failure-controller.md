@@ -1,6 +1,6 @@
 # Failure Controller
 
-The failure controller is a cloud-hosted presenter dashboard. It verifies the checkout baseline, runs bounded traffic, selects prepared Inventory memory/access versions, and recovers the current release without deleting orders. Another authenticated browser can observe or stop the same run. Native alarm state, durable agent investigations, source-cited reports, trace references and endpoint readiness remain independent observations.
+The failure controller is a cloud-hosted presenter dashboard. It verifies the checkout baseline, runs bounded normal traffic, selects prepared Inventory memory/access versions, changes Inventory's reserved-concurrency cap, and recovers the current release without deleting orders. Another authenticated browser can observe or stop the same run. Native alarm state, durable agent investigations, source-cited reports, trace references and endpoint readiness remain independent observations. The calibrated capacity surge and matched workload comparison are Phase 10 work; Phase 9 cap readback is configuration evidence only.
 
 The [controller specification](failure-controller-behavior.md) owns action behavior, traffic bounds, observations, private records, and interruptions. The [scenario contracts](../demo-scenarios.md) own inventory capacity overload, denied inventory access, and the recovered/stale-alarm condition. The [demo script](../demo-script.md) places these controls in the talk. The [agent design](operations-agent.md) defines the alarm-to-Runtime path and durable run/report records.
 
@@ -10,16 +10,20 @@ Both incidents start from healthy application code and do not require a faulty c
 
 | Incident | How the controller causes it | Configuration control |
 | --- | --- | --- |
-| Inventory capacity overload | Start a finite surge of ordinary authenticated catalog reads against a positive inventory Lambda concurrency limit that supports baseline demand. Include sparse checkout probes. Activation increases demand without changing code or lowering the limit. | Increase inventory reserved concurrency. |
+| Inventory capacity overload (Phase 10) | Start a finite surge of ordinary authenticated catalog reads against a positive Inventory cap that supports baseline demand. Include sparse checkout probes. Activation increases demand without changing code or lowering the limit. | Increase Inventory reserved concurrency. |
 | Inventory access denied | Select the prepared denied Inventory version through the single-target `live` alias. Its static execution role has logging/read access plus a permanent `dynamodb:GetItem` Deny on the exact Inventory table. | Select the healthy role-backed Inventory version at the current memory. |
 
 ## Configuration actions
 
-The implemented controls select prepared Inventory memory variants, restore Inventory access, Recover the current release, and Reset business data into a new verified run. Readiness, normal traffic, Stop and inspection remain available. Capacity increase and overload remain intended controls. Memory choices come from the current release manifest and are independent of an agent report.
+The release-owned Inventory cap is 16. The original release baseline stays 16 even after the controller confirms a higher current cap. The capacity shortcut changes Inventory only; Checkout has no capacity shortcut and remains unreserved. The first higher target is 32, and the input accepts integer values from 16 through 64. Equality with the current cap is `no_change`; lower values are rejected. These are control defaults, not measured surge requirements or guaranteed regional headroom.
+
+The capacity action checks fresh account capacity, records the requested before/target values, changes only Inventory's reserved concurrency, then reads the setting back. It does not call Service Quotas, send business requests, control traffic, or establish recovery. A capacity readback proves configuration only. The actual bounded surge and comparison of workload outcomes remain Phase 10 work.
+
+The other controls select prepared Inventory memory variants, restore Inventory access, Recover the current release, and Reset business data into a new verified run. Readiness, normal traffic, Stop and inspection remain available. Memory choices come from the current release manifest and are independent of an agent report.
 
 **Increase Lambda memory** selects a prepared qualified version at the requested supported size in MB through a revision-guarded `live` alias update. It preserves application code and all other settings, records the previous and resulting memory/version state, and reads back the configuration of the version invoked through the alias. Recover restores the saved baseline memory/version; Reset reconciles to the trusted expected settings for the current successful release. The [specification](failure-controller-behavior.md#increase-function-memory) defines the action contract and published-version constraint.
 
-The implemented memory command targets Inventory. Use the supported-memory dropdown or the authenticated `PUT /api/actions/<action UUID>` interface:
+The memory command targets Inventory. Use the supported-memory dropdown or the authenticated `PUT /api/actions/<action UUID>` interface:
 
 ```json
 {"kind":"increase_memory","function":"inventory","memoryMb":512}
@@ -27,13 +31,21 @@ The implemented memory command targets Inventory. Use the supported-memory dropd
 
 Choices come from the current release manifest. An equal active size completes as no change; a lower size, unsupported function/value, stale release or incompatible version is rejected. Reusing the same UUID/input returns its recorded outcome. Before a change, the worker saves configuration and guards the alias switch with its observed revision. Lost acknowledgement is reconciled by readback; an unconfirmed result remains unknown. The action sends no app requests and establishes no recovery. Higher memory preserves denial; **Restore Inventory access** selects the matching healthy version at that memory. After the original baseline for the successful deployment is established, readiness accepts a supported higher healthy variant and separately verifies an order/decrement. First adoption requires the release's original healthy baseline settings.
 
+Use the authenticated `PUT /api/actions/<action UUID>` interface for the capacity shortcut:
+
+```json
+{"kind":"increase_capacity","function":"inventory","reservedConcurrency":32}
+```
+
+The Inventory function must already have a positive cap. The worker requires the selected value to be at least the confirmed current cap, and checks that the requested increase fits the fresh unreserved account capacity while preserving AWS's 100-unit unreserved floor. It rejects stale generation state, unexplained cap drift, unsettled work, or insufficient headroom before changing configuration. A confirmed result updates the controller's current-cap observation; it does not change the original baseline of 16 or the release identity. A lost acknowledgement with matching readback is recorded as applied with the ambiguity retained. No matching or unavailable readback remains failed or incomplete/unknown; the worker does not retry the Put automatically.
+
 The agent investigates ordinary logs, metrics, and relevant configuration evidence and merely recommends an action, another response, or no remediation. It has no mutation tools or controller authority. The presenter independently selects a shortcut and its target/value. Controller actions do not depend on parsing or executing an agent report, and an action can be used without an agent run.
 
-A shortcut changes only its selected setting and reports applied, no change, failed, or unknown from configuration acknowledgement/readback. It does not start or stop traffic, submit application probes, or judge incident resolution. It must not silently call Recover, fix another component, or substitute the controller's known cause for the presenter's choice. Application outcomes remain separate observations.
+A shortcut changes only its selected setting and reports `applied`, `no_change`, `failed`, or `unknown` from configuration acknowledgement/readback. It does not start or stop traffic, submit application probes, or judge incident resolution. It must not silently call Recover, fix another component, or substitute the controller's known cause for the presenter's choice. Application outcomes remain separate observations.
 
 ## Recover the current release
 
-Pause other browser/manual checkout writers, select the existing quiet-writers confirmation, then choose **Recover**. Recover stops both producers itself and drains submitted work. It restores the original healthy Inventory version and memory for the same successful app deployment, together with both expected function caps. A previous memory increase does not replace this restore target. Orders, productVersion, actual request history, incident/source history and agent results are preserved; traffic remains stopped.
+Pause other browser/manual checkout writers, select the existing quiet-writers confirmation, then choose **Recover**. Recover stops both producers itself and drains submitted work. It restores the original healthy Inventory version and memory for the same successful app deployment, Inventory's release baseline cap of 16, and Checkout's unchanged unreserved setting. A confirmed higher Inventory cap does not replace the restore target. Orders, productVersion, actual request history, incident/source history and agent results are preserved; traffic remains stopped.
 
 The authenticated command uses a new action UUID:
 
@@ -43,7 +55,7 @@ The authenticated command uses a new action UUID:
 
 Configuration restoration and business verification have separate results. A complete recovery verifies two fresh catalog reads, a quantity-one checkout, its saved receipt through status, and its same-productVersion stock decrement. Each verification action has its own request bounds and deadline. Existing ambiguous attempts are checked through bounded status reads without resubmitting them; an absent order does not settle an uncertain write. If the bounded verification action cannot complete, verification remains incomplete even when settings are restored. Inspect the recorded configuration result and last independently verified health instead of interpreting a configuration acknowledgement or alarm OK as fresh business proof.
 
-Fresh readiness binds the original baseline to the successful stack generation, immutable versions and artifact/settings identities. Missing legacy facts, another deployment, unexpected code/role/policy drift or an unknown alias blocks Recover until reconciled. After a successful new deployment, explicit readiness can preserve prior incident history and establish the new original baseline within the current session/run.
+Fresh readiness binds the original baseline to the successful stack generation, immutable versions and artifact/settings identities. First adoption and new-generation adoption require Inventory at 16. Within the same generation, readiness may use a controller-confirmed higher current Inventory cap while retaining the original cap of 16 and the same release identity. It never adopts an unexplained observed increase or carries a prior generation's confirmed raised cap into a new generation. Missing legacy facts, another deployment, unexpected code/role/policy drift or an unknown alias blocks Recover until reconciled. After a successful new deployment, explicit readiness can preserve prior incident history and establish the new original baseline within the current session/run.
 
 Recover stores ordinary configuration evidence before changing settings. If that capture is unavailable, the UI can request separate confirmation to proceed protectively using `recoverWithoutEvidence:true`. This retains the evidence gap and still requires all target checks and fresh business proof. Reusing an action UUID returns its recorded input/result; changed confirmation is conflicting reuse, and a failed/unknown AWS acknowledgement is reconciled by readback without blind retries.
 
@@ -51,7 +63,7 @@ Recover stores ordinary configuration evidence before changing settings. If that
 
 Establish credentials and the target, then check readiness. Start normal traffic, activate one incident, inspect its effects and the agent's investigation, and choose a remedy when ready. After the fix, explicitly generate or repeat traffic to observe its effect. Use Recover to return to the demonstration baseline; use Reset when a new business-data baseline is needed.
 
-For overload, the presenter can stop the surge, apply a fix, then repeat the same workload at the current capacity setting to show whether it now succeeds. Repeating the workload does not restore the original cap or require another failure. Compare actual demand and outcomes across those separate phases; a quiet application after Stop traffic does not show that peak demand can be served. Each additional phase is a separate bounded action and never extends automatically. For denied access, repeat ordinary requests after the alias fix without selecting the denied version again. None of this traffic belongs to the fix action itself.
+For the Phase 10 overload scenario, the presenter can stop the surge, apply a fix, then repeat the same workload at the controller-confirmed current Inventory cap to show whether it now succeeds. Repeating the workload does not restore the original cap or require another failure. Compare actual demand and outcomes across those separate phases; a quiet application after Stop traffic does not show that peak demand can be served. Each additional phase is a separate bounded action and never extends automatically. For denied access, repeat ordinary requests after the alias fix without selecting the denied version again. None of this traffic belongs to the fix action itself.
 
 Keep controls and observations visible together. Activation confirmed and incident observed are separate states. Stopping traffic, applying one remedy, recovering configuration, and resetting data are separate intentions. Stop prevents new generated requests; it does not cancel submitted work.
 
@@ -78,7 +90,7 @@ Use ordinary React components and independent observation reads. Each view ident
 
 Keep one dashboard route with a compact Actions menu, large status text, and persistent action progress. Preserve the accepted wrapping layout and support substantial browser zoom. Put detailed configuration, records, and older timeline entries below the essential overview. Do not shrink text or introduce horizontal scrolling to fit primary controls.
 
-The Actions menu offers readiness, normal traffic, incident activation, Stop traffic, increase function capacity, increase function memory, restore inventory access, and Recover. Reset is presented in a separate card with its destructive effect and required confirmations. Choosing a menu action keeps the overview visible, shows progress, and disables conflicting mutations. Stop remains available when a producer is active.
+The Actions menu offers readiness, normal traffic, incident activation, Stop traffic, increase Inventory capacity, increase Inventory memory, restore inventory access, and Recover. The capacity input starts at 32 and accepts bounded integer values from 16 through 64. Reset is presented in a separate card with its destructive effect and required confirmations. Choosing a menu action keeps the overview visible, shows progress, and disables conflicting mutations. Stop remains available when a producer is active.
 
 The [interactive design preview](../design/controller-dashboard-preview.html) uses illustrative data and predates these incident and remediation controls. It is a layout reference, not an implemented or current menu specification. Its earlier layout checks at 1280px, 1024px, 800x450, 640x360, and 320px do not verify the new controls or actual projector readability. Retain the 960x540, 800x450, and 640x360 effective-viewport stress cases and narrow reflow to 320px when implementing the updated view.
 
@@ -102,10 +114,10 @@ Schedule deployments outside demo runs and wait for each dependent app, agent, a
 
 | Action | Controller responsibility | Evidence to retain |
 | --- | --- | --- |
-| Establish baseline | Bind known expected healthy versions and settings to a trusted successful deployment generation; exercise normal reads and a checkout | Target, generation/artifact identity, actual settings/revisions, successful requests, and the post-checkout stock/order baseline |
-| Cause capacity overload | Apply the selected finite demand profile without changing its positive inventory cap | Intended profile, actual demand, invocation errors/throttles, and affected request windows |
+| Establish baseline | Bind known expected healthy versions and settings, including Inventory cap 16 and unreserved Checkout, to a trusted successful deployment generation; exercise normal reads and a checkout | Target, generation/artifact identity, original/current cap observations, actual settings/revisions, successful requests, and the post-checkout stock/order baseline |
+| Cause capacity overload (Phase 10) | Apply the selected finite demand profile without changing the Inventory cap | Intended profile, actual demand, invocation errors/throttles, and affected request windows |
 | Deny inventory access | Select only the prepared denied role-backed Inventory version through the `live` alias | Prior alias/version/role/policy state, requested target, actual revision/readback, and independently observed denied reads |
-| Apply a configuration action | Increase the selected function's reserved concurrency or memory, or switch the Inventory `live` alias to the healthy version, without generating traffic | Operator choice, before/after values and version/alias/role/policy state where applicable, and configuration result/readback |
+| Apply a configuration action | Increase Inventory's reserved concurrency, increase Inventory memory, or switch the Inventory `live` alias to the healthy version, without generating traffic | Operator choice, before/after values and version/alias/role/policy state where applicable, and configuration result/readback |
 | Repeat traffic and observe | Explicitly run another bounded workload at the current configuration | Actual demand, phase windows, and request outcomes, separate from the preceding action result |
 | Recover application | Stop traffic, confirm the baseline generation is still current, restore expected caps and healthy role-backed alias versions at baseline memory, settle work, then verify fresh behavior | Confirmed restoration and fresh evidence, retaining prior effects and results |
 | Reset demo | Require quiet, destructive, and checkout-closed confirmations; stop/drain work, reconcile the current trusted release, archive the old run, replace business data under a fresh productVersion, and verify a new run | Previous-run link and preserved history; reset progress and the new baseline including the verification order |
@@ -130,7 +142,7 @@ For each incident, distinguish baseline readiness, action acceptance, configurat
 
 Overload verification distinguishes inventory throttling from Gateway rejection, checkout throttling, client queueing, and database contention. Lambda concurrency and synchronous request-rate limits are related but different; use the observed reason rather than asserting that execution slots were all busy. Access-version switches require actual denied/successful read evidence from fresh requests after alias readback.
 
-A single successful quiet checkout cannot certify overload resolution. First verify service at comparable demand; after stopping producers and settling work, verify precise order/stock effects. Full Recover deliberately returns the original low-demand configuration, including the original capacity limits; it is separate from proving that an increased limit handled the surge.
+For the Phase 10 overload scenario, a successful quiet checkout cannot certify capacity recovery. Compare service at the original surge demand before and after the Inventory cap increase; after stopping producers and settling work, verify precise order/stock effects. Full Recover deliberately returns Inventory to 16 and Checkout to unreserved; it is separate from proving that an increased limit handled the surge.
 
 Reset preserves operational history, invalidates old productVersion payloads, and requires old work to stop and drain plus checkout pages to be closed. The new baseline includes the single verification order and stock decrement. An incomplete Reset remains unusable; do not resume it or claim success. Once its execution/drain window has ended and it has been explicitly discarded if needed, a new confirmed Reset may proceed with a fresh action UUID/version while retaining any old unknown checkout outcome as unknown.
 

@@ -7,12 +7,12 @@ The [slides plan](slides-plan.md) records slide numbers, content, purposes, and 
 ## Before the room opens
 
 - [ ] Confirm the correct AWS target and presenter controller access.
-- [ ] Verify that the controller baseline matches the current trusted deployment generation, healthy aliases, baseline memory/version and capacity settings, expected healthy role-backed Inventory access state, and no unresolved checkouts.
+- [ ] Verify that the controller's original Inventory cap is the current release baseline, 16, and that its current cap is separately recorded; first/new-generation adoption starts at 16. Checkout stays unreserved. Also verify healthy aliases, baseline memory/version, expected healthy role-backed Inventory access state, and no unresolved checkouts.
 - [ ] Record the real business-data baseline after a fresh verification checkout, including its stock effect.
 - [ ] Observe the real alarm in **OK** with its alarm-to-agent path ready for a new incident.
 - [ ] Select S0 and the intentionally faulty candidate; verify no evaluation case, evaluator, score, or gate is active.
 - [ ] Open the application view, controller dashboard, live agent report view, editor, evaluation results, and AgentCore Observability for later trace inspection.
-- [ ] Prepare actual saved runs and results for delays or the capacity case. Label each **recorded** and retain its event/run identity.
+- [ ] Prepare actual saved runs and results for delays. Add a capacity case only after Phase 10's surge and comparison are implemented and rehearsed; label saved runs **recorded** and retain their event/run identity.
 
 ## Working run of show
 
@@ -143,9 +143,9 @@ Use the approved closing above verbatim, then leave the final block for question
 - If either outcome cannot be demonstrated live, use a clearly labeled actual saved execution with its matching event/run and action/request evidence. For capacity, show that the repeated bounded workload used comparable delivered demand and the raised cap remained active; the repeat does not automatically reactivate the fault or restore the cap. A repeat may not create a new alarm or agent run. A fresh alarm-driven corrected run requires an observed **OK**, a new incident, and a matching event/run.
 - Show the release policy result and its reasons, including any incomplete evaluation, and the pending source/agent artifact identity it evaluated before deployment. Evaluations assess the proposal and investigation; they do not apply controller actions or claim that the application recovered.
 
-### Capacity overload and separate remedy observation
+### Phase 10 capacity overload and separate remedy observation
 
-If time and rehearsal allow a live capacity case, verify a healthy baseline and observe the actual alarm **OK** first. Start the bounded catalog surge, inspect the actual alarm and matching agent run, and show the corrected candidate recommending increased reserved concurrency for INVENTORY. The presenter applies that cap increase independently; its readback is only configuration evidence. Stop or pause the first workload phase as needed, then explicitly repeat the same bounded workload at the current raised cap. Compare actual delivered demand, request outcomes, and throttling evidence across the phases. Do not reset the raised cap or reapply the incident between the action and comparison; the repeated workload does not promise a new alarm or agent run. Recover only after the remedy observation is complete.
+This cue is for Phase 10, after the bounded surge and comparison are implemented and rehearsed. The release-owned Inventory baseline is 16; Checkout remains unreserved. Start only the approved bounded catalog workload after verifying a healthy baseline and actual alarm **OK**. Inspect the alarm and matching agent run, and show the corrected candidate recommending increased reserved concurrency for Inventory. The presenter applies the Inventory-only shortcut independently; its readback is configuration evidence, not a recovery claim. Stop or pause the first workload phase as needed, then explicitly repeat the same bounded workload at the controller-confirmed current cap. Compare actual delivered demand, request outcomes, and throttling evidence across the phases. Do not reset the raised cap or reapply the incident between action and comparison; the repeated workload does not promise a new alarm or agent run. Recover only after the remedy observation is complete.
 
 If the live sequence does not fit, show an actual saved capacity run with the matching event/run, action readback, and separate post-action traffic observations. Label it recorded. Do not claim a capacity remedy from the corrected recommendation or an evaluation score alone.
 
@@ -158,7 +158,7 @@ Use a genuine originating event, retained incident evidence, and timestamped pos
 - Before each new alarm-driven incident, observe the actual alarm **OK** and confirm the event-to-agent path is ready. Match a genuine event to its run ID. Dashboard polling does not invoke the agent; do not manually invoke it as a substitute.
 - A saved trace is evidence of that recorded execution. Label it as recorded; do not present rejudging it as a fresh execution of the repaired candidate. A new candidate execution against captured evidence is a labeled regression run with its own identity.
 - A targeted action changes and reads back the chosen configuration only. It does not create traffic. A later independent request or workload is required to observe application behavior.
-- Stop traffic and settle accepted work before recovery or Reset. Recover strictly restores its current saved baseline and preserves business data. Reset uses trusted expected settings for the current successful release even if the old baseline is stale or missing; it preserves the previous run, creates a new run/version, and does not restart traffic automatically. An interrupted Reset is replaced by a new explicit Reset after its old execution/drain window, never resumed with the same ID.
+- Stop traffic and settle accepted work before recovery or Reset. Recover strictly restores Inventory's original cap of 16, Checkout's unreserved setting, and the current generation's healthy versions/memory while preserving business data. Reset uses trusted expected settings for the current successful release even if the old baseline is stale or missing; it restores Inventory to 16, preserves the old run's cap observations, creates a new run/version, and does not restart traffic automatically. An interrupted Reset is replaced by a new explicit Reset after its old execution/drain window, never resumed with the same ID.
 - If automatic deployment intervenes, pause the presentation's controller operations through the deployment handoff. Reconcile and verify the new generation's baseline before resuming; do not use the old baseline or alter session/run history merely because code changed. The [deployment contract](deployment.md#deployment-and-controller-baseline) owns the sequence.
 - If the alarm, agent, or evaluator is slow, show an actual saved run/result while leaving its recorded status visible. Never fake an alarm or silently substitute a manual invocation.
 
@@ -169,7 +169,7 @@ Detailed action, workload, and recovery behavior belongs to the [controller spec
 - [ ] Settle how S0–S5 checkpoints and candidate versions are selected and packaged.
 - [ ] Write the actual live edits and commands after implementation; do not use placeholder or invented commands on screen.
 - [ ] Make the initial Inventory memory defect reproduce reliably and prepare the explicit agent repair.
-- [ ] Calibrate supported numeric capacity and memory targets, bounded load settings, and comparable delivered demand. Exact values remain unselected until measured.
+- [ ] Use Inventory capacity target 32 and bounded integer input 16–64; verify fresh account headroom and the 100-unit unreserved floor. Checkout has no capacity shortcut. Phase 10 must calibrate bounded surge settings and comparable delivered demand before any load-remedy claim. Memory choices come from the deployed Inventory manifest.
 - [ ] Time alarm, agent, telemetry, and evaluation waits; record replay locations and event/run identities.
 - [ ] Rehearse the repaired incident and CI rejection fallbacks using matching recorded evidence. Choose the switch cues after measuring the live path and leave time for the result, callback, and approved closing.
 - [ ] Select the judge rubric/model, evaluator paths, and release-gate criteria before rehearsal results are presented.

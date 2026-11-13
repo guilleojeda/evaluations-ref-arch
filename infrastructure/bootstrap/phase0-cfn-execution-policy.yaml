@@ -119,12 +119,14 @@ Resources:
               - lambda:CreateFunction
               - lambda:DeleteAlias
               - lambda:DeleteFunction
+              - lambda:DeleteFunctionConcurrency
               - lambda:Get*
               - lambda:List*
               - lambda:PublishVersion
               - lambda:RemovePermission
               - lambda:TagResource
               - lambda:Update*
+              - lambda:PutFunctionConcurrency
             Resource:
               - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoCheckout
               - arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoCheckout:*
@@ -586,6 +588,13 @@ Resources:
               - dynamodb:Scan
               - dynamodb:DeleteItem
             Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoOrders
+          - Sid: ControllerWorkerLambdaAccountSettings
+            Effect: Allow
+            Action: lambda:GetAccountSettings
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: us-east-1
           - Sid: ControllerWorkerSecret
             Effect: Allow
             Action: secretsmanager:GetSecretValue

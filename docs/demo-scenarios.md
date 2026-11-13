@@ -1,14 +1,14 @@
 # Demonstration scenario contracts
 
-**Status: intended behavior; not implemented.** The selected incidents are **inventory-capacity-overload** and **inventory-access-denied**. Both use unchanged healthy application code. The application-regression and fixed-delay fixtures are no longer the selected controller incidents. **recovered-stale-alarm** remains an observation condition reached through recovery, not another fault.
+**Status:** Phase 9 provides the Inventory-only capacity shortcut and its baseline/readiness/recovery behavior. The calibrated capacity surge and matched before/after workload demonstration remain Phase 10 work. Do not treat a cap change or readback as evidence that a surge was served. The selected incidents are **inventory-capacity-overload** and **inventory-access-denied**; both use unchanged healthy application code. The application-regression and fixed-delay fixtures are no longer selected controller incidents. **recovered-stale-alarm** remains an observation condition reached through recovery, not another fault.
 
 The [application](components/application.md) owns API/business semantics; the [controller specification](components/failure-controller-behavior.md) owns actions, traffic, and records. The [operations agent](components/operations-agent.md) investigates and recommends; [evaluations](evaluations.md) assess its behavior.
 
 ## Common contract
 
-Setup records the trusted deployment generation and artifact identities, healthy numeric checkout/inventory live-alias versions and memory allocations, the allowlisted denied Inventory version and its static execution role, expected function caps, the exact Inventory Deny policy/default document and access state, plus the absence of an Inventory table resource policy, target resources, and the normal catalog/business baseline. The healthy and denied baseline-memory Inventory variants share checked code and non-role settings; only the execution role differs. A baseline belongs to that deployment generation; it cannot restore old settings over a later or uncertain deployment. The [deployment contract](deployment.md) and [controller specification](components/failure-controller-behavior.md) own reconciliation and safe baseline adoption. Inventory's positive cap supports ordinary demand. A positive checkout cap with adequate headroom allows a real wrong-component increase to be demonstrated. Exact caps and workload bounds remain unselected.
+Setup records the trusted deployment generation and artifact identities, healthy numeric checkout/inventory live-alias versions and memory allocations, the allowlisted denied Inventory version and its static execution role, Inventory's release-owned reserved-concurrency baseline of **16**, Checkout's unreserved setting, the exact Inventory Deny policy/default document and access state, plus the absence of an Inventory table resource policy, target resources, and the normal catalog/business baseline. The healthy and denied baseline-memory Inventory variants share checked code and non-role settings; only the execution role differs. A baseline belongs to that deployment generation; it cannot restore old settings over a later or uncertain deployment. The [deployment contract](deployment.md) and [controller specification](components/failure-controller-behavior.md) own reconciliation and safe baseline adoption. The capacity shortcut changes Inventory only; its initial target is 32 and it accepts integer values from 16 through 64. Checkout has no capacity shortcut and remains unreserved.
 
-The presenter controls incident activation, targeted fixes, traffic, recovery, and reset separately. The agent recommends one of **Increase reserved concurrency**, **Increase memory**, **Restore inventory access**, or **Other**, with an explanation and the action's target/value where applicable. Other includes a justified no-change response or insufficient evidence. It does not call the controller or supply its authority. Shortcuts are usable independently of an agent report or evaluation result.
+The presenter controls incident activation, targeted fixes, traffic, recovery, and reset separately. The agent recommends one of **Increase reserved concurrency**, **Increase memory**, **Restore inventory access**, or **Other**, with an explanation and the action's target/value where applicable. A report that proposes increasing Checkout concurrency is an incorrect candidate output; there is no Checkout capacity control for the presenter to execute. Other includes a justified no-change response or insufficient evidence. The agent does not call the controller or supply its authority. Shortcuts are usable independently of an agent report or evaluation result.
 
 **Targeted fixes only change the selected configuration and report the action result.** They do not start/stop traffic, submit verification requests, or decide whether the incident is resolved. The presenter can apply a fix and then explicitly repeat the workload to show what happens. Ordinary independent dashboard observations remain available throughout.
 
@@ -37,7 +37,7 @@ The [agent software stages](components/operations-agent.md#software-stages) defi
 
 | Condition supported by the evidence | Corrected candidate recommendation | Unacceptable response |
 | --- | --- | --- |
-| Inventory capacity is throttling the comparable workload | Increase reserved concurrency on inventory to an explicit supported higher limit | Increase the unconstrained checkout function, restore an unrelated policy, or assert that a memory increase addresses the observed limit without supporting evidence |
+| Inventory capacity is throttling the comparable workload | Increase reserved concurrency on Inventory to an explicit supported higher limit | Choose an unsupported target, change an unrelated setting, or assert that memory addresses the observed limit without supporting evidence |
 | Inventory reads are blocked by the scoped IAM Deny on the denied version's role | Select the healthy role-backed Inventory version at the current memory | Increase memory or reserved concurrency while leaving the denied version active |
 | Current requests support recovery within the investigated scope | Other, explaining that no configuration change is needed and the scope of that conclusion | Apply a remedy solely because the old alarm remains ALARM |
 | The available evidence cannot establish a supported action | Other, explaining the uncertainty and useful next investigation | Invent a cause, target, or recovery claim |
@@ -50,7 +50,7 @@ The memory action must select a prepared qualified version through inventory's l
 
 ### Cause and baseline
 
-The application works at ordinary demand. Inventory has a small positive reserved-concurrency cap; checkout, Gateway, and database capacity are adequate for the selected workload. Healthy versions and access policy remain unchanged. Record successful baseline catalog and checkout behavior before starting the surge.
+The application works at ordinary demand. Inventory starts at its release-owned reserved-concurrency cap of **16**; Checkout is unreserved, and Gateway and database capacity are adequate for the selected workload. Healthy versions and access policy remain unchanged. Record successful baseline catalog and checkout behavior before the Phase 10 surge. A controller-confirmed higher current Inventory cap is distinct from the original release baseline and is not carried to a new deployment generation.
 
 ### Activation
 
@@ -62,13 +62,11 @@ Check that Gateway throttling, checkout limits, client queueing, or other failur
 
 ### Fixes and separate demonstration
 
-**Appropriate recommendation:** Increase reserved concurrency on inventory to an explicit permitted higher limit.
+**Appropriate recommendation:** Increase reserved concurrency on Inventory to a permitted higher limit. The controller input starts at **32** and accepts integer targets from **16–64**. Equality with the current cap is `no_change`; lower values are rejected. Fresh account settings determine available headroom, and the action preserves AWS's 100-unit unreserved floor. The worker uses `GetAccountSettings`; it does not call Service Quotas or wait on quota changes.
 
-**Example ineffective action:** increase checkout reserved concurrency while inventory remains the constrained dependency. This must be a real increase from a positive checkout cap; an already-active target is a no-change result.
+The capacity shortcut changes only Inventory's cap and reads back the result. It neither generates traffic nor checks application outcomes, and a readback makes no recovery claim. The calibrated workload and post-change comparison remain Phase 10 work; do not interpret this shortcut as that demonstration.
 
-Each action changes only the named cap and reads back the result. It neither generates traffic nor checks application outcomes. Do not switch another setting or call Recover on the presenter's behalf.
-
-The presenter may stop the surge, apply the action, and then explicitly repeat the same workload profile at the current limits. Repetition does not restore the original inventory cap, lower demand, or imply that a new fault or alarm must occur. A successful replay of the surge after the inventory increase is the desired result.
+Once the Phase 10 surge is implemented, the presenter may stop it, apply the action, and then explicitly repeat the same workload profile at the current limits. Repetition does not restore the original Inventory cap, lower demand, or imply that a new fault or alarm must occur. A successful replay at the raised cap is the desired Phase 10 result.
 
 Assess that separately observed result against actual offered rates, workload mix, request outcomes, and throttling windows. A quiet successful request or a batch ending cannot establish that peak demand is now served. Any further phase is a separate bounded action; label reduced-load stabilization separately from serving the original surge.
 
@@ -78,7 +76,7 @@ The agent should identify the constrained component using ordinary evidence, sep
 
 Observe the real alarm and matching agent run independently. If finite traffic ends without proving delivery, retain the application evidence and report live delivery incomplete rather than extending traffic or manually invoking the agent.
 
-After the presenter has observed the remedy result, stop producers and settle work for exact order/stock verification. Full Recover returns the expected low-demand caps/policy and healthy aliases and verifies fresh baseline business behavior. Restoring the original cap is not the overload fix; its original surge limitation remains part of that baseline.
+After the presenter has observed the Phase 10 remedy result, stop producers and settle work for exact order/stock verification. Full Recover returns Inventory to its release cap of **16**, restores Checkout's unreserved setting and healthy aliases, and verifies fresh baseline business behavior. Reset also restores Inventory to 16 and starts a fresh verified business run. Preserve the original and controller-confirmed current caps separately; Reset archives the prior settings rather than rewriting them.
 
 ## inventory-access-denied
 
@@ -100,7 +98,7 @@ Bounded catalog reads can establish a correlated denied DynamoDB operation in in
 
 **Initial candidate's ineffective recommendation:** Increase memory on inventory. The presenter selects a supported larger size in MB. Confirm the live alias's effective memory/version change, then separately repeat ordinary requests while the denied access state remains active. Those requests should still show the denied read and 502 responses. The memory switch preserves the denied role/policy during the demonstration. A configuration failure or no-change result does not demonstrate a successfully executed ineffective remedy.
 
-An increase to either function's reserved concurrency also leaves this denial in place; it is another incorrect recommendation for the reviewed case, not an additional required live demonstration.
+Increasing Inventory's reserved concurrency while its denied version remains active also leaves this denial in place; it is an incorrect recommendation for the reviewed case, not an additional required live demonstration.
 
 The access shortcut captures the active alias/version/role/policy before recovery, then selects only the allowlisted healthy version at the current memory with a compare-and-swap alias update. It reads back the alias, qualified configuration, role and policy state after verifying the current app source revision. It does not broaden or mutate the execution role, stage `$LATEST`, publish versions, issue application probes, or decide whether reads work.
 
@@ -110,7 +108,7 @@ After the alias restoration, the presenter explicitly repeats ordinary catalog/c
 
 The corrected agent should use the denied operation/resource, current alias/version/role/policy or relevant history, and request correlation to support an access diagnosis and Restore inventory access, with the healthy role-backed version as the concrete target. It must not infer a capacity problem merely from a dependency error or recommend unnecessarily broad grants. Missing policy evidence may require a qualified diagnosis or Other. The initial memory recommendation is a known agent defect, not acceptable handling of this evidence.
 
-Observe the genuine alarm/run separately. After request success is observed, stop other writers, settle outcomes, and verify fresh business effects. Recover restores the expected original caps and healthy role-backed alias at baseline memory while preserving data and operational history.
+Observe the genuine alarm/run separately. After request success is observed, stop other writers, settle outcomes, and verify fresh business effects. Recover restores Inventory's original cap of 16, Checkout's unreserved setting, and the healthy role-backed alias at baseline memory while preserving data and operational history.
 
 ## recovered-stale-alarm
 
