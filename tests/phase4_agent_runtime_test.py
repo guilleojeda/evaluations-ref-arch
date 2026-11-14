@@ -247,6 +247,7 @@ class RuntimeAcceptanceTests(unittest.TestCase):
             "2026-11-14T16:46:00",
             "2026-11-14T16:46:00+24:00",
             "2026-11-14T16:46:00+12:60",
+            "２０２６-11-14T16:46:00Z",
             "not-a-timestamp",
         )
         for field in ("windowStart", "windowEnd", "observedAt"):

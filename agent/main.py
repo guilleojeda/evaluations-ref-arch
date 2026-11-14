@@ -18,7 +18,7 @@ from botocore.config import Config
 from botocore.exceptions import ClientError
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from pydantic.json_schema import WithJsonSchema
 from strands import Agent
 from strands.models import BedrockModel
@@ -34,6 +34,9 @@ MAX_TOOL_CALLS = 12
 FAULTY_ENDPOINT = "faulty"
 RUNTIME_ARN_PREFIX = "arn:aws:bedrock-agentcore:"
 MANIFEST_PATH = Path(__file__).with_name("agent-manifest.json")
+CITATION_TIMESTAMP_PATTERN = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?(?:Z|[+-](?:[01][0-9]|2[0-3]):?[0-5][0-9])"
+)
 
 
 class EvidenceCitation(BaseModel):
@@ -45,6 +48,19 @@ class EvidenceCitation(BaseModel):
     windowEnd: str = Field(min_length=1, max_length=64)
     observedAt: str = Field(min_length=1, max_length=64)
     finding: str = Field(min_length=1, max_length=2000)
+
+    @field_validator("windowStart", "windowEnd", "observedAt")
+    @classmethod
+    def validate_timezone_qualified_timestamp(cls, value: str) -> str:
+        if not CITATION_TIMESTAMP_PATTERN.fullmatch(value):
+            raise ValueError("citation timestamps must be timezone-qualified ISO-8601 values")
+        try:
+            parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+        except ValueError as exc:
+            raise ValueError("citation timestamps must be valid calendar and clock values") from exc
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("citation timestamps must include a timezone")
+        return value
 
 
 class Recommendation(BaseModel):

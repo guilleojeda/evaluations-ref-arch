@@ -42,7 +42,7 @@ function runStatusLabel(run: InvestigationRun): string {
   if (run.status === "running") {
     return Date.parse(run.deadlineAt) <= Date.now() ? "Overdue · still running" : "Running";
   }
-  if (run.status === "failed") return "Failed";
+  if (run.status === "failed") return run.failure?.code === "INVALID_REPORT" ? "Report rejected" : "Failed";
   return run.report?.assessment === "unknown" ? "Complete · assessment unknown"
     : run.report?.assessment ? `Complete · ${run.report.assessment}` : "Complete";
 }
