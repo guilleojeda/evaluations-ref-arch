@@ -62,9 +62,22 @@ function durationLabel(milliseconds: number | undefined): string {
   return `${(milliseconds / 1_000).toFixed(1)} s`;
 }
 
+function catalogProfileLabel(profile: TrafficProfileSnapshot): string {
+  if (profile.version === 1) return `catalog ${profile.catalog.ratePerSecond}/s, max ${profile.catalog.maxAttempts.toLocaleString()}`;
+  return `${profile.catalog.batchSize} catalog GETs every ${profile.catalog.batchIntervalMs} ms (${profile.catalog.ratePerSecond}/s average), max ${profile.catalog.maxAttempts.toLocaleString()}`;
+}
+
 function profileLabel(profile: TrafficProfileSnapshot | undefined): string {
   if (!profile) return "Profile not recorded";
-  return `${profile.durationMs / 1_000} s · catalog ${profile.catalog.ratePerSecond}/s, max ${profile.catalog.maxAttempts.toLocaleString()} · checkout every ${profile.checkout.intervalMs / 1_000} s, max ${profile.checkout.maxAttempts}`;
+  return `${profile.durationMs / 1_000} s · ${catalogProfileLabel(profile)} · checkout every ${profile.checkout.intervalMs / 1_000} s, max ${profile.checkout.maxAttempts}`;
+}
+
+function isCurrentInventorySurgeProfile(profile: TrafficProfileSnapshot | undefined): boolean {
+  return profile?.version === 2 && profile.name === "inventory_surge" && profile.durationMs === 15_000 &&
+    profile.catalog.ratePerSecond === 60 && profile.catalog.batchSize === 30 && profile.catalog.batchIntervalMs === 500 &&
+    profile.catalog.maxAttempts === 900 && profile.catalog.maxInFlight === 30 && profile.catalog.requestTimeoutMs === 7_000 &&
+    profile.checkout.intervalMs === 1_000 && profile.checkout.maxAttempts === 15 && profile.checkout.maxInFlight === 1 &&
+    profile.checkout.requestTimeoutMs === 7_000;
 }
 
 function actionProductionDuration(action: Action | undefined): number | undefined {
@@ -142,11 +155,14 @@ async function responseJson(response: Response): Promise<unknown> {
 
 function sameProfile(left: TrafficProfileSnapshot | undefined, right: TrafficProfileSnapshot | undefined): boolean | undefined {
   if (!left || !right) return undefined;
-  return left.name === right.name && left.version === right.version && left.durationMs === right.durationMs &&
+  const sharedFieldsMatch = left.name === right.name && left.version === right.version && left.durationMs === right.durationMs &&
     left.catalog.ratePerSecond === right.catalog.ratePerSecond && left.catalog.maxAttempts === right.catalog.maxAttempts &&
     left.catalog.maxInFlight === right.catalog.maxInFlight && left.catalog.requestTimeoutMs === right.catalog.requestTimeoutMs &&
     left.checkout.intervalMs === right.checkout.intervalMs && left.checkout.maxAttempts === right.checkout.maxAttempts &&
     left.checkout.maxInFlight === right.checkout.maxInFlight && left.checkout.requestTimeoutMs === right.checkout.requestTimeoutMs;
+  if (!sharedFieldsMatch) return false;
+  return left.version === 1 && right.version === 1 || left.version === 2 && right.version === 2 &&
+    left.catalog.batchSize === right.catalog.batchSize && left.catalog.batchIntervalMs === right.catalog.batchIntervalMs;
 }
 
 function contextMatchesExceptInventoryCap(previous: TrafficContext | undefined, current: TrafficContext | undefined): boolean | undefined {
@@ -254,7 +270,7 @@ function TrafficActionObservation({ action, observation, label, onMetricsRefresh
     <dl className="surge-facts">
       <div><dt>Action ID</dt><dd className="mono">{action.id}</dd></div>
       <div><dt>Requested profile</dt><dd>{profileLabel(profile)}{profile ? ` · v${profile.version} · max ${profile.catalog.maxInFlight} catalog / ${profile.checkout.maxInFlight} checkout in flight · ${profile.catalog.requestTimeoutMs / 1_000} s request timeouts` : ""}</dd></div>
-      <div><dt>Profile requested vs observed</dt><dd>{profile ? `catalog ${profile.catalog.ratePerSecond.toLocaleString()}/s requested · ${catalogStartsLabel(action)}` : "No profile snapshot"}</dd></div>
+      <div><dt>Profile requested vs observed</dt><dd>{profile ? `${catalogProfileLabel(profile)} requested · ${catalogStartsLabel(action)}` : "No profile snapshot"}</dd></div>
       <div><dt>Production duration</dt><dd>{window ? `${durationLabel(productionDuration)} · scheduled ${timeLabel(window.startedAt)}–${timeLabel(window.scheduledEndAt)}` : ["queued", "running", "draining"].includes(action.status) ? "Preparing · producer window not yet recorded" : "No producer window recorded"}</dd></div>
       <div><dt>Catalog totals</dt><dd>{action.catalogObservation ? `${catalogTotalsLabel(action)} · ${catalogInFlightLabel(action)}` : "No saved catalog snapshot; catalog start, outcome, and in-flight counts are unknown"}</dd></div>
       <div><dt>Checkout totals</dt><dd>{countLabel(checkout?.submitted)} sent · {countLabel(checkout?.completed)} settled · {countLabel(checkout?.succeeded)} succeeded · {countLabel(checkout?.skipped)} skipped · {countLabel(checkout?.inFlight)} in flight</dd></div>
@@ -322,7 +338,14 @@ export function TrafficSurgePanel({ bearer, currentAction, latestSurgeActionId, 
   const previousLiveAction = previousId && currentAction?.id === previousId ? currentAction : undefined;
   const previousAction = previousLiveAction ?? (previousId ? loadedActions[previousId]?.value : undefined);
   const comparison = comparisonCheck(previousAction, latestAction);
-  const showRepeat = Boolean(latestId);
+  const showRepeat = isCurrentInventorySurgeProfile(latestAction?.trafficProfile);
+  const repeatUnavailableReason = latestAction?.trafficProfile?.version === 1
+    ? "Latest surge is historical profile v1 (240/s); it is not a same-profile repeat of the current batched v2 workload."
+    : latestId && latestAction && !latestAction.trafficProfile
+      ? "The latest surge action has no saved profile snapshot; same-profile repeat cannot be confirmed."
+    : latestId && latestAction && latestAction.trafficProfile && !showRepeat
+      ? `Latest surge profile v${latestAction.trafficProfile.version} differs from the current v2 workload; same-profile repeat is unavailable.`
+      : undefined;
 
   const loadAction = useCallback(async (id: string) => {
     if (!bearer || inFlightActions.current.has(id)) return;
@@ -405,10 +428,11 @@ export function TrafficSurgePanel({ bearer, currentAction, latestSurgeActionId, 
     </div>
     <p className="surge-intro">Start the fixed 15-second Inventory workload. Stop closes new admissions and drains accepted requests. Set Inventory capacity to 32 in the capacity control, then explicitly repeat the same profile. Recover restores the original release capacity.</p>
     <div className="surge-start-row">
-      <button className="button button-secondary" type="button" onClick={onStart} disabled={disabled}>Start Inventory surge · 15 s</button>
-      {showRepeat && <button className="button button-primary" type="button" onClick={onRepeat} disabled={disabled}>Repeat same Inventory surge profile</button>}
+      <button className="button button-secondary" type="button" onClick={onStart} disabled={disabled}>Start Inventory surge · v2 · 15 s</button>
+      {showRepeat && <button className="button button-primary" type="button" onClick={onRepeat} disabled={disabled}>Repeat same Inventory surge v2 profile</button>}
     </div>
-    <p className="surge-muted" role="status">{disabledReason ?? "Profile: catalog 240 requests/s for 15 seconds (maximum 3,600), up to 128 in flight; checkout every 1 second, maximum 15, up to 2 in flight. Starting or repeating sends no capacity, code, memory, access, alias, or Checkout setting change."}</p>
+    <p className="surge-muted" role="status">{disabledReason ?? "Current profile v2: 30 catalog GETs every 500 ms (60/s average), maximum 900 attempts in 15 seconds, up to 30 in flight; checkout every 1 second, maximum 15, up to 1 in flight. Starting or repeating sends no capacity, code, memory, access, alias, or Checkout setting change."}</p>
+    {repeatUnavailableReason && <p className="surge-muted" role="status">{repeatUnavailableReason}</p>}
     {latestId ? <>
       {latestAction ? <TrafficActionObservation action={latestAction} observation={metricObservations[latestId]} label="Latest surge" onMetricsRefresh={() => void loadMetrics(latestId)} /> :
         <div className="surge-read-error" role="status">
