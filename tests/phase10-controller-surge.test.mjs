@@ -323,9 +323,13 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
             'catalog waves remain separated by their 500 ms cadence');
         }
       }
-      assert.ok(fixture.catalogFetches.slice(0, surgeProfile.catalog.batchSize).every(({ durableCheckoutInFlightBeforeFetch,
-        checkoutFetchInFlightBeforeFetch }) => durableCheckoutInFlightBeforeFetch && checkoutFetchInFlightBeforeFetch),
-      'the initial catalog wave overlaps an already durable, actually in-flight one-second checkout');
+      const initialWave = fixture.catalogFetches.slice(0, surgeProfile.catalog.batchSize);
+      assert.ok(initialWave.every(({ durableCheckoutInFlightBeforeFetch }) => durableCheckoutInFlightBeforeFetch),
+        'the initial wave starts only after its immutable quantity-one Checkout input is durably reserved');
+      assert.ok(initialWave.slice(0, 20).every(({ checkoutFetchInFlightBeforeFetch }) => !checkoutFetchInFlightBeforeFetch),
+        'the first catalog portion is dispatched before the fresh Checkout HTTP probe');
+      assert.ok(initialWave.slice(20).every(({ checkoutFetchInFlightBeforeFetch }) => checkoutFetchInFlightBeforeFetch),
+        'the fresh Checkout probe starts inside the catalog wave, before its remaining requests');
       assert.ok(fixture.appRequests.slice(appRequestStart).filter(({ method, path }) => method === 'GET' && path === '/api/products')
         .every(({ surgeContextBeforeFetch }) => surgeContextBeforeFetch === true),
       'fresh release/cap/alias/access observations are saved before each surge fetch');
@@ -590,6 +594,8 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
       const action = await getAction(context.api, id);
       assert.equal(action.status, 'completed', action.error);
       assert.ok(fixture.checkoutReservationDelayStarted, 'the fixture delayed the first durable reservation acknowledgement');
+      assert.ok(action.requests.some(({ kind, outcome }) => kind === 'checkout' && outcome === 'not_sent'),
+        'the first checkout tick that missed its admission window remains durably classified as known not sent');
       assert.ok(fixture.checkoutFetches.length > 1);
       assert.ok(fixture.checkoutFetches.every(({ durableBeforeFetch }) => durableBeforeFetch),
         'even after the slow reservation, every Checkout fetch has a durable input');
@@ -603,6 +609,8 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
       }
       assert.equal(action.traffic.catalog.submitted + action.traffic.catalog.skipped, surgeProfile.catalog.maxAttempts);
       assert.equal(fixture.catalogFetches.length % surgeProfile.catalog.batchSize, 0);
+      assert.ok(action.catalogObservation.skips.late > 0,
+        'catalog waves whose scheduled windows elapsed during the slow reservation are counted as late skips');
       assert.ok(fixture.catalogFetches.some(({ durableCheckoutInFlightBeforeFetch, checkoutFetchInFlightBeforeFetch }) =>
         durableCheckoutInFlightBeforeFetch && checkoutFetchInFlightBeforeFetch),
       'at least one catalog wave overlaps a durable Checkout fetch despite the slow reservation');
