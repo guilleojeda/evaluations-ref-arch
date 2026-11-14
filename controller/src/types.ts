@@ -82,7 +82,12 @@ export interface TrafficProfileV3 {
   };
 }
 
-export type TrafficProfileSnapshot = TrafficProfileV1 | TrafficProfileV2 | TrafficProfileV3;
+export interface TrafficProfileV4 extends Omit<TrafficProfileV3, "version"> {
+  version: 4;
+  admissionLatenessMs: 300;
+}
+
+export type TrafficProfileSnapshot = TrafficProfileV1 | TrafficProfileV2 | TrafficProfileV3 | TrafficProfileV4;
 
 export interface TrafficContext {
   appRevision: string;

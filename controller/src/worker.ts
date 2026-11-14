@@ -52,6 +52,7 @@ import type {
   TrafficProfileSnapshot,
   TrafficProfileV2,
   TrafficProfileV3,
+  TrafficProfileV4,
   TrafficWindow,
 } from "./types.js";
 
@@ -2886,7 +2887,8 @@ function profileIsExact(profile: TrafficProfileSnapshot | undefined): profile is
       profile.catalog.batchIntervalMs === 500 && profile.catalog.maxAttempts === 900 &&
       profile.catalog.maxInFlight === 30 && profile.catalog.requestTimeoutMs === 7_000;
   }
-  return profile.version === 3 && profile.checkout.maxInFlight === 1 && profile.catalog.ratePerSecond === 30 &&
+  return (profile.version === 3 || (profile.version === 4 && profile.admissionLatenessMs === 300)) &&
+    profile.checkout.maxInFlight === 1 && profile.catalog.ratePerSecond === 30 &&
     profile.catalog.batchSize === 30 && profile.catalog.batchIntervalMs === 1_000 && profile.catalog.maxAttempts === 450 &&
     profile.catalog.maxInFlight === 30 && profile.catalog.requestTimeoutMs === 7_000;
 }
@@ -3043,7 +3045,7 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
   const startWallMs = Date.now();
   const startMono = performance.now();
   const endMono = startMono + profile.durationMs;
-  const waveAdmissionLatenessMs = 150;
+  const waveAdmissionLatenessMs = profile.version === 4 ? profile.admissionLatenessMs : 150;
   const window: TrafficWindow = {
     startedAt: new Date(startWallMs).toISOString(),
     scheduledEndAt: new Date(startWallMs + profile.durationMs).toISOString(),
@@ -3336,7 +3338,7 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
     if (!localStop && performance.now() < endMono) await waitFor(endMono, 50);
   }
 
-  async function runCatalogWaves(waveProfile: TrafficProfileV2 | TrafficProfileV3): Promise<void> {
+  async function runCatalogWaves(waveProfile: TrafficProfileV2 | TrafficProfileV3 | TrafficProfileV4): Promise<void> {
     const batchSize = waveProfile.catalog.batchSize;
     const batchIntervalMs = waveProfile.catalog.batchIntervalMs;
     const catalogIntervalMs = batchIntervalMs / batchSize;
@@ -3378,7 +3380,7 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
       }
 
       const checkoutTick = checkoutTickAtWave(wave);
-      const serializeCheckpointCheckout = waveProfile.version === 3;
+      const serializeCheckpointCheckout = waveProfile.version === 3 || waveProfile.version === 4;
       if (serializeCheckpointCheckout && checkoutTick !== undefined && checkpointPending) await checkpointPending;
       if (localStop) break;
 
