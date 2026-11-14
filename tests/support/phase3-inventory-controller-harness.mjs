@@ -70,6 +70,31 @@ export const fixture = {
   accountConcurrentExecutions: 1000,
   accountOtherReservedConcurrency: 0,
   alarmReads: [],
+  cloudWatchRequests: [],
+  cloudWatchMode: 'values',
+  cloudWatchNextToken: undefined,
+  cloudWatchResultOrder: 'request',
+  cloudWatchMetricData: new Map(),
+  catalogFetches: [],
+  catalogInFlight: 0,
+  peakCatalogInFlight: 0,
+  catalogResponseDelayMs: 0,
+  catalogResponseMode: 'immediate',
+  catalogResponseStatuses: new Map(),
+  heldCatalogRequests: new Set(),
+  checkoutFetches: [],
+  checkoutInFlight: 0,
+  peakCheckoutInFlight: 0,
+  checkoutResponseDelayMs: 0,
+  checkoutNoResponseCount: 0,
+  checkoutDropMode: 'before-processing',
+  catalogObservationWrites: [],
+  catalogObservationWriteDelayMs: 0,
+  catalogObservationWriteFailure: false,
+  beforeCatalogObservationWrite: undefined,
+  stopReadFailureActionId: undefined,
+  stopReadFailureRemaining: 0,
+  stopReadFailures: [],
   unhandled: [],
   revision: appRevision,
   stackStatus: 'UPDATE_COMPLETE',
@@ -119,6 +144,19 @@ export function omitOriginalBaseline() {
 
 export function put(value) {
   records.set(value.pk, value);
+}
+
+export function resetProducerRunObservations() {
+  fixture.catalogFetches.length = 0;
+  fixture.catalogInFlight = 0;
+  fixture.peakCatalogInFlight = 0;
+  fixture.catalogResponseStatuses.clear();
+  fixture.heldCatalogRequests.clear();
+  fixture.checkoutFetches.length = 0;
+  fixture.checkoutInFlight = 0;
+  fixture.peakCheckoutInFlight = 0;
+  fixture.catalogObservationWrites.length = 0;
+  fixture.stopReadFailures.length = 0;
 }
 
 export function iamPolicyDocument() {
@@ -183,6 +221,31 @@ export function reset({ baselineRevision = appRevision, revision = appRevision, 
   fixture.accountConcurrentExecutions = 1000;
   fixture.accountOtherReservedConcurrency = 0;
   fixture.alarmReads.length = 0;
+  fixture.cloudWatchRequests.length = 0;
+  fixture.cloudWatchMode = 'values';
+  fixture.cloudWatchNextToken = undefined;
+  fixture.cloudWatchResultOrder = 'request';
+  fixture.cloudWatchMetricData.clear();
+  fixture.catalogFetches.length = 0;
+  fixture.catalogInFlight = 0;
+  fixture.peakCatalogInFlight = 0;
+  fixture.catalogResponseDelayMs = 0;
+  fixture.catalogResponseMode = 'immediate';
+  fixture.catalogResponseStatuses.clear();
+  fixture.heldCatalogRequests.clear();
+  fixture.checkoutFetches.length = 0;
+  fixture.checkoutInFlight = 0;
+  fixture.peakCheckoutInFlight = 0;
+  fixture.checkoutResponseDelayMs = 0;
+  fixture.checkoutNoResponseCount = 0;
+  fixture.checkoutDropMode = 'before-processing';
+  fixture.catalogObservationWrites.length = 0;
+  fixture.catalogObservationWriteDelayMs = 0;
+  fixture.catalogObservationWriteFailure = false;
+  fixture.beforeCatalogObservationWrite = undefined;
+  fixture.stopReadFailureActionId = undefined;
+  fixture.stopReadFailureRemaining = 0;
+  fixture.stopReadFailures.length = 0;
   fixture.unhandled.length = 0;
   fixture.revision = revision;
   fixture.stackStatus = 'UPDATE_COMPLETE';
@@ -319,6 +382,48 @@ export async function requestBody(request) {
   }
 }
 
+function cloudWatchQueries(body) {
+  return (body.MetricDataQueries ?? []).map((query) => ({
+    id: query.Id,
+    namespace: query.MetricStat?.Metric?.Namespace,
+    metricName: query.MetricStat?.Metric?.MetricName,
+    dimensions: (query.MetricStat?.Metric?.Dimensions ?? []).map(({ Name, Value }) => ({ name: Name, value: Value })),
+    periodSeconds: query.MetricStat?.Period,
+    statistic: query.MetricStat?.Stat,
+  }));
+}
+
+function cloudWatchResponse(body) {
+  const queries = cloudWatchQueries(body);
+  const request = {
+    protocol: 'json',
+    startTime: body.StartTime,
+    endTime: body.EndTime,
+    queries,
+  };
+  fixture.cloudWatchRequests.push(structuredClone(request));
+  if (fixture.cloudWatchMode === 'fail') {
+    return { __error: 'InternalServiceError', __errorProtocol: 'cloudwatch-json' };
+  }
+
+  const resultItems = queries.map((query, index) => {
+    const configured = fixture.cloudWatchMetricData.get(query.id);
+    const mode = fixture.cloudWatchMode;
+    const sparse = mode === 'sparse' && /^(Errors|Throttles|4xx|5xx)$/.test(query.metricName ?? '');
+    const timestamps = configured?.timestamps ?? (mode === 'empty' || sparse ? [] : [request.startTime]);
+    const values = configured?.values ?? (mode === 'empty' || sparse ? [] : [index + 1]);
+    const statusCode = configured?.statusCode ?? (mode === 'partial' && index === 0 ? 'PartialData' : 'Complete');
+    return { id: query.id, label: query.metricName, timestamps, values, statusCode };
+  });
+  if (fixture.cloudWatchResultOrder === 'reverse') resultItems.reverse();
+  return { __json: {
+    MetricDataResults: resultItems.map(({ id, label, timestamps, values, statusCode }) => ({
+      Id: id, Label: label, Timestamps: timestamps, Values: values, StatusCode: statusCode,
+    })),
+    ...(fixture.cloudWatchNextToken ? { NextToken: fixture.cloudWatchNextToken } : {}),
+  } };
+}
+
 function noteBusinessRequest(operation, body) {
   const count = (fixture.businessOperationCounts.get(operation) ?? 0) + 1;
   fixture.businessOperationCounts.set(operation, count);
@@ -413,6 +518,7 @@ async function businessScan(body) {
 export async function awsProtocol(request, body) {
   const action = typeof body.Action === 'string' ? body.Action : '';
   const target = request.headers['x-amz-target'] ?? (action ? `CloudFormation_${action}` : '');
+  if (target.endsWith('GetMetricData') && request.method === 'POST') return cloudWatchResponse(body);
   if (!target && request.method === 'GET' && request.url.includes('/account-settings')) {
     const reserved = [fixture.inventoryConcurrency, fixture.checkoutConcurrency]
       .filter((value) => Number.isSafeInteger(value) && value > 0)
@@ -433,7 +539,14 @@ export async function awsProtocol(request, body) {
   }
   if (target.endsWith('GetItem')) {
     if (body.TableName === runTable) {
-      const item = row(body.Key?.pk?.S);
+      const key = body.Key?.pk?.S;
+      const item = row(key);
+      if (key === `ACTION#${fixture.stopReadFailureActionId}` && fixture.stopReadFailureRemaining > 0 &&
+          item?.data?.trafficProfile?.name === 'inventory_surge' && item.data.stopRequested) {
+        fixture.stopReadFailureRemaining--;
+        fixture.stopReadFailures.push({ actionId: fixture.stopReadFailureActionId, at: new Date().toISOString() });
+        return { __error: 'AccessDeniedException' };
+      }
       return item ? { Item: marshall(item, { removeUndefinedValues: true }) } : {};
     }
     if (body.TableName === table) {
@@ -459,6 +572,34 @@ export async function awsProtocol(request, body) {
     const writes = body.TransactItems?.map(({ Put }) => Put).filter(Boolean) ?? [];
     assert.ok(writes.length > 0, 'controller journal transaction must include puts');
     assert.ok(writes.every((write) => write.TableName === runTable), 'controller journal writes must stay in the fixture table');
+    const observationItems = writes.map((write) => unmarshall(write.Item)).filter((item) => {
+      const observation = item.data?.catalogObservation;
+      const previous = row(item.pk)?.data?.catalogObservation;
+      return item.pk?.startsWith('ACTION#') && item.data?.trafficProfile?.name === 'inventory_surge' &&
+        item.data?.trafficWindow?.startedAt && observation?.observedThrough && Array.isArray(observation?.bins) &&
+        JSON.stringify(observation) !== JSON.stringify(previous);
+    });
+    for (const item of observationItems) {
+      const observation = item.data.catalogObservation;
+      const entry = {
+        actionId: item.data.id,
+        observedThrough: observation.observedThrough,
+        status: observation.status,
+        bins: structuredClone(observation.bins),
+        startedAt: new Date().toISOString(),
+        startedAtMs: performance.now(),
+      };
+      fixture.catalogObservationWrites.push(entry);
+      if (typeof fixture.beforeCatalogObservationWrite === 'function') {
+        await fixture.beforeCatalogObservationWrite(structuredClone(entry));
+      }
+      if (fixture.catalogObservationWriteDelayMs > 0) {
+        await new Promise((resolveDelay) => setTimeout(resolveDelay, fixture.catalogObservationWriteDelayMs));
+      }
+      entry.completedAtMs = performance.now();
+      entry.completedAt = new Date().toISOString();
+      if (fixture.catalogObservationWriteFailure) return { __error: 'AccessDeniedException' };
+    }
     for (const write of writes) {
       const item = unmarshall(write.Item);
       const existing = row(item.pk);
@@ -737,6 +878,9 @@ export async function startAwsServer() {
         } else if (result.__errorProtocol === 's3') {
           response.writeHead(404, { 'content-type': 'application/xml', 'x-amz-request-id': 'fixture-s3-error' });
           response.end(`<Error><Code>${result.__error}</Code><Message>${result.__error}</Message></Error>`);
+        } else if (result.__errorProtocol === 'cloudwatch-json') {
+          response.writeHead(400, { 'content-type': 'application/x-amz-json-1.0', 'x-amzn-errortype': result.__error });
+          response.end(JSON.stringify({ __type: `com.amazonaws.monitoring#${result.__error}`, message: 'Fixture CloudWatch provider failure' }));
         } else {
           response.writeHead(400, { 'content-type': 'application/x-amz-json-1.0', 'x-amzn-errortype': result.__error });
           response.end(JSON.stringify({ __type: `com.amazonaws.dynamodbv20120810#${result.__error}`, message: result.__error,
@@ -752,6 +896,9 @@ export async function startAwsServer() {
       } else if (result.__xml) {
         response.writeHead(200, { 'content-type': 'text/xml' });
         response.end(result.__xml);
+      } else if (result.__json) {
+        response.writeHead(200, { 'content-type': 'application/x-amz-json-1.0' });
+        response.end(JSON.stringify(result.__json));
       } else if (result.__s3Body !== undefined) {
         response.writeHead(200, { 'content-type': 'application/json', etag: 'fixture-etag' });
         response.end(result.__s3Body);
@@ -858,12 +1005,92 @@ export function appFetch(url, init = {}) {
   assert.equal(target.origin, appApi, 'worker app requests must stay on the controlled fixture origin');
   const method = init.method ?? 'GET';
   const body = init.body ? JSON.parse(init.body) : undefined;
-  const request = { url: String(url), method, path: target.pathname, body };
+  const startedAtMs = performance.now();
+  const durableCheckoutBeforeFetch = method === 'POST' && target.pathname === '/api/checkout' &&
+    [...records.values()].some((item) => item.data?.requests?.some((saved) => saved.checkout?.checkoutId === body?.checkoutId));
+  const currentActionId = row('STATE')?.data?.currentActionId;
+  const currentAction = currentActionId ? row(`ACTION#${currentActionId}`)?.data : undefined;
+  const request = { url: String(url), method, path: target.pathname, body,
+    startedAt: new Date().toISOString(), startedAtMs,
+    ...(method === 'POST' && target.pathname === '/api/checkout' ? { durableCheckoutBeforeFetch } : {}),
+    ...(method === 'GET' && target.pathname === '/api/products' && currentAction?.trafficProfile?.name === 'inventory_surge'
+      ? { surgeContextBeforeFetch: Boolean(currentAction.trafficContext && currentAction.trafficWindow?.startedAt) } : {}) };
   fixture.appRequests.push(request);
-  if (fixture.appMode === 'hold') {
-    return new Promise((resolveResponse) => fixture.heldRequests.add(() => resolveResponse(appReply(target.pathname, method, body))));
+  const isCatalog = method === 'GET' && target.pathname === '/api/products';
+  const isCheckout = method === 'POST' && target.pathname === '/api/checkout';
+  let catalogFetch;
+  let checkoutFetch;
+  if (isCatalog) {
+    fixture.catalogInFlight++;
+    fixture.peakCatalogInFlight = Math.max(fixture.peakCatalogInFlight, fixture.catalogInFlight);
+    catalogFetch = {
+      ordinal: fixture.catalogFetches.length + 1,
+      url: String(url),
+      startedAt: request.startedAt,
+      startedAtMs,
+      inFlightAtStart: fixture.catalogInFlight,
+    };
+    fixture.catalogFetches.push(catalogFetch);
   }
-  return Promise.resolve(appReply(target.pathname, method, body));
+  if (isCheckout) {
+    fixture.checkoutInFlight++;
+    fixture.peakCheckoutInFlight = Math.max(fixture.peakCheckoutInFlight, fixture.checkoutInFlight);
+    checkoutFetch = {
+      ordinal: fixture.checkoutFetches.length + 1,
+      checkoutId: body?.checkoutId,
+      startedAt: request.startedAt,
+      startedAtMs,
+      inFlightAtStart: fixture.checkoutInFlight,
+      durableBeforeFetch: durableCheckoutBeforeFetch,
+    };
+    fixture.checkoutFetches.push(checkoutFetch);
+  }
+  const finish = (response) => {
+    if (catalogFetch && catalogFetch.completedAt === undefined) {
+      catalogFetch.completedAt = new Date().toISOString();
+      catalogFetch.completedAtMs = performance.now();
+      catalogFetch.status = response.status;
+      catalogFetch.outcome = response.status >= 200 && response.status < 300 ? 'success' : 'failure';
+      fixture.catalogInFlight--;
+    }
+    if (checkoutFetch && checkoutFetch.completedAt === undefined) {
+      checkoutFetch.completedAt = new Date().toISOString();
+      checkoutFetch.completedAtMs = performance.now();
+      checkoutFetch.status = response.status;
+      fixture.checkoutInFlight--;
+    }
+    return response;
+  };
+  const reply = () => {
+    if (catalogFetch && fixture.catalogResponseStatuses.has(catalogFetch.ordinal)) {
+      return finish(appResponse(fixture.catalogResponseStatuses.get(catalogFetch.ordinal), { code: 'FIXTURE_CATALOG_STATUS' }));
+    }
+    return finish(appReply(target.pathname, method, body));
+  };
+  if (method === 'POST' && target.pathname === '/api/checkout' && fixture.checkoutNoResponseCount > 0) {
+    fixture.checkoutNoResponseCount--;
+    if (fixture.checkoutDropMode === 'after-commit') appReply(target.pathname, method, body);
+    if (checkoutFetch) {
+      checkoutFetch.completedAt = new Date().toISOString();
+      checkoutFetch.completedAtMs = performance.now();
+      checkoutFetch.status = undefined;
+      fixture.checkoutInFlight--;
+    }
+    return Promise.reject(new Error('Fixture dropped the Checkout response'));
+  }
+  const holdAll = fixture.appMode === 'hold';
+  const holdCatalog = isCatalog && fixture.catalogResponseMode === 'hold' && !holdAll;
+  if (holdAll || holdCatalog) {
+    return new Promise((resolveResponse) => {
+      const release = () => resolveResponse(reply());
+      (holdCatalog ? fixture.heldCatalogRequests : fixture.heldRequests).add(release);
+    });
+  }
+  const delayMs = isCatalog ? fixture.catalogResponseDelayMs : isCheckout ? fixture.checkoutResponseDelayMs : 0;
+  if (delayMs > 0) {
+    return new Promise((resolveResponse) => setTimeout(() => resolveResponse(reply()), delayMs));
+  }
+  return Promise.resolve(reply());
 }
 
 export function releaseHeld() {
@@ -871,6 +1098,12 @@ export function releaseHeld() {
   fixture.heldReleaseMode = undefined;
   for (const release of fixture.heldRequests) release();
   fixture.heldRequests.clear();
+  releaseHeldCatalog();
+}
+
+export function releaseHeldCatalog() {
+  for (const release of fixture.heldCatalogRequests) release();
+  fixture.heldCatalogRequests.clear();
 }
 
 export async function call(api, method, path, body, expected) {
