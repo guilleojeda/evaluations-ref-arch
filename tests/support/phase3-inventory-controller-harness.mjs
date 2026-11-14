@@ -92,6 +92,15 @@ export const fixture = {
   catalogObservationWriteDelayMs: 0,
   catalogObservationWriteFailure: false,
   beforeCatalogObservationWrite: undefined,
+  admissionReadDelayActionId: undefined,
+  admissionReadDelayRemaining: 0,
+  admissionReadDelayMs: 0,
+  admissionReadDelayCheckoutCount: 0,
+  admissionReadDelayStarted: false,
+  checkoutReservationDelayActionId: undefined,
+  checkoutReservationDelayCount: 0,
+  checkoutReservationDelayMs: 0,
+  checkoutReservationDelayStarted: false,
   stopReadFailureActionId: undefined,
   stopReadFailureRemaining: 0,
   stopReadFailures: [],
@@ -243,6 +252,15 @@ export function reset({ baselineRevision = appRevision, revision = appRevision, 
   fixture.catalogObservationWriteDelayMs = 0;
   fixture.catalogObservationWriteFailure = false;
   fixture.beforeCatalogObservationWrite = undefined;
+  fixture.admissionReadDelayActionId = undefined;
+  fixture.admissionReadDelayRemaining = 0;
+  fixture.admissionReadDelayMs = 0;
+  fixture.admissionReadDelayCheckoutCount = 0;
+  fixture.admissionReadDelayStarted = false;
+  fixture.checkoutReservationDelayActionId = undefined;
+  fixture.checkoutReservationDelayCount = 0;
+  fixture.checkoutReservationDelayMs = 0;
+  fixture.checkoutReservationDelayStarted = false;
   fixture.stopReadFailureActionId = undefined;
   fixture.stopReadFailureRemaining = 0;
   fixture.stopReadFailures.length = 0;
@@ -540,12 +558,24 @@ export async function awsProtocol(request, body) {
   if (target.endsWith('GetItem')) {
     if (body.TableName === runTable) {
       const key = body.Key?.pk?.S;
-      const item = row(key);
+      let item = row(key);
       if (key === `ACTION#${fixture.stopReadFailureActionId}` && fixture.stopReadFailureRemaining > 0 &&
           item?.data?.trafficProfile?.name === 'inventory_surge' && item.data.stopRequested) {
         fixture.stopReadFailureRemaining--;
         fixture.stopReadFailures.push({ actionId: fixture.stopReadFailureActionId, at: new Date().toISOString() });
         return { __error: 'AccessDeniedException' };
+      }
+      if (key === `ACTION#${fixture.admissionReadDelayActionId}` && fixture.admissionReadDelayRemaining > 0 &&
+          item?.data?.trafficProfile?.name === 'inventory_surge' &&
+          item.data.requests?.some((entry) => entry.kind === 'checkout' && !entry.completedAt) &&
+          (fixture.admissionReadDelayCheckoutCount === 0 ||
+            item.data.requests.filter((entry) => entry.kind === 'checkout').length === fixture.admissionReadDelayCheckoutCount)) {
+        fixture.admissionReadDelayRemaining--;
+        fixture.admissionReadDelayStarted = true;
+        if (fixture.admissionReadDelayMs > 0) {
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, fixture.admissionReadDelayMs));
+        }
+        item = row(key);
       }
       return item ? { Item: marshall(item, { removeUndefinedValues: true }) } : {};
     }
@@ -572,6 +602,7 @@ export async function awsProtocol(request, body) {
     const writes = body.TransactItems?.map(({ Put }) => Put).filter(Boolean) ?? [];
     assert.ok(writes.length > 0, 'controller journal transaction must include puts');
     assert.ok(writes.every((write) => write.TableName === runTable), 'controller journal writes must stay in the fixture table');
+    const observationEntries = [];
     const observationItems = writes.map((write) => unmarshall(write.Item)).filter((item) => {
       const observation = item.data?.catalogObservation;
       const previous = row(item.pk)?.data?.catalogObservation;
@@ -586,10 +617,15 @@ export async function awsProtocol(request, body) {
         observedThrough: observation.observedThrough,
         status: observation.status,
         bins: structuredClone(observation.bins),
+        catalogCounters: structuredClone(item.data.traffic.catalog),
+        outcomes: structuredClone(observation.outcomes),
+        skips: structuredClone(observation.skips),
         startedAt: new Date().toISOString(),
         startedAtMs: performance.now(),
+        committed: false,
       };
       fixture.catalogObservationWrites.push(entry);
+      observationEntries.push(entry);
       if (typeof fixture.beforeCatalogObservationWrite === 'function') {
         await fixture.beforeCatalogObservationWrite(structuredClone(entry));
       }
@@ -598,16 +634,21 @@ export async function awsProtocol(request, body) {
       }
       entry.completedAtMs = performance.now();
       entry.completedAt = new Date().toISOString();
-      if (fixture.catalogObservationWriteFailure) return { __error: 'AccessDeniedException' };
+      if (fixture.catalogObservationWriteFailure) {
+        entry.outcome = 'write_failed';
+        return { __error: 'AccessDeniedException' };
+      }
     }
     for (const write of writes) {
       const item = unmarshall(write.Item);
       const existing = row(item.pk);
       if (write.ConditionExpression === 'attribute_not_exists(pk)' && existing) {
+        for (const entry of observationEntries) entry.outcome = 'conditional_failed';
         return { __error: 'TransactionCanceledException' };
       }
       if (write.ConditionExpression?.includes('#revision = :previous') &&
           (!existing || String(existing.revision) !== String(write.ExpressionAttributeValues?.[':previous']?.N))) {
+        for (const entry of observationEntries) entry.outcome = 'conditional_failed';
         return { __error: 'TransactionCanceledException' };
       }
     }
@@ -619,7 +660,25 @@ export async function awsProtocol(request, body) {
         return { __error: 'AccessDeniedException' };
       }
     }
+    const delayedReservation = writes.map((write) => unmarshall(write.Item)).find((item) => {
+      if (item.pk !== `ACTION#${fixture.checkoutReservationDelayActionId}` ||
+          item.data?.trafficProfile?.name !== 'inventory_surge') return false;
+      const previous = row(item.pk)?.data?.requests ?? [];
+      const priorIds = new Set(previous.map(({ id }) => id));
+      const newlyReserved = item.data.requests?.filter((entry) => entry.kind === 'checkout' && !entry.completedAt &&
+        !priorIds.has(entry.id)) ?? [];
+      const checkoutCount = item.data.requests?.filter((entry) => entry.kind === 'checkout').length ?? 0;
+      return newlyReserved.length > 0 && checkoutCount === fixture.checkoutReservationDelayCount;
+    });
     for (const write of writes) put(unmarshall(write.Item));
+    for (const entry of observationEntries) {
+      entry.committed = true;
+      entry.outcome = 'committed';
+    }
+    if (delayedReservation && fixture.checkoutReservationDelayMs > 0) {
+      fixture.checkoutReservationDelayStarted = true;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, fixture.checkoutReservationDelayMs));
+    }
     return {};
   }
   if (target.endsWith('PutItem')) {
@@ -1014,7 +1073,7 @@ export function appFetch(url, init = {}) {
     startedAt: new Date().toISOString(), startedAtMs,
     ...(method === 'POST' && target.pathname === '/api/checkout' ? { durableCheckoutBeforeFetch } : {}),
     ...(method === 'GET' && target.pathname === '/api/products' && currentAction?.trafficProfile?.name === 'inventory_surge'
-      ? { surgeContextBeforeFetch: Boolean(currentAction.trafficContext && currentAction.trafficWindow?.startedAt) } : {}) };
+      ? { surgeContextBeforeFetch: Boolean(currentAction.trafficProfile && currentAction.trafficContext && currentAction.trafficApiId) } : {}) };
   fixture.appRequests.push(request);
   const isCatalog = method === 'GET' && target.pathname === '/api/products';
   const isCheckout = method === 'POST' && target.pathname === '/api/checkout';

@@ -1,6 +1,6 @@
 export type Command =
   | { kind: "readiness"; confirmQuiet: true }
-  | { kind: "traffic" }
+  | { kind: "traffic"; profile?: "inventory_surge" }
   | { kind: "reset"; confirmQuiet: true; confirmReset: true; confirmCheckoutClosed: true }
   | { kind: "increase_capacity"; function: "inventory"; reservedConcurrency: number }
   | { kind: "increase_memory"; function: "inventory"; memoryMb: number }
@@ -21,6 +21,78 @@ export type ActionStatus =
 export type ResetPhase = "stopping" | "draining" | "validating" | "capturing" | "restoring"
   | "seeding" | "deleting" | "verifying" | "verified";
 export type Profile = "catalog" | "checkout";
+export type CatalogOutcome = "success" | "http4xx" | "http5xx" | "invalidResponse" | "noResponse";
+export type CatalogSkip = "late" | "full" | "checkpoint";
+
+export interface TrafficProfileSnapshot {
+  name: "inventory_surge";
+  version: 1;
+  durationMs: 15_000;
+  catalog: {
+    ratePerSecond: 240;
+    maxAttempts: 3_600;
+    maxInFlight: 128;
+    requestTimeoutMs: 7_000;
+  };
+  checkout: {
+    intervalMs: 1_000;
+    maxAttempts: 15;
+    maxInFlight: 2;
+    requestTimeoutMs: 7_000;
+  };
+}
+
+export interface TrafficContext {
+  appRevision: string;
+  productVersion: string;
+  inventory: {
+    cap: number | "unreserved";
+    aliasVersion: string;
+    access: InventoryAccess;
+    memoryMb: number;
+  };
+  checkout: {
+    cap: number | "unreserved";
+    aliasVersion: string;
+    memoryMb: number;
+  };
+}
+
+export interface TrafficWindow {
+  startedAt: string;
+  scheduledEndAt: string;
+  stopObservedAt?: string;
+  producerStoppedAt?: string;
+  settledAt?: string;
+  stopReason?: "duration" | "requested" | "deadline" | "observation_failure";
+}
+
+export interface CatalogOutcomes extends Record<CatalogOutcome, number> {}
+
+export interface CatalogSkips extends Record<CatalogSkip, number> {}
+
+export interface CatalogBin {
+  offsetMs: number;
+  durationMs: 1_000;
+  observedDurationMs: number;
+  submitted: number;
+  completed: number;
+  succeeded: number;
+  skipped: number;
+  outcomes: CatalogOutcomes;
+}
+
+export interface CatalogObservation {
+  observedThrough: string;
+  status: "partial" | "complete";
+  peakInFlight: number;
+  outcomes: CatalogOutcomes;
+  skips: CatalogSkips;
+  bins: CatalogBin[];
+  samples: RequestRecord[];
+  sampleRule: "first8_last8_first8_failed";
+  samplesTruncated: boolean;
+}
 
 export interface Counters {
   submitted: number;
@@ -94,7 +166,7 @@ export interface RequestRecord {
   requestId?: string;
   errorCode?: string;
   dependencyReason?: string;
-  outcome?: "success" | "rejected" | "failed" | "unknown";
+  outcome?: "success" | "rejected" | "failed" | "unknown" | "not_sent";
 }
 
 export type PolicyState = "absent" | "present" | "unknown";
@@ -257,6 +329,12 @@ export interface Action {
   finishedAt?: string;
   stopRequested?: boolean;
   traffic?: Record<Profile, Counters>;
+  trafficProfile?: TrafficProfileSnapshot;
+  trafficContext?: TrafficContext;
+  trafficApiId?: string;
+  trafficWindow?: TrafficWindow;
+  catalogObservation?: CatalogObservation;
+  previousSurgeActionId?: string;
   requests: RequestRecord[];
   baseline?: Baseline;
   configurationCheckpoint?: ConfigurationCheckpoint;
@@ -312,6 +390,7 @@ export interface RunState {
   currentActionId?: string;
   /** The configuration lane is independent from the primary traffic/readiness lane. */
   configurationActionId?: string;
+  lastSurgeActionId?: string;
   baseline: Baseline | null;
   originalBaseline?: Baseline;
   inventoryAliasUnknown?: boolean;

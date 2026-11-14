@@ -136,6 +136,7 @@ class InventoryCapacityEvidenceTests(unittest.TestCase):
         boundary = FakeAWSBoundary()
         gateway_log = {
             "requestId": REQUEST_ID,
+            "requestTimeEpoch": "1795000000000",
             "routeKey": "GET /api/products",
             "status": "502",
             "integrationStatus": "200",
@@ -178,6 +179,7 @@ class InventoryCapacityEvidenceTests(unittest.TestCase):
         gateway_fields = gateway["observations"][0]["fields"]
         for field, expected in {
             "requestId": REQUEST_ID,
+            "requestTimeEpoch": "1795000000000",
             "routeKey": "GET /api/products",
             "status": "502",
             "integrationStatus": "200",

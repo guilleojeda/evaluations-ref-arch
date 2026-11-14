@@ -163,6 +163,9 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
       ['unexplained Inventory cap drift', () => {
         fixture.inventoryConcurrency = 48;
       }],
+      ['changed current productVersion', () => {
+        fixture.appProductVersion = 'fixture-product-v2';
+      }],
       ['unresolved checkout', () => {
         row('STATE').data.unresolved.push({
           checkoutId: 'phase10-unknown-checkout', sku: 'demo-widget', quantity: 1,
@@ -196,6 +199,46 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
     }
   });
 
+  await t.test('surge rejects a deadline that cannot cover the full window and bounded drain', async () => {
+    await prepareReady(context);
+    const { id } = await startSurge(context.api);
+    row(`ACTION#${id}`).data.deadlineAt = Date.now() + 20_000;
+    const appRequestCount = fixture.appRequests.length;
+    await context.worker.handler({ actionId: id });
+    const action = await getAction(context.api, id);
+    assert.equal(action.status, 'failed', action.error);
+    assert.ok(action.trafficContext, 'the worker may save its preflight context before rejecting the shortened deadline');
+    assert.equal(action.trafficWindow, undefined, 'no production window starts without the full 15s plus drain budget');
+    assert.equal(fixture.appRequests.length, appRequestCount, 'the rejected deadline sends no app traffic');
+    assert.equal(fixture.catalogFetches.length, 0);
+    assert.equal(fixture.checkoutFetches.length, 0);
+    assert.deepEqual(fixture.unhandled, []);
+  });
+
+  await t.test('ordinary traffic keeps its existing producer window and saves worker-observed attribution', { timeout: 45_000 }, async () => {
+    const ready = await prepareReady(context);
+    const requestStart = fixture.appRequests.length;
+    const id = randomUUID();
+    await call(context.api, 'PUT', `/api/actions/${id}`, { kind: 'traffic' }, 202);
+    await context.worker.handler({ actionId: id });
+    const action = await getAction(context.api, id);
+    assert.equal(action.status, 'completed', action.error);
+    assert.equal(action.trafficProfile, undefined, 'ordinary traffic does not acquire a surge profile');
+    assert.equal(action.trafficWindow, undefined, 'ordinary traffic retains its existing 15-second action shape');
+    assert.equal(action.trafficApiId, 'fixtureapi');
+    assert.deepEqual(action.trafficContext, {
+      appRevision,
+      productVersion: ready.state.baseline.productVersion,
+      inventory: { cap: 16, aliasVersion: healthyVersion, access: 'healthy', memoryMb: 256 },
+      checkout: { cap: 'unreserved', aliasVersion: healthyVersion, memoryMb: 256 },
+    });
+    const requests = fixture.appRequests.slice(requestStart);
+    assert.equal(requests.filter(({ method, path }) => method === 'GET' && path === '/api/products').length, 15);
+    assert.equal(requests.filter(({ method, path }) => method === 'POST' && path === '/api/checkout').length, 15);
+    assert.equal(action.requests.length, 30, 'ordinary traffic keeps its durable per-request history');
+    assert.deepEqual(fixture.unhandled, []);
+  });
+
   await t.test('one finite surge records actual fetches, cohort outcomes, a bounded sample, and durable checkouts', { timeout: 75_000 }, async () => {
     const ready = await prepareReady(context);
     fixture.catalogResponseDelayMs = 100;
@@ -227,11 +270,18 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
         inventory: { cap: 16, aliasVersion: healthyVersion, access: 'healthy', memoryMb: 256 },
         checkout: { cap: 'unreserved', aliasVersion: healthyVersion, memoryMb: 256 },
       }, 'the worker records freshly observed release and current settings before production');
+      assert.equal(action.trafficApiId, 'fixtureapi', 'the worker derives and saves the trusted API ID before surge sends');
       assert.equal(action.status, 'completed', action.error);
       assert.equal(action.trafficWindow.stopReason, 'duration');
       assert.ok(Date.parse(action.trafficWindow.producerStoppedAt) >= Date.parse(action.trafficWindow.scheduledEndAt));
       assert.ok(Date.parse(action.trafficWindow.settledAt) >= Date.parse(action.trafficWindow.producerStoppedAt));
       assert.equal(Date.parse(action.trafficWindow.scheduledEndAt) - Date.parse(action.trafficWindow.startedAt), surgeProfile.durationMs);
+      const firstCatalogFetch = fixture.catalogFetches[0];
+      const windowStartMono = Date.parse(action.trafficWindow.startedAt) - performance.timeOrigin;
+      assert.ok(firstCatalogFetch.startedAtMs >= windowStartMono - 2,
+        'the recorded producer window does not start after the first catalog dispatch');
+      assert.ok(firstCatalogFetch.startedAtMs - windowStartMono < 100,
+        'the window start is aligned with the first source dispatch after worker preflight');
       assert.equal(observation.status, 'complete');
       assert.equal(fixture.catalogFetches.length, catalog.submitted, 'submitted counts actual GET starts, not intended ticks');
       assert.equal(fixture.catalogFetches.length, catalog.completed, 'a completed action drains every actual GET');
@@ -316,7 +366,10 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
     const execution = context.worker.handler({ actionId: id });
     try {
       await waitFor('the held surge to fill its real catalog slots', () => fixture.catalogFetches.length >= surgeProfile.catalog.maxInFlight, 25_000);
-      const full = await getAction(context.api, id);
+      const full = await waitFor('the first periodic snapshot of held catalog slots', async () => {
+        const action = await getAction(context.api, id);
+        return action.traffic.catalog.inFlight === surgeProfile.catalog.maxInFlight ? action : undefined;
+      });
       assert.equal(full.traffic.catalog.inFlight, surgeProfile.catalog.maxInFlight);
       assert.equal(fixture.peakCatalogInFlight, surgeProfile.catalog.maxInFlight);
       await waitFor('full-slot skips to be recorded', async () => (await getAction(context.api, id)).traffic.catalog.skipped > 0);
@@ -393,35 +446,136 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
     fixture.catalogResponseDelayMs = 80;
     fixture.catalogObservationWriteDelayMs = 300;
     fixture.beforeCatalogObservationWrite = async () => {
-      if (fixture.catalogObservationWrites.length >= 3) fixture.catalogObservationWriteFailure = true;
+      if (fixture.catalogObservationWrites.filter(({ committed }) => committed).length >= 2) {
+        fixture.catalogObservationWriteFailure = true;
+      }
     };
     fixture.checkoutNoResponseCount = 1;
     const { id } = await startSurge(context.api);
     const execution = context.worker.handler({ actionId: id });
-    await waitFor('the first persisted catalog checkpoint', () =>
-      fixture.catalogObservationWrites.length >= 1 && fixture.catalogObservationWrites[0].completedAtMs !== undefined);
-    await waitFor('two successful periodic observations and the targeted third write', () =>
-      fixture.catalogObservationWrites.length >= 3 && fixture.catalogObservationWrites[1].completedAtMs !== undefined);
     await execution;
+    const persistedWrites = fixture.catalogObservationWrites.filter(({ committed }) => committed);
+    const failedWrites = fixture.catalogObservationWrites.filter(({ outcome }) => outcome === 'write_failed');
 
     const saved = await getAction(context.api, id);
     assert.equal(saved.status, 'incomplete', saved.error);
     assert.equal(saved.trafficWindow.stopReason, 'observation_failure');
     assert.equal(saved.catalogObservation.status, 'partial');
-    assert.equal(saved.catalogObservation.observedThrough, fixture.catalogObservationWrites[1].observedThrough,
+    assert.ok(persistedWrites.length >= 2, 'two periodic observations committed before the selected failure');
+    assert.ok(failedWrites.length >= 1, 'a later catalog observation was rejected by the fixture');
+    const lastSuccessful = persistedWrites.at(-1);
+    assert.equal(saved.catalogObservation.observedThrough, lastSuccessful.observedThrough,
       'the public snapshot remains at the last successful checkpoint');
-    assert.ok(saved.catalogObservation.skips.checkpoint > 0, 'elapsed ordinals during slow persistence are counted as checkpoint skips');
-    assert.ok(fixture.catalogObservationWrites[1].completedAtMs - fixture.catalogObservationWrites[1].startedAtMs >= 250,
+    assert.ok(saved.catalogObservation.skips.checkpoint > 0,
+      `elapsed ordinals during slow persistence are counted as checkpoint skips: ${JSON.stringify({
+        skips: saved.catalogObservation.skips,
+        writes: fixture.catalogObservationWrites.map(({ observedThrough, startedAt, completedAtMs, startedAtMs, skips, catalogCounters }) =>
+          ({ observedThrough, startedAt, durationMs: completedAtMs === undefined ? undefined : completedAtMs - startedAtMs, skips, catalogCounters })),
+      })}`);
+    assert.ok(lastSuccessful.completedAtMs - lastSuccessful.startedAtMs >= 250,
       'the fixture delayed the real observation transaction rather than changing the producer clock');
     const unknown = saved.requests.find(({ kind, outcome }) => kind === 'checkout' && outcome === 'unknown');
     assert.ok(unknown?.checkout?.checkoutId);
     assert.ok((await getState(context.api)).unresolved.some(({ checkoutId }) => checkoutId === unknown.checkout.checkoutId),
       'observation failure preserves an unresolved checkout ID');
+    for (const write of persistedWrites.slice(0, 2)) {
+      const sumBins = (field) => write.bins.reduce((total, bin) => total + bin[field], 0);
+      assert.equal(write.catalogCounters.submitted, sumBins('submitted'),
+        'the action counters and cohort snapshot share one submission boundary');
+      assert.equal(write.catalogCounters.completed, sumBins('completed'),
+        'the action counters and cohort snapshot share one completion boundary');
+      assert.equal(write.catalogCounters.succeeded, sumBins('succeeded'));
+      assert.equal(write.catalogCounters.skipped, sumBins('skipped'));
+      assert.equal(sum(Object.values(write.skips)), write.catalogCounters.skipped);
+      for (const name of outcomeNames) {
+        assert.equal(write.outcomes[name], write.bins.reduce((total, bin) => total + bin.outcomes[name], 0),
+          `the ${name} aggregate and start cohorts come from the same checkpoint`);
+      }
+    }
     const fetchCount = fixture.catalogFetches.length;
     await context.worker.handler({ actionId: id });
     assert.equal(fixture.catalogFetches.length, fetchCount, 'incomplete action redelivery does not replay the producer');
     assert.ok(fixture.catalogFetches.every(({ completedAt }) => completedAt), 'all requests accepted before failure were drained');
     assert.deepEqual(fixture.unhandled, []);
+  });
+
+  await t.test('Stop during Checkout admission cancels the durable reservation without a fetch or unresolved ID', async () => {
+    await prepareReady(context);
+    fixture.catalogResponseMode = 'hold';
+    const { id } = await startSurge(context.api);
+    fixture.admissionReadDelayActionId = id;
+    fixture.admissionReadDelayRemaining = 1;
+    fixture.admissionReadDelayMs = 300;
+    const execution = context.worker.handler({ actionId: id });
+    try {
+      await waitFor('the post-reservation admission read', () => fixture.admissionReadDelayStarted, 5_000);
+      assert.equal(fixture.checkoutFetches.length, 0, 'the reservation is durable before the fetch admission check');
+      const stopId = randomUUID();
+      await call(context.api, 'PUT', `/api/actions/${stopId}`, { kind: 'stop', targetActionId: id }, 202);
+      await waitFor('producer closure after the concurrent Stop', async () =>
+        (await getAction(context.api, id)).trafficWindow?.producerStoppedAt);
+      releaseHeldCatalog();
+      await execution;
+      const action = await getAction(context.api, id);
+      const cancelled = action.requests.find(({ kind, outcome }) => kind === 'checkout' && outcome === 'not_sent');
+      assert.ok(cancelled?.checkout?.checkoutId, 'the immutable reserved payload remains auditable');
+      assert.equal(cancelled.completedAt !== undefined, true);
+      assert.equal(cancelled.statusCode, undefined, 'known-not-sent does not invent an HTTP response');
+      assert.equal(action.traffic.checkout.submitted, fixture.checkoutFetches.length,
+        'submitted counts only actual fetches');
+      assert.equal(action.traffic.checkout.completed, fixture.checkoutFetches.length,
+        'completed counts only actual fetch responses');
+      assert.equal(action.traffic.checkout.skipped, 1, 'the canceled scheduled tick is reported as skipped');
+      assert.equal(action.traffic.checkout.inFlight, 0);
+      assert.equal((await getState(context.api)).unresolved.some(({ checkoutId }) => checkoutId === cancelled.checkout.checkoutId), false,
+        'a known-unsent checkout is not left unresolved');
+      assert.deepEqual(fixture.unhandled, []);
+    } finally {
+      fixture.catalogResponseMode = 'immediate';
+      releaseHeldCatalog();
+      await execution;
+    }
+  });
+
+  await t.test('a Stop observed after the scheduled end does not move the producer closure time', { timeout: 35_000 }, async () => {
+    await prepareReady(context);
+    const { id } = await startSurge(context.api);
+    fixture.checkoutReservationDelayActionId = id;
+    fixture.checkoutReservationDelayCount = surgeProfile.checkout.maxAttempts;
+    fixture.checkoutReservationDelayMs = 2_500;
+    const execution = context.worker.handler({ actionId: id });
+    try {
+      await waitFor('the final durable checkout reservation to pause before admission', () =>
+        fixture.checkoutReservationDelayStarted, 20_000);
+      const running = await getAction(context.api, id);
+      assert.ok(running.trafficWindow?.scheduledEndAt, 'the actual producer window is already persisted');
+      const scheduledEnd = Date.parse(running.trafficWindow.scheduledEndAt);
+      await waitFor('the scheduled production end to pass', () => Date.now() >= scheduledEnd + 150, 3_000);
+      const stopId = randomUUID();
+      await call(context.api, 'PUT', `/api/actions/${stopId}`, { kind: 'stop', targetActionId: id }, 202);
+      await waitFor('the worker to observe the late Stop', async () =>
+        (await getAction(context.api, id)).trafficWindow?.stopObservedAt, 3_000);
+      await execution;
+
+      const stopped = await getAction(context.api, id);
+      assert.equal(stopped.status, 'stopped', stopped.error);
+      assert.equal(stopped.trafficWindow.stopReason, 'duration', 'a Stop after the duration does not replace the scheduled close reason');
+      assert.equal(stopped.trafficWindow.producerStoppedAt, stopped.trafficWindow.scheduledEndAt,
+        'producerStoppedAt reports the actual scheduled admission boundary, not late bookkeeping');
+      assert.ok(Date.parse(stopped.trafficWindow.stopObservedAt) > scheduledEnd,
+        'the separately recorded Stop observation remains truthful when it arrives after production ended');
+      assert.equal(fixture.checkoutFetches.length, stopped.traffic.checkout.submitted,
+        'the delayed reservation is not counted as a submitted fetch');
+      const notSent = stopped.requests.find(({ kind, outcome }) => kind === 'checkout' && outcome === 'not_sent');
+      assert.ok(notSent?.checkout?.checkoutId, 'the immutable final checkout remains recorded');
+      assert.equal(notSent.statusCode, undefined, 'the worker does not invent an HTTP response for a blocked fetch');
+      assert.equal(stopped.traffic.checkout.inFlight, 0);
+      assert.equal(stopped.traffic.checkout.skipped, 1);
+      assert.equal((await getState(context.api)).unresolved.some(({ checkoutId }) => checkoutId === notSent.checkout.checkoutId), false);
+      assert.deepEqual(fixture.unhandled, []);
+    } finally {
+      await execution;
+    }
   });
 
   await t.test('a failed Stop read closes admissions and leaves a partial action', async () => {

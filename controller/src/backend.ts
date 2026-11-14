@@ -11,6 +11,7 @@ import {
   readInvestigations,
 } from "./investigations.js";
 import { applyCommand, getAction, getDashboard, getRunById, CommandError } from "./store.js";
+import { MetricsReadError, readTrafficMetrics } from "./metrics.js";
 import type { Action, Command } from "./types.js";
 
 export interface BackendEvent {
@@ -97,7 +98,9 @@ function command(value: unknown): Command | undefined {
   if (input.kind === "readiness" && input.confirmQuiet === true && keys.every((key) => ["kind", "confirmQuiet"].includes(key))) {
     return { kind: "readiness", confirmQuiet: true };
   }
-  if (input.kind === "traffic" && keys.length === 1) return { kind: "traffic" };
+  if (input.kind === "traffic" && keys.length === 1 && keys[0] === "kind") return { kind: "traffic" };
+  if (input.kind === "traffic" && keys.length === 2 && keys.includes("kind") && keys.includes("profile") &&
+      input.profile === "inventory_surge") return { kind: "traffic", profile: "inventory_surge" };
   if (input.kind === "reset" && keys.length === 4 && input.confirmQuiet === true &&
       input.confirmReset === true && input.confirmCheckoutClosed === true &&
       keys.every((key) => ["kind", "confirmQuiet", "confirmReset", "confirmCheckoutClosed"].includes(key))) {
@@ -174,6 +177,7 @@ function commandError(error: unknown): BackendResponse {
   if (error instanceof AlarmReadError) return json(503, { code: "ALARM_UNAVAILABLE", message: error.message });
   if (error instanceof InvestigationQueryError) return json(400, { code: error.code, message: error.message });
   if (error instanceof InvestigationReadError) return json(503, { code: "INVESTIGATIONS_UNAVAILABLE", message: error.message });
+  if (error instanceof MetricsReadError) return json(503, { code: error.code, message: error.message });
   return json(500, { code: "CONTROLLER_ERROR", message: "The controller could not complete the request" });
 }
 
@@ -197,6 +201,16 @@ export async function handler(event: BackendEvent = {}): Promise<BackendResponse
     if (method === "GET" && path === "/api/alarm") return json(200, await readAlarm());
     if (method === "GET" && path === "/api/investigations") {
       return json(200, await readInvestigations(parseInvestigationQuery(event.rawQueryString, event.queryStringParameters)));
+    }
+    const metricsMatch = path.match(/^\/api\/actions\/([^/]+)\/metrics$/);
+    if (metricsMatch && UUID.test(metricsMatch[1])) {
+      if (method !== "GET") return json(405, { code: "METHOD_NOT_ALLOWED", message: "Method not allowed" });
+      if (event.rawQueryString || Object.keys(event.queryStringParameters ?? {}).length > 0) {
+        return json(400, { code: "INVALID_QUERY", message: "Traffic metrics do not accept query parameters" });
+      }
+      const action = await getAction(metricsMatch[1]);
+      return action ? json(200, await readTrafficMetrics(action))
+        : json(404, { code: "ACTION_NOT_FOUND", message: "Action not found" });
     }
     const match = path.match(/^\/api\/actions\/([^/]+)$/);
     if (!match || !UUID.test(match[1])) return json(404, { code: "NOT_FOUND", message: "Controller route not found" });

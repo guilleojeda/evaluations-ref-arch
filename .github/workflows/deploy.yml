@@ -119,7 +119,7 @@ jobs:
       - name: Run app release acceptance checks
         if: matrix.component == 'app'
         run: |
-          node --test tests/phase1-deploy.test.mjs tests/phase1-checkout-handler.test.mjs tests/phase3-inventory-version-preparation.test.mjs tests/phase5-inventory-memory-preparation.test.mjs
+          node --test tests/phase1-deploy.test.mjs tests/phase1-checkout-handler.test.mjs tests/phase3-inventory-version-preparation.test.mjs tests/phase5-inventory-memory-preparation.test.mjs tests/phase10-app-throttle.test.mjs
           node --test --test-name-pattern="^app " tests/phase3-inventory-denial-infrastructure.test.mjs
           python -m unittest discover -s tests -p 'phase4_release_bindings_test.py' -k app
       - name: Run controller release acceptance checks
@@ -131,6 +131,7 @@ jobs:
           # The Phase 6 infrastructure suite also checks Phase 9 capacity baseline and IAM grants.
           node --test tests/phase6-controller-recovery.test.mjs tests/phase6-controller-recovery-display.test.mjs tests/phase6-controller-recovery-infrastructure.test.mjs tests/phase7-controller-request-limits.test.mjs tests/phase8-controller-reset.test.mjs tests/phase8-controller-reset-infrastructure.test.mjs
           node --test tests/phase9-controller-capacity.test.mjs
+          node --test tests/phase10-controller-surge.test.mjs tests/phase10-controller-metrics.test.mjs tests/phase10-controller-infrastructure.test.mjs
           node --test --test-name-pattern="^controller evidence" tests/phase3-inventory-denial-infrastructure.test.mjs
           node --test tests/phase4-agent-controller.test.mjs
           node --test --test-name-pattern="^controller can read" tests/phase4-agent-infrastructure.test.mjs
@@ -139,6 +140,7 @@ jobs:
         if: matrix.component == 'agent'
         run: |
           uv run --project agent --locked python -m unittest discover -s tests -p 'phase4_*_test.py'
+          uv run --project agent --locked python -m unittest discover -s tests -p 'phase10_agent_capacity_evidence_test.py'
           node --test --test-name-pattern="^(agent stack|adapter only)" tests/phase4-agent-infrastructure.test.mjs
           node --test tests/phase4-agent-release.test.mjs
       - name: Run the locked native ARM64 smoke command
