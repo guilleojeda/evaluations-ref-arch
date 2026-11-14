@@ -24,7 +24,7 @@ export type Profile = "catalog" | "checkout";
 export type CatalogOutcome = "success" | "http4xx" | "http5xx" | "invalidResponse" | "noResponse";
 export type CatalogSkip = "late" | "full" | "checkpoint";
 
-export interface TrafficProfileSnapshot {
+export interface TrafficProfileV1 {
   name: "inventory_surge";
   version: 1;
   durationMs: 15_000;
@@ -41,6 +41,28 @@ export interface TrafficProfileSnapshot {
     requestTimeoutMs: 7_000;
   };
 }
+
+export interface TrafficProfileV2 {
+  name: "inventory_surge";
+  version: 2;
+  durationMs: 15_000;
+  catalog: {
+    ratePerSecond: 60;
+    batchSize: 30;
+    batchIntervalMs: 500;
+    maxAttempts: 900;
+    maxInFlight: 30;
+    requestTimeoutMs: 7_000;
+  };
+  checkout: {
+    intervalMs: 1_000;
+    maxAttempts: 15;
+    maxInFlight: 1;
+    requestTimeoutMs: 7_000;
+  };
+}
+
+export type TrafficProfileSnapshot = TrafficProfileV1 | TrafficProfileV2;
 
 export interface TrafficContext {
   appRevision: string;

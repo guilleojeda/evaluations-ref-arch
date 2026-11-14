@@ -12,10 +12,10 @@ const active = new Set<Action["status"]>(["queued", "running", "draining"]);
 
 const inventorySurgeProfile: TrafficProfileSnapshot = {
   name: "inventory_surge",
-  version: 1,
+  version: 2,
   durationMs: 15_000,
-  catalog: { ratePerSecond: 240, maxAttempts: 3_600, maxInFlight: 128, requestTimeoutMs: 7_000 },
-  checkout: { intervalMs: 1_000, maxAttempts: 15, maxInFlight: 2, requestTimeoutMs: 7_000 },
+  catalog: { ratePerSecond: 60, batchSize: 30, batchIntervalMs: 500, maxAttempts: 900, maxInFlight: 30, requestTimeoutMs: 7_000 },
+  checkout: { intervalMs: 1_000, maxAttempts: 15, maxInFlight: 1, requestTimeoutMs: 7_000 },
 };
 
 interface Row<T> {

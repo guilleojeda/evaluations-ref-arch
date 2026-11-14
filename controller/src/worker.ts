@@ -50,6 +50,7 @@ import type {
   StoredIncidentState,
   TrafficContext,
   TrafficProfileSnapshot,
+  TrafficProfileV2,
   TrafficWindow,
 } from "./types.js";
 
@@ -2872,11 +2873,16 @@ function recordCatalogCompletion(state: SurgeCatalogState, startMono: number, st
 }
 
 function profileIsExact(profile: TrafficProfileSnapshot | undefined): profile is TrafficProfileSnapshot {
-  return Boolean(profile && profile.name === "inventory_surge" && profile.version === 1 && profile.durationMs === 15_000 &&
-    profile.catalog.ratePerSecond === 240 && profile.catalog.maxAttempts === 3_600 &&
-    profile.catalog.maxInFlight === 128 && profile.catalog.requestTimeoutMs === 7_000 &&
-    profile.checkout.intervalMs === 1_000 && profile.checkout.maxAttempts === 15 &&
-    profile.checkout.maxInFlight === 2 && profile.checkout.requestTimeoutMs === 7_000);
+  if (!profile || profile.name !== "inventory_surge" || profile.durationMs !== 15_000 ||
+      profile.checkout.intervalMs !== 1_000 || profile.checkout.maxAttempts !== 15 ||
+      profile.checkout.requestTimeoutMs !== 7_000) return false;
+  if (profile.version === 1) {
+    return profile.checkout.maxInFlight === 2 && profile.catalog.ratePerSecond === 240 && profile.catalog.maxAttempts === 3_600 &&
+      profile.catalog.maxInFlight === 128 && profile.catalog.requestTimeoutMs === 7_000;
+  }
+  return profile.version === 2 && profile.checkout.maxInFlight === 1 && profile.catalog.ratePerSecond === 60 && profile.catalog.batchSize === 30 &&
+    profile.catalog.batchIntervalMs === 500 && profile.catalog.maxAttempts === 900 &&
+    profile.catalog.maxInFlight === 30 && profile.catalog.requestTimeoutMs === 7_000;
 }
 
 async function persistTrafficContext(actionId: string, context: TrafficContext, apiId: string): Promise<boolean> {
@@ -3031,6 +3037,7 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
   const startWallMs = Date.now();
   const startMono = performance.now();
   const endMono = startMono + profile.durationMs;
+  const v2AdmissionLatenessMs = 150;
   const window: TrafficWindow = {
     startedAt: new Date(startWallMs).toISOString(),
     scheduledEndAt: new Date(startWallMs + profile.durationMs).toISOString(),
@@ -3049,8 +3056,10 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
   let deadlineReached = false;
   let producerStoppedMono: number | undefined;
   let monitorClosed = false;
-  let nextCheckpointMono = startMono + 1_000;
+  const checkpointPhaseMono = startMono + 1_250;
+  let nextCheckpointMono = checkpointPhaseMono;
   let lastCheckpointInterval: { start: number; end: number } | undefined;
+  let checkpointPending: Promise<void> | undefined;
 
   function closeAdmissions(reason: TrafficWindow["stopReason"], observedAt?: string): void {
     if (localStop) return;
@@ -3109,6 +3118,13 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
     }
   }
 
+  function skipCatalogWave(wave: number, batchSize: number, reason: CatalogSkip, catalogIntervalMs: number): void {
+    const firstOrdinal = wave * batchSize;
+    for (let offset = 0; offset < batchSize; offset++) {
+      recordCatalogSkip(state, firstOrdinal + offset, reason, catalogIntervalMs);
+    }
+  }
+
   async function saveCheckpoint(): Promise<void> {
     const checkpointStart = performance.now();
     try {
@@ -3120,9 +3136,144 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
     } finally {
       const checkpointEnd = performance.now();
       lastCheckpointInterval = { start: checkpointStart, end: checkpointEnd };
-      const nextAlignedSecond = startMono + (Math.floor((checkpointEnd - startMono) / 1_000) + 1) * 1_000;
+      const nextAlignedSecond = checkpointPhaseMono + (Math.floor((checkpointEnd - checkpointPhaseMono) / 1_000) + 1) * 1_000;
       nextCheckpointMono = nextAlignedSecond;
     }
+  }
+
+  function startCheckpointIfDue(): void {
+    if (checkpointPending || localStop || performance.now() < nextCheckpointMono) return;
+    checkpointPending = saveCheckpoint().finally(() => { checkpointPending = undefined; });
+  }
+
+  function startCatalogRequest(requestOrdinal: number, catalogIntervalMs: number): void {
+    const request: RequestRecord = { id: randomUUID(), kind: "catalog", startedAt: new Date().toISOString() };
+    let requestStartMono = performance.now();
+    let requestStartedAt = request.startedAt;
+    const task = (async () => {
+      const response = await appRequest(target, bearer, request, profile.catalog.requestTimeoutMs, () => {
+        if (localStop || performance.now() >= endMono) return false;
+        if (Date.now() + profile.catalog.requestTimeoutMs + 1_000 >= action.deadlineAt) {
+          deadlineReached = true;
+          closeAdmissions("deadline");
+          return false;
+        }
+        requestStartMono = performance.now();
+        requestStartedAt = new Date().toISOString();
+        request.startedAt = requestStartedAt;
+        recordCatalogStart(state, startMono, requestStartMono);
+        return true;
+      });
+      if (response.sent === false) {
+        recordCatalogSkip(state, requestOrdinal, "late", catalogIntervalMs);
+        return;
+      }
+      const observed = product(response, target.sku);
+      recordCatalogCompletion(state, startMono, requestStartedAt, request.id, requestStartMono, response, observed);
+    })().catch(() => {
+      observationFailure = true;
+      closeAdmissions("observation_failure");
+      if (state.counters.inFlight > 0) state.counters.inFlight--;
+    }).finally(() => pending.delete(task));
+    pending.add(task);
+  }
+
+  async function prepareWaveCheckout(due: number): Promise<RequestRecord | undefined> {
+    if (localStop) return undefined;
+    if (performance.now() > due + v2AdmissionLatenessMs) {
+      await skipCheckoutTick(action.id).catch(() => { observationFailure = true; closeAdmissions("observation_failure"); });
+      return undefined;
+    }
+    if (Date.now() + profile.checkout.requestTimeoutMs + 1_000 >= action.deadlineAt) {
+      deadlineReached = true;
+      closeAdmissions("deadline");
+      return undefined;
+    }
+    const request = newRequest("checkout", checkoutPayload(baseline.sku, baseline.productVersion));
+    const reserved = await reserveSurgeCheckout(action.id, request, profile).catch(() => {
+      observationFailure = true;
+      closeAdmissions("observation_failure");
+      return false;
+    });
+    if (!reserved) {
+      const current = await getAction(action.id).catch(() => undefined);
+      if (!current) {
+        observationFailure = true;
+        closeAdmissions("observation_failure");
+      } else if (current.stopRequested || current.status === "draining") {
+        observeStop();
+      } else if (current.status !== "running") {
+        observationFailure = true;
+        closeAdmissions("observation_failure");
+      }
+      return undefined;
+    }
+
+    let admitted = !localStop && performance.now() < endMono;
+    if (admitted) {
+      try {
+        const current = await getAction(action.id);
+        if (!current || current.kind !== "traffic") {
+          observationFailure = true;
+          closeAdmissions("observation_failure");
+          admitted = false;
+        } else if (current.stopRequested || current.status === "draining") {
+          observeStop();
+          admitted = false;
+        } else if (current.status !== "running" || performance.now() >= endMono || localStop) {
+          if (current.status !== "running") {
+            observationFailure = true;
+            closeAdmissions("observation_failure");
+          }
+          admitted = false;
+        } else if (performance.now() > due + v2AdmissionLatenessMs) {
+          admitted = false;
+        }
+      } catch {
+        observationFailure = true;
+        closeAdmissions("observation_failure");
+        admitted = false;
+      }
+    }
+    if (!admitted) {
+      const reason = localStop ? "ADMISSION_CLOSED"
+        : performance.now() > due + v2AdmissionLatenessMs && performance.now() < endMono
+          ? "CHECKOUT_TICK_MISSED" : "PRODUCTION_WINDOW_CLOSED";
+      await markSurgeCheckoutNotSent(action.id, request, reason, window, stopObservedAt)
+        .catch(() => { observationFailure = true; closeAdmissions("observation_failure"); });
+      return undefined;
+    }
+    return request;
+  }
+
+  function startWaveCheckout(request: RequestRecord, due: number): boolean {
+    const payload = request.checkout;
+    if (!payload) return false;
+    let fetchStarted = false;
+    const task = (async () => {
+      const result = await send(action.id, target, bearer, request, payload, profile.checkout.requestTimeoutMs, () => {
+        if (localStop || performance.now() >= endMono) return false;
+        if (performance.now() > due + v2AdmissionLatenessMs) return false;
+        if (Date.now() + profile.checkout.requestTimeoutMs + 1_000 >= action.deadlineAt) {
+          deadlineReached = true;
+          closeAdmissions("deadline");
+          return false;
+        }
+        fetchStarted = true;
+        return true;
+      });
+      if (!result.sent) {
+        const reason = localStop ? "ADMISSION_CLOSED"
+          : performance.now() > due + v2AdmissionLatenessMs && performance.now() < endMono
+            ? "CHECKOUT_TICK_MISSED" : "PRODUCTION_WINDOW_CLOSED";
+        await markSurgeCheckoutNotSent(action.id, request, reason, window, stopObservedAt);
+      } else if (result.outcome === "unknown") unknown.push(payload);
+    })().catch(() => {
+      observationFailure = true;
+      closeAdmissions("observation_failure");
+    }).finally(() => pending.delete(task));
+    pending.add(task);
+    return fetchStarted;
   }
 
   async function runCatalogProducer(): Promise<void> {
@@ -3172,43 +3323,105 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
         ordinal++;
         continue;
       }
-
-      const request: RequestRecord = { id: randomUUID(), kind: "catalog", startedAt: new Date().toISOString() };
-      let requestStartMono = performance.now();
-      let requestStartedAt = request.startedAt;
       const requestOrdinal = ordinal;
-      const task = (async () => {
-        const response = await appRequest(target, bearer, request, profile.catalog.requestTimeoutMs, () => {
-          if (localStop || performance.now() >= endMono) return false;
-          if (Date.now() + profile.catalog.requestTimeoutMs + 1_000 >= action.deadlineAt) {
-            deadlineReached = true;
-            closeAdmissions("deadline");
-            return false;
-          }
-          requestStartMono = performance.now();
-          requestStartedAt = new Date().toISOString();
-          request.startedAt = requestStartedAt;
-          recordCatalogStart(state, startMono, requestStartMono);
-          return true;
-        });
-        if (response.sent === false) {
-          recordCatalogSkip(state, requestOrdinal, "late", catalogIntervalMs);
-          return;
-        }
-        const observed = product(response, target.sku);
-        recordCatalogCompletion(state, startMono, requestStartedAt, request.id, requestStartMono, response, observed);
-      })().catch(() => {
-        observationFailure = true;
-        closeAdmissions("observation_failure");
-        if (state.counters.inFlight > 0) state.counters.inFlight--;
-      }).finally(() => pending.delete(task));
-      pending.add(task);
+      startCatalogRequest(requestOrdinal, catalogIntervalMs);
       ordinal++;
     }
     if (!localStop && performance.now() < endMono) await waitFor(endMono, 50);
   }
 
+  async function runCatalogWaves(waveProfile: TrafficProfileV2): Promise<void> {
+    const batchSize = waveProfile.catalog.batchSize;
+    const batchIntervalMs = waveProfile.catalog.batchIntervalMs;
+    const catalogIntervalMs = batchIntervalMs / batchSize;
+    const waveCount = waveProfile.catalog.maxAttempts / batchSize;
+    const lateAllowanceMs = v2AdmissionLatenessMs;
+    let wave = 0;
+    while (wave < waveCount && !localStop) {
+      const now = performance.now();
+      startCheckpointIfDue();
+      const due = startMono + wave * batchIntervalMs;
+      if (now < due) {
+        const nextWake = checkpointPending ? due : Math.min(due, nextCheckpointMono);
+        await waitFor(nextWake, Math.max(1, Math.min(50, nextWake - now)));
+        continue;
+      }
+      if (localStop) break;
+      const current = performance.now();
+      if (current >= endMono) {
+        const firstRemainingTick = Math.ceil(wave / 2);
+        while (wave < waveCount && !localStop) {
+          const scheduled = startMono + wave * batchIntervalMs;
+          const reason: CatalogSkip = lastCheckpointInterval && scheduled >= lastCheckpointInterval.start &&
+            scheduled < lastCheckpointInterval.end ? "checkpoint" : "late";
+          skipCatalogWave(wave, batchSize, reason, catalogIntervalMs);
+          wave++;
+        }
+        for (let tick = firstRemainingTick; tick < waveProfile.checkout.maxAttempts && !localStop; tick++) {
+          if (startMono + tick * waveProfile.checkout.intervalMs < endMono) {
+            await skipCheckoutTick(action.id).catch(() => { observationFailure = true; closeAdmissions("observation_failure"); });
+          }
+        }
+        break;
+      }
+
+      const checkoutRequest = wave % 2 === 0 ? await prepareWaveCheckout(due) : undefined;
+      if (localStop) {
+        if (checkoutRequest) {
+          await markSurgeCheckoutNotSent(action.id, checkoutRequest, "ADMISSION_CLOSED", window, stopObservedAt)
+            .catch(() => { observationFailure = true; closeAdmissions("observation_failure"); });
+        }
+        break;
+      }
+
+      const dispatchAt = performance.now();
+      const checkpointCovered = Boolean(checkpointPending || (lastCheckpointInterval && due >= lastCheckpointInterval.start &&
+        due < lastCheckpointInterval.end));
+      const late = dispatchAt - due > lateAllowanceMs;
+      const full = state.counters.inFlight + batchSize > waveProfile.catalog.maxInFlight;
+      const canDispatchCatalog = !checkpointCovered && !late && !full &&
+        Date.now() + waveProfile.catalog.requestTimeoutMs + 1_000 < action.deadlineAt;
+      if (Date.now() + waveProfile.catalog.requestTimeoutMs + 1_000 >= action.deadlineAt) {
+        deadlineReached = true;
+        closeAdmissions("deadline");
+      }
+
+      if (canDispatchCatalog) {
+        if (wave % 2 === 0 && checkoutRequest) {
+          for (let offset = 0; offset < 20; offset++) {
+            startCatalogRequest(wave * batchSize + offset, catalogIntervalMs);
+          }
+          const checkoutStarted = startWaveCheckout(checkoutRequest, due);
+          if (checkoutStarted) {
+            for (let offset = 20; offset < batchSize; offset++) {
+              startCatalogRequest(wave * batchSize + offset, catalogIntervalMs);
+            }
+          } else if (!localStop) {
+            for (let offset = 20; offset < batchSize; offset++) {
+              recordCatalogSkip(state, wave * batchSize + offset, "late", catalogIntervalMs);
+            }
+          }
+        } else {
+          for (let offset = 0; offset < batchSize; offset++) {
+            startCatalogRequest(wave * batchSize + offset, catalogIntervalMs);
+          }
+          if (wave % 2 === 0 && checkoutRequest) startWaveCheckout(checkoutRequest, due);
+        }
+      } else {
+        if (!localStop) {
+          const reason: CatalogSkip = checkpointCovered ? "checkpoint" : full ? "full" : "late";
+          skipCatalogWave(wave, batchSize, reason, catalogIntervalMs);
+        }
+        if (checkoutRequest) startWaveCheckout(checkoutRequest, due);
+      }
+      wave++;
+      startCheckpointIfDue();
+    }
+    if (!localStop && performance.now() < endMono) await waitFor(endMono, 50);
+  }
+
   async function runCheckoutProducer(): Promise<void> {
+    if (profile.version === 2) return;
     for (let tick = 0; tick < profile.checkout.maxAttempts && !localStop; tick++) {
       const due = startMono + tick * profile.checkout.intervalMs;
       await waitFor(due, 100);
@@ -3297,11 +3510,13 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
   }
 
   try {
-    await Promise.all([runCatalogProducer(), runCheckoutProducer()]);
+    if (profile.version === 2) await runCatalogWaves(profile);
+    else await Promise.all([runCatalogProducer(), runCheckoutProducer()]);
   } catch {
     observationFailure = true;
     closeAdmissions("observation_failure");
   }
+  if (checkpointPending) await checkpointPending;
   if (!localStop) {
     localStop = true;
     admissionClosedMono = endMono;

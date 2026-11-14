@@ -21,7 +21,7 @@ const surgeProfile = {
   version: 2,
   durationMs: 15_000,
   catalog: { ratePerSecond: 60, batchSize: 30, batchIntervalMs: 500, maxAttempts: 900, maxInFlight: 30, requestTimeoutMs: 7_000 },
-  checkout: { intervalMs: 1_000, maxAttempts: 15, maxInFlight: 2, requestTimeoutMs: 7_000 },
+  checkout: { intervalMs: 1_000, maxAttempts: 15, maxInFlight: 1, requestTimeoutMs: 7_000 },
 };
 const outcomeNames = ['success', 'http4xx', 'http5xx', 'invalidResponse', 'noResponse'];
 const skipNames = ['late', 'full', 'checkpoint'];
@@ -156,13 +156,11 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
     });
     assert.equal(fixture.appRequests.length, requestsAtExpiry, 'expired duplicate delivery cannot replay an accepted action');
 
-    const legacyId = randomUUID();
-    await call(context.api, 'PUT', `/api/actions/${legacyId}`, surgeCommand, 202);
-    const legacyRow = row(`ACTION#${legacyId}`);
+    const legacyRow = row(`ACTION#${id}`);
     legacyRow.data.trafficProfile = structuredClone(surgeProfileV1);
     const savedV1Action = structuredClone(legacyRow.data);
     const dispatchesBeforeLegacyReplay = fixture.invocations.length;
-    const legacyReplay = await call(context.api, 'PUT', `/api/actions/${legacyId}`, surgeCommand, 200);
+    const legacyReplay = await call(context.api, 'PUT', `/api/actions/${id}`, surgeCommand, 200);
     assert.deepEqual(legacyReplay.action, savedV1Action, 'an existing v1 action remains immutable under the v2 command implementation');
     assert.equal(legacyReplay.action.trafficProfile.version, 1);
     assert.deepEqual(legacyReplay.action.trafficProfile, surgeProfileV1);
@@ -271,7 +269,10 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
     const execution = context.worker.handler({ actionId: id });
     try {
       await waitFor('initial production fetches', () => fixture.catalogFetches.length >= 20);
-      blockEventLoop(150);
+      const firstWaveStartedAtMs = fixture.catalogFetches[0].startedAtMs;
+      await waitFor('the near-boundary scheduler stall point', () =>
+        performance.now() >= firstWaveStartedAtMs + 350, 1_000);
+      blockEventLoop(600);
       const resumedAt = performance.now();
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
       const resumedStarts = fixture.catalogFetches.filter(({ startedAtMs }) =>
@@ -374,7 +375,7 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
       assert.equal(checkoutFetches.length, action.traffic.checkout.submitted);
       assert.ok(action.traffic.checkout.submitted <= 15);
       assert.ok(fixture.peakCheckoutInFlight <= surgeProfile.checkout.maxInFlight);
-      assert.ok(fixture.peakCheckoutInFlight > 1, 'the delayed profile checkouts exercise the two-slot bound');
+      assert.equal(fixture.peakCheckoutInFlight, 1, 'v2 keeps one fresh Checkout probe in flight to avoid overlapping Inventory writes');
       for (let index = 1; index < fixture.checkoutFetches.length; index++) {
         assert.ok(fixture.checkoutFetches[index].startedAtMs - fixture.checkoutFetches[index - 1].startedAtMs >= 850,
           'quantity-one checkouts use paced one-second ticks without catch-up');
@@ -416,9 +417,9 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
       assert.equal(full.traffic.catalog.inFlight, surgeProfile.catalog.maxInFlight);
       assert.equal(fixture.peakCatalogInFlight, surgeProfile.catalog.maxInFlight);
       await waitFor('full-slot skips to be recorded', async () => (await getAction(context.api, id)).traffic.catalog.skipped > 0);
-      await waitFor('both paced checkout slots to be occupied', () => fixture.peakCheckoutInFlight === 2, 5_000);
-      assert.equal(fixture.checkoutInFlight, 2);
-      assert.equal((await getAction(context.api, id)).traffic.checkout.inFlight, 2);
+      await waitFor('the paced Checkout slot to be occupied', () => fixture.peakCheckoutInFlight === 1, 5_000);
+      assert.equal(fixture.checkoutInFlight, 1);
+      assert.equal((await getAction(context.api, id)).traffic.checkout.inFlight, 1);
       assert.ok(fixture.checkoutFetches.every(({ durableBeforeFetch }) => durableBeforeFetch),
         'all in-flight checkout payloads were persisted before their fetches');
       for (let index = 1; index < fixture.checkoutFetches.length; index++) {
@@ -488,6 +489,7 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
     await prepareReady(context);
     fixture.catalogResponseDelayMs = 80;
     fixture.catalogObservationWriteDelayMs = 300;
+    fixture.checkoutResponseDelayMs = 400;
     fixture.beforeCatalogObservationWrite = async () => {
       if (fixture.catalogObservationWrites.filter(({ committed }) => committed).length >= 2) {
         fixture.catalogObservationWriteFailure = true;
@@ -506,6 +508,16 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
     assert.equal(saved.catalogObservation.status, 'partial');
     assert.ok(persistedWrites.length >= 2, 'two periodic observations committed before the selected failure');
     assert.ok(failedWrites.length >= 1, 'a later catalog observation was rejected by the fixture');
+    const synchronizedWave = fixture.catalogFetches.slice(60, 90);
+    assert.equal(synchronizedWave.length, surgeProfile.catalog.batchSize,
+      'the 1-second catalog wave is dispatched before the first shifted periodic checkpoint');
+    assert.ok(synchronizedWave.every(({ durableCheckoutInFlightBeforeFetch }) => durableCheckoutInFlightBeforeFetch),
+      'the later synchronized wave still follows its fresh durable Checkout reservation');
+    assert.ok(synchronizedWave.slice(0, 20).every(({ checkoutFetchInFlightBeforeFetch }) => !checkoutFetchInFlightBeforeFetch));
+    assert.ok(synchronizedWave.slice(20).every(({ checkoutFetchInFlightBeforeFetch }) => checkoutFetchInFlightBeforeFetch),
+      'the periodic transition preserves GET-20, Checkout, GET-10 dispatch order');
+    assert.ok(synchronizedWave.at(-1).startedAtMs < persistedWrites[0].startedAtMs,
+      'the periodic checkpoint begins after the co-launched wave instead of reversing its order');
     const lastSuccessful = persistedWrites.at(-1);
     assert.equal(saved.catalogObservation.observedThrough, lastSuccessful.observedThrough,
       'the public snapshot remains at the last successful checkpoint');
@@ -580,13 +592,13 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
     }
   });
 
-  await t.test('a slow durable checkout reservation preserves one-second checkout pacing and bounded catalog waves', { timeout: 40_000 }, async () => {
+  await t.test('a slow prior checkout skips a full tick without queuing another reservation', { timeout: 40_000 }, async () => {
     await prepareReady(context);
     const { id } = await startSurge(context.api);
     fixture.checkoutReservationDelayActionId = id;
     fixture.checkoutReservationDelayCount = 1;
-    fixture.checkoutReservationDelayMs = 750;
-    fixture.checkoutResponseDelayMs = 800;
+    fixture.checkoutReservationDelayMs = 20;
+    fixture.checkoutResponseDelayMs = 1_800;
     fixture.catalogResponseDelayMs = 100;
     const execution = context.worker.handler({ actionId: id });
     try {
@@ -594,26 +606,25 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
       const action = await getAction(context.api, id);
       assert.equal(action.status, 'completed', action.error);
       assert.ok(fixture.checkoutReservationDelayStarted, 'the fixture delayed the first durable reservation acknowledgement');
-      assert.ok(action.requests.some(({ kind, outcome }) => kind === 'checkout' && outcome === 'not_sent'),
-        'the first checkout tick that missed its admission window remains durably classified as known not sent');
       assert.ok(fixture.checkoutFetches.length > 1);
       assert.ok(fixture.checkoutFetches.every(({ durableBeforeFetch }) => durableBeforeFetch),
-        'even after the slow reservation, every Checkout fetch has a durable input');
+        'every Checkout fetch has a durable input');
       assert.equal(action.traffic.checkout.submitted, fixture.checkoutFetches.length,
         'checkout submitted counts reflect actual post-gate fetch starts');
       assert.equal(action.traffic.checkout.submitted + action.traffic.checkout.skipped, surgeProfile.checkout.maxAttempts,
-        'a slow reservation cannot erase or replay a missed one-second checkout tick');
+        'a full one-slot lane accounts for each one-second tick without replay');
+      assert.ok(action.traffic.checkout.skipped > 0);
+      assert.equal(action.requests.filter(({ kind }) => kind === 'checkout').length, fixture.checkoutFetches.length,
+        'ticks missed while the previous probe is in flight create no durable queued reservation');
       for (let index = 1; index < fixture.checkoutFetches.length; index++) {
         assert.ok(fixture.checkoutFetches[index].startedAtMs - fixture.checkoutFetches[index - 1].startedAtMs >= 850,
-          'a slow durable reservation does not create a checkout catch-up burst');
+          'the single-slot probe lane does not create a checkout catch-up burst');
       }
       assert.equal(action.traffic.catalog.submitted + action.traffic.catalog.skipped, surgeProfile.catalog.maxAttempts);
       assert.equal(fixture.catalogFetches.length % surgeProfile.catalog.batchSize, 0);
-      assert.ok(action.catalogObservation.skips.late > 0,
-        'catalog waves whose scheduled windows elapsed during the slow reservation are counted as late skips');
       assert.ok(fixture.catalogFetches.some(({ durableCheckoutInFlightBeforeFetch, checkoutFetchInFlightBeforeFetch }) =>
         durableCheckoutInFlightBeforeFetch && checkoutFetchInFlightBeforeFetch),
-      'at least one catalog wave overlaps a durable Checkout fetch despite the slow reservation');
+      'at least one catalog wave overlaps a durable Checkout fetch');
       assert.ok(fixture.peakCatalogInFlight <= surgeProfile.catalog.maxInFlight);
       assert.deepEqual(fixture.unhandled, []);
     } finally {
