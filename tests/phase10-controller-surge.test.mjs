@@ -16,11 +16,18 @@ const surgeProfileV1 = {
   catalog: { ratePerSecond: 240, maxAttempts: 3_600, maxInFlight: 128, requestTimeoutMs: 7_000 },
   checkout: { intervalMs: 1_000, maxAttempts: 15, maxInFlight: 2, requestTimeoutMs: 7_000 },
 };
-const surgeProfile = {
+const surgeProfileV2 = {
   name: 'inventory_surge',
   version: 2,
   durationMs: 15_000,
   catalog: { ratePerSecond: 60, batchSize: 30, batchIntervalMs: 500, maxAttempts: 900, maxInFlight: 30, requestTimeoutMs: 7_000 },
+  checkout: { intervalMs: 1_000, maxAttempts: 15, maxInFlight: 1, requestTimeoutMs: 7_000 },
+};
+const surgeProfile = {
+  name: 'inventory_surge',
+  version: 3,
+  durationMs: 15_000,
+  catalog: { ratePerSecond: 30, batchSize: 30, batchIntervalMs: 1_000, maxAttempts: 450, maxInFlight: 30, requestTimeoutMs: 7_000 },
   checkout: { intervalMs: 1_000, maxAttempts: 15, maxInFlight: 1, requestTimeoutMs: 7_000 },
 };
 const outcomeNames = ['success', 'http4xx', 'http5xx', 'invalidResponse', 'noResponse'];
@@ -156,15 +163,72 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
     });
     assert.equal(fixture.appRequests.length, requestsAtExpiry, 'expired duplicate delivery cannot replay an accepted action');
 
-    const legacyRow = row(`ACTION#${id}`);
-    legacyRow.data.trafficProfile = structuredClone(surgeProfileV1);
-    const savedV1Action = structuredClone(legacyRow.data);
-    const dispatchesBeforeLegacyReplay = fixture.invocations.length;
-    const legacyReplay = await call(context.api, 'PUT', `/api/actions/${id}`, surgeCommand, 200);
-    assert.deepEqual(legacyReplay.action, savedV1Action, 'an existing v1 action remains immutable under the v2 command implementation');
-    assert.equal(legacyReplay.action.trafficProfile.version, 1);
-    assert.deepEqual(legacyReplay.action.trafficProfile, surgeProfileV1);
-    assert.equal(fixture.invocations.length, dispatchesBeforeLegacyReplay, 'v1 replay does not dispatch another producer');
+    for (const [version, profile] of [[2, surgeProfileV2], [1, surgeProfileV1]]) {
+      const legacyId = randomUUID();
+      const savedAt = new Date().toISOString();
+      const savedAction = {
+        id: legacyId, kind: 'traffic', command: surgeCommand, status: 'completed',
+        createdAt: savedAt, updatedAt: savedAt, finishedAt: savedAt,
+        claimBy: Date.now() + 30_000, deadlineAt: Date.now() + 75_000,
+        requests: [], trafficProfile: structuredClone(profile),
+      };
+      records.set(`ACTION#${legacyId}`, { pk: `ACTION#${legacyId}`, revision: 1, data: savedAction });
+      const dispatchesBeforeLegacyReplay = fixture.invocations.length;
+      const legacyReplay = await call(context.api, 'PUT', `/api/actions/${legacyId}`, surgeCommand, 200);
+      assert.deepEqual(legacyReplay.action, savedAction, `an existing v${version} action remains immutable under v3`);
+      assert.equal(legacyReplay.action.trafficProfile.version, version);
+      assert.deepEqual(legacyReplay.action.trafficProfile, profile);
+      assert.equal(fixture.invocations.length, dispatchesBeforeLegacyReplay, `v${version} replay does not dispatch another producer`);
+    }
+  });
+
+  await t.test('a saved v2 action still executes its immutable half-second waves', { timeout: 75_000 }, async () => {
+    await prepareReady(context);
+    fixture.checkoutResponseDelayMs = 250;
+    const appRequestStart = fixture.appRequests.length;
+    const { id } = await startSurge(context.api);
+    row(`ACTION#${id}`).data.trafficProfile = structuredClone(surgeProfileV2);
+    const execution = context.worker.handler({ actionId: id });
+    try {
+      await execution;
+      const action = await getAction(context.api, id);
+      assert.equal(action.status, 'completed', action.error);
+      assert.deepEqual(action.trafficProfile, surgeProfileV2,
+        'a queued action uses its saved v2 workload, not the current v3 defaults');
+      const catalogFetches = fixture.appRequests.slice(appRequestStart)
+        .filter(({ method, path }) => method === 'GET' && path === '/api/products');
+      const checkoutFetches = fixture.appRequests.slice(appRequestStart)
+        .filter(({ method, path }) => method === 'POST' && path === '/api/checkout');
+      assert.equal(action.traffic.catalog.submitted + action.traffic.catalog.skipped, surgeProfileV2.catalog.maxAttempts);
+      assert.equal(catalogFetches.length, action.traffic.catalog.submitted);
+      assert.equal(catalogFetches.length % surgeProfileV2.catalog.batchSize, 0);
+      assert.equal(action.traffic.checkout.submitted, checkoutFetches.length);
+      assert.equal(action.traffic.checkout.submitted + action.traffic.checkout.skipped,
+        surgeProfileV2.checkout.maxAttempts, 'saved v2 execution accounts for every one-second tick');
+      assert.equal(checkoutFetches.length, surgeProfileV2.checkout.maxAttempts);
+      assert.equal(fixture.peakCheckoutInFlight, 1);
+      for (let index = 0; index < fixture.catalogFetches.length; index += surgeProfileV2.catalog.batchSize) {
+        const wave = fixture.catalogFetches.slice(index, index + surgeProfileV2.catalog.batchSize);
+        assert.equal(wave.length, surgeProfileV2.catalog.batchSize);
+        if (index > 0) {
+          assert.ok(wave[0].startedAtMs - fixture.catalogFetches[index - surgeProfileV2.catalog.batchSize].startedAtMs >= 350,
+            'saved v2 execution keeps its original 500 ms wave cadence');
+        }
+      }
+      const catalogWaves = Array.from({ length: catalogFetches.length / surgeProfileV2.catalog.batchSize }, (_, wave) =>
+        fixture.catalogFetches.slice(wave * surgeProfileV2.catalog.batchSize, (wave + 1) * surgeProfileV2.catalog.batchSize));
+      for (const checkout of fixture.checkoutFetches) {
+        const matching = catalogWaves.filter((wave) =>
+          wave[19].startedAtMs < checkout.startedAtMs && checkout.startedAtMs < wave[20].startedAtMs);
+        assert.equal(matching.length, 1, 'each sent v2 Checkout remains co-launched on its saved every-second-wave schedule');
+        assert.ok(matching[0].every(({ durableCheckoutInFlightBeforeFetch }) => durableCheckoutInFlightBeforeFetch));
+        assert.ok(matching[0].slice(0, 20).every(({ checkoutFetchInFlightBeforeFetch }) => !checkoutFetchInFlightBeforeFetch));
+        assert.ok(matching[0].slice(20).every(({ checkoutFetchInFlightBeforeFetch }) => checkoutFetchInFlightBeforeFetch));
+      }
+      assert.deepEqual(fixture.unhandled, []);
+    } finally {
+      await execution;
+    }
   });
 
   await t.test('surge fails closed on stale release, denied Inventory, cap drift, or unresolved checkout', async () => {
@@ -270,8 +334,8 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
     try {
       await waitFor('initial production fetches', () => fixture.catalogFetches.length >= 20);
       const firstWaveStartedAtMs = fixture.catalogFetches[0].startedAtMs;
-      await waitFor('the near-boundary scheduler stall point', () =>
-        performance.now() >= firstWaveStartedAtMs + 350, 1_000);
+      await waitFor('the near-boundary one-second scheduler stall point', () =>
+        performance.now() >= firstWaveStartedAtMs + 1_350, 2_000);
       blockEventLoop(600);
       const resumedAt = performance.now();
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
@@ -293,9 +357,9 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
       }, 'the worker records freshly observed release and current settings before production');
       assert.equal(action.trafficApiId, 'fixtureapi', 'the worker derives and saves the trusted API ID before surge sends');
       assert.equal(action.status, 'completed', action.error);
-      assert.equal(action.trafficProfile.version, 2);
+      assert.equal(action.trafficProfile.version, 3);
       assert.equal(action.trafficProfile.catalog.batchSize, 30);
-      assert.equal(action.trafficProfile.catalog.batchIntervalMs, 500);
+      assert.equal(action.trafficProfile.catalog.batchIntervalMs, 1_000);
       assert.equal(action.trafficWindow.stopReason, 'duration');
       assert.ok(Date.parse(action.trafficWindow.producerStoppedAt) >= Date.parse(action.trafficWindow.scheduledEndAt));
       assert.ok(Date.parse(action.trafficWindow.settledAt) >= Date.parse(action.trafficWindow.producerStoppedAt));
@@ -309,7 +373,7 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
       assert.equal(observation.status, 'complete');
       assert.equal(fixture.catalogFetches.length, catalog.submitted, 'submitted counts actual GET starts, not intended ticks');
       assert.equal(fixture.catalogFetches.length, catalog.completed, 'a completed action drains every actual GET');
-      assert.ok(catalog.submitted <= surgeProfile.catalog.maxAttempts, 'the finite surge respects its 900-attempt cap');
+      assert.ok(catalog.submitted <= surgeProfile.catalog.maxAttempts, 'the finite surge respects its 450-attempt cap');
       assert.equal(catalog.submitted + catalog.skipped, surgeProfile.catalog.maxAttempts,
         'a completed profile accounts for every scheduled catalog request as a fetch or explicit skip');
       assert.equal(catalog.submitted % surgeProfile.catalog.batchSize, 0,
@@ -320,17 +384,23 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
         assert.ok(wave.at(-1).startedAtMs - wave[0].startedAtMs < 250,
           'each accepted wave starts as one bounded burst, without a second pacing loop');
         if (index > 0) {
-          assert.ok(wave[0].startedAtMs - fixture.catalogFetches[index - surgeProfile.catalog.batchSize].startedAtMs >= 350,
-            'catalog waves remain separated by their 500 ms cadence');
+          assert.ok(wave[0].startedAtMs - fixture.catalogFetches[index - surgeProfile.catalog.batchSize].startedAtMs >= 850,
+            'catalog waves remain separated by their 1,000 ms cadence');
         }
       }
-      const initialWave = fixture.catalogFetches.slice(0, surgeProfile.catalog.batchSize);
-      assert.ok(initialWave.every(({ durableCheckoutInFlightBeforeFetch }) => durableCheckoutInFlightBeforeFetch),
-        'the initial wave starts only after its immutable quantity-one Checkout input is durably reserved');
-      assert.ok(initialWave.slice(0, 20).every(({ checkoutFetchInFlightBeforeFetch }) => !checkoutFetchInFlightBeforeFetch),
-        'the first catalog portion is dispatched before the fresh Checkout HTTP probe');
-      assert.ok(initialWave.slice(20).every(({ checkoutFetchInFlightBeforeFetch }) => checkoutFetchInFlightBeforeFetch),
-        'the fresh Checkout probe starts inside the catalog wave, before its remaining requests');
+      const catalogWaves = Array.from({ length: fixture.catalogFetches.length / surgeProfile.catalog.batchSize }, (_, wave) =>
+        fixture.catalogFetches.slice(wave * surgeProfile.catalog.batchSize, (wave + 1) * surgeProfile.catalog.batchSize));
+      for (const checkout of fixture.checkoutFetches) {
+        const matching = catalogWaves.filter((wave) =>
+          wave[19].startedAtMs < checkout.startedAtMs && checkout.startedAtMs < wave[20].startedAtMs);
+        assert.equal(matching.length, 1, 'each fresh Checkout is co-launched inside a v3 one-second catalog wave');
+        assert.ok(matching[0].every(({ durableCheckoutInFlightBeforeFetch }) => durableCheckoutInFlightBeforeFetch),
+          'the co-launch wave follows the Checkout reservation');
+        assert.ok(matching[0].slice(0, 20).every(({ checkoutFetchInFlightBeforeFetch }) => !checkoutFetchInFlightBeforeFetch),
+          'the first catalog portion is dispatched before the fresh Checkout HTTP probe');
+        assert.ok(matching[0].slice(20).every(({ checkoutFetchInFlightBeforeFetch }) => checkoutFetchInFlightBeforeFetch),
+          'the fresh Checkout probe starts before the wave’s final 10 reads');
+      }
       assert.ok(fixture.appRequests.slice(appRequestStart).filter(({ method, path }) => method === 'GET' && path === '/api/products')
         .every(({ surgeContextBeforeFetch }) => surgeContextBeforeFetch === true),
       'fresh release/cap/alias/access observations are saved before each surge fetch');
@@ -375,7 +445,7 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
       assert.equal(checkoutFetches.length, action.traffic.checkout.submitted);
       assert.ok(action.traffic.checkout.submitted <= 15);
       assert.ok(fixture.peakCheckoutInFlight <= surgeProfile.checkout.maxInFlight);
-      assert.equal(fixture.peakCheckoutInFlight, 1, 'v2 keeps one fresh Checkout probe in flight to avoid overlapping Inventory writes');
+      assert.equal(fixture.peakCheckoutInFlight, 1, 'v3 keeps one fresh Checkout probe in flight to avoid overlapping Inventory writes');
       for (let index = 1; index < fixture.checkoutFetches.length; index++) {
         assert.ok(fixture.checkoutFetches[index].startedAtMs - fixture.checkoutFetches[index - 1].startedAtMs >= 850,
           'quantity-one checkouts use paced one-second ticks without catch-up');
@@ -488,7 +558,7 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
   await t.test('slow periodic persistence exposes checkpoint skips and a failed later observation remains incomplete', async () => {
     await prepareReady(context);
     fixture.catalogResponseDelayMs = 80;
-    fixture.catalogObservationWriteDelayMs = 300;
+    fixture.catalogObservationWriteDelayMs = 900;
     fixture.checkoutResponseDelayMs = 400;
     fixture.beforeCatalogObservationWrite = async () => {
       if (fixture.catalogObservationWrites.filter(({ committed }) => committed).length >= 2) {
@@ -508,9 +578,9 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
     assert.equal(saved.catalogObservation.status, 'partial');
     assert.ok(persistedWrites.length >= 2, 'two periodic observations committed before the selected failure');
     assert.ok(failedWrites.length >= 1, 'a later catalog observation was rejected by the fixture');
-    const synchronizedWave = fixture.catalogFetches.slice(60, 90);
+    const synchronizedWave = fixture.catalogFetches.slice(30, 60);
     assert.equal(synchronizedWave.length, surgeProfile.catalog.batchSize,
-      'the 1-second catalog wave is dispatched before the first shifted periodic checkpoint');
+      'the 1-second synchronized wave is dispatched before the first shifted periodic checkpoint');
     assert.ok(synchronizedWave.every(({ durableCheckoutInFlightBeforeFetch }) => durableCheckoutInFlightBeforeFetch),
       'the later synchronized wave still follows its fresh durable Checkout reservation');
     assert.ok(synchronizedWave.slice(0, 20).every(({ checkoutFetchInFlightBeforeFetch }) => !checkoutFetchInFlightBeforeFetch));
