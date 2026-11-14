@@ -1065,17 +1065,24 @@ export function appFetch(url, init = {}) {
   const method = init.method ?? 'GET';
   const body = init.body ? JSON.parse(init.body) : undefined;
   const startedAtMs = performance.now();
+  const isCatalog = method === 'GET' && target.pathname === '/api/products';
   const durableCheckoutBeforeFetch = method === 'POST' && target.pathname === '/api/checkout' &&
     [...records.values()].some((item) => item.data?.requests?.some((saved) => saved.checkout?.checkoutId === body?.checkoutId));
   const currentActionId = row('STATE')?.data?.currentActionId;
   const currentAction = currentActionId ? row(`ACTION#${currentActionId}`)?.data : undefined;
+  const durableCheckoutInFlightBeforeFetch = isCatalog && currentAction?.trafficProfile?.name === 'inventory_surge' &&
+    currentAction.traffic?.checkout?.inFlight > 0 && currentAction.requests?.some((saved) =>
+      saved.kind === 'checkout' && saved.checkout?.checkoutId && !saved.completedAt);
+  const checkoutFetchInFlightBeforeFetch = isCatalog && fixture.checkoutInFlight > 0;
   const request = { url: String(url), method, path: target.pathname, body,
     startedAt: new Date().toISOString(), startedAtMs,
     ...(method === 'POST' && target.pathname === '/api/checkout' ? { durableCheckoutBeforeFetch } : {}),
+    ...(isCatalog && currentAction?.trafficProfile?.name === 'inventory_surge'
+      ? { durableCheckoutInFlightBeforeFetch: Boolean(durableCheckoutInFlightBeforeFetch),
+        checkoutFetchInFlightBeforeFetch: Boolean(checkoutFetchInFlightBeforeFetch) } : {}),
     ...(method === 'GET' && target.pathname === '/api/products' && currentAction?.trafficProfile?.name === 'inventory_surge'
       ? { surgeContextBeforeFetch: Boolean(currentAction.trafficProfile && currentAction.trafficContext && currentAction.trafficApiId) } : {}) };
   fixture.appRequests.push(request);
-  const isCatalog = method === 'GET' && target.pathname === '/api/products';
   const isCheckout = method === 'POST' && target.pathname === '/api/checkout';
   let catalogFetch;
   let checkoutFetch;
@@ -1088,6 +1095,10 @@ export function appFetch(url, init = {}) {
       startedAt: request.startedAt,
       startedAtMs,
       inFlightAtStart: fixture.catalogInFlight,
+      ...(isCatalog && currentAction?.trafficProfile?.name === 'inventory_surge' ? {
+        durableCheckoutInFlightBeforeFetch: Boolean(durableCheckoutInFlightBeforeFetch),
+        checkoutFetchInFlightBeforeFetch: Boolean(checkoutFetchInFlightBeforeFetch),
+      } : {}),
     };
     fixture.catalogFetches.push(catalogFetch);
   }
