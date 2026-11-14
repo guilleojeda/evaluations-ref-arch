@@ -306,9 +306,10 @@ function comparisonCheck(previous: Action | undefined, current: Action | undefin
   const currentStarts = current.catalogObservation ? current.traffic?.catalog?.submitted : undefined;
   const actualDemand = previousStarts === undefined || currentStarts === undefined ? undefined : currentStarts >= previousStarts;
   const completeCatalogPair = previous.catalogObservation?.status === "complete" && current.catalogObservation?.status === "complete";
-  const settledPair = previous.status === "completed" && current.status === "completed" &&
-    previous.catalogObservation?.status === "complete" && current.catalogObservation?.status === "complete";
   const sameDuration = previousDuration !== undefined && currentDuration !== undefined && previousDuration === currentDuration;
+  const hasSettledDrain = (action: Action) => (action.status === "completed" || action.status === "stopped") &&
+    action.catalogObservation?.status === "complete" && Boolean(action.trafficWindow?.producerStoppedAt && action.trafficWindow.settledAt);
+  const settledPair = hasSettledDrain(previous) && hasSettledDrain(current);
   const previousBins = previous.catalogObservation?.bins;
   const currentBins = current.catalogObservation?.bins;
   const cohortComparison = previousBins?.length === 15 && currentBins?.length === 15
@@ -320,7 +321,8 @@ function comparisonCheck(previous: Action | undefined, current: Action | undefin
     : !completeCatalogPair ? `checkpointed start totals ${actualDemand ? "are at least as high" : "are lower"} at the recorded observation times; final demand is unknown`
       : actualDemand ? "repeat recorded at least as many final catalog starts" : "repeat recorded fewer final catalog starts";
   const durationText = sameDuration ? `production durations match (${durationLabel(currentDuration)})` : "production durations differ or are unavailable";
-  const settleText = settledPair ? "both catalog snapshots are complete and actions completed" : "one or both actions are incomplete or partial";
+  const settleText = settledPair ? "both catalog snapshots are complete and accepted work drained"
+    : "complete snapshots and settled drains are not confirmed for both episodes";
   return `${profileText}; ${contextText}; ${durationText}; ${demandText}; ${cohortComparison}; ${settleText}.`;
 }
 
