@@ -23,12 +23,17 @@ const surgeProfileV2 = {
   catalog: { ratePerSecond: 60, batchSize: 30, batchIntervalMs: 500, maxAttempts: 900, maxInFlight: 30, requestTimeoutMs: 7_000 },
   checkout: { intervalMs: 1_000, maxAttempts: 15, maxInFlight: 1, requestTimeoutMs: 7_000 },
 };
-const surgeProfile = {
+const surgeProfileV3 = {
   name: 'inventory_surge',
   version: 3,
   durationMs: 15_000,
   catalog: { ratePerSecond: 30, batchSize: 30, batchIntervalMs: 1_000, maxAttempts: 450, maxInFlight: 30, requestTimeoutMs: 7_000 },
   checkout: { intervalMs: 1_000, maxAttempts: 15, maxInFlight: 1, requestTimeoutMs: 7_000 },
+};
+const surgeProfile = {
+  ...surgeProfileV3,
+  version: 4,
+  admissionLatenessMs: 300,
 };
 const outcomeNames = ['success', 'http4xx', 'http5xx', 'invalidResponse', 'noResponse'];
 const skipNames = ['late', 'full', 'checkpoint'];
@@ -231,6 +236,72 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
     }
   });
 
+  await t.test('v4 admits bounded Checkout preparation while saved v3 keeps its stricter gate', { timeout: 45_000 }, async () => {
+    const exercise = async ({ label, profile, delayMs, expectedSent }) => {
+      await prepareReady(context);
+      const catalogFetchStart = fixture.catalogFetches.length;
+      const checkoutFetchStart = fixture.checkoutFetches.length;
+      const { id } = await startSurge(context.api);
+      row(`ACTION#${id}`).data.trafficProfile = structuredClone(profile);
+      fixture.checkoutReservationDelayActionId = id;
+      fixture.checkoutReservationDelayCount = 1;
+      fixture.checkoutReservationDelayMs = delayMs;
+      const execution = context.worker.handler({ actionId: id });
+      try {
+        await waitFor(`${label} first durable reservation`, () => fixture.checkoutReservationDelayStarted, 5_000);
+        const delayObservedAt = performance.now();
+        const observed = await waitFor(`${label} first checkout admission outcome`, async () => {
+          const action = await getAction(context.api, id);
+          const checkout = action.requests.find(({ kind }) => kind === 'checkout');
+          if (checkout?.outcome === 'not_sent') return { action, checkout };
+          if (fixture.checkoutFetches.length > checkoutFetchStart) return { action, checkout };
+          return undefined;
+        }, 5_000);
+        if (expectedSent) {
+          const checkoutFetches = fixture.checkoutFetches.slice(checkoutFetchStart);
+          assert.equal(checkoutFetches.length, 1,
+            `${label}: the admitted tick reaches the app`);
+          assert.notEqual(observed.checkout?.outcome, 'not_sent', `${label}: the reservation is not canceled`);
+          await waitFor(`${label} complete first catalog wave`, () =>
+            fixture.catalogFetches.length >= catalogFetchStart + surgeProfile.catalog.batchSize, 2_000);
+          const firstWave = fixture.catalogFetches.slice(catalogFetchStart, catalogFetchStart + surgeProfile.catalog.batchSize);
+          assert.equal(firstWave.length, surgeProfile.catalog.batchSize,
+            `${label}: the admitted checkout stays co-launched with one complete catalog wave`);
+          assert.ok(firstWave[19].startedAtMs < checkoutFetches[0].startedAtMs &&
+            checkoutFetches[0].startedAtMs < firstWave[20].startedAtMs,
+          `${label}: the delayed Checkout and catalog GETs stay in the same scheduled wave`);
+          const delayTailMs = firstWave[0].startedAtMs - delayObservedAt;
+          assert.ok(delayTailMs >= 100 && delayTailMs <= delayMs + 100,
+            `${label}: fixture-clock starts reflect the controlled ${delayMs}ms preparation delay (${delayTailMs.toFixed(1)}ms after the test observed the delay)`);
+        } else {
+          assert.equal(observed.checkout?.outcome, 'not_sent', `${label}: the durable reservation is marked known-unsent`);
+          assert.equal(observed.checkout?.errorCode, 'CHECKOUT_TICK_MISSED');
+          await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
+          assert.equal(fixture.checkoutFetches.length - checkoutFetchStart, 0,
+            `${label}: an over-late Checkout does not become a business fetch`);
+          assert.equal(fixture.catalogFetches.length - catalogFetchStart, 0,
+            `${label}: the over-late catalog wave is skipped without a catch-up dispatch`);
+          const current = await getAction(context.api, id);
+          assert.equal(current.requests.filter(({ kind }) => kind === 'checkout').length, 1,
+            `${label}: no later reservation is created to catch up the missed tick`);
+        }
+        const stopId = randomUUID();
+        await call(context.api, 'PUT', `/api/actions/${stopId}`, { kind: 'stop', targetActionId: id }, 202);
+        await execution;
+        const stopped = await getAction(context.api, id);
+        assert.equal(stopped.status, 'stopped', stopped.error);
+        assert.deepEqual(stopped.trafficProfile, profile, `${label}: execution preserves the saved profile snapshot`);
+        assert.deepEqual(fixture.unhandled, []);
+      } finally {
+        await execution;
+      }
+    };
+
+    await exercise({ label: 'v4 with 200ms preparation', profile: surgeProfile, delayMs: 200, expectedSent: true });
+    await exercise({ label: 'v4 with 500ms preparation', profile: surgeProfile, delayMs: 500, expectedSent: false });
+    await exercise({ label: 'saved v3 with 200ms preparation', profile: surgeProfileV3, delayMs: 200, expectedSent: false });
+  });
+
   await t.test('surge fails closed on stale release, denied Inventory, cap drift, or unresolved checkout', async () => {
     const cases = [
       ['stale app release', () => {
@@ -334,15 +405,15 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
     try {
       await waitFor('initial production fetches', () => fixture.catalogFetches.length >= 20);
       const firstWaveStartedAtMs = fixture.catalogFetches[0].startedAtMs;
-      await waitFor('the near-boundary one-second scheduler stall point', () =>
-        performance.now() >= firstWaveStartedAtMs + 1_350, 2_000);
+      await waitFor('the one-second scheduler stall point beyond the v4 lateness allowance', () =>
+        performance.now() >= firstWaveStartedAtMs + 1_450, 2_000);
       blockEventLoop(900);
       const resumedAt = performance.now();
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
       const resumedStarts = fixture.catalogFetches.filter(({ startedAtMs }) =>
         startedAtMs >= resumedAt && startedAtMs <= resumedAt + 100).length;
-      assert.ok(resumedStarts <= surgeProfile.catalog.batchSize,
-        `late catalog waves are skipped without a catch-up burst (${resumedStarts} starts in 100 ms)`);
+      assert.equal(resumedStarts, 0,
+        `a wave more than 300 ms late is skipped without an immediate catch-up burst (${resumedStarts} starts in 100 ms)`);
       await execution;
 
       const action = await getAction(context.api, id);
@@ -357,7 +428,8 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
       }, 'the worker records freshly observed release and current settings before production');
       assert.equal(action.trafficApiId, 'fixtureapi', 'the worker derives and saves the trusted API ID before surge sends');
       assert.equal(action.status, 'completed', action.error);
-      assert.equal(action.trafficProfile.version, 3);
+      assert.equal(action.trafficProfile.version, 4);
+      assert.equal(action.trafficProfile.admissionLatenessMs, 300);
       assert.equal(action.trafficProfile.catalog.batchSize, 30);
       assert.equal(action.trafficProfile.catalog.batchIntervalMs, 1_000);
       assert.equal(action.trafficWindow.stopReason, 'duration');
@@ -384,8 +456,8 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
         assert.ok(wave.at(-1).startedAtMs - wave[0].startedAtMs < 250,
           'each accepted wave starts as one bounded burst, without a second pacing loop');
         if (index > 0) {
-          assert.ok(wave[0].startedAtMs - fixture.catalogFetches[index - surgeProfile.catalog.batchSize].startedAtMs >= 850,
-            'catalog waves remain separated by their 1,000 ms cadence');
+          assert.ok(wave[0].startedAtMs - fixture.catalogFetches[index - surgeProfile.catalog.batchSize].startedAtMs >= 700,
+            'catalog waves retain their 1,000 ms cadence with the bounded v4 admission window');
         }
       }
       const catalogWaves = Array.from({ length: fixture.catalogFetches.length / surgeProfile.catalog.batchSize }, (_, wave) =>
@@ -393,7 +465,7 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
       for (const checkout of fixture.checkoutFetches) {
         const matching = catalogWaves.filter((wave) =>
           wave[19].startedAtMs < checkout.startedAtMs && checkout.startedAtMs < wave[20].startedAtMs);
-        assert.equal(matching.length, 1, 'each fresh Checkout is co-launched inside a v3 one-second catalog wave');
+        assert.equal(matching.length, 1, 'each fresh Checkout is co-launched inside a v4 one-second catalog wave');
         assert.ok(matching[0].every(({ durableCheckoutInFlightBeforeFetch }) => durableCheckoutInFlightBeforeFetch),
           'the co-launch wave follows the Checkout reservation');
         assert.ok(matching[0].slice(0, 20).every(({ checkoutFetchInFlightBeforeFetch }) => !checkoutFetchInFlightBeforeFetch),
@@ -445,9 +517,9 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
       assert.equal(checkoutFetches.length, action.traffic.checkout.submitted);
       assert.ok(action.traffic.checkout.submitted <= 15);
       assert.ok(fixture.peakCheckoutInFlight <= surgeProfile.checkout.maxInFlight);
-      assert.equal(fixture.peakCheckoutInFlight, 1, 'v3 keeps one fresh Checkout probe in flight to avoid overlapping Inventory writes');
+      assert.equal(fixture.peakCheckoutInFlight, 1, 'v4 keeps one fresh Checkout probe in flight to avoid overlapping Inventory writes');
       for (let index = 1; index < fixture.checkoutFetches.length; index++) {
-        assert.ok(fixture.checkoutFetches[index].startedAtMs - fixture.checkoutFetches[index - 1].startedAtMs >= 850,
+        assert.ok(fixture.checkoutFetches[index].startedAtMs - fixture.checkoutFetches[index - 1].startedAtMs >= 700,
           'quantity-one checkouts use paced one-second ticks without catch-up');
       }
       assert.ok(checkoutFetches.every(({ durableCheckoutBeforeFetch }) => durableCheckoutBeforeFetch),
@@ -493,7 +565,7 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
       assert.ok(fixture.checkoutFetches.every(({ durableBeforeFetch }) => durableBeforeFetch),
         'all in-flight checkout payloads were persisted before their fetches');
       for (let index = 1; index < fixture.checkoutFetches.length; index++) {
-        assert.ok(fixture.checkoutFetches[index].startedAtMs - fixture.checkoutFetches[index - 1].startedAtMs >= 850,
+          assert.ok(fixture.checkoutFetches[index].startedAtMs - fixture.checkoutFetches[index - 1].startedAtMs >= 700,
           'surge checkouts remain paced at one-second intervals');
       }
       await waitFor('the dropped Checkout response to be durably marked unknown', async () =>
@@ -690,7 +762,7 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
       assert.equal(action.requests.filter(({ kind }) => kind === 'checkout').length, fixture.checkoutFetches.length,
         'ticks missed while the previous probe is in flight create no durable queued reservation');
       for (let index = 1; index < fixture.checkoutFetches.length; index++) {
-        assert.ok(fixture.checkoutFetches[index].startedAtMs - fixture.checkoutFetches[index - 1].startedAtMs >= 850,
+        assert.ok(fixture.checkoutFetches[index].startedAtMs - fixture.checkoutFetches[index - 1].startedAtMs >= 700,
           'the single-slot probe lane does not create a checkout catch-up burst');
       }
       assert.equal(action.traffic.catalog.submitted + action.traffic.catalog.skipped, surgeProfile.catalog.maxAttempts);
