@@ -336,7 +336,7 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
       const firstWaveStartedAtMs = fixture.catalogFetches[0].startedAtMs;
       await waitFor('the near-boundary one-second scheduler stall point', () =>
         performance.now() >= firstWaveStartedAtMs + 1_350, 2_000);
-      blockEventLoop(600);
+      blockEventLoop(900);
       const resumedAt = performance.now();
       await new Promise((resolveDelay) => setTimeout(resolveDelay, 100));
       const resumedStarts = fixture.catalogFetches.filter(({ startedAtMs }) =>
@@ -578,6 +578,9 @@ test('Phase 10 surge commands use bounded, durable observations and preserve con
     assert.equal(saved.catalogObservation.status, 'partial');
     assert.ok(persistedWrites.length >= 2, 'two periodic observations committed before the selected failure');
     assert.ok(failedWrites.length >= 1, 'a later catalog observation was rejected by the fixture');
+    assert.equal(fixture.checkoutFetches.some(({ startedAtMs }) =>
+      startedAtMs >= fixture.catalogObservationWrites[0].startedAtMs && startedAtMs < persistedWrites[0].completedAtMs), false,
+    'the coordinator waits for a pending checkpoint before starting another Checkout tick');
     const synchronizedWave = fixture.catalogFetches.slice(30, 60);
     assert.equal(synchronizedWave.length, surgeProfile.catalog.batchSize,
       'the 1-second synchronized wave is dispatched before the first shifted periodic checkpoint');

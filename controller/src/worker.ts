@@ -51,6 +51,7 @@ import type {
   TrafficContext,
   TrafficProfileSnapshot,
   TrafficProfileV2,
+  TrafficProfileV3,
   TrafficWindow,
 } from "./types.js";
 
@@ -2880,8 +2881,13 @@ function profileIsExact(profile: TrafficProfileSnapshot | undefined): profile is
     return profile.checkout.maxInFlight === 2 && profile.catalog.ratePerSecond === 240 && profile.catalog.maxAttempts === 3_600 &&
       profile.catalog.maxInFlight === 128 && profile.catalog.requestTimeoutMs === 7_000;
   }
-  return profile.version === 2 && profile.checkout.maxInFlight === 1 && profile.catalog.ratePerSecond === 60 && profile.catalog.batchSize === 30 &&
-    profile.catalog.batchIntervalMs === 500 && profile.catalog.maxAttempts === 900 &&
+  if (profile.version === 2) {
+    return profile.checkout.maxInFlight === 1 && profile.catalog.ratePerSecond === 60 && profile.catalog.batchSize === 30 &&
+      profile.catalog.batchIntervalMs === 500 && profile.catalog.maxAttempts === 900 &&
+      profile.catalog.maxInFlight === 30 && profile.catalog.requestTimeoutMs === 7_000;
+  }
+  return profile.version === 3 && profile.checkout.maxInFlight === 1 && profile.catalog.ratePerSecond === 30 &&
+    profile.catalog.batchSize === 30 && profile.catalog.batchIntervalMs === 1_000 && profile.catalog.maxAttempts === 450 &&
     profile.catalog.maxInFlight === 30 && profile.catalog.requestTimeoutMs === 7_000;
 }
 
@@ -3037,7 +3043,7 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
   const startWallMs = Date.now();
   const startMono = performance.now();
   const endMono = startMono + profile.durationMs;
-  const v2AdmissionLatenessMs = 150;
+  const waveAdmissionLatenessMs = 150;
   const window: TrafficWindow = {
     startedAt: new Date(startWallMs).toISOString(),
     scheduledEndAt: new Date(startWallMs + profile.durationMs).toISOString(),
@@ -3180,7 +3186,7 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
 
   async function prepareWaveCheckout(due: number): Promise<RequestRecord | undefined> {
     if (localStop) return undefined;
-    if (performance.now() > due + v2AdmissionLatenessMs) {
+    if (performance.now() > due + waveAdmissionLatenessMs) {
       await skipCheckoutTick(action.id).catch(() => { observationFailure = true; closeAdmissions("observation_failure"); });
       return undefined;
     }
@@ -3226,7 +3232,7 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
             closeAdmissions("observation_failure");
           }
           admitted = false;
-        } else if (performance.now() > due + v2AdmissionLatenessMs) {
+        } else if (performance.now() > due + waveAdmissionLatenessMs) {
           admitted = false;
         }
       } catch {
@@ -3237,7 +3243,7 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
     }
     if (!admitted) {
       const reason = localStop ? "ADMISSION_CLOSED"
-        : performance.now() > due + v2AdmissionLatenessMs && performance.now() < endMono
+        : performance.now() > due + waveAdmissionLatenessMs && performance.now() < endMono
           ? "CHECKOUT_TICK_MISSED" : "PRODUCTION_WINDOW_CLOSED";
       await markSurgeCheckoutNotSent(action.id, request, reason, window, stopObservedAt)
         .catch(() => { observationFailure = true; closeAdmissions("observation_failure"); });
@@ -3253,7 +3259,7 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
     const task = (async () => {
       const result = await send(action.id, target, bearer, request, payload, profile.checkout.requestTimeoutMs, () => {
         if (localStop || performance.now() >= endMono) return false;
-        if (performance.now() > due + v2AdmissionLatenessMs) return false;
+        if (performance.now() > due + waveAdmissionLatenessMs) return false;
         if (Date.now() + profile.checkout.requestTimeoutMs + 1_000 >= action.deadlineAt) {
           deadlineReached = true;
           closeAdmissions("deadline");
@@ -3264,7 +3270,7 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
       });
       if (!result.sent) {
         const reason = localStop ? "ADMISSION_CLOSED"
-          : performance.now() > due + v2AdmissionLatenessMs && performance.now() < endMono
+          : performance.now() > due + waveAdmissionLatenessMs && performance.now() < endMono
             ? "CHECKOUT_TICK_MISSED" : "PRODUCTION_WINDOW_CLOSED";
         await markSurgeCheckoutNotSent(action.id, request, reason, window, stopObservedAt);
       } else if (result.outcome === "unknown") unknown.push(payload);
@@ -3330,12 +3336,18 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
     if (!localStop && performance.now() < endMono) await waitFor(endMono, 50);
   }
 
-  async function runCatalogWaves(waveProfile: TrafficProfileV2): Promise<void> {
+  async function runCatalogWaves(waveProfile: TrafficProfileV2 | TrafficProfileV3): Promise<void> {
     const batchSize = waveProfile.catalog.batchSize;
     const batchIntervalMs = waveProfile.catalog.batchIntervalMs;
     const catalogIntervalMs = batchIntervalMs / batchSize;
     const waveCount = waveProfile.catalog.maxAttempts / batchSize;
-    const lateAllowanceMs = v2AdmissionLatenessMs;
+    const lateAllowanceMs = waveAdmissionLatenessMs;
+    const checkoutTickAtWave = (candidateWave: number): number | undefined => {
+      const offsetMs = candidateWave * batchIntervalMs;
+      if (offsetMs % waveProfile.checkout.intervalMs !== 0) return undefined;
+      const tick = offsetMs / waveProfile.checkout.intervalMs;
+      return Number.isSafeInteger(tick) && tick < waveProfile.checkout.maxAttempts ? tick : undefined;
+    };
     let wave = 0;
     while (wave < waveCount && !localStop) {
       const now = performance.now();
@@ -3349,7 +3361,7 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
       if (localStop) break;
       const current = performance.now();
       if (current >= endMono) {
-        const firstRemainingTick = Math.ceil(wave / 2);
+        const firstRemainingTick = Math.ceil((wave * batchIntervalMs) / waveProfile.checkout.intervalMs);
         while (wave < waveCount && !localStop) {
           const scheduled = startMono + wave * batchIntervalMs;
           const reason: CatalogSkip = lastCheckpointInterval && scheduled >= lastCheckpointInterval.start &&
@@ -3365,7 +3377,18 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
         break;
       }
 
-      const checkoutRequest = wave % 2 === 0 ? await prepareWaveCheckout(due) : undefined;
+      const checkoutTick = checkoutTickAtWave(wave);
+      const serializeCheckpointCheckout = waveProfile.version === 3;
+      if (serializeCheckpointCheckout && checkoutTick !== undefined && checkpointPending) await checkpointPending;
+      if (localStop) break;
+
+      const checkpointCovered = Boolean(lastCheckpointInterval && due >= lastCheckpointInterval.start &&
+        due < lastCheckpointInterval.end);
+      if (serializeCheckpointCheckout && checkoutTick !== undefined && checkpointCovered) {
+        await skipCheckoutTick(action.id).catch(() => { observationFailure = true; closeAdmissions("observation_failure"); });
+      }
+      const checkoutRequest = checkoutTick === undefined || (serializeCheckpointCheckout && checkpointCovered)
+        ? undefined : await prepareWaveCheckout(due);
       if (localStop) {
         if (checkoutRequest) {
           await markSurgeCheckoutNotSent(action.id, checkoutRequest, "ADMISSION_CLOSED", window, stopObservedAt)
@@ -3375,11 +3398,11 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
       }
 
       const dispatchAt = performance.now();
-      const checkpointCovered = Boolean(checkpointPending || (lastCheckpointInterval && due >= lastCheckpointInterval.start &&
+      const checkpointStillPending = Boolean(checkpointPending || (lastCheckpointInterval && due >= lastCheckpointInterval.start &&
         due < lastCheckpointInterval.end));
       const late = dispatchAt - due > lateAllowanceMs;
       const full = state.counters.inFlight + batchSize > waveProfile.catalog.maxInFlight;
-      const canDispatchCatalog = !checkpointCovered && !late && !full &&
+      const canDispatchCatalog = !checkpointStillPending && !late && !full &&
         Date.now() + waveProfile.catalog.requestTimeoutMs + 1_000 < action.deadlineAt;
       if (Date.now() + waveProfile.catalog.requestTimeoutMs + 1_000 >= action.deadlineAt) {
         deadlineReached = true;
@@ -3387,7 +3410,7 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
       }
 
       if (canDispatchCatalog) {
-        if (wave % 2 === 0 && checkoutRequest) {
+        if (checkoutRequest) {
           for (let offset = 0; offset < 20; offset++) {
             startCatalogRequest(wave * batchSize + offset, catalogIntervalMs);
           }
@@ -3405,11 +3428,10 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
           for (let offset = 0; offset < batchSize; offset++) {
             startCatalogRequest(wave * batchSize + offset, catalogIntervalMs);
           }
-          if (wave % 2 === 0 && checkoutRequest) startWaveCheckout(checkoutRequest, due);
         }
       } else {
         if (!localStop) {
-          const reason: CatalogSkip = checkpointCovered ? "checkpoint" : full ? "full" : "late";
+          const reason: CatalogSkip = checkpointStillPending ? "checkpoint" : full ? "full" : "late";
           skipCatalogWave(wave, batchSize, reason, catalogIntervalMs);
         }
         if (checkoutRequest) startWaveCheckout(checkoutRequest, due);
@@ -3421,7 +3443,7 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
   }
 
   async function runCheckoutProducer(): Promise<void> {
-    if (profile.version === 2) return;
+    if (profile.version !== 1) return;
     for (let tick = 0; tick < profile.checkout.maxAttempts && !localStop; tick++) {
       const due = startMono + tick * profile.checkout.intervalMs;
       await waitFor(due, 100);
@@ -3510,8 +3532,8 @@ async function surgeTraffic(action: Action, target: AppTarget, bearer: string, b
   }
 
   try {
-    if (profile.version === 2) await runCatalogWaves(profile);
-    else await Promise.all([runCatalogProducer(), runCheckoutProducer()]);
+    if (profile.version === 1) await Promise.all([runCatalogProducer(), runCheckoutProducer()]);
+    else await runCatalogWaves(profile);
   } catch {
     observationFailure = true;
     closeAdmissions("observation_failure");

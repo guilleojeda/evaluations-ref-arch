@@ -62,7 +62,27 @@ export interface TrafficProfileV2 {
   };
 }
 
-export type TrafficProfileSnapshot = TrafficProfileV1 | TrafficProfileV2;
+export interface TrafficProfileV3 {
+  name: "inventory_surge";
+  version: 3;
+  durationMs: 15_000;
+  catalog: {
+    ratePerSecond: 30;
+    batchSize: 30;
+    batchIntervalMs: 1_000;
+    maxAttempts: 450;
+    maxInFlight: 30;
+    requestTimeoutMs: 7_000;
+  };
+  checkout: {
+    intervalMs: 1_000;
+    maxAttempts: 15;
+    maxInFlight: 1;
+    requestTimeoutMs: 7_000;
+  };
+}
+
+export type TrafficProfileSnapshot = TrafficProfileV1 | TrafficProfileV2 | TrafficProfileV3;
 
 export interface TrafficContext {
   appRevision: string;
