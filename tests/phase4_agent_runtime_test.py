@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime
 from threading import Event
-import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -238,6 +239,58 @@ class RuntimeAcceptanceTests(unittest.TestCase):
                 row = self.run_row(boundary)
                 self.assertEqual("failed", row["status"])
                 self.assertNotIn("report", row)
+
+    def test_citation_timestamps_require_real_timezone_qualified_instants_and_preserve_wire_values(self):
+        invalid_values = (
+            "2026-11-14T16:46:60Z",
+            "2026-02-30T16:46:00Z",
+            "2026-11-14T16:46:00",
+            "2026-11-14T16:46:00+24:00",
+            "2026-11-14T16:46:00+12:60",
+            "２０２６-11-14T16:46:00Z",
+            "not-a-timestamp",
+        )
+        for field in ("windowStart", "windowEnd", "observedAt"):
+            for timestamp in invalid_values:
+                with self.subTest(field=field, timestamp=timestamp):
+                    payload = report()
+                    payload["evidence"][0][field] = timestamp
+                    with isolated_runtime(AgentScript(), FakeAWSBoundary()) as (module, _):
+                        with self.assertRaises(ValueError):
+                            module.InvestigationReport.model_validate(payload)
+
+        payload = report()
+        expected = {
+            "windowStart": "2026-11-14T16:46:00Z",
+            "windowEnd": "2026-11-14T11:46:00.123456789-0500",
+            "observedAt": "2026-11-14T16:47:00+00:00",
+        }
+        payload["evidence"][0].update(expected)
+        with isolated_runtime(AgentScript(), FakeAWSBoundary()) as (module, _):
+            validated = module.InvestigationReport.model_validate(payload).model_dump(mode="json")
+        self.assertEqual(expected, {field: validated["evidence"][0][field] for field in expected},
+                         "timezone-qualified values accepted by the controller must keep their original wire strings")
+
+    def test_handler_cannot_persist_a_complete_report_from_an_invalid_raw_structured_output(self):
+        invalid = report()
+        invalid["evidence"][0]["windowEnd"] = "2026-11-14T16:46:60Z"
+
+        class RawReportAgent:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __call__(self, *args, **kwargs):
+                return SimpleNamespace(structured_output=invalid)
+
+        boundary = FakeAWSBoundary()
+        with isolated_runtime(AgentScript(), boundary) as (module, _):
+            with patch.object(module, "Agent", RawReportAgent):
+                self.invoke(module)
+
+        row = self.run_row(boundary)
+        self.assertEqual("failed", row["status"])
+        self.assertNotIn("report", row, "invalid model output must never be stored as a complete report")
+        self.assertTrue(row.get("failure"), "the existing bounded handler failure result must be persisted")
 
     def test_structured_output_schema_advertises_recommendation_value_union(self):
         from strands.tools.structured_output.structured_output_tool import StructuredOutputTool

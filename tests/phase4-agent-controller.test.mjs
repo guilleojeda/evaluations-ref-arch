@@ -511,6 +511,110 @@ test('running, overdue, failed, and completed-unknown records keep separate mean
   assertNoInvocationOrWrites();
 });
 
+test('an invalid report is isolated from valid investigation history and remains visibly rejected', async (t) => {
+  const older = run({ transitionAt: '2026-11-14T16:40:00.000Z' });
+  older.report.evidence[0].windowStart = '2026-11-14T16:40:00Z';
+  older.report.evidence[0].windowEnd = '2026-11-14T11:40:00.123456789-0500';
+  older.report.evidence[0].observedAt = '2026-11-14T16:41:00+00:00';
+  const rejected = run({ transitionAt: '2026-11-14T16:46:00.000Z', artifactSha256: 'c'.repeat(64) });
+  rejected.report.evidence[0].windowEnd = '2026-11-14T16:46:60Z';
+  const storedRows = structuredClone([older, rejected]);
+  const originalRows = structuredClone(storedRows);
+
+  await t.test('recent history returns the valid older report and a failed projection for the stored complete record', async () => {
+    reset({ rows: structuredClone(storedRows) });
+    const response = await call('GET', '/api/investigations');
+    assert.equal(response.statusCode, 200, response.body);
+    const runs = responseBody(response).runs;
+    assert.deepEqual(runs.map(({ transitionAt }) => transitionAt), [rejected.transitionAt, older.transitionAt]);
+
+    const invalid = runs[0];
+    assert.equal(invalid.status, 'failed', 'the normalized read view must preserve visible failure status');
+    assert.equal(invalid.failure?.code, 'INVALID_REPORT');
+    assert.equal(invalid.failure?.message,
+      'The Runtime completed, but the saved investigation report failed validation.');
+    assert.doesNotMatch(invalid.failure?.message ?? '', /model failed|runtime failed/i,
+      'derived report validation must not be described as an actual model or Runtime failure');
+    assert.equal(invalid.report, undefined, 'a rejected report must not reach the presenter');
+    for (const field of ['runId', 'runtimeSessionId', 'candidateId', 'sourceRevision', 'artifactSha256',
+      'promptSha256', 'modelId', 'runtimeArn', 'runtimeVersion', 'endpointName', 'startedAt', 'deadlineAt', 'finishedAt']) {
+      assert.equal(invalid[field], rejected[field], `native provenance ${field} must remain available`);
+    }
+    assert.deepEqual(invalid.traceRef, rejected.traceRef);
+    assert.deepEqual(invalid.captureRef, rejected.captureRef);
+    assert.deepEqual(runs[1].report, older.report, 'valid timezone strings in the older report must be preserved byte-for-byte');
+    assert.deepEqual(fixture.rows, originalRows, 'history normalization must not rewrite the stored complete row or report');
+    assertNoInvocationOrWrites();
+  });
+
+  await t.test('an exact event filter uses the same failed report projection without hiding the run', async () => {
+    reset({ rows: structuredClone(storedRows) });
+    const response = await call('GET', `/api/investigations?transitionAt=${encodeURIComponent(rejected.transitionAt)}`);
+    assert.equal(response.statusCode, 200, response.body);
+    const runs = responseBody(response).runs;
+    assert.equal(runs.length, 1);
+    assert.equal(runs[0].runId, rejected.runId);
+    assert.equal(runs[0].status, 'failed');
+    assert.equal(runs[0].failure?.code, 'INVALID_REPORT');
+    assert.equal(runs[0].report, undefined);
+    assert.deepEqual(runs[0].traceRef, rejected.traceRef);
+    assert.deepEqual(runs[0].captureRef, rejected.captureRef);
+    assert.deepEqual(fixture.rows, originalRows, 'event-filtered normalization must leave the source row untouched');
+    assertNoInvocationOrWrites();
+  });
+
+  await t.test('a second-60 citation timestamp in each field is rejected as a report', async () => {
+    for (const field of ['windowStart', 'windowEnd', 'observedAt']) {
+      const row = structuredClone(rejected);
+      row.report.evidence[0][field] = '2026-11-14T16:46:60Z';
+      const original = structuredClone(row);
+      reset({ rows: [row] });
+      const response = await call('GET', `/api/investigations?transitionAt=${encodeURIComponent(row.transitionAt)}`);
+      assert.equal(response.statusCode, 200, `${field}: ${response.body}`);
+      const [found] = responseBody(response).runs;
+      assert.equal(found.status, 'failed', field);
+      assert.equal(found.failure?.code, 'INVALID_REPORT', field);
+      assert.equal(found.report, undefined, field);
+      assert.deepEqual(fixture.rows, [original], `${field}: source row must remain unchanged`);
+      assertNoInvocationOrWrites();
+    }
+  });
+
+  await t.test('invalid report classification does not forgive malformed native provenance', async () => {
+    const malformedProvenance = structuredClone(rejected);
+    malformedProvenance.artifactSha256 = 'not-a-sha256';
+    const original = structuredClone(malformedProvenance);
+    reset({ rows: [malformedProvenance] });
+    const response = await call('GET', `/api/investigations?transitionAt=${encodeURIComponent(malformedProvenance.transitionAt)}`);
+    assert.ok(response.statusCode >= 500, response.body);
+    assert.equal(responseBody(response).runs, undefined,
+      'invalid native provenance must keep the entire record unavailable instead of being downgraded to report rejection');
+    assert.deepEqual(fixture.rows, [original], 'fail-closed provenance validation is read-only');
+    assertNoInvocationOrWrites();
+  });
+
+  await t.test('missing reports and conflicting native failures remain unavailable', async () => {
+    const rows = [
+      run({ transitionAt: '2026-11-14T16:45:00.000Z', report: undefined }),
+      run({ transitionAt: '2026-11-14T16:44:00.000Z', report: null }),
+      run({ transitionAt: '2026-11-14T16:46:00.000Z', failure: {
+        code: 'INVESTIGATION_INTERRUPTED', message: 'The Runtime ended before a terminal report was stored.',
+      } }),
+    ];
+    rows[2].report.evidence[0].windowEnd = '2026-11-14T16:46:60Z';
+    for (const row of rows) {
+      const original = structuredClone(row);
+      reset({ rows: [row] });
+      const response = await call('GET', `/api/investigations?transitionAt=${encodeURIComponent(row.transitionAt)}`);
+      assert.ok(response.statusCode >= 500, response.body);
+      assert.equal(responseBody(response).runs, undefined,
+        'report recovery is limited to a present report on a native complete record with no native failure');
+      assert.deepEqual(fixture.rows, [original], 'invalid lifecycle combinations must not rewrite source records');
+      assertNoInvocationOrWrites();
+    }
+  });
+});
+
 test('the discovery route has no manual trigger or action-execution method', async () => {
   reset();
   const discovery = await call('GET', '/api/investigations');

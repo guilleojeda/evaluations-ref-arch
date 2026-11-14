@@ -173,7 +173,8 @@ function citation(value: unknown): InvestigationCitation {
 
 function report(value: unknown): InvestigationReport | undefined {
   if (value === undefined || value === null) return undefined;
-  if (!isRecord(value) || !["ongoing", "recovered", "unknown"].includes(String(value.assessment))) {
+  if (!isRecord(value) || typeof value.assessment !== "string" ||
+      !["ongoing", "recovered", "unknown"].includes(value.assessment)) {
     throw new InvestigationReadError("An investigation record contains an invalid report.");
   }
   const rawRecommendation = value.recommendation;
@@ -223,7 +224,7 @@ function run(value: unknown, alarmArn: string, transitionAt?: string): Investiga
   if (itemAlarmArn !== alarmArn || !normalized || (transitionAt && normalized !== transitionAt)) {
     throw new InvestigationReadError("The investigation store returned a record outside the requested alarm event.");
   }
-  const status = stringField(value, "status", 32) as InvestigationStatus;
+  let status = stringField(value, "status", 32) as InvestigationStatus;
   if (!["running", "complete", "failed"].includes(status)) throw new InvestigationReadError("An investigation record has an invalid status.");
   const startedAt = timestamp(stringField(value, "startedAt", 64));
   const deadlineAt = timestamp(stringField(value, "deadlineAt", 64));
@@ -232,13 +233,29 @@ function run(value: unknown, alarmArn: string, transitionAt?: string): Investiga
   if (artifactSha256 !== undefined && !/^[a-f0-9]{64}$/i.test(artifactSha256)) {
     throw new InvestigationReadError("An investigation record contains an invalid artifact digest.");
   }
-  const reportValue = report(value.report);
   const failureValue = failure(value.failure);
+  let reportValue: InvestigationReport | undefined;
+  let reportRejected = false;
+  if (status === "complete" && value.report !== undefined && value.report !== null && !failureValue) {
+    try {
+      reportValue = report(value.report);
+    } catch (error) {
+      if (!(error instanceof InvestigationReadError)) throw error;
+      status = "failed";
+      reportRejected = true;
+    }
+  } else {
+    reportValue = report(value.report);
+  }
   const traceRef = reference(value.traceRef, "trace");
   const captureRef = reference(value.captureRef, "capture");
   if (status === "complete" && (!reportValue || failureValue)) throw new InvestigationReadError("A completed investigation has an invalid terminal result.");
-  if (status === "failed" && !failureValue) throw new InvestigationReadError("A failed investigation has no failure result.");
+  if (status === "failed" && !failureValue && !reportRejected) throw new InvestigationReadError("A failed investigation has no failure result.");
   if (status === "running" && (reportValue || failureValue)) throw new InvestigationReadError("A running investigation has an unexpected terminal result.");
+  const reportedFailure = failureValue ?? (reportRejected ? {
+    code: "INVALID_REPORT",
+    message: "The Runtime completed, but the saved investigation report failed validation.",
+  } : undefined);
   return {
     alarmArn: itemAlarmArn,
     transitionAt: normalized,
@@ -257,7 +274,7 @@ function run(value: unknown, alarmArn: string, transitionAt?: string): Investiga
     deadlineAt,
     ...(finishedAtValue ? { finishedAt: timestamp(finishedAtValue) } : {}),
     ...(reportValue ? { report: reportValue } : {}),
-    ...(failureValue ? { failure: failureValue } : {}),
+    ...(reportedFailure ? { failure: reportedFailure } : {}),
     ...(traceRef ? { traceRef } : {}),
     ...(captureRef ? { captureRef } : {}),
   };
