@@ -43,9 +43,18 @@ LOG_MESSAGE_FIELDS = {
     "timestamp", "service", "operation", "requestId", "lambdaRequestId",
     "functionVersion", "outcome", "durationMs", "statusCode", "errorCode",
     "errorName", "error", "dependencyErrorName", "dependencyFailureReason",
-    "dependencyDurationMs", "inventoryExecutedVersion", "inventoryInvocationId",
-    "routeKey", "responseLatency", "integrationLatency", "integrationStatus",
+    "dependencyThrottleReason", "dependencyDurationMs", "inventoryExecutedVersion",
+    "inventoryInvocationId", "routeKey", "responseLatency", "integrationLatency",
+    "requestTimeEpoch", "status", "integrationStatus", "integrationError",
 }
+LAMBDA_THROTTLE_REASONS = frozenset({
+    "CallerRateLimitExceeded",
+    "ConcurrentInvocationLimitExceeded",
+    "ConcurrentSnapshotCreateLimitExceeded",
+    "FunctionInvocationRateLimitExceeded",
+    "ReservedFunctionConcurrentInvocationLimitExceeded",
+    "ReservedFunctionInvocationRateLimitExceeded",
+})
 INVENTORY_TABLE = "IncidentTriageDemoInventory"
 INVENTORY_ROLE_NAMES = {
     "IncidentTriageDemoAppInventoryRole",
@@ -461,7 +470,11 @@ class EvidenceTools:
                                 "Dimensions": dimensions,
                             },
                             "Period": period,
-                            "Stat": "Sum" if selected_metric not in {"Latency", "IntegrationLatency", "Duration"} else "Average",
+                            "Stat": (
+                                "Maximum" if selected_metric == "ConcurrentExecutions"
+                                else "Average" if selected_metric in {"Latency", "IntegrationLatency", "Duration"}
+                                else "Sum"
+                            ),
                         },
                         "ReturnData": True,
                     }
@@ -499,7 +512,13 @@ class EvidenceTools:
         return self._result(
             source="cloudwatch",
             scope=list(resources),
-            query={"metrics": "allowlisted", "periodSeconds": period},
+            query={
+                "metrics": [
+                    {"Id": item["Id"], "MetricStat": item["MetricStat"]}
+                    for item in queries
+                ],
+                "periodSeconds": period,
+            },
             window=window,
             observed_at=observed_at,
             observations=metric_results,
@@ -997,11 +1016,19 @@ class EvidenceTools:
             except (json.JSONDecodeError, TypeError):
                 structured = None
         if isinstance(structured, Mapping):
-            fields = {
-                key: self._sanitize(value, key=key)
-                for key, value in structured.items()
-                if key in LOG_MESSAGE_FIELDS and not SENSITIVE_KEY.search(str(key))
-            }
+            fields: dict[str, Any] = {}
+            for key, value in structured.items():
+                if key not in LOG_MESSAGE_FIELDS or SENSITIVE_KEY.search(str(key)):
+                    continue
+                safe_value = self._sanitize(value, key=key)
+                if key == "dependencyThrottleReason":
+                    if not isinstance(safe_value, str) or safe_value not in LAMBDA_THROTTLE_REASONS:
+                        continue
+                if key in {"requestTimeEpoch", "status", "integrationStatus", "integrationError"}:
+                    if not isinstance(safe_value, str):
+                        continue
+                    safe_value = safe_value[:256 if key == "integrationError" else 32]
+                fields[key] = safe_value
             if fields:
                 output["fields"] = fields
         elif message:

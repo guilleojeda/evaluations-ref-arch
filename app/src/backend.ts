@@ -5,7 +5,12 @@ import {
   type GetItemCommandOutput,
   type AttributeValue,
 } from "@aws-sdk/client-dynamodb";
-import { InvokeCommand, LambdaClient } from "@aws-sdk/client-lambda";
+import {
+  InvokeCommand,
+  LambdaClient,
+  ThrottleReason,
+  TooManyRequestsException,
+} from "@aws-sdk/client-lambda";
 
 import {
   INVENTORY_CALLER_DEADLINE_MS,
@@ -64,12 +69,18 @@ interface InventoryCallFailure {
   readonly error?: unknown;
   readonly errorName: string;
   readonly reason: "configuration" | "function_error" | "invalid_payload" | "deadline" | "transport_error" | "inventory_access_denied";
+  readonly dependencyThrottleReason?: ThrottleReason;
   readonly executedVersion?: string;
   readonly durationMs: number;
 }
 
 type InventoryCall = InventoryCallSuccess | InventoryCallFailure;
 type ObserveInventory = (call: InventoryCall) => void;
+
+function inventoryThrottleReason(error: unknown): ThrottleReason | undefined {
+  if (!(error instanceof TooManyRequestsException) || !error.Reason) return undefined;
+  return Object.values(ThrottleReason).includes(error.Reason) ? error.Reason : undefined;
+}
 
 interface SavedOrder {
   readonly item: Record<string, AttributeValue>;
@@ -216,7 +227,14 @@ async function invokeInventory(
     if (abort.signal.aborted || name === "AbortError") {
       return { kind: "timeout", errorName: "AbortError", reason: "deadline", durationMs };
     }
-    return { kind: "error", error, errorName: name, reason: "transport_error", durationMs };
+    return {
+      kind: "error",
+      error,
+      errorName: name,
+      reason: "transport_error",
+      dependencyThrottleReason: inventoryThrottleReason(error),
+      durationMs,
+    };
   } finally {
     clearTimeout(timeout);
   }
@@ -483,6 +501,7 @@ export async function handler(event: ApiEvent = {}, context: LambdaContext = EMP
   let dependencyDurationMs: number | undefined;
   let dependencyErrorName: string | undefined;
   let dependencyFailureReason: string | undefined;
+  let dependencyThrottleReason: ThrottleReason | undefined;
   let requestErrorName: string | undefined;
   const observeInventory: ObserveInventory = (call) => {
     dependencyDurationMs = call.durationMs;
@@ -492,6 +511,7 @@ export async function handler(event: ApiEvent = {}, context: LambdaContext = EMP
     } else {
       dependencyErrorName = call.errorName;
       dependencyFailureReason = call.reason;
+      dependencyThrottleReason = call.dependencyThrottleReason;
     }
   };
   try {
@@ -582,6 +602,7 @@ export async function handler(event: ApiEvent = {}, context: LambdaContext = EMP
     dependencyErrorName,
     dependencyFailureReason,
     dependencyDurationMs,
+    ...(dependencyThrottleReason === undefined ? {} : { dependencyThrottleReason }),
   });
   emitMetric("checkout", operation, durationMs, outcome, {
     inventoryLookupDurationMs: dependencyDurationMs,

@@ -2,13 +2,21 @@ import { randomUUID } from "node:crypto";
 import { DynamoDBClient, GetItemCommand, TransactWriteItemsCommand, type TransactWriteItem } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { setTimeout as delay } from "node:timers/promises";
-import type { Action, Command, Counters, DashboardState, RunState } from "./types";
+import type { Action, Command, Counters, DashboardState, RunState, TrafficProfileSnapshot } from "./types";
 
 const dynamo = new DynamoDBClient({ maxAttempts: 1 });
 const runKey = "STATE";
 const actionKey = (id: string) => `ACTION#${id}`;
 const timestamp = () => new Date().toISOString();
 const active = new Set<Action["status"]>(["queued", "running", "draining"]);
+
+const inventorySurgeProfile: TrafficProfileSnapshot = {
+  name: "inventory_surge",
+  version: 1,
+  durationMs: 15_000,
+  catalog: { ratePerSecond: 240, maxAttempts: 3_600, maxInFlight: 128, requestTimeoutMs: 7_000 },
+  checkout: { intervalMs: 1_000, maxAttempts: 15, maxInFlight: 2, requestTimeoutMs: 7_000 },
+};
 
 interface Row<T> {
   pk: string;
@@ -116,6 +124,7 @@ export async function getDashboard(): Promise<DashboardState> {
 
 function sameCommand(a: Command, b: Command): boolean {
   if (a.kind !== b.kind) return false;
+  if (a.kind === "traffic" && b.kind === "traffic") return (a.profile ?? undefined) === (b.profile ?? undefined);
   if ("targetActionId" in a) return "targetActionId" in b && a.targetActionId === b.targetActionId;
   if ("targetActionId" in b) return false;
   if (a.kind === "restore_inventory_access" && b.kind === "restore_inventory_access") {
@@ -148,6 +157,8 @@ function newAction(id: string, command: Command, now: number): Action {
     claimBy: now + 30_000, deadlineAt: now + 75_000, discardAfter: now + 105_000,
     requests: [],
     ...(command.kind === "traffic" ? { traffic: { catalog: counters(), checkout: counters() } } : {}),
+    ...(command.kind === "traffic" && command.profile === "inventory_surge"
+      ? { trafficProfile: structuredClone(inventorySurgeProfile) } : {}),
     ...(command.kind === "recover" ? { recoveryProgress: "stopping" as const } : {}),
     ...(command.kind === "reset" ? { reset: {
       runId: id,
@@ -291,6 +302,10 @@ export async function applyCommand(id: string, command: Command): Promise<{ acti
       };
     }
     let nextRun = storedRun ?? initialRun();
+    if (command.kind === "traffic" && command.profile === "inventory_surge") {
+      action.previousSurgeActionId = run.lastSurgeActionId;
+      nextRun = { ...nextRun, lastSurgeActionId: id };
+    }
     const writes: TransactWriteItem[] = [];
     if ("targetActionId" in command) {
       const target = (current?.data.id === command.targetActionId ? current : undefined) ?? (configuration?.data.id === command.targetActionId ? configuration : undefined);

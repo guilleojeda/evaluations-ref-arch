@@ -293,6 +293,7 @@ export class AppStack extends DemoStack {
         destination: new apigatewayv2.LogGroupLogDestination(gatewayLogGroup),
         format: AccessLogFormat.custom(JSON.stringify({
           requestId: AccessLogField.contextRequestId(),
+          requestTimeEpoch: AccessLogField.contextRequestTimeEpoch(),
           routeKey: AccessLogField.contextRouteKey(),
           status: AccessLogField.contextStatus(),
           responseLatency: AccessLogField.contextResponseLatency(),

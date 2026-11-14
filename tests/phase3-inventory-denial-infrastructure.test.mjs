@@ -57,6 +57,10 @@ function grants(statements, action) {
 test('app alarm watches the real HTTP API stage and publishes the target for the controller', () => {
   const { Resources, Outputs } = template('app', 'IncidentTriageDemoApp');
   const [[apiId]] = resourcesOf(Resources, 'AWS::ApiGatewayV2::Api');
+  const [[, { Properties: stage }]] = resourcesOf(Resources, 'AWS::ApiGatewayV2::Stage');
+  const accessLogFormat = JSON.parse(stage.AccessLogSettings.Format);
+  assert.equal(accessLogFormat.requestTimeEpoch, '$context.requestTimeEpoch',
+    'API Gateway access logs need the request arrival epoch, separate from CloudWatch event time');
   const alarms = resourcesOf(Resources, 'AWS::CloudWatch::Alarm');
   assert.equal(alarms.length, 1, 'the app needs one neutral stage alarm');
   const [[, { Properties: alarm }]] = alarms;

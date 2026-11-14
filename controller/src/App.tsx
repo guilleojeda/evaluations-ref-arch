@@ -12,6 +12,7 @@ import type {
   InventoryVersionObservation,
   RunState,
 } from "./types";
+import { TrafficSurgePanel } from "./TrafficSurgePanel";
 import {
   capOutcomeLabel,
   capValueLabel,
@@ -756,6 +757,18 @@ export function App() {
                   : actionBusy ? "Wait for the current action to finish."
                     : pollFailure || staleCloudObservation ? "Cloud state is stale; wait for a successful refresh before changing capacity."
                       : undefined;
+  const surgeUnavailableReason = resetRequired ? "Reset is required before starting a new traffic action."
+    : !baseline ? "Check readiness to establish the current release and product version."
+      : !capacityReleaseReady ? "A verified current release with Inventory baseline capacity 16 is required."
+        : currentInventoryCap === undefined || currentInventoryCap < 16 ? "The current Inventory capacity is not confirmed."
+          : aliasUnknown ? "Inventory settings are unknown until the alias is read back."
+            : incidentActive || Boolean(legacyIncident) ? "Restore healthy Inventory access before starting the surge."
+              : state?.unresolved.length ? "Resolve unknown checkout attempts before starting the surge."
+                : configurationBusy ? "Wait for the configuration action to finish."
+                  : actionBusy ? "Wait for the current action to finish."
+                    : pollFailure || staleCloudObservation ? "Cloud state is stale; wait for a successful refresh before starting the surge."
+                      : !trafficStartAllowed ? "The current run is not ready for traffic."
+                        : undefined;
   const capacityTargetBelowCurrent = currentInventoryCap !== undefined && capacityInputValid && proposedInventoryCapacity < currentInventoryCap;
   const capacitySelectionDisabled = Boolean(capacityUnavailableReason) || !capacityInputValid || capacityTargetBelowCurrent;
   const incompleteAction = currentAction?.status === "incomplete" ? currentAction
@@ -915,6 +928,9 @@ export function App() {
   const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setInvestigations(undefined); setInvestigationReadFailedAt(undefined); setPendingCommand(undefined); setPendingConfigurationCommand(undefined); setConfigurationSubmitting(false); setInventoryMemorySelection(undefined); setInventoryCapacityTarget("32"); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setProtectiveRecoveryConfirmed(false); setResetConfirmationOpen(false); setResetQuietConfirmed(false); setResetDataConfirmed(false); setResetCheckoutClosedConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
   const runReadiness = () => { if (!resetRequired && readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "readiness", confirmQuiet: true }); };
   const runTraffic = () => { if (!resetRequired && !resetInProgress && trafficStartAllowed) void sendAction(crypto.randomUUID(), { kind: "traffic" }); };
+  const runInventorySurge = () => {
+    if (!surgeUnavailableReason) void sendAction(crypto.randomUUID(), { kind: "traffic", profile: "inventory_surge" });
+  };
   const runActivation = () => { if (!resetRequired && readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "activate_inventory_denial" }); };
   const runRestore = () => { if (!resetRequired && aliasIncident && !restoreBusy && (!needsProtectiveRestore || protectiveRestoreConfirmed)) void sendAction(crypto.randomUUID(), needsProtectiveRestore ? { kind: "restore_inventory_access", restoreWithoutEvidence: true } : { kind: "restore_inventory_access" }); };
   const runRecovery = () => {
@@ -1071,7 +1087,7 @@ export function App() {
           </button>
         </div>
         <p className="muted">Reset stops and drains scripted traffic, restores the current release’s healthy settings, replaces disposable orders, and verifies a fresh run. Prior session receipts and incident/source history remain available above.</p>
-        {incompleteActionMustBeDiscarded && <p className="notice notice-warning" role="status">Discard the incomplete action after its drain window before starting another Reset. Discarding keeps Reset required; it does not make this run usable.</p>}
+        {incompleteActionMustBeDiscarded && <p className="notice notice-warning" role="status">Discard the incomplete action after its drain window before starting Reset.{resetRequired ? " Discarding keeps Reset required; it does not make this run usable." : ""}</p>}
         {resetRequired && <p className="reset-required-message" role="status">The current run stays blocked until a newly confirmed Reset completes. A completed or discarded earlier action cannot clear this requirement.</p>}
         {resetAction?.status === "incomplete" && <p className="reset-required-message" role="status">Do not resume this Reset with its old action ID. After prior work has stopped and the action is discarded, confirm another Reset to create a fresh run and product version.</p>}
         {resetAction?.status === "completed" && !resetRequired && <p className="notice notice-success" role="status">Reset completed. The new run is usable with its verified baseline; scripted traffic remains stopped.</p>}
@@ -1101,6 +1117,8 @@ export function App() {
         <button className="inline-action" type="button" onClick={() => retryPending(pendingConfigurationCommand)} disabled={loading || configurationSubmitting}>Retry {pendingConfigurationCommand.command.kind}</button>
       </div>}
       {pollFailure && <p className="notice notice-error" role="alert">{pollFailure}. The last good cloud observation remains visible.</p>}
+      <TrafficSurgePanel bearer={bearer} currentAction={currentAction} latestSurgeActionId={state?.lastSurgeActionId}
+        disabled={Boolean(surgeUnavailableReason)} disabledReason={surgeUnavailableReason} onStart={runInventorySurge} onRepeat={runInventorySurge} />
       {recoveryAction && state && <RecoveryPanel action={recoveryAction} state={state}
         trafficAction={currentAction?.kind === "traffic" ? currentAction : undefined}
         currentAlias={currentAlias} currentMemoryMb={currentMemoryMb} currentAccess={currentAccess} />}

@@ -26,10 +26,17 @@ import { beginReset, changeAction, getAction, getRun } from "./store.js";
 import type {
   Action,
   Baseline,
+  CatalogBin,
+  CatalogObservation,
+  CatalogOutcome,
+  CatalogOutcomes,
+  CatalogSkip,
+  CatalogSkips,
   CapRestoration,
   CapValue,
   CheckoutPayload,
   ConfigurationCheckpoint,
+  Counters,
   DeploymentIdentity,
   IncidentState,
   InventoryAliasObservation,
@@ -41,6 +48,9 @@ import type {
   RequestRecord,
   RunState,
   StoredIncidentState,
+  TrafficContext,
+  TrafficProfileSnapshot,
+  TrafficWindow,
 } from "./types.js";
 
 const account = "027224425948";
@@ -101,6 +111,7 @@ interface AppResponse {
   body?: Record<string, unknown>;
   requestId?: string;
   durationMs: number;
+  sent?: boolean;
 }
 
 interface StatusCheck {
@@ -801,8 +812,8 @@ async function restoreContext(): Promise<RestoreContext> {
     manifest, tablePolicy, policy: deniedPolicy, healthyPolicy: policy, deniedPolicy, incident };
 }
 
-async function currentReleaseContext(bearer: string): Promise<CurrentReleaseContext> {
-  const target = await appTarget();
+async function currentReleaseContext(bearer: string, verifiedTarget?: AppTarget): Promise<CurrentReleaseContext> {
+  const target = verifiedTarget ?? await appTarget();
   if (target.outputs.get("InventoryResourcePolicy") !== "absent" ||
       target.outputs.get("InventoryDeniedRoleArn") !== expectedInventoryDeniedRoleArn()) {
     throw new ActionFailure("The current app release does not identify the expected Inventory access configuration.");
@@ -891,6 +902,76 @@ async function capacityContext(action: Action, bearer: string): Promise<Capacity
     throw new ActionFailure("The Inventory live alias is not in its recorded healthy state.");
   }
   return { ...release, baseline };
+}
+
+function trafficApiId(target: AppTarget): string {
+  let hostname: string;
+  try {
+    hostname = new URL(target.api).hostname;
+  } catch {
+    throw new ActionFailure("The trusted app API URL is invalid.");
+  }
+  const match = hostname.match(/^([a-z0-9]+)\.execute-api\.us-east-1\.amazonaws\.com$/);
+  if (!match) throw new ActionFailure("The trusted app API URL does not identify the expected regional HTTP API.");
+  return match[1];
+}
+
+function trafficContextFromSettings(appRevision: string, productVersion: string,
+  checkout: InventoryTargetSettings & { aliasRevision?: string }, inventory: InventoryContextSettings): TrafficContext {
+  if (!checkout.version || !inventory.version || !Number.isSafeInteger(checkout.memory) || !Number.isSafeInteger(inventory.memory)) {
+    throw new ActionFailure("The current app configuration is incomplete for traffic attribution.");
+  }
+  return {
+    appRevision,
+    productVersion,
+    inventory: { cap: inventory.cap, aliasVersion: inventory.version, access: inventory.access, memoryMb: inventory.memory },
+    checkout: { cap: checkout.cap, aliasVersion: checkout.version, memoryMb: checkout.memory },
+  };
+}
+
+async function surgeTrafficContext(action: Action, target: AppTarget, bearer: string, run: RunState): Promise<TrafficContext> {
+  const baseline = run.baseline;
+  const original = run.originalBaseline;
+  if (run.resetRequired || !baseline || !original || !baseline.deploymentIdentity || !original.deploymentIdentity ||
+      baseline.appRevision !== target.revision || original.appRevision !== target.revision ||
+      baseline.sku !== target.sku || original.sku !== target.sku ||
+      typeof baseline.productVersion !== "string" || baseline.productVersion.length === 0) {
+    throw new ActionFailure("A current verified readiness baseline is required before Inventory surge traffic.");
+  }
+  if (run.unresolved.length > 0) throw new ActionFailure("Settle unresolved checkout attempts before starting Inventory surge traffic.");
+  const incident = incidentRecord(run);
+  if ((run.incident && !incident) || (incident && incident.active !== "healthy")) {
+    throw new ActionFailure("Resolve the recorded Inventory access state before starting Inventory surge traffic.");
+  }
+  if (run.configurationActionId) {
+    const configuration = await getAction(run.configurationActionId);
+    if (!configuration || ["queued", "running", "draining", "incomplete"].includes(configuration.status)) {
+      throw new ActionFailure("Wait for the Inventory configuration action to settle before starting surge traffic.");
+    }
+  }
+  const cap = baselineInventoryCap(baseline);
+  const fresh = await settings(target, bearer, cap);
+  if (fresh.inventory.access !== "healthy" || fresh.inventory.cap === "unreserved" ||
+      !Number.isSafeInteger(fresh.inventory.cap) || fresh.inventory.cap <= 0) {
+    throw new ActionFailure("Inventory surge requires a healthy alias and a positive, confirmed Inventory cap.");
+  }
+  const expectedInventory = baselineInventorySettings(baseline);
+  const baselineSettings = record(baseline.settings);
+  const expectedCheckout = baselineSettings && record(baselineSettings.checkout);
+  if (!expectedCheckout || !sameInventorySettings(expectedCheckout, fresh.checkout) ||
+      !sameInventorySettings(expectedInventory, fresh.inventory)) {
+    throw new ActionFailure("The current Inventory or Checkout settings drifted from the confirmed readiness state.");
+  }
+  const identity = await deploymentIdentity(target, fresh.inventoryVariantsManifest, fresh.checkout, true);
+  if (!sameDeploymentIdentity(baseline.deploymentIdentity, identity) ||
+      !sameDeploymentIdentity(original.deploymentIdentity, identity)) {
+    throw new ActionFailure("The current app generation does not match the saved readiness release.");
+  }
+  const currentProduct = await readInventorySeedRow(action, inventoryTable, baseline.sku);
+  if (currentProduct.productVersion !== baseline.productVersion) {
+    throw new ActionFailure("The current Inventory productVersion differs from the verified readiness baseline.");
+  }
+  return trafficContextFromSettings(target.revision, baseline.productVersion, fresh.checkout, fresh.inventory);
 }
 
 function sameCapacityContext(left: CapacityContext, right: CapacityContext): boolean {
@@ -1877,10 +1958,12 @@ async function restoreInventoryAccess(action: Action): Promise<void> {
   if (!done) throw new IncompleteActionFailure("The completed Inventory restore could not be recorded.");
 }
 
-async function appRequest(target: AppTarget, bearer: string, request: RequestRecord, timeout = requestTimeout): Promise<AppResponse> {
+async function appRequest(target: AppTarget, bearer: string, request: RequestRecord, timeout = requestTimeout,
+  beforeFetch?: () => boolean): Promise<AppResponse> {
   const path = request.kind === "catalog" ? "/api/products" : request.kind === "checkout" ? "/api/checkout" : `/api/orders/${request.checkoutId}`;
   const started = performance.now();
   try {
+    if (beforeFetch && !beforeFetch()) return { durationMs: 0, sent: false };
     const response = await fetch(`${target.api}${path}`, {
       method: request.kind === "checkout" ? "POST" : "GET",
       headers: { authorization: `Bearer ${bearer}`, accept: "application/json", "content-type": "application/json" },
@@ -1984,15 +2067,17 @@ async function settle(actionId: string, request: RequestRecord, response: AppRes
   if (!result) throw new ActionFailure("A completed app request could not be recorded.");
 }
 
-async function send(actionId: string, target: AppTarget, bearer: string, request: RequestRecord, payload?: CheckoutPayload, timeout?: number) {
-  const response = await appRequest(target, bearer, request, timeout);
+async function send(actionId: string, target: AppTarget, bearer: string, request: RequestRecord, payload?: CheckoutPayload,
+  timeout?: number, beforeFetch?: () => boolean) {
+  const response = await appRequest(target, bearer, request, timeout, beforeFetch);
+  if (response.sent === false) return { response, observed: undefined, saved: undefined, outcome: undefined, sent: false };
   const observed = request.kind === "catalog" ? product(response, target.sku) : undefined;
   const saved = payload && (request.kind === "checkout" ? response.status === 201 || response.status === 200 : response.status === 200)
     ? receipt(response, payload) : undefined;
   const outcome = request.kind === "checkout" ? checkoutOutcome(response, saved)
     : observed || saved ? "success" : request.kind === "order_status" ? "unknown" : "failed";
   await settle(actionId, request, response, outcome, observed, saved);
-  return { response, observed, saved, outcome };
+  return { response, observed, saved, outcome, sent: true };
 }
 
 async function checkStatus(actionId: string, target: AppTarget, bearer: string, payload: CheckoutPayload): Promise<StatusCheck> {
@@ -2655,13 +2740,246 @@ async function reset(action: Action): Promise<void> {
   if (!completed) throw new IncompleteActionFailure("The verified Reset baseline could not be committed to the current session.");
 }
 
-async function traffic(action: Action): Promise<void> {
-  const target = await appTarget();
-  const { baseline } = await getRun();
-  if (!baseline || baseline.appRevision !== target.revision || baseline.sku !== target.sku) {
-    throw new ActionFailure("The app release changed. Check readiness before starting traffic.");
+interface SurgeCatalogState {
+  counters: Counters;
+  peakInFlight: number;
+  outcomes: CatalogOutcomes;
+  skips: CatalogSkips;
+  bins: CatalogBin[];
+  firstSamples: RequestRecord[];
+  lastSamples: RequestRecord[];
+  failedSamples: RequestRecord[];
+}
+
+function emptyCatalogOutcomes(): CatalogOutcomes {
+  return { success: 0, http4xx: 0, http5xx: 0, invalidResponse: 0, noResponse: 0 };
+}
+
+function emptyCatalogSkips(): CatalogSkips {
+  return { late: 0, full: 0, checkpoint: 0 };
+}
+
+function newSurgeCatalogState(): SurgeCatalogState {
+  return {
+    counters: { submitted: 0, completed: 0, succeeded: 0, skipped: 0, inFlight: 0 },
+    peakInFlight: 0,
+    outcomes: emptyCatalogOutcomes(),
+    skips: emptyCatalogSkips(),
+    bins: Array.from({ length: 15 }, (_, index) => ({
+      offsetMs: index * 1_000, durationMs: 1_000, observedDurationMs: 0,
+      submitted: 0, completed: 0, succeeded: 0, skipped: 0, outcomes: emptyCatalogOutcomes(),
+    })),
+    firstSamples: [],
+    lastSamples: [],
+    failedSamples: [],
+  };
+}
+
+function boundedText(value: unknown, maximum = 256): string | undefined {
+  return typeof value === "string" ? value.slice(0, maximum) : undefined;
+}
+
+function catalogResultKind(response: AppResponse, observed?: Product): CatalogOutcome {
+  if (observed) return "success";
+  if (response.status === undefined) return "noResponse";
+  if (response.status >= 400 && response.status < 500) return "http4xx";
+  if (response.status >= 500 && response.status < 600) return "http5xx";
+  return "invalidResponse";
+}
+
+function requestOutcome(kind: CatalogOutcome): RequestRecord["outcome"] {
+  if (kind === "success") return "success";
+  if (kind === "http4xx") return "rejected";
+  if (kind === "noResponse") return "unknown";
+  return "failed";
+}
+
+function catalogBinIndex(offsetMs: number): number {
+  return Math.max(0, Math.min(14, Math.floor(Math.max(0, offsetMs) / 1_000)));
+}
+
+function recordCatalogSkip(state: SurgeCatalogState, ordinal: number, reason: CatalogSkip,
+  intervalMs: number): void {
+  state.counters.skipped++;
+  state.skips[reason]++;
+  const scheduledOffset = ordinal * intervalMs;
+  state.bins[catalogBinIndex(scheduledOffset)].skipped++;
+}
+
+function catalogSamples(state: SurgeCatalogState): RequestRecord[] {
+  const selected = new Map<string, RequestRecord>();
+  for (const sample of [...state.firstSamples, ...state.lastSamples, ...state.failedSamples]) {
+    selected.set(sample.id, sample);
   }
-  const bearer = await loadBearer();
+  return [...selected.values()];
+}
+
+function observationSnapshot(state: SurgeCatalogState, startMono: number, observedMono: number,
+  producerStoppedMono: number | undefined, status: CatalogObservation["status"]): CatalogObservation {
+  const activeThrough = producerStoppedMono ?? Math.min(observedMono, startMono + 15_000);
+  const bins = state.bins.map((bin) => {
+    const offsetStart = startMono + bin.offsetMs;
+    const observedDurationMs = Math.max(0, Math.min(1_000, activeThrough - offsetStart));
+    return { ...bin, observedDurationMs: Math.floor(observedDurationMs), outcomes: { ...bin.outcomes } };
+  });
+  const samples = catalogSamples(state).map((sample) => ({
+    ...sample,
+    id: sample.id.slice(0, 36),
+    startedAt: sample.startedAt.slice(0, 256),
+    ...(sample.completedAt ? { completedAt: sample.completedAt.slice(0, 256) } : {}),
+    ...(sample.requestId ? { requestId: sample.requestId.slice(0, 256) } : {}),
+    ...(sample.errorCode ? { errorCode: sample.errorCode.slice(0, 256) } : {}),
+    ...(sample.dependencyReason ? { dependencyReason: sample.dependencyReason.slice(0, 256) } : {}),
+  }));
+  return {
+    observedThrough: new Date().toISOString(), status, peakInFlight: state.peakInFlight,
+    outcomes: { ...state.outcomes }, skips: { ...state.skips }, bins, samples,
+    sampleRule: "first8_last8_first8_failed", samplesTruncated: state.counters.completed > samples.length,
+  };
+}
+
+function recordCatalogStart(state: SurgeCatalogState, startMono: number, startedMono: number): void {
+  state.counters.submitted++;
+  state.counters.inFlight++;
+  state.peakInFlight = Math.max(state.peakInFlight, state.counters.inFlight);
+  state.bins[catalogBinIndex(startedMono - startMono)].submitted++;
+}
+
+function recordCatalogCompletion(state: SurgeCatalogState, startMono: number, startedAt: string,
+  requestId: string, startedMono: number, response: AppResponse, observed?: Product): void {
+  const kind = catalogResultKind(response, observed);
+  const completedAt = new Date().toISOString();
+  const bin = state.bins[catalogBinIndex(startedMono - startMono)];
+  state.counters.completed++;
+  state.counters.inFlight = Math.max(0, state.counters.inFlight - 1);
+  state.outcomes[kind]++;
+  bin.completed++;
+  bin.outcomes[kind]++;
+  if (kind === "success") {
+    state.counters.succeeded++;
+    bin.succeeded++;
+  }
+  const sample: RequestRecord = {
+    id: requestId.slice(0, 36), kind: "catalog", startedAt, completedAt,
+    durationMs: Math.max(0, Math.floor(response.durationMs)), statusCode: response.status,
+    requestId: boundedText(response.requestId, 256),
+    errorCode: boundedText(response.body?.code, 256), outcome: requestOutcome(kind),
+  };
+  if (state.firstSamples.length < 8) state.firstSamples.push(sample);
+  state.lastSamples.push(sample);
+  if (state.lastSamples.length > 8) state.lastSamples.shift();
+  if (kind !== "success" && state.failedSamples.length < 8) state.failedSamples.push(sample);
+}
+
+function profileIsExact(profile: TrafficProfileSnapshot | undefined): profile is TrafficProfileSnapshot {
+  return Boolean(profile && profile.name === "inventory_surge" && profile.version === 1 && profile.durationMs === 15_000 &&
+    profile.catalog.ratePerSecond === 240 && profile.catalog.maxAttempts === 3_600 &&
+    profile.catalog.maxInFlight === 128 && profile.catalog.requestTimeoutMs === 7_000 &&
+    profile.checkout.intervalMs === 1_000 && profile.checkout.maxAttempts === 15 &&
+    profile.checkout.maxInFlight === 2 && profile.checkout.requestTimeoutMs === 7_000);
+}
+
+async function persistTrafficContext(actionId: string, context: TrafficContext, apiId: string): Promise<boolean> {
+  const result = await changeAction(actionId, (_run, current) => {
+    if (current.kind !== "traffic" || current.status !== "running" || current.stopRequested) return false;
+    current.trafficContext = context;
+    current.trafficApiId = apiId;
+    return true;
+  });
+  return Boolean(result);
+}
+
+async function persistCatalogObservation(actionId: string, state: SurgeCatalogState, startMono: number,
+  producerStoppedMono: number | undefined, status: CatalogObservation["status"], window: TrafficWindow): Promise<void> {
+  const result = await changeAction(actionId, (_run, current) => {
+    if (current.kind !== "traffic" || !current.trafficProfile || !current.traffic ||
+        !["running", "draining"].includes(current.status)) return false;
+    const observedMono = performance.now();
+    const catalogCounters = { ...state.counters };
+    const observation = observationSnapshot(state, startMono, observedMono, producerStoppedMono, status);
+    current.traffic.catalog = catalogCounters;
+    current.catalogObservation = observation;
+    current.trafficWindow ??= window;
+    return true;
+  });
+  if (!result) throw new IncompleteActionFailure("A catalog observation could not be merged into the active traffic action.");
+}
+
+async function setSurgeLifecycle(actionId: string, window: TrafficWindow, values: Partial<TrafficWindow>,
+  final?: { state: SurgeCatalogState; startMono: number; producerStoppedMono: number; observationStatus: CatalogObservation["status"];
+    actionStatus: Action["status"]; error?: string }): Promise<void> {
+  const result = await changeAction(actionId, (_run, current) => {
+    if (current.kind !== "traffic" || !current.traffic ||
+        !["running", "draining"].includes(current.status)) return false;
+    current.trafficWindow = { ...(current.trafficWindow ?? window), ...values };
+    if (final) {
+      current.traffic.catalog = { ...final.state.counters };
+      current.catalogObservation = observationSnapshot(final.state, final.startMono, performance.now(),
+        final.producerStoppedMono, final.observationStatus);
+      current.status = final.actionStatus;
+      current.finishedAt = current.trafficWindow.settledAt ?? new Date().toISOString();
+      current.error = final.error;
+    }
+    return true;
+  });
+  if (!result) throw new IncompleteActionFailure("The surge producer lifecycle could not be merged into the traffic action.");
+}
+
+async function finishIncompleteSurge(actionId: string, window: TrafficWindow, values: Partial<TrafficWindow>, error: string): Promise<void> {
+  const result = await changeAction(actionId, (_run, current) => {
+    if (current.kind !== "traffic" || !current.traffic ||
+        !["running", "draining"].includes(current.status)) return false;
+    current.trafficWindow = { ...(current.trafficWindow ?? window), ...values };
+    current.status = "incomplete";
+    current.finishedAt = current.trafficWindow.settledAt ?? new Date().toISOString();
+    current.error = error;
+    return true;
+  });
+  if (!result) throw new IncompleteActionFailure("The incomplete surge lifecycle could not be saved.");
+}
+
+async function skipCheckoutTick(actionId: string): Promise<void> {
+  await changeAction(actionId, (_run, current) => {
+    if (current.kind !== "traffic" || current.status !== "running" || current.stopRequested || !current.traffic) return false;
+    current.traffic.checkout.skipped++;
+    return true;
+  });
+}
+
+async function reserveSurgeCheckout(actionId: string, request: RequestRecord, profile: TrafficProfileSnapshot): Promise<boolean> {
+  const result = await changeAction(actionId, (run, current) => {
+    if (current.kind !== "traffic" || current.status !== "running" || current.stopRequested || !current.traffic) return false;
+    const progress = current.traffic.checkout;
+    if (progress.inFlight >= profile.checkout.maxInFlight || progress.submitted >= profile.checkout.maxAttempts ||
+        !reserve(run, current, request)) {
+      progress.skipped++;
+      return true;
+    }
+    return true;
+  });
+  return Boolean(result?.action.requests.some(({ id }) => id === request.id));
+}
+
+async function markSurgeCheckoutNotSent(actionId: string, request: RequestRecord, reason: string,
+  window: TrafficWindow, stopObservedAt?: string): Promise<void> {
+  const result = await changeAction(actionId, (run, current) => {
+    if (current.kind !== "traffic" || !current.traffic) return false;
+    const persisted = current.requests.find(({ id }) => id === request.id);
+    if (!persisted || persisted.completedAt) return false;
+    const now = new Date().toISOString();
+    Object.assign(persisted, { completedAt: now, durationMs: 0, outcome: "not_sent" as const, errorCode: reason });
+    current.traffic.checkout.submitted = Math.max(0, current.traffic.checkout.submitted - 1);
+    current.traffic.checkout.inFlight = Math.max(0, current.traffic.checkout.inFlight - 1);
+    current.traffic.checkout.skipped++;
+    run.unresolved = run.unresolved.filter(({ checkoutId }) => checkoutId !== request.checkout?.checkoutId);
+    current.trafficWindow ??= window;
+    if (stopObservedAt && !current.trafficWindow.stopObservedAt) current.trafficWindow.stopObservedAt = stopObservedAt;
+    return true;
+  });
+  if (!result) throw new IncompleteActionFailure("A durably reserved Checkout that was not sent could not be reconciled.");
+}
+
+async function ordinaryTraffic(action: Action, target: AppTarget, bearer: string, baseline: Baseline): Promise<void> {
   const start = performance.now();
   const pending = new Set<Promise<void>>();
   const unknown: CheckoutPayload[] = [];
@@ -2701,6 +3019,377 @@ async function traffic(action: Action): Promise<void> {
     current.finishedAt = new Date().toISOString();
     return true;
   });
+}
+
+async function surgeTraffic(action: Action, target: AppTarget, bearer: string, baseline: Baseline,
+  profile: TrafficProfileSnapshot): Promise<void> {
+  if (!profileIsExact(profile)) throw new ActionFailure("The saved Inventory surge profile is not the approved immutable version.");
+  const deadlineNeed = profile.durationMs + profile.checkout.requestTimeoutMs + 1_000;
+  if (Date.now() + deadlineNeed >= action.deadlineAt) {
+    throw new ActionFailure("There is not enough action time remaining for the complete surge and bounded drain.");
+  }
+  const startWallMs = Date.now();
+  const startMono = performance.now();
+  const endMono = startMono + profile.durationMs;
+  const window: TrafficWindow = {
+    startedAt: new Date(startWallMs).toISOString(),
+    scheduledEndAt: new Date(startWallMs + profile.durationMs).toISOString(),
+  };
+  const state = newSurgeCatalogState();
+  const pending = new Set<Promise<void>>();
+  const unknown: CheckoutPayload[] = [];
+  let localStop = false;
+  let admissionClosedMono: number | undefined;
+  let admissionClosedAt: string | undefined;
+  let closeReason: TrafficWindow["stopReason"] | undefined;
+  let requestedStop = false;
+  let stopObservedAt: string | undefined;
+  let observationFailure = false;
+  let observationWriteFailure = false;
+  let deadlineReached = false;
+  let producerStoppedMono: number | undefined;
+  let monitorClosed = false;
+  let nextCheckpointMono = startMono + 1_000;
+  let lastCheckpointInterval: { start: number; end: number } | undefined;
+
+  function closeAdmissions(reason: TrafficWindow["stopReason"], observedAt?: string): void {
+    if (localStop) return;
+    localStop = true;
+    const nowMono = performance.now();
+    if (nowMono >= endMono) {
+      admissionClosedMono = endMono;
+      admissionClosedAt = window.scheduledEndAt;
+      closeReason = "duration";
+    } else {
+      admissionClosedMono = nowMono;
+      admissionClosedAt = observedAt ?? new Date().toISOString();
+      closeReason = reason;
+    }
+  }
+
+  function observeStop(): void {
+    requestedStop = true;
+    stopObservedAt ??= new Date().toISOString();
+    closeAdmissions("requested", stopObservedAt);
+  }
+
+  const stopMonitor = (async () => {
+    while (!monitorClosed) {
+      await delay(100);
+      if (monitorClosed) return;
+      let observed: Action | undefined;
+      try {
+        observed = await getAction(action.id);
+        if (!observed || observed.kind !== "traffic") throw new Error("traffic action unreadable");
+      } catch {
+        observationFailure = true;
+        closeAdmissions("observation_failure");
+        return;
+      }
+      if (observed.stopRequested || observed.status === "draining") {
+        observeStop();
+        await changeAction(action.id, (_run, current) => {
+          if (current.kind !== "traffic" || !current.traffic) return false;
+          current.trafficWindow ??= window;
+          if (current.trafficWindow.stopObservedAt) return false;
+          current.trafficWindow.stopObservedAt = stopObservedAt;
+          return true;
+        }).catch(() => { observationFailure = true; closeAdmissions("observation_failure"); });
+        return;
+      }
+      if (!["running", "queued"].includes(observed.status)) return;
+    }
+  })();
+
+  async function waitFor(targetMono: number, maximumSliceMs: number): Promise<void> {
+    while (!localStop) {
+      const remaining = targetMono - performance.now();
+      if (remaining <= 0) return;
+      await delay(Math.max(1, Math.min(maximumSliceMs, remaining)));
+    }
+  }
+
+  async function saveCheckpoint(): Promise<void> {
+    const checkpointStart = performance.now();
+    try {
+      await persistCatalogObservation(action.id, state, startMono, producerStoppedMono, "partial", window);
+    } catch {
+      observationFailure = true;
+      observationWriteFailure = true;
+      closeAdmissions("observation_failure");
+    } finally {
+      const checkpointEnd = performance.now();
+      lastCheckpointInterval = { start: checkpointStart, end: checkpointEnd };
+      const nextAlignedSecond = startMono + (Math.floor((checkpointEnd - startMono) / 1_000) + 1) * 1_000;
+      nextCheckpointMono = nextAlignedSecond;
+    }
+  }
+
+  async function runCatalogProducer(): Promise<void> {
+    const catalogIntervalMs = 1_000 / profile.catalog.ratePerSecond;
+    let ordinal = 0;
+    while (ordinal < profile.catalog.maxAttempts && !localStop) {
+      const now = performance.now();
+      if (now >= nextCheckpointMono) {
+        await saveCheckpoint();
+        continue;
+      }
+      const due = startMono + ordinal * catalogIntervalMs;
+      if (now < due) {
+        await waitFor(Math.min(due, nextCheckpointMono), Math.max(1, Math.min(50, due - now)));
+        continue;
+      }
+      if (localStop) break;
+      const current = performance.now();
+      if (current >= nextCheckpointMono) continue;
+      if (current >= endMono) {
+        while (ordinal < profile.catalog.maxAttempts && !localStop) {
+          const scheduled = startMono + ordinal * catalogIntervalMs;
+          const reason: CatalogSkip = lastCheckpointInterval && scheduled >= lastCheckpointInterval.start &&
+            scheduled < lastCheckpointInterval.end ? "checkpoint" : "late";
+          recordCatalogSkip(state, ordinal, reason, catalogIntervalMs);
+          ordinal++;
+        }
+        break;
+      }
+      const missedUntil = current - catalogIntervalMs * 1.25;
+      while (ordinal < profile.catalog.maxAttempts &&
+        startMono + ordinal * catalogIntervalMs < missedUntil && !localStop) {
+        const scheduled = startMono + ordinal * catalogIntervalMs;
+        const reason: CatalogSkip = lastCheckpointInterval && scheduled >= lastCheckpointInterval.start &&
+          scheduled < lastCheckpointInterval.end ? "checkpoint" : "late";
+        recordCatalogSkip(state, ordinal, reason, catalogIntervalMs);
+        ordinal++;
+      }
+      if (ordinal >= profile.catalog.maxAttempts || localStop) break;
+      if (Date.now() + profile.catalog.requestTimeoutMs + 1_000 >= action.deadlineAt) {
+        deadlineReached = true;
+        closeAdmissions("deadline");
+        break;
+      }
+      if (state.counters.inFlight >= profile.catalog.maxInFlight) {
+        recordCatalogSkip(state, ordinal, "full", catalogIntervalMs);
+        ordinal++;
+        continue;
+      }
+
+      const request: RequestRecord = { id: randomUUID(), kind: "catalog", startedAt: new Date().toISOString() };
+      let requestStartMono = performance.now();
+      let requestStartedAt = request.startedAt;
+      const requestOrdinal = ordinal;
+      const task = (async () => {
+        const response = await appRequest(target, bearer, request, profile.catalog.requestTimeoutMs, () => {
+          if (localStop || performance.now() >= endMono) return false;
+          if (Date.now() + profile.catalog.requestTimeoutMs + 1_000 >= action.deadlineAt) {
+            deadlineReached = true;
+            closeAdmissions("deadline");
+            return false;
+          }
+          requestStartMono = performance.now();
+          requestStartedAt = new Date().toISOString();
+          request.startedAt = requestStartedAt;
+          recordCatalogStart(state, startMono, requestStartMono);
+          return true;
+        });
+        if (response.sent === false) {
+          recordCatalogSkip(state, requestOrdinal, "late", catalogIntervalMs);
+          return;
+        }
+        const observed = product(response, target.sku);
+        recordCatalogCompletion(state, startMono, requestStartedAt, request.id, requestStartMono, response, observed);
+      })().catch(() => {
+        observationFailure = true;
+        closeAdmissions("observation_failure");
+        if (state.counters.inFlight > 0) state.counters.inFlight--;
+      }).finally(() => pending.delete(task));
+      pending.add(task);
+      ordinal++;
+    }
+    if (!localStop && performance.now() < endMono) await waitFor(endMono, 50);
+  }
+
+  async function runCheckoutProducer(): Promise<void> {
+    for (let tick = 0; tick < profile.checkout.maxAttempts && !localStop; tick++) {
+      const due = startMono + tick * profile.checkout.intervalMs;
+      await waitFor(due, 100);
+      if (localStop) break;
+      const now = performance.now();
+      if (now > due + 100) {
+        await skipCheckoutTick(action.id).catch(() => { observationFailure = true; closeAdmissions("observation_failure"); });
+        continue;
+      }
+      if (Date.now() + profile.checkout.requestTimeoutMs + 1_000 >= action.deadlineAt) {
+        deadlineReached = true;
+        closeAdmissions("deadline");
+        break;
+      }
+      const request = newRequest("checkout", checkoutPayload(baseline.sku, baseline.productVersion));
+      const reserved = await reserveSurgeCheckout(action.id, request, profile).catch(() => {
+        observationFailure = true;
+        closeAdmissions("observation_failure");
+        return false;
+      });
+      if (!reserved) {
+        const current = await getAction(action.id).catch(() => undefined);
+        if (!current) {
+          observationFailure = true;
+          closeAdmissions("observation_failure");
+        } else if (current.stopRequested || current.status === "draining") {
+          observeStop();
+        } else if (current.status !== "running") {
+          observationFailure = true;
+          closeAdmissions("observation_failure");
+        }
+        continue;
+      }
+      const payload = request.checkout;
+      let admitted = !localStop && performance.now() < endMono;
+      if (admitted) {
+        try {
+          const current = await getAction(action.id);
+          if (!current || current.kind !== "traffic") {
+            observationFailure = true;
+            closeAdmissions("observation_failure");
+            admitted = false;
+          } else if (current.stopRequested || current.status === "draining") {
+            observeStop();
+            admitted = false;
+          } else if (current.status !== "running" || performance.now() >= endMono || localStop) {
+            if (current.status !== "running") {
+              observationFailure = true;
+              closeAdmissions("observation_failure");
+            }
+            admitted = false;
+          }
+        } catch {
+          observationFailure = true;
+          closeAdmissions("observation_failure");
+          admitted = false;
+        }
+      }
+      if (!admitted) {
+        await markSurgeCheckoutNotSent(action.id, request,
+          localStop ? "ADMISSION_CLOSED" : "PRODUCTION_WINDOW_CLOSED", window, stopObservedAt)
+          .catch(() => { observationFailure = true; closeAdmissions("observation_failure"); });
+        continue;
+      }
+      const task = (async () => {
+        const result = await send(action.id, target, bearer, request, payload, profile.checkout.requestTimeoutMs, () => {
+          if (localStop || performance.now() >= endMono) return false;
+          if (Date.now() + profile.checkout.requestTimeoutMs + 1_000 >= action.deadlineAt) {
+            deadlineReached = true;
+            closeAdmissions("deadline");
+            return false;
+          }
+          return true;
+        });
+        if (!result.sent) {
+          await markSurgeCheckoutNotSent(action.id, request,
+            localStop ? "ADMISSION_CLOSED" : "PRODUCTION_WINDOW_CLOSED", window, stopObservedAt);
+        } else if (result.outcome === "unknown" && payload) unknown.push(payload);
+      })().catch(() => {
+        observationFailure = true;
+        closeAdmissions("observation_failure");
+      }).finally(() => pending.delete(task));
+      pending.add(task);
+    }
+    if (!localStop && performance.now() < endMono) await waitFor(endMono, 100);
+  }
+
+  try {
+    await Promise.all([runCatalogProducer(), runCheckoutProducer()]);
+  } catch {
+    observationFailure = true;
+    closeAdmissions("observation_failure");
+  }
+  if (!localStop) {
+    localStop = true;
+    admissionClosedMono = endMono;
+    admissionClosedAt = window.scheduledEndAt;
+    closeReason = "duration";
+  }
+  producerStoppedMono = admissionClosedMono ?? performance.now();
+  const producerStoppedAt = admissionClosedAt ?? new Date().toISOString();
+  const stopReason: TrafficWindow["stopReason"] = observationWriteFailure || observationFailure ? "observation_failure"
+    : deadlineReached ? "deadline" : closeReason ?? "duration";
+  try {
+    await setSurgeLifecycle(action.id, window, { ...(stopObservedAt ? { stopObservedAt } : {}), producerStoppedAt, stopReason });
+  } catch {
+    observationFailure = true;
+    observationWriteFailure = true;
+  }
+
+  await Promise.all([...pending]);
+  for (const payload of unknown) {
+    try {
+      const status = await checkStatus(action.id, target, bearer, payload);
+      if (!status.submitted) deadlineReached = true;
+    } catch {
+      observationFailure = true;
+    }
+  }
+  const settledAt = new Date().toISOString();
+  const incomplete = observationWriteFailure || observationFailure || deadlineReached;
+  const finalStopReason = incomplete ? (deadlineReached && !observationFailure ? "deadline" : "observation_failure")
+    : closeReason ?? "duration";
+
+  try {
+    if (observationWriteFailure) {
+      await finishIncompleteSurge(action.id, window, { ...(stopObservedAt ? { stopObservedAt } : {}), producerStoppedAt,
+        settledAt, stopReason: finalStopReason },
+      "A catalog observation could not be saved; the last successful partial snapshot is retained.");
+      return;
+    }
+    await setSurgeLifecycle(action.id, window, { ...(stopObservedAt ? { stopObservedAt } : {}), producerStoppedAt,
+      settledAt, stopReason: finalStopReason }, { state, startMono, producerStoppedMono,
+      observationStatus: incomplete ? "partial" : "complete",
+      actionStatus: incomplete ? "incomplete" : requestedStop ? "stopped" : "completed",
+      ...(incomplete ? { error: "Traffic stopped before all required observations and reconciliation completed." } : {}) });
+  } finally {
+    monitorClosed = true;
+    await stopMonitor;
+  }
+}
+
+async function traffic(action: Action): Promise<void> {
+  const target = await appTarget();
+  const run = await getRun();
+  const baseline = run.baseline;
+  if (!baseline || baseline.appRevision !== target.revision || baseline.sku !== target.sku) {
+    throw new ActionFailure("The app release changed. Check readiness before starting traffic.");
+  }
+  const bearer = await loadBearer();
+  const isSurge = action.command.kind === "traffic" && action.command.profile === "inventory_surge";
+  let context: TrafficContext;
+  if (isSurge) {
+    context = await surgeTrafficContext(action, target, bearer, run);
+  } else {
+    const release = await currentReleaseContext(bearer, target);
+    if (baseline.deploymentIdentity && !sameDeploymentIdentity(baseline.deploymentIdentity, release.deploymentIdentity)) {
+      throw new ActionFailure("The app release changed. Check readiness before starting traffic.");
+    }
+    context = trafficContextFromSettings(target.revision, baseline.productVersion, release.checkout, release.inventory);
+  }
+  const apiId = trafficApiId(target);
+  if (!await persistTrafficContext(action.id, context, apiId)) {
+    const current = await getAction(action.id);
+    if (current?.kind === "traffic" && current.stopRequested) {
+      await changeAction(action.id, (_run, latest) => {
+        if (latest.kind !== "traffic" || !latest.stopRequested) return false;
+        latest.status = "stopped";
+        latest.finishedAt = new Date().toISOString();
+        return true;
+      });
+      return;
+    }
+    throw new IncompleteActionFailure("The worker-observed traffic context could not be saved before production.");
+  }
+  if (isSurge) {
+    if (!action.trafficProfile) throw new ActionFailure("The accepted surge action is missing its immutable workload profile.");
+    await surgeTraffic(action, target, bearer, baseline, action.trafficProfile);
+  } else {
+    await ordinaryTraffic(action, target, bearer, baseline);
+  }
 }
 
 export async function handler(event: { actionId?: string } = {}): Promise<void> {

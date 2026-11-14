@@ -549,6 +549,13 @@ Resources:
             Effect: Allow
             Action: cloudwatch:DescribeAlarms
             Resource: arn:aws:cloudwatch:us-east-1:027224425948:alarm:IncidentTriageDemoAppStage5xx
+          - Sid: ControllerHttpMetrics
+            Effect: Allow
+            Action: cloudwatch:GetMetricData
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: us-east-1
 
   IncidentTriageDemoControllerWorkerRuntimeBoundary:
     Type: AWS::IAM::ManagedPolicy
