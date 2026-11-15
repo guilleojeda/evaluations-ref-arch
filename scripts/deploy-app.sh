@@ -46,6 +46,19 @@ stack_output() {
   jq -r --arg key "$1" '.Stacks[0].Outputs[]? | select(.OutputKey == $key) | .OutputValue'
 }
 
+checked_web_entry_is_current() {
+  local entry
+  if entry="$(deploy_aws s3api head-object --bucket "$bucket" --key index.html \
+      --expected-bucket-owner "$AWS_ACCOUNT_ID" 2>"$aws_error")"; then
+    jq -e --arg revision "$GITHUB_SHA" '.Metadata.sourcerevision == $revision' <<<"$entry" >/dev/null
+  elif grep -Eq '404|NotFound|NoSuchKey' "$aws_error"; then
+    return 1
+  else
+    cat "$aws_error" >&2
+    exit 1
+  fi
+}
+
 verify_aliases() {
   local name fn expected alias
   for name in Checkout Inventory; do
@@ -141,31 +154,99 @@ while :; do
   esac
 done
 
-# Reconcile a prior release's recognized role-only staging before preparing a
-# new CloudFormation change set. The helper uses the previous revision's
-# healthy qualified version and a fresh $LATEST revision guard.
-restore_previous_inventory_staging
-
 previous_adapter="$(jq -r '.Stacks[0].Parameters[]? | select(.ParameterKey == "AlarmAdapterArn") | .ParameterValue' <<<"$stack_state")"
 desired_adapter="${APP_ALARM_ADAPTER_ARN:-$previous_adapter}"
 [[ -z "$desired_adapter" || "$desired_adapter" == arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter ]] || { echo "Unexpected alarm adapter ARN" >&2; exit 1; }
 binding_changed=false
 [[ "$previous_adapter" == "$desired_adapter" ]] || binding_changed=true
-binding_hash="$(printf '%s' "$desired_adapter" | sha256sum | cut -c1-12)"
-change_set_name="phase1-app-${GITHUB_SHA}-${binding_hash}"
-deployed_revision="$(stack_output SourceRevision <<<"$stack_state")"
-if [[ "$deployed_revision" == "$GITHUB_SHA" && "$binding_changed" == false ]]; then
-  verify_aliases
-  prepare_inventory_versions
-  if entry="$(deploy_aws s3api head-object --bucket "$bucket" --key index.html \
-      --expected-bucket-owner "$AWS_ACCOUNT_ID" 2>"$aws_error")"; then
-    if [[ "$(jq -r '.Metadata.sourcerevision // ""' <<<"$entry")" == "$GITHUB_SHA" ]]; then
-      echo "App stack and entry page already serve $GITHUB_SHA"
-      exit 0
-    fi
-  elif ! grep -Eq '404|NotFound|NoSuchKey' "$aws_error"; then
-    cat "$aws_error" >&2
+
+# A rotation is deliberately opt-in. Do not validate or consume the staged
+# digest for ordinary releases: the app workflow may carry that secret while a
+# normal source update still needs CloudFormation's previous parameter values.
+rotation_from="${APP_ROTATION_FROM_GENERATION:-}"
+rotation_to="${APP_ROTATION_TO_GENERATION:-}"
+rotation_requested=false
+if [[ -n "$rotation_from$rotation_to" ]]; then
+  rotation_requested=true
+  [[ -n "$rotation_from" && -n "$rotation_to" ]] || {
+    echo "Credential rotation requires both generation values" >&2
     exit 1
+  }
+  [[ "${#rotation_from}" -le 128 && "${#rotation_to}" -le 128 && "$rotation_from" =~ ^[A-Za-z0-9._-]+$ && "$rotation_to" =~ ^[A-Za-z0-9._-]+$ ]] || {
+    echo "Credential generation contains unsupported characters" >&2
+    exit 1
+  }
+  [[ "$rotation_from" != "$rotation_to" ]] || {
+    echo "Credential rotation generations must differ" >&2
+    exit 1
+  }
+  [[ "${APP_PRESENTER_DIGEST:-}" =~ ^[a-fA-F0-9]{64}$ ]] || {
+    echo "Credential rotation requires the masked app presenter digest" >&2
+    exit 1
+  }
+fi
+if [[ "$rotation_requested" == true && "$binding_changed" == true ]]; then
+  echo "Credential rotation cannot change the app alarm binding" >&2
+  exit 1
+fi
+
+active_generation="$(stack_output PresenterCredentialGeneration <<<"$stack_state")"
+active_generation_parameter="$(jq -r '.Stacks[0].Parameters[]? | select(.ParameterKey == "PresenterCredentialGeneration") | .ParameterValue' <<<"$stack_state")"
+previous_checkout_version="$(stack_output CheckoutLiveVersion <<<"$stack_state")"
+rotation_already_applied=false
+if [[ "$rotation_requested" == true ]]; then
+  [[ "$status" != ABSENT && "$status" != REVIEW_IN_PROGRESS ]] || {
+    echo "Credential rotation requires an existing app stack" >&2
+    exit 1
+  }
+  [[ "$status" == CREATE_COMPLETE || "$status" == UPDATE_COMPLETE ]] || {
+    echo "Credential rotation requires a successfully completed app stack" >&2
+    exit 1
+  }
+  [[ "${#active_generation}" -le 128 && "$active_generation" =~ ^[A-Za-z0-9._-]+$ ]] || {
+    echo "App stack has no valid active credential generation" >&2
+    exit 1
+  }
+  [[ "$active_generation_parameter" == "$active_generation" ]] || {
+    echo "App stack credential generation output and parameter disagree" >&2
+    exit 1
+  }
+  [[ "$previous_checkout_version" =~ ^[1-9][0-9]*$ ]] || {
+    echo "App stack has no valid active Checkout version" >&2
+    exit 1
+  }
+  # Establish the exact old serving state before preparing a new change set.
+  # This also makes an already-applied retry an observational no-op.
+  verify_aliases
+  if [[ "$active_generation" == "$rotation_to" ]]; then
+    rotation_already_applied=true
+  elif [[ "$active_generation" != "$rotation_from" ]]; then
+    echo "App credential generation is neither the requested predecessor nor target" >&2
+    exit 1
+  fi
+fi
+
+binding_hash="$(printf '%s' "$desired_adapter" | sha256sum | cut -c1-12)"
+generation_hash=""
+if [[ "$rotation_requested" == true ]]; then
+  generation_hash="-$(printf '%s' "$rotation_to" | sha256sum | cut -c1-12)"
+fi
+change_set_name="phase1-app-${GITHUB_SHA}-${binding_hash}${generation_hash}"
+deployed_revision="$(stack_output SourceRevision <<<"$stack_state")"
+if [[ "$rotation_already_applied" == true && "$deployed_revision" != "$GITHUB_SHA" ]]; then
+  echo "The existing credential target is not the checked app revision" >&2
+  exit 1
+fi
+if [[ "$deployed_revision" == "$GITHUB_SHA" && "$binding_changed" == false ]] &&
+    [[ "$rotation_requested" == false || "$rotation_already_applied" == true ]]; then
+  # Complete a prior release that stopped before publishing its manifest or
+  # web entry. Existing verified Inventory versions and assets are reused.
+  restore_previous_inventory_staging
+  if [[ "$rotation_already_applied" == false ]]; then verify_aliases; fi
+  prepare_inventory_versions
+  if checked_web_entry_is_current; then
+    echo "App stack and entry page already serve $GITHUB_SHA"
+    exit 0
   fi
   echo "Completing static publication for $GITHUB_SHA"
 else
@@ -186,6 +267,10 @@ else
       exit 1
     fi
     if [[ "$deployed_revision" != "$GITHUB_SHA" ]] && git merge-base --is-ancestor "$GITHUB_SHA" "$deployed_revision"; then
+      if [[ "$rotation_requested" == true ]]; then
+        echo "Credential rotation candidate $GITHUB_SHA was superseded by $deployed_revision" >&2
+        exit 1
+      fi
       echo "App release $GITHUB_SHA was superseded by $deployed_revision"
       exit 0
     fi
@@ -195,18 +280,58 @@ else
     }
     base="$deployed_revision"
   fi
+  # Reconcile recognized staging only after source ancestry and any explicit
+  # rotation predecessor have been accepted.
+  restore_previous_inventory_staging
+  if [[ "$rotation_requested" == true ]]; then
+    parameter_args+=(--parameters "$stack:PresenterCredentialDigest=$APP_PRESENTER_DIGEST"
+      --parameters "$stack:PresenterCredentialGeneration=$rotation_to")
+  fi
   components="$(node scripts/affected-stacks.mjs "$base" "$GITHUB_SHA")"
-  if [[ "$binding_changed" == false ]] && ! jq -e 'index("app") != null' <<<"$components" >/dev/null; then
+  if [[ "$binding_changed" == false && "$rotation_requested" == false ]] && ! jq -e 'index("app") != null' <<<"$components" >/dev/null; then
     echo "No app change from $base to $GITHUB_SHA"
     exit 0
   fi
 
   # Reuse an available change set when submission had already succeeded.
+  rotation_change_set_explicit() {
+    jq -e --arg revision "$GITHUB_SHA" --arg adapter "$desired_adapter" --arg generation "$rotation_to" '
+      def one($key): [.Parameters[]? | select(.ParameterKey == $key)];
+      def explicit($key): one($key) as $matches |
+        ($matches | length == 1) and (($matches[0].UsePreviousValue // false) != true);
+      def value($key): one($key) | .[0].ParameterValue;
+      (explicit("SourceRevision") and value("SourceRevision") == $revision) and
+      (explicit("AlarmAdapterArn") and value("AlarmAdapterArn") == $adapter) and
+      (explicit("PresenterCredentialGeneration") and value("PresenterCredentialGeneration") == $generation) and
+      (explicit("PresenterCredentialDigest") and
+        ((value("PresenterCredentialDigest") // "") | type == "string" and length > 0))
+    ' "$description" >/dev/null
+  }
+
+  rotation_change_set_proves_digest() {
+    jq -e --arg digest "$APP_PRESENTER_DIGEST" '
+      [.Parameters[]? | select(.ParameterKey == "PresenterCredentialDigest")] as $matches |
+      ($matches | length == 1) and
+      (($matches[0].UsePreviousValue // false) != true) and
+      ($matches[0].ParameterValue == $digest)
+    ' "$description" >/dev/null
+  }
+
   prepared=false
   if deploy_aws cloudformation describe-change-set --stack-name "$stack" --change-set-name "$change_set_name" \
       --output json >"$description" 2>"$aws_error"; then
     case "$(jq -r '.Status + ":" + .ExecutionStatus' "$description")" in
-      CREATE_COMPLETE:AVAILABLE) prepared=true ;;
+      CREATE_COMPLETE:AVAILABLE)
+        prepared=true
+        # CloudFormation masks NoEcho values in a change-set read. A prepared
+        # set with a masked digest cannot prove which staged value signed it,
+        # so discard it and prepare a fresh set from the current environment.
+        if [[ "$rotation_requested" == true ]] && {
+          ! rotation_change_set_explicit || ! rotation_change_set_proves_digest;
+        }; then
+          deploy_aws cloudformation delete-change-set --stack-name "$stack" --change-set-name "$change_set_name"
+          prepared=false
+        fi ;;
       FAILED:*|*:OBSOLETE)
         deploy_aws cloudformation delete-change-set --stack-name "$stack" --change-set-name "$change_set_name" ;;
       *) echo "Previous change set is still in progress or unavailable" >&2; exit 1 ;;
@@ -223,13 +348,32 @@ else
     deploy_aws cloudformation describe-change-set --stack-name "$stack" --change-set-name "$change_set_name" \
       --output json >"$description"
   fi
-  unset APP_PRESENTER_DIGEST parameter_args
   node scripts/check-app-change-set.mjs <"$description"
   change_set_id="$(jq -er .ChangeSetId "$description")"
   jq -e --arg revision "$GITHUB_SHA" \
     '[.Parameters[] | select(.ParameterKey == "SourceRevision") | .ParameterValue] == [$revision]' \
     "$description" >/dev/null
   jq -e --arg adapter "$desired_adapter" '[.Parameters[] | select(.ParameterKey == "AlarmAdapterArn") | .ParameterValue] == [$adapter]' "$description" >/dev/null
+  if [[ "$rotation_requested" == true ]]; then
+    if ! rotation_change_set_explicit; then
+      echo "Rotation change set does not contain explicit credential parameters" >&2
+      exit 1
+    fi
+    # A newly prepared NoEcho parameter may be masked by the provider. The
+    # explicit cdk argument above is the signed intent; reject previous-value
+    # reuse and any visible value that disagrees with that intent.
+    if ! rotation_change_set_proves_digest && ! jq -e '
+      [.Parameters[]? | select(.ParameterKey == "PresenterCredentialDigest")] as $matches |
+      ($matches | length == 1) and (($matches[0].ParameterValue // "") | test("^\\*+$"))
+    ' "$description" >/dev/null; then
+      echo "Rotation change set digest does not match the explicit rotation intent" >&2
+      exit 1
+    fi
+    jq -e --arg generation "$rotation_to" \
+      '[.Parameters[] | select(.ParameterKey == "PresenterCredentialGeneration") | .ParameterValue] == [$generation]' \
+      "$description" >/dev/null
+  fi
+  unset APP_PRESENTER_DIGEST parameter_args
   candidate_template="$(jq -er --arg stack "$stack" '.artifacts[$stack].properties.templateFile' "$assembly/manifest.json")"
   checked_hash="$(jq -cS . "$assembly/$candidate_template" | sha256sum | cut -d' ' -f1)"
   prepared_hash="$(deploy_aws cloudformation get-template --stack-name "$stack" --change-set-name "$change_set_id" \
@@ -243,23 +387,62 @@ else
     stack_state="$(read_stack)"
     status="$(stack_status <<<"$stack_state")"
     revision="$(stack_output SourceRevision <<<"$stack_state")"
-    if [[ ( "$status" == CREATE_COMPLETE || "$status" == UPDATE_COMPLETE ) && "$revision" == "$GITHUB_SHA" ]] &&
-       jq -e --arg adapter "$desired_adapter" '[.Stacks[0].Parameters[]? | select(.ParameterKey == "AlarmAdapterArn") | .ParameterValue] == [$adapter]' <<<"$stack_state" >/dev/null; then
-      break
+    if [[ "$status" == CREATE_COMPLETE || "$status" == UPDATE_COMPLETE ]]; then
+      if [[ "$revision" == "$GITHUB_SHA" ]] &&
+         jq -e --arg adapter "$desired_adapter" '[.Stacks[0].Parameters[]? | select(.ParameterKey == "AlarmAdapterArn") | .ParameterValue] == [$adapter]' <<<"$stack_state" >/dev/null &&
+         { [[ "$rotation_requested" == false ]] || {
+           jq -e --arg generation "$rotation_to" \
+             '[.Stacks[0].Outputs[]? | select(.OutputKey == "PresenterCredentialGeneration") | .OutputValue] == [$generation]' <<<"$stack_state" >/dev/null &&
+           jq -e --arg generation "$rotation_to" \
+             '[.Stacks[0].Parameters[]? | select(.ParameterKey == "PresenterCredentialGeneration") | .ParameterValue] == [$generation]' <<<"$stack_state" >/dev/null;
+         }; }; then
+        break
+      fi
+      # A successful status can be observed before the final parameter/output
+      # read has caught up. Keep polling within the same bounded release wait;
+      # rollback and other failure terminals below remain immediate.
+      (( SECONDS < deploy_until )) || {
+        echo "App stack reached terminal $status without the requested release parameters" >&2
+        deploy_aws cloudformation describe-stack-events --stack-name "$stack" --max-items 12 \
+          --query 'StackEvents[:12].[LogicalResourceId,ResourceStatus,ResourceStatusReason]' --output text >&2 || true
+        exit 1
+      }
+      sleep 15
+      continue
     fi
-    if [[ "$status" == ROLLBACK_COMPLETE || "$status" == *_FAILED ]] || (( SECONDS >= deploy_until )); then
-      echo "App stack did not complete revision $GITHUB_SHA ($status)" >&2
-      deploy_aws cloudformation describe-stack-events --stack-name "$stack" --max-items 12 \
-        --query 'StackEvents[:12].[LogicalResourceId,ResourceStatus,ResourceStatusReason]' --output text >&2 || true
-      exit 1
-    fi
-    sleep 15
+    case "$status" in
+      ROLLBACK_COMPLETE|UPDATE_ROLLBACK_COMPLETE|*_FAILED|*_ROLLBACK_FAILED|DELETE_COMPLETE)
+        echo "App stack reached terminal failure status $status" >&2
+        deploy_aws cloudformation describe-stack-events --stack-name "$stack" --max-items 12 \
+          --query 'StackEvents[:12].[LogicalResourceId,ResourceStatus,ResourceStatusReason]' --output text >&2 || true
+        exit 1 ;;
+      *_IN_PROGRESS|*_CLEANUP_IN_PROGRESS)
+        (( SECONDS < deploy_until )) || { echo "App stack is still $status" >&2; exit 1; }
+        sleep 15 ;;
+      *)
+        echo "App stack reached unexpected terminal status $status" >&2
+        exit 1 ;;
+    esac
   done
   verify_aliases
+  if [[ "$rotation_requested" == true ]]; then
+    new_checkout_version="$(stack_output CheckoutLiveVersion <<<"$stack_state")"
+    [[ "$new_checkout_version" =~ ^[1-9][0-9]*$ && "$new_checkout_version" != "$previous_checkout_version" ]] || {
+      echo "Credential rotation did not publish a changed numeric Checkout version" >&2
+      exit 1
+    }
+    echo "Verified credential rotation to Checkout version $new_checkout_version"
+  fi
 fi
 
 if [[ "$deployed_revision" != "$GITHUB_SHA" || "$binding_changed" == true ]]; then
   prepare_inventory_versions
+elif [[ "$rotation_requested" == true && "$rotation_already_applied" == false ]]; then
+  prepare_inventory_versions
+  if checked_web_entry_is_current; then
+    echo "Reused the checked Inventory publication and web entry for $GITHUB_SHA"
+    exit 0
+  fi
 fi
 
 [[ "$(stack_output WebBucketName <<<"$stack_state")" == "$bucket" ]]
