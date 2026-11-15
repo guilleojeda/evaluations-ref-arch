@@ -22,15 +22,6 @@ on:
         required: false
         default: ''
         type: string
-      oidc_probe:
-        description: STS-only migration proof. Use only on main or the phase12 proof tag.
-        required: false
-        default: none
-        type: choice
-        options:
-          - none
-          - wrong-branch
-          - wrong-tag
   push:
     branches:
       - main
@@ -127,29 +118,6 @@ jobs:
             fi
           fi
           echo "components=$(node scripts/affected-stacks.mjs "$base" "$candidate")" >> "$GITHUB_OUTPUT"
-
-  oidc-probe:
-    name: Verify rejected OIDC identity
-    if: >-
-      github.event_name == 'workflow_dispatch' &&
-      ((inputs.oidc_probe == 'wrong-branch' && github.ref == 'refs/heads/main') ||
-      (inputs.oidc_probe == 'wrong-tag' && github.ref == 'refs/tags/phase12-oidc-proof'))
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      id-token: write
-    steps:
-      - name: Check out source
-        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
-      - name: Set up Node.js
-        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
-        with:
-          node-version: '24.22.2'
-      - name: Verify the rejected OIDC case
-        env:
-          PHASE0_OIDC_CASE: ${{ inputs.oidc_probe }}
-          PHASE0_OIDC_PROBE_REF: ${{ github.ref }}
-        run: node --test tests/phase0-oidc.test.mjs
 
   check:
     name: Check ${{ matrix.component }}
