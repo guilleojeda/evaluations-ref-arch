@@ -234,7 +234,7 @@ The React page and the Checkout and Inventory Lambda entries live in `app/src`. 
 
 The development host uses Node.js 24, a single npm lockfile, TypeScript type checking, Vite for the web build, esbuild-backed CDK Lambda bundling, and explicitly bundled AWS SDK v3 modules. Versions are pinned during implementation; production does not follow a latest-runtime alias. Develop the React page locally against the deployed AWS API with a dev proxy and the privately supplied demo credential, rather than requiring a cloud emulator.
 
-[GitHub Actions](../deployment.md) builds, checks, and automatically deploys relevant changes from `main` to the shared development environment. CDK remains the infrastructure definition. Routine deployments preserve Orders/Inventory; initial data setup and presenter-operated reset are separate operations.
+[GitHub Actions](../deployment.md) builds and checks pull requests and `main` without AWS credentials, then publishes relevant changes from the long-lived `demo-deploy` branch to the shared development environment. CDK remains the infrastructure definition. Routine deployments preserve Orders/Inventory; initial data setup and presenter-operated reset are separate operations.
 
 Schedule deployments outside active demo runs. Bind the controller baseline to the successful app release and its deployed artifact identity. If a deployment overlaps a demo, abandon that run and verify the deployed release and affected live settings before starting another. See the [deployment procedure](../deployment.md#deployment-and-controller-baseline).
 

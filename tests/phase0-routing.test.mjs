@@ -45,6 +45,8 @@ test('the CI selector identifies component, shared, and documentation changes ac
   const agentRelease = commit('scripts/finalize-agent.py');
   const appRelease = commit('scripts/deploy-app.sh');
   const controllerRelease = commit('scripts/deploy-controller.sh');
+  const oidcProbe = commit('.github/workflows/oidc-negative.yml');
+  const releaseWorkflow = commit('.github/workflows/deploy.yml');
 
   assert.deepEqual(affected(baseline, docs), []);
   assert.deepEqual(affected(docs, componentDocs), []);
@@ -56,6 +58,9 @@ test('the CI selector identifies component, shared, and documentation changes ac
   assert.deepEqual(affected(shared, agentRelease), ['agent']);
   assert.deepEqual(affected(agentRelease, appRelease), ['app']);
   assert.deepEqual(affected(appRelease, controllerRelease), ['controller']);
+  assert.deepEqual(affected(controllerRelease, oidcProbe), [],
+    'a temporary STS-only proof workflow must not start a product release');
+  assert.deepEqual(affected(oidcProbe, releaseWorkflow), ['agent', 'app', 'controller']);
   assert.deepEqual(affected(baseline, controller), ['app', 'controller'],
     'an earlier relevant change remains visible when comparing with the last successful revision');
 });

@@ -133,7 +133,7 @@ A known incorrect recommendation for either demonstrated incident must fail its 
 
 The local gate command and CI workflow must use the same policy and captured evidence contract. Keep evaluation execution failures distinguishable from agent-quality failures, and block an automatic pass when required evidence is incomplete.
 
-[GitHub Actions](deployment.md) deploys development changes automatically from S0. At S4, the repaired candidate must complete the captured-evidence Strands experiment and pass the existing reviewed local release policy before the first deployment. At S5, CI runs that same experiment and policy before deployment; failed or incomplete required results block it. Ordinary build/code checks in the earlier stages are separate from agent evaluations.
+[GitHub Actions](deployment.md) publishes development changes automatically from `demo-deploy` without an agent evaluation gate at the current stage. At S4, the repaired candidate must complete the captured-evidence Strands experiment and pass the existing reviewed local release policy before the first deployment. At S5, CI runs that same experiment and policy before deployment; failed or incomplete required results block it. Ordinary build/code checks in the earlier stages are separate from agent evaluations.
 
 ## Measurements
 
