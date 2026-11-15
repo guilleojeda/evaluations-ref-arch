@@ -10,9 +10,15 @@ const targetAccount = '027224425948';
 const targetRepository = 'guilleojeda/evaluations-ref-arch';
 const targetRepositoryId = '1411023195';
 const targetRegion = 'us-east-1';
+const releaseRef = 'refs/heads/demo-deploy';
 const mainRef = 'refs/heads/main';
+const probeTagRef = 'refs/tags/phase12-oidc-proof';
 const deployWorkflow = '.github/workflows/deploy.yml';
 const negativeWorkflow = '.github/workflows/oidc-negative.yml';
+const deployRoleArn = `arn:aws:iam::${targetAccount}:role/IncidentTriageDemoGitHubDeploy`;
+const immutableRepository = `repo:guilleojeda@18320860/evaluations-ref-arch@${targetRepositoryId}:workflow_ref:`;
+const expectedSubject = `${immutableRepository}${targetRepository}/${deployWorkflow}@${releaseRef}`;
+const negativeRefs = { 'wrong-branch': mainRef, 'wrong-tag': probeTagRef };
 const probe = process.env.PHASE0_OIDC_CASE;
 
 function input(name) {
@@ -22,14 +28,15 @@ function input(name) {
 }
 
 function validateRunnerIdentity(context, env) {
-  const { probe, repository, repositoryId, account, region, roleArn, ref, workflowRef } = context;
+  const { probe, repository, repositoryId, account, region, roleArn, ref, workflowRef, subject } = context;
   assert.equal(repository, targetRepository, `OIDC probe must target ${targetRepository}`);
   assert.equal(repositoryId, targetRepositoryId, `OIDC probe must target repository ID ${targetRepositoryId}`);
   assert.equal(account, targetAccount, `OIDC probe must target AWS account ${targetAccount}`);
   assert.equal(region, targetRegion, `OIDC probe must target ${targetRegion}`);
-  assert.ok(roleArn.startsWith(`arn:aws:iam::${account}:role/`), 'Deploy role must belong to the confirmed account');
-  assert.match(ref, /^refs\/heads\/.+$/);
-  if (probe === 'wrong-branch') assert.notEqual(ref, mainRef);
+  assert.equal(roleArn, deployRoleArn, 'OIDC proof must target the exact publishing role');
+  assert.equal(subject, expectedSubject, 'Expected subject must refer to the exact publishing workflow');
+  assert.equal(ref, negativeRefs[probe] ?? releaseRef);
+  assert.equal(workflowRef, `${repository}/${probe === 'wrong-workflow' ? negativeWorkflow : deployWorkflow}@${ref}`);
   assert.equal(env.GITHUB_ACTIONS, 'true');
   assert.equal(env.GITHUB_REPOSITORY, repository);
   assert.equal(env.GITHUB_REF, ref);
@@ -48,32 +55,31 @@ function validateTokenIdentity(context, claims) {
   assert.equal(claims.ref, ref);
   assert.equal(claims.workflow_ref, workflowRef);
   assert.equal(claims.event_name, eventName, 'Token event_name must match the verified runner event');
-  assert.ok(claims.sub?.startsWith(`repo:guilleojeda@18320860/evaluations-ref-arch@${targetRepositoryId}:workflow_ref:`), 'GitHub subject is missing the immutable repository identity');
-  assert.ok(claims.sub?.includes(`workflow_ref:${workflowRef}`), 'GitHub subject is missing the exact workflow file and ref');
+  assert.equal(claims.sub, `${immutableRepository}${workflowRef}`,
+    'GitHub subject must match the immutable repository and exact workflow file and ref');
   if (probe === 'allowed') assert.equal(claims.sub, subject);
   else {
-    assert.notEqual(claims.sub, subject, 'A wrong branch or workflow must change the immutable subject');
-    if (probe === 'wrong-branch') {
-      assert.notEqual(claims.ref, mainRef, 'Wrong-branch probe must issue a different ref claim');
+    assert.notEqual(claims.sub, subject, 'A wrong ref or workflow must change the immutable subject');
+    if (Object.hasOwn(negativeRefs, probe)) {
+      assert.notEqual(claims.ref, releaseRef, 'Wrong-ref proof requires a different ref claim');
       assert.equal(claims.workflow_ref, `${repository}/${deployWorkflow}@${ref}`);
     } else {
-      assert.equal(claims.ref, mainRef);
-      assert.notEqual(claims.workflow_ref, `${repository}/${deployWorkflow}@${mainRef}`, 'Wrong-workflow probe must issue a different workflow_ref claim');
+      assert.equal(claims.ref, releaseRef);
+      assert.notEqual(claims.workflow_ref, `${repository}/${deployWorkflow}@${releaseRef}`, 'Wrong-workflow probe must issue a different workflow_ref claim');
     }
   }
 }
 
 function identityFixture(eventName = 'push', probe = 'allowed') {
-  const ref = probe === 'wrong-branch' ? 'refs/heads/oidc-probe' : mainRef;
+  const ref = negativeRefs[probe] ?? releaseRef;
   const workflow = probe === 'wrong-workflow' ? negativeWorkflow : deployWorkflow;
   const workflowRef = `${targetRepository}/${workflow}@${ref}`;
-  const immutableRepository = `repo:guilleojeda@18320860/evaluations-ref-arch@${targetRepositoryId}:workflow_ref:`;
   return {
     context: {
       probe, repository: targetRepository, repositoryId: targetRepositoryId,
       account: targetAccount, region: targetRegion,
-      roleArn: `arn:aws:iam::${targetAccount}:role/IncidentTriageDemoGitHubDeploy`,
-      subject: `${immutableRepository}${targetRepository}/${deployWorkflow}@${mainRef}`,
+      roleArn: deployRoleArn,
+      subject: expectedSubject,
       ref, workflowRef, eventName,
     },
     env: {
@@ -90,7 +96,7 @@ function identityFixture(eventName = 'push', probe = 'allowed') {
 }
 
 for (const eventName of ['push', 'workflow_dispatch']) {
-  test(`offline OIDC validation accepts ${eventName} from the exact main deployment workflow`, () => {
+  test(`offline OIDC validation accepts ${eventName} from the exact demo-deploy workflow`, () => {
     const { context, env, claims } = identityFixture(eventName);
     assert.equal(validateRunnerIdentity(context, env), eventName);
     validateTokenIdentity(context, claims);
@@ -110,7 +116,7 @@ test('offline OIDC validation rejects other runner events and mismatched token e
   }
 });
 
-test('offline manual OIDC validation preserves repository, workflow, main, audience and immutable subject checks', () => {
+test('offline manual OIDC validation preserves repository, workflow, release ref, audience and immutable subject checks', () => {
   const { context, env, claims } = identityFixture('workflow_dispatch');
   for (const [key, value] of [
     ['GITHUB_ACTIONS', 'false'], ['GITHUB_REPOSITORY', 'other/repository'],
@@ -125,17 +131,17 @@ test('offline manual OIDC validation preserves repository, workflow, main, audie
     ['sub', claims.sub.replace('guilleojeda@18320860', 'guilleojeda')],
     ['sub', claims.sub.replace(targetRepositoryId, '123')],
     ['sub', claims.sub.replace(deployWorkflow, negativeWorkflow)],
-    ['sub', claims.sub.replace(mainRef, 'refs/heads/feature')],
+    ['sub', claims.sub.replace(releaseRef, mainRef)],
   ]) {
     assert.throws(() => validateTokenIdentity(context, { ...claims, [key]: value }), assert.AssertionError, key);
   }
 });
 
-test('offline negative OIDC probes still require distinct branch or workflow identities before native STS denial', () => {
+test('offline negative OIDC probes require distinct main, tag or alternate-workflow identities before native STS denial', () => {
   const allowed = identityFixture();
-  for (const probe of ['wrong-branch', 'wrong-workflow']) {
-    const { context, env, claims } = identityFixture('push', probe);
-    assert.equal(validateRunnerIdentity(context, env), 'push');
+  for (const [probe, eventName] of [['wrong-branch', 'workflow_dispatch'], ['wrong-tag', 'workflow_dispatch'], ['wrong-workflow', 'push']]) {
+    const { context, env, claims } = identityFixture(eventName, probe);
+    assert.equal(validateRunnerIdentity(context, env), eventName);
     validateTokenIdentity(context, claims);
     assert.notEqual(claims.sub, allowed.claims.sub);
     assert.throws(() => validateTokenIdentity(context, allowed.claims), assert.AssertionError);
@@ -144,17 +150,17 @@ test('offline negative OIDC probes still require distinct branch or workflow ide
 });
 
 test('GitHub issues the expected identity and STS enforces the deployment boundary', {
-  skip: probe ? false : 'Run from a Phase 0 GitHub Actions push or workflow_dispatch probe with PHASE0_OIDC_CASE set',
+  skip: probe ? false : 'Run in GitHub Actions with PHASE0_OIDC_CASE and the required OIDC context set',
   timeout: 45_000,
 }, async () => {
-  assert.ok(['allowed', 'wrong-branch', 'wrong-workflow'].includes(probe), 'Invalid Phase 0 probe');
+  assert.ok(['allowed', ...Object.keys(negativeRefs), 'wrong-workflow'].includes(probe), 'Invalid OIDC probe');
   const repository = input('PHASE0_GITHUB_REPOSITORY');
   const repositoryId = input('PHASE0_GITHUB_REPOSITORY_ID');
   const account = input('PHASE0_AWS_ACCOUNT_ID');
   const region = input('PHASE0_AWS_REGION');
   const roleArn = input('PHASE0_DEPLOY_ROLE_ARN');
   const subject = input('PHASE0_EXPECTED_OIDC_SUBJECT');
-  const ref = probe === 'wrong-branch' ? input('PHASE0_OIDC_PROBE_REF') : mainRef;
+  const ref = negativeRefs[probe] ?? releaseRef;
   const workflow = probe === 'wrong-workflow' ? negativeWorkflow : deployWorkflow;
   const workflowRef = `${repository}/${workflow}@${ref}`;
 
@@ -191,6 +197,9 @@ test('GitHub issues the expected identity and STS enforces the deployment bounda
       '--region', targetRegion, '--endpoint-url', `https://sts.${targetRegion}.amazonaws.com`,
       '--role-arn', roleArn, '--role-session-name', sessionName,
       '--web-identity-token', `file://${tokenFile}`,
+      // The verification session has no permissions even if a denial check unexpectedly succeeds.
+      '--duration-seconds', '900',
+      '--policy', '{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Action":"*","Resource":"*"}]}',
       '--query', 'AssumedRoleUser.Arn', '--output', 'text',
     ], {
       encoding: 'utf8',

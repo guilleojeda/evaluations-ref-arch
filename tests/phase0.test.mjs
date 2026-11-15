@@ -9,7 +9,7 @@ const TARGET_REPOSITORY = "guilleojeda/evaluations-ref-arch";
 const TARGET_REPOSITORY_ID = "1411023195";
 const TARGET_OWNER_ID = "18320860";
 const WORKFLOW = ".github/workflows/deploy.yml";
-const REF = "refs/heads/main";
+const REF = "refs/heads/demo-deploy";
 const ISSUER = "token.actions.githubusercontent.com";
 const AUDIENCE = "sts.amazonaws.com";
 const ENV_NAMES = [
@@ -151,7 +151,7 @@ function validateRoleTrust(policy, inputs, providerArn) {
     // GitHub puts the caller's workflow path in sub. STS also maps the repository ID and ref.
     assert.equal(conditions[`${ISSUER}:sub`], inputs.expectedSubject, "role trust must require the exact immutable workflow subject");
     assert.equal(conditions[`${ISSUER}:repository_id`], inputs.repositoryId, "role trust must require the immutable repository ID");
-    assert.equal(conditions[`${ISSUER}:ref`], REF, "role trust must require refs/heads/main");
+    assert.equal(conditions[`${ISSUER}:ref`], REF, `role trust must require ${REF}`);
   }
 }
 
@@ -197,7 +197,7 @@ test("local checks reject misdirected targets and broadened OIDC trust", () => {
   assert.throws(() => validateRoleTrust({ Statement: [{ ...policy.Statement[0], Condition: { StringEquals: { ...policy.Statement[0].Condition.StringEquals, [`${ISSUER}:aud`]: "wrong-audience" } } }] }, inputs, providerArn), /STS audience/);
   assert.throws(() => validateRoleTrust({ Statement: [{ ...policy.Statement[0], Condition: { StringEquals: { ...policy.Statement[0].Condition.StringEquals, [`${ISSUER}:sub`]: "repo:wrong" } } }] }, inputs, providerArn), /exact immutable workflow subject/);
   assert.throws(() => validateRoleTrust({ Statement: [{ ...policy.Statement[0], Condition: { StringEquals: { ...policy.Statement[0].Condition.StringEquals, [`${ISSUER}:sub`]: inputs.expectedSubject.replace(REF, "refs/heads/feature") } } }] }, inputs, providerArn), /exact immutable workflow subject/);
-  assert.throws(() => validateRoleTrust({ Statement: [{ ...policy.Statement[0], Condition: { StringEquals: { ...policy.Statement[0].Condition.StringEquals, [`${ISSUER}:ref`]: "refs/heads/feature" } } }] }, inputs, providerArn), /refs\/heads\/main/);
+  assert.throws(() => validateRoleTrust({ Statement: [{ ...policy.Statement[0], Condition: { StringEquals: { ...policy.Statement[0].Condition.StringEquals, [`${ISSUER}:ref`]: "refs/heads/main" } } }] }, inputs, providerArn), /refs\/heads\/demo-deploy/);
   assert.throws(() => validateSubjectCustomization({ use_default: false, use_immutable_subject: true, include_claim_keys: ["repo"] }, repo, inputs), /subject customization/);
 });
 
