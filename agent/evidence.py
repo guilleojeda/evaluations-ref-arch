@@ -8,6 +8,7 @@ performed here, and they are restricted to the configured per-run S3 prefix.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 import time
@@ -26,6 +27,11 @@ RESULT_TARGET_BYTES = 11_500
 MAX_CAPTURE_BYTES = 256 * 1024
 MAX_PAGES = 8
 MAX_ITEMS = 120
+# Source exports may retain every record from their bounded page budget.  The
+# model-facing response still uses MAX_ITEMS and _bound_result; this larger
+# sanitization cap prevents a valid 131-record export from being mistaken for
+# a 120-record model result.
+MAX_SANITIZED_ITEMS = MAX_PAGES * 100
 MAX_WINDOW_SECONDS = 30 * 60
 
 CHECKOUT_FUNCTION = "IncidentTriageDemoCheckout"
@@ -384,8 +390,14 @@ class EvidenceTools:
         truncated = False
         start_ms, end_ms = self._epoch_ms(window[0]), self._epoch_ms(window[1])
         logs_client = self._client("logs")
+        # Keep a bounded share for each selected group.  A busy Gateway must
+        # not consume the entire response before the Inventory group is read.
+        # The caller can still request a larger source bundle; the public
+        # wrapper bounds the serialized model response separately.
+        events_by_resource: dict[str, list[dict[str, Any]]] = {resource: [] for resource in resources}
         for resource in resources:
             token: str | None = None
+            resource_events = 0
             for _ in range(MAX_PAGES):
                 self._check_deadline()
                 request: dict[str, Any] = {
@@ -405,22 +417,32 @@ class EvidenceTools:
                     break
                 raw_events = response.get("events", []) if isinstance(response, Mapping) else []
                 for event in raw_events:
-                    if len(events) >= limit:
+                    if resource_events >= limit:
                         truncated = True
                         break
                     projected = self._project_log_event(event, resource)
-                    if projected:
-                        events.append(projected)
+                    if projected and self._matches_log_filter(projected, filter_pattern):
+                        events_by_resource[resource].append(projected)
+                        resource_events += 1
                 token = response.get("nextToken") if isinstance(response, Mapping) else None
-                if len(events) >= limit:
+                if resource_events >= limit:
                     truncated = True
                     break
                 if not token:
                     break
             else:
                 truncated = True
-            if truncated and len(events) >= limit:
-                break
+        # Interleave groups before applying the model byte bound so a large
+        # Gateway response cannot hide all Checkout/Inventory observations.
+        events = []
+        for index in range(limit):
+            for resource in resources:
+                group = events_by_resource[resource]
+                if index < len(group):
+                    events.append(group[index])
+        if len(events) > MAX_SANITIZED_ITEMS:
+            events = events[:MAX_SANITIZED_ITEMS]
+            truncated = True
         return self._result(
             source="logs",
             scope=list(resources),
@@ -430,6 +452,7 @@ class EvidenceTools:
             observations=events,
             errors=errors,
             truncated=truncated,
+            bound=limit <= MAX_ITEMS,
         )
 
     def _query_metrics(
@@ -524,6 +547,7 @@ class EvidenceTools:
             observations=metric_results,
             errors=errors,
             truncated=truncated,
+            bound=limit <= MAX_ITEMS,
         )
 
     def _query_configuration(self, resources: Sequence[str]) -> dict[str, Any]:
@@ -542,6 +566,14 @@ class EvidenceTools:
                         observations.extend(self._read_inventory_access())
                     except Exception as exc:
                         errors.append(f"inventory access: {self._safe_error(exc)}")
+                    try:
+                        version_observations, version_errors, version_truncated = self._read_inventory_versions()
+                        observations.extend(version_observations)
+                        errors.extend(version_errors)
+                        if version_truncated:
+                            errors.append("inventory versions: source page or record cap reached")
+                    except Exception as exc:
+                        errors.append(f"inventory versions: {self._safe_error(exc)}")
         for observation in observations:
             if isinstance(observation, Mapping) and observation.get("error"):
                 errors.append(str(observation["error"]))
@@ -611,36 +643,194 @@ class EvidenceTools:
         if role_name not in INVENTORY_ROLE_NAMES:
             # Do not follow arbitrary role values returned by a provider.
             raise ValueError("Inventory execution role is outside the configured app roles")
+        outputs.extend(self._read_inventory_role_access(role_name))
+        return outputs
+
+    def _read_inventory_versions(self) -> tuple[list[dict[str, Any]], list[str], bool]:
+        """Read ordinary published Inventory alternatives and related policy.
+
+        This intentionally follows only the fixed Inventory function and the
+        two application-owned roles.  ``$LATEST`` and arbitrary role values do
+        not become model-facing alternatives.  Pagination is finite and a
+        missing release or code digest remains an explicit observation error.
+        """
+
+        lambda_client = self._client("lambda")
+        observations: list[dict[str, Any]] = []
+        errors: list[str] = []
+        marker: str | None = None
+        truncated = False
+        seen_versions: set[str] = set()
+        for page_number in range(MAX_PAGES):
+            self._check_deadline()
+            request: dict[str, Any] = {"FunctionName": INVENTORY_FUNCTION}
+            if marker:
+                request["Marker"] = marker
+            try:
+                response = lambda_client.list_versions_by_function(**request)
+            except Exception as exc:
+                errors.append(self._safe_error(exc))
+                break
+            versions = response.get("Versions", []) if isinstance(response, Mapping) else []
+            for version in versions if isinstance(versions, list) else []:
+                if len(observations) >= MAX_ITEMS:
+                    truncated = True
+                    break
+                if not isinstance(version, Mapping):
+                    continue
+                number = str(version.get("Version", ""))
+                if not number.isdigit() or number in seen_versions:
+                    continue
+                role_arn = str(version.get("Role", ""))
+                # A provider may return only version/memory metadata (the
+                # ordinary live reader then has no admissible alternative to
+                # project).  Do not turn that benign absence into a false
+                # partial result; a supplied but unapproved role is different
+                # and is reported below.
+                if not role_arn:
+                    continue
+                role_name = role_arn.rsplit("/", 1)[-1]
+                if role_name not in INVENTORY_ROLE_NAMES:
+                    # Keep the fact that a published alternative could not be
+                    # admitted without exposing arbitrary role configuration.
+                    errors.append(f"version {number}: execution role is outside the configured app roles")
+                    continue
+                seen_versions.add(number)
+                projected = self._project_published_version(version, role_name)
+                observations.append(projected)
+                for detail in projected.get("configuration", {}).get("errors", []):
+                    errors.append(f"version {number}: {detail}")
+                try:
+                    observations.extend(self._read_inventory_role_access(role_name))
+                except Exception as exc:
+                    observations.append({"kind": "iam-role", "roleName": role_name, "error": self._safe_error(exc)})
+                    errors.append(f"version {number} role {role_name}: {self._safe_error(exc)}")
+            marker = response.get("NextMarker") if isinstance(response, Mapping) else None
+            if len(observations) >= MAX_ITEMS:
+                truncated = True
+                break
+            if not marker:
+                break
+        else:
+            if marker:
+                truncated = True
+        return observations, errors, truncated
+
+    def _project_published_version(self, version: Mapping[str, Any], role_name: str) -> dict[str, Any]:
+        number = str(version.get("Version", ""))
+        configuration: dict[str, Any] = {
+            key: version[key]
+            for key in ("FunctionName", "Version", "Role", "MemorySize", "Timeout", "LastModified", "Architectures")
+            if key in version
+        }
+        description = version.get("Description")
+        if isinstance(description, str) and description.strip():
+            release = description.strip()
+            if len(release) <= 128 and not SENSITIVE_KEY.search(release):
+                configuration["sourceRevision"] = release
+            else:
+                configuration["sourceRevision"] = "[unavailable]"
+                configuration.setdefault("errors", []).append("published description was not a safe release identifier")
+        else:
+            configuration["sourceRevision"] = "[unavailable]"
+            configuration.setdefault("errors", []).append("published description did not establish a release identifier")
+
+        code_sha = version.get("CodeSha256")
+        artifact_sha = self._hex_digest(code_sha)
+        if artifact_sha is None:
+            configuration["artifactSha256"] = "[unavailable]"
+            configuration.setdefault("errors", []).append("published code metadata did not establish a SHA-256 digest")
+        else:
+            configuration["artifactSha256"] = artifact_sha
+        return {
+            "kind": "lambda-version",
+            "function": INVENTORY_FUNCTION,
+            "roleName": role_name,
+            "configuration": configuration,
+        }
+
+    @staticmethod
+    def _hex_digest(value: Any) -> str | None:
+        if not isinstance(value, str):
+            return None
+        try:
+            raw = base64.b64decode(value, validate=True)
+        except (ValueError, TypeError):
+            return None
+        return raw.hex() if len(raw) == 32 else None
+
+    def _read_inventory_role_access(self, role_name: str) -> list[dict[str, Any]]:
         iam_client = self._client("iam")
+        outputs: list[dict[str, Any]] = []
         role = iam_client.get_role(RoleName=role_name)
         outputs.append({"kind": "iam-role", "role": self._project_role(role)})
         try:
-            inline = iam_client.list_role_policies(RoleName=role_name)
-            outputs.append({"kind": "iam-inline-policy-names", "roleName": role_name, "policyNames": self._bounded_strings(inline.get("PolicyNames", []))})
-            for policy_name in inline.get("PolicyNames", []):
-                # Only the exact table policy is permitted for a full readback.
-                if str(policy_name) == INVENTORY_DENY_POLICY_NAME:
-                    document = iam_client.get_role_policy(RoleName=role_name, PolicyName=policy_name)
-                    outputs.append({"kind": "iam-inline-policy", "roleName": role_name, "policyName": policy_name, "document": self._project_policy(document)})
+            names: list[str] = []
+            marker: str | None = None
+            inline_truncated = False
+            for _ in range(MAX_PAGES):
+                request: dict[str, Any] = {"RoleName": role_name}
+                if marker:
+                    request["Marker"] = marker
+                inline = iam_client.list_role_policies(**request)
+                names.extend(str(name) for name in (inline.get("PolicyNames", []) if isinstance(inline, Mapping) else []))
+                marker = inline.get("NextMarker") if isinstance(inline, Mapping) else None
+                if not marker:
+                    break
+            else:
+                inline_truncated = bool(marker)
+            relevant_names = [name for name in names if self._is_inventory_policy_name(name)]
+            outputs.append({"kind": "iam-inline-policy-names", "roleName": role_name, "policyNames": self._bounded_strings(relevant_names)})
+            if inline_truncated:
+                outputs.append({"kind": "iam-inline-policies", "roleName": role_name, "error": "policy-name pagination reached the bounded page limit"})
+            for policy_name in relevant_names[:20]:
+                document = iam_client.get_role_policy(RoleName=role_name, PolicyName=policy_name)
+                outputs.append({"kind": "iam-inline-policy", "roleName": role_name, "policyName": policy_name, "document": self._project_policy(document)})
         except Exception as exc:
             outputs.append({"kind": "iam-inline-policies", "roleName": role_name, "error": self._safe_error(exc)})
-        attached = iam_client.list_attached_role_policies(RoleName=role_name)
-        attached_policies = attached.get("AttachedPolicies", [])
-        outputs.append({"kind": "iam-attached-policy-names", "roleName": role_name, "policies": self._project_attached_policies(attached_policies)})
-        for policy in attached_policies:
-            if str(policy.get("PolicyName", "")) != INVENTORY_DENY_POLICY_NAME:
-                continue
-            policy_arn = str(policy.get("PolicyArn", ""))
-            expected_arn = INVENTORY_DENY_POLICY_ARN_TEMPLATE.format(account=self.account_id)
-            if policy_arn != expected_arn:
-                outputs.append({"kind": "iam-deny-policy", "error": "configured Inventory deny policy ARN did not match"})
-                continue
-            metadata = iam_client.get_policy(PolicyArn=policy_arn)
-            default_version = metadata.get("Policy", {}).get("DefaultVersionId")
-            if default_version:
-                version_response = iam_client.get_policy_version(PolicyArn=policy_arn, VersionId=default_version)
-                outputs.append({"kind": "iam-deny-policy", "policyArn": policy_arn, "defaultVersionId": default_version, "document": self._project_policy(version_response)})
+        try:
+            attached_items: list[Any] = []
+            marker = None
+            attached_truncated = False
+            for _ in range(MAX_PAGES):
+                request = {"RoleName": role_name}
+                if marker:
+                    request["Marker"] = marker
+                attached = iam_client.list_attached_role_policies(**request)
+                attached_items.extend(attached.get("AttachedPolicies", []) if isinstance(attached, Mapping) else [])
+                marker = attached.get("NextMarker") if isinstance(attached, Mapping) else None
+                if not marker:
+                    break
+            else:
+                attached_truncated = bool(marker)
+            attached_policies = [
+                item for item in attached_items
+                if isinstance(item, Mapping) and self._is_inventory_policy_name(str(item.get("PolicyName", "")))
+            ]
+            outputs.append({"kind": "iam-attached-policy-names", "roleName": role_name, "policies": self._project_attached_policies(attached_policies)})
+            if attached_truncated:
+                outputs.append({"kind": "iam-attached-policies", "roleName": role_name, "error": "attached-policy pagination reached the bounded page limit"})
+            for policy in attached_policies:
+                if str(policy.get("PolicyName", "")) != INVENTORY_DENY_POLICY_NAME:
+                    continue
+                policy_arn = str(policy.get("PolicyArn", ""))
+                expected_arn = INVENTORY_DENY_POLICY_ARN_TEMPLATE.format(account=self.account_id)
+                if policy_arn != expected_arn:
+                    outputs.append({"kind": "iam-deny-policy", "error": "configured Inventory deny policy ARN did not match"})
+                    continue
+                metadata = iam_client.get_policy(PolicyArn=policy_arn)
+                default_version = metadata.get("Policy", {}).get("DefaultVersionId")
+                if default_version:
+                    version_response = iam_client.get_policy_version(PolicyArn=policy_arn, VersionId=default_version)
+                    outputs.append({"kind": "iam-deny-policy", "policyArn": policy_arn, "defaultVersionId": default_version, "document": self._project_policy(version_response)})
+        except Exception as exc:
+            outputs.append({"kind": "iam-attached-policies", "roleName": role_name, "error": self._safe_error(exc)})
         return outputs
+
+    @staticmethod
+    def _is_inventory_policy_name(name: str) -> bool:
+        value = str(name).lower()
+        return any(token in value for token in ("inventory", "dynamodb"))
 
     def _query_change_history(
         self,
@@ -879,6 +1069,25 @@ class EvidenceTools:
             raise ValueError("log query contains an out-of-scope resource or private field")
         return text
 
+    @staticmethod
+    def _matches_log_filter(event: Mapping[str, Any], filter_pattern: str | None) -> bool:
+        """Apply the portable literal portion of a log predicate locally.
+
+        CloudWatch's filter-pattern language is not available to captured
+        providers (and fake/read-only boundaries need not implement it).  The
+        public contract therefore treats supplied terms as literals: every
+        whitespace-delimited term must occur in the projected, sanitized event.
+        Structured ``operation``/``error`` predicates are passed through the
+        same representation by the live and captured readers.  This keeps a
+        prefixed Lambda JSON record queryable without leaking its raw message.
+        """
+
+        if not filter_pattern:
+            return True
+        rendered = json.dumps(event, ensure_ascii=False, sort_keys=True, default=str).casefold()
+        terms = [term.casefold() for term in str(filter_pattern).split() if term]
+        return all(term in rendered for term in terms)
+
     def _history_resource_names(self, resources: Sequence[str]) -> tuple[str, ...]:
         names: list[str] = []
         if "gateway" in resources:
@@ -904,6 +1113,7 @@ class EvidenceTools:
         observations: Any,
         errors: Sequence[str],
         truncated: bool,
+        bound: bool = True,
     ) -> dict[str, Any]:
         result: dict[str, Any] = {
             "source": source,
@@ -919,7 +1129,8 @@ class EvidenceTools:
             result["observations"] = observations
         elif errors:
             result["gaps"] = ["source did not provide an observation"]
-        return self._bound_result(self._sanitize(result))
+        result = self._sanitize(result)
+        return self._bound_result(result) if bound else result
 
     @staticmethod
     def _unavailable(source: str, start: str, end: str, error: str) -> dict[str, Any]:
@@ -1011,10 +1222,7 @@ class EvidenceTools:
         message = event.get("message", "")
         structured: Any = None
         if isinstance(message, str):
-            try:
-                structured = json.loads(message)
-            except (json.JSONDecodeError, TypeError):
-                structured = None
+            structured = self._decode_prefixed_json(message)
         if isinstance(structured, Mapping):
             fields: dict[str, Any] = {}
             for key, value in structured.items():
@@ -1036,6 +1244,26 @@ class EvidenceTools:
             # plaintext records pass through the token scrubber.
             output["message"] = self._scrub_text(message)[:1000]
         return output
+
+    @staticmethod
+    def _decode_prefixed_json(message: str) -> Any:
+        """Decode a JSON object embedded after Lambda's text prefix.
+
+        Lambda log lines commonly contain an ISO timestamp, level and logger
+        prefix before the structured payload.  Decode only the first JSON
+        value; raw text remains subject to the normal scrubber/projection.
+        """
+
+        text = message.strip()
+        candidates = [index for index in (text.find("{"), text.find("[")) if index >= 0]
+        if not candidates:
+            return None
+        start = min(candidates)
+        try:
+            value, _ = json.JSONDecoder().raw_decode(text[start:])
+        except (json.JSONDecodeError, TypeError, ValueError):
+            return None
+        return value
 
     @staticmethod
     def _project_metric(item: Any) -> dict[str, Any] | None:
@@ -1152,7 +1380,7 @@ class EvidenceTools:
         if isinstance(value, Mapping):
             return {str(k): cls._sanitize(v, key=str(k)) for k, v in value.items() if not SENSITIVE_KEY.search(str(k))}
         if isinstance(value, (list, tuple)):
-            return [cls._sanitize(item) for item in value[:MAX_ITEMS]]
+            return [cls._sanitize(item) for item in value[:MAX_SANITIZED_ITEMS]]
         if isinstance(value, str):
             return cls._scrub_text(value)
         if isinstance(value, (str, int, float, bool)) or value is None:
