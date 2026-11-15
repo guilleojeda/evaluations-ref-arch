@@ -294,13 +294,13 @@ Resources:
     Properties:
       RoleName: IncidentTriageDemoGitHubDeploy
       Description: >-
-        GitHub Actions deployment identity for the pinned main workflow of
+        GitHub Actions deployment identity for the pinned demo-deploy workflow of
         guilleojeda/evaluations-ref-arch.
       MaxSessionDuration: 3600
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Sid: ExactMainWorkflow
+          - Sid: ExactDemoDeployWorkflow
             Effect: Allow
             Principal:
               Federated:
@@ -314,11 +314,11 @@ Resources:
             Condition:
               StringEquals:
                 token.actions.githubusercontent.com:aud: sts.amazonaws.com
-                token.actions.githubusercontent.com:sub: repo:guilleojeda@18320860/evaluations-ref-arch@1411023195:workflow_ref:guilleojeda/evaluations-ref-arch/.github/workflows/deploy.yml@refs/heads/main
+                token.actions.githubusercontent.com:sub: repo:guilleojeda@18320860/evaluations-ref-arch@1411023195:workflow_ref:guilleojeda/evaluations-ref-arch/.github/workflows/deploy.yml@refs/heads/demo-deploy
                 token.actions.githubusercontent.com:repository_id:
                   '1411023195'
                 token.actions.githubusercontent.com:ref:
-                  refs/heads/main
+                  refs/heads/demo-deploy
       Policies:
         - PolicyName: AssumeCdkDeploymentRoles
           PolicyDocument:
@@ -363,7 +363,7 @@ Outputs:
   GitHubOidcSubject:
     Description: Exact immutable subject accepted by the role trust policy.
     Value:
-      repo:guilleojeda@18320860/evaluations-ref-arch@1411023195:workflow_ref:guilleojeda/evaluations-ref-arch/.github/workflows/deploy.yml@refs/heads/main
+      repo:guilleojeda@18320860/evaluations-ref-arch@1411023195:workflow_ref:guilleojeda/evaluations-ref-arch/.github/workflows/deploy.yml@refs/heads/demo-deploy
   CdkDeployRoleArn:
     Description: Dedicated CDK deployment role the GitHub role may assume.
     Value:

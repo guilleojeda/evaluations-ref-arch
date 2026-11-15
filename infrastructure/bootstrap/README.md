@@ -36,7 +36,8 @@ The setup has three deliberately separate layers:
    `--cloudformation-execution-policies`.
 3. `github-iam.yaml` creates stack `IncidentTriageDemoGitHub`, the GitHub OIDC
    provider when one is absent, and role `IncidentTriageDemoGitHubDeploy`.
-   The role trust accepts only the immutable main workflow subject. Its
+   The role trust accepts only the immutable `deploy.yml` workflow subject
+   on `demo-deploy`. Its
    identity policy contains only `sts:AssumeRole` for the standard CDK deploy
    and file-publishing roles. The same stack attaches the deploy guard to
    the existing `cdk-evaltalk-deploy-role-*`. It limits the standard role to
@@ -227,11 +228,11 @@ The provider resource is retained if this stack is later deleted.
 The role trust's exact subject is:
 
 ```text
-repo:guilleojeda@18320860/evaluations-ref-arch@1411023195:workflow_ref:guilleojeda/evaluations-ref-arch/.github/workflows/deploy.yml@refs/heads/main
+repo:guilleojeda@18320860/evaluations-ref-arch@1411023195:workflow_ref:guilleojeda/evaluations-ref-arch/.github/workflows/deploy.yml@refs/heads/demo-deploy
 ```
 
 It also requires the separate `repository_id=1411023195`,
-`ref=refs/heads/main`, and `aud=sts.amazonaws.com` conditions. The GitHub role
+`ref=refs/heads/demo-deploy`, and `aud=sts.amazonaws.com` conditions. The GitHub role
 only assumes the standard CDK roles. The deploy role's scoped guard permits
 the release helpers' Lambda role-only stage/publish/restore operations, exact
 role and policy reads, conditional manifest publication, and the agent's

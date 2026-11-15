@@ -22,9 +22,19 @@ on:
         required: false
         default: ''
         type: string
+      oidc_probe:
+        description: STS-only migration proof. Use only on main or the phase12 proof tag.
+        required: false
+        default: none
+        type: choice
+        options:
+          - none
+          - wrong-branch
+          - wrong-tag
   push:
     branches:
       - main
+      - demo-deploy
 
 env:
   AWS_REGION: us-east-1
@@ -34,7 +44,7 @@ env:
   PHASE0_AWS_ACCOUNT_ID: '027224425948'
   PHASE0_AWS_REGION: us-east-1
   PHASE0_DEPLOY_ROLE_ARN: arn:aws:iam::027224425948:role/IncidentTriageDemoGitHubDeploy
-  PHASE0_EXPECTED_OIDC_SUBJECT: repo:guilleojeda@18320860/evaluations-ref-arch@1411023195:workflow_ref:guilleojeda/evaluations-ref-arch/.github/workflows/deploy.yml@refs/heads/main
+  PHASE0_EXPECTED_OIDC_SUBJECT: repo:guilleojeda@18320860/evaluations-ref-arch@1411023195:workflow_ref:guilleojeda/evaluations-ref-arch/.github/workflows/deploy.yml@refs/heads/demo-deploy
   PHASE0_CDK_QUALIFIER: evaltalk
   PHASE0_CDK_BOOTSTRAP_STACK: IncidentTriageDemoBootstrap
   PHASE0_APP_STACK: IncidentTriageDemoApp
@@ -118,13 +128,37 @@ jobs:
           fi
           echo "components=$(node scripts/affected-stacks.mjs "$base" "$candidate")" >> "$GITHUB_OUTPUT"
 
+  oidc-probe:
+    name: Verify rejected OIDC identity
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      ((inputs.oidc_probe == 'wrong-branch' && github.ref == 'refs/heads/main') ||
+      (inputs.oidc_probe == 'wrong-tag' && github.ref == 'refs/tags/phase12-oidc-proof'))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version: '24.22.2'
+      - name: Verify the rejected OIDC case
+        env:
+          PHASE0_OIDC_CASE: ${{ inputs.oidc_probe }}
+          PHASE0_OIDC_PROBE_REF: ${{ github.ref }}
+        run: node --test tests/phase0-oidc.test.mjs
+
   check:
     name: Check ${{ matrix.component }}
     needs: route
     if: >-
       needs.route.outputs.components != '[]' &&
       (github.event_name == 'pull_request' ||
-      ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'))
+      ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/demo-deploy')))
     runs-on: ${{ matrix.component == 'agent' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
     permissions:
       contents: read
@@ -160,7 +194,7 @@ jobs:
       - name: Run the selected check
         run: npm run check -- ${{ matrix.component }}
       - name: Verify component routing
-        run: node --test tests/phase0-routing.test.mjs
+        run: node --test tests/phase0-routing.test.mjs tests/phase12-demo-deploy-routing.test.mjs
       - name: Run app release acceptance checks
         if: matrix.component == 'app'
         run: |
@@ -193,7 +227,7 @@ jobs:
         if: matrix.component == 'agent'
         run: uv run --project agent --locked python agent/native_smoke.py .artifacts/agent/runtime.zip
       - name: Save the checked assembly for the serialized preflight
-        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/demo-deploy'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: phase0-${{ matrix.component }}-${{ github.sha }}
@@ -208,7 +242,7 @@ jobs:
     needs: [route, check]
     if: >-
       always() && !cancelled() && needs.route.result == 'success' &&
-      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/demo-deploy' &&
       needs.route.outputs.components != '[]'
     runs-on: ubuntu-24.04
     permissions:
@@ -219,7 +253,7 @@ jobs:
       matrix:
         component: ${{ fromJSON(needs.route.outputs.components) }}
     concurrency:
-      group: incident-triage-main-${{ matrix.component }}
+      group: incident-triage-demo-${{ matrix.component }}
       cancel-in-progress: false
     steps:
       - name: Check out workflow tests and helpers

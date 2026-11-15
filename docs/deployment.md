@@ -1,6 +1,6 @@
 # Deployment
 
-The checkout app, failure controller, and operations agent have separate AWS CDK stacks in one development account. The repository workflow checks each component and verifies its AWS deployment access. Product releases use the corresponding stack job.
+The checkout app, failure controller, and operations agent have separate AWS CDK stacks in one development account. Pull requests and `main` run credential-free checks. The long-lived `demo-deploy` branch is the only branch that can publish checked component releases to AWS through the corresponding stack job.
 
 ## Local development
 
@@ -25,7 +25,7 @@ The checks write browser builds and CDK assemblies under `.artifacts/<component>
 
 ## GitHub Actions
 
-Use [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) for pull requests and changes to `main`. Pull requests run the affected checks without AWS credentials. Changes in shared build or infrastructure inputs select all affected stacks. Documentation-only changes skip AWS jobs.
+Use [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) for pull requests, `main`, and `demo-deploy`. Pull requests and `main` run affected checks without AWS credentials. `demo-deploy` runs those checks and can publish the affected stacks. Changes in shared build or infrastructure inputs select all three stacks. Documentation-only changes skip AWS jobs.
 
 | Component | AWS stack |
 | --- | --- |
@@ -35,12 +35,12 @@ Use [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) for pull r
 
 Deploy jobs serialize within each stack. The app job compares the candidate with the successful app stack revision, skips superseded or irrelevant candidates, and uses the checked CDK assembly. It inspects the prepared CloudFormation change set for table removal or possible replacement before executing that exact change set. It publishes immutable hashed assets before the revalidatable HTML. The controller job serves the checked web build in the HTTP Lambda artifact and deploys the separate worker. It inspects the change set for removal or possible replacement of the controller run table. The agent job publishes and checks the runtime and adapter ZIPs, inspects the agent-stack change set, and deploys its independent Runtime, endpoint, adapter, and retained run table. Its finalization step verifies the checked Runtime configuration, applies MMDSv2 while preserving the remaining configuration when needed, uses the returned Runtime version, pins and reads back the `faulty` endpoint, checks the trace destination, and writes the verified runtime version into the adapter configuration with a revision guard. It does not invoke the agent or send application traffic.
 
-Relevant pushes to `main` deploy affected stacks automatically. The app, controller, and agent stacks remain independent; the presenter sequences dependent releases outside a live run. For an operator retry or a binding-only update at the same source revision, `workflow_dispatch` requires one component selection and deploys only that stack. Run separate dispatches in dependency order:
+Relevant pushes to `demo-deploy` deploy affected stacks automatically. Pushes to `main` remain check-only. The app, controller, and agent stacks remain independent. The presenter sequences dependent releases outside a live run. For an operator retry or a binding-only update at the same source revision, `workflow_dispatch` requires one component selection and deploys only that stack from `demo-deploy`. Run separate dispatches in dependency order:
 
 ```sh
-gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref main -f component=agent
-gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref main -f component=app
-gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref main -f component=controller
+gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref demo-deploy -f component=agent
+gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref demo-deploy -f component=app
+gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref demo-deploy -f component=controller
 ```
 
 For the first alarm-path release, keep the app alarm adapter and controller agent variables empty until the checked agent stack has finalized and its outputs have been read back. Then set `APP_ALARM_ADAPTER_ARN` to the agent stack's `AlarmAdapterArn` and dispatch `app`; only after that succeeds set `CONTROLLER_AGENT_RUNTIME_ARN`, `CONTROLLER_AGENT_ENDPOINT_ARN`, and `CONTROLLER_AGENT_ALARM_ADAPTER_ARN` to the verified agent outputs and dispatch `controller`. Empty or unset variables preserve an existing binding on updates; fresh stacks start unconfigured. Verify each run and its stack outputs before dispatching the dependent component. Record the checked source revision and final Runtime version/artifact identity with each release. Finish deployments before a demo run. If a deployment overlaps a run, abandon that run and verify the current release and settings before starting another.
@@ -53,7 +53,7 @@ Use AWS CLI v2 with the `reinvent-2026-talk` profile, account `027224425948`, an
 aws sts get-caller-identity --profile reinvent-2026-talk --region us-east-1
 ```
 
-GitHub receives short-lived credentials through OIDC. The deployment role trusts the STS audience and the immutable identity of `guilleojeda/evaluations-ref-arch`, and pins the caller to `.github/workflows/deploy.yml` on `main`. It assumes the CDK deployment and file-publishing roles. Bootstrap administration, CloudFormation execution, and component runtime permissions use separate roles. [GitHub OIDC for AWS](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws) · [CDK bootstrapping](https://docs.aws.amazon.com/cdk/v2/guide/bootstrapping-env.html)
+GitHub receives short-lived credentials through OIDC. The deployment role trusts the STS audience and immutable identity of `guilleojeda/evaluations-ref-arch`, and pins the caller to `.github/workflows/deploy.yml` on `refs/heads/demo-deploy`. Pull requests, `main`, tags, and other branches cannot assume that publishing role. It assumes the CDK deployment and file-publishing roles. Bootstrap administration, CloudFormation execution, and component runtime permissions use separate roles. [GitHub OIDC for AWS](https://docs.github.com/en/actions/how-tos/secure-your-work/security-harden-deployments/oidc-in-aws) · [CDK bootstrapping](https://docs.aws.amazon.com/cdk/v2/guide/bootstrapping-env.html)
 
 Follow the [AWS bootstrap commands](../infrastructure/bootstrap/README.md) to provision the scoped execution policy, dedicated `evaltalk` toolkit, and GitHub IAM stack in that order. Before the first agent release, an administrator must also [check or create the exact Runtime Identity service-linked role](../infrastructure/bootstrap/README.md#one-time-agentcore-runtime-identity-account-prerequisite); preserve it if it already exists. This is one-time account setup, separate from CI and agent execution authority. The dedicated deploy role can prepare and execute change sets for the named app, controller, and agent stacks. CloudFormation uses separate scoped execution policies for their resources. Use the verified administrator for updates to the bootstrap IAM stacks. Keep the deploy guard and CloudFormation execution grants scoped to reviewed feature resources.
 
@@ -118,7 +118,7 @@ Read the finalized agent stack outputs into local shell variables, then bind the
 ```sh
 export AGENT_ALARM_ADAPTER_ARN="$(aws cloudformation describe-stacks --stack-name IncidentTriageDemoAgent --profile reinvent-2026-talk --region us-east-1 --query "Stacks[0].Outputs[?OutputKey=='AlarmAdapterArn'].OutputValue | [0]" --output text)"
 gh variable set APP_ALARM_ADAPTER_ARN --repo guilleojeda/evaluations-ref-arch --body "$AGENT_ALARM_ADAPTER_ARN"
-gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref main -f component=app
+gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref demo-deploy -f component=app
 ```
 
 Set `AGENT_ALARM_ADAPTER_ARN` to the exact `AlarmAdapterArn` output from the finalized agent stack. After the app release succeeds, read back the alarm's single `AlarmActions` target and confirm it equals that ARN.
@@ -132,14 +132,14 @@ export AGENT_ALARM_ADAPTER_ARN="$(aws cloudformation describe-stacks --stack-nam
 gh variable set CONTROLLER_AGENT_RUNTIME_ARN --repo guilleojeda/evaluations-ref-arch --body "$AGENT_RUNTIME_ARN"
 gh variable set CONTROLLER_AGENT_ENDPOINT_ARN --repo guilleojeda/evaluations-ref-arch --body "$AGENT_FAULTY_ENDPOINT_ARN"
 gh variable set CONTROLLER_AGENT_ALARM_ADAPTER_ARN --repo guilleojeda/evaluations-ref-arch --body "$AGENT_ALARM_ADAPTER_ARN"
-gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref main -f component=controller
+gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref demo-deploy -f component=controller
 ```
 
 The values are `RuntimeArn`, `FaultyEndpointArn`, and `AlarmAdapterArn` from the agent stack outputs. When the controller release completes, open the dashboard and verify the endpoint is ready and the alarm binding is bound. These checks are read-only control-plane observations; they do not prove an inference occurred. Complete the actual alarm-triggered journey through the controller after readiness.
 
 ## Phase 10 surge and native metric reader
 
-Phase 10 uses the existing `main` release workflow. It does not move deployment to `demo-deploy`; that migration remains Phase 12. Configure the existing finite worker Lambda at **1,024 MB**, a 90-second timeout, and zero asynchronous retries to give catalog production room during calibration. This is a controller-side producer setting only: Inventory and Checkout memory, aliases, access, and app code stay fixed across the capacity comparison. Higher producer memory does not prove the requested fetch rate was achieved.
+Phase 10 uses the `demo-deploy` release workflow. Configure the existing finite worker Lambda at **1,024 MB**, a 90-second timeout, and zero asynchronous retries to give catalog production room during calibration. This is a controller-side producer setting only: Inventory and Checkout memory, aliases, access, and app code stay fixed across the capacity comparison. Higher producer memory does not prove the requested fetch rate was achieved.
 
 New `inventory_surge` actions use version 4: 30 catalog GETs every 1,000 ms for 15 seconds (30 starts/second average), at most 450 attempts and 30 in flight, a 300 ms bounded launch allowance, and a 7-second request timeout, plus at most 15 quantity-one checkout probes at one-second ticks/one in-flight/7-second timeout. These are requested bounds; achieved demand is always measured. Historical v1 requested a smooth 240 catalog starts/second, at most 3,600 attempts and 128 in flight; v2 requested 30 reads every 500 ms (60 starts/second average), at most 900 attempts and 30 in flight; v3 used the same catalog and checkout bounds as v4 with a 150 ms launch allowance. Versions 1–3 remain readable in prior action history. Reusing an action UUID with the same input returns the recorded action/result without sending traffic; conflicting input is rejected. A new action UUID starts a new workload using v4, and historical profiles are not current same-profile repeats. The v4 profile is a pressure/latency hypothesis until verified through actual starts, wave cadence, skips, request-arrival timing, and upstream headroom. Use the same exact v4 paired workload for both cap episodes, recheck headroom before each pair, and compare actual delivered demand. Do not raise or lower demand between the 16 and 32 cap episodes to make a result appear comparable. Checkout inputs are durably recorded before producers co-launch; missed, full-slot, and checkpoint-overlapping catalog waves are skipped without queueing or catch-up.
 
@@ -162,16 +162,16 @@ The deployment workflow leaves incident activation, probes, Recover, and Reset t
 
 ## Rotate presenter credentials
 
-This is a scheduled, app-only release on the trusted `main` ref. It rotates two independent presenter credentials while keeping the same secret ARNs, app tables, and controller run. Use the exact ARNs already configured in `CONTROLLER_APP_SECRET_ARN` and `CONTROLLER_OPERATOR_SECRET_ARN`. Their stable names are `incident-triage-demo/controller/app-bearer` and `incident-triage-demo/controller/operator-digest`. Update the existing presenter-only SSM SecureString `/incident-triage-demo/presenter/controller-operator-bearer` with the raw operator bearer before activating its new digest. Handle both raw values only through the private presenter channel.
+This is a scheduled, app-only release on the trusted `demo-deploy` ref. It rotates two independent presenter credentials while keeping the same secret ARNs, app tables, and controller run. Use the exact ARNs already configured in `CONTROLLER_APP_SECRET_ARN` and `CONTROLLER_OPERATOR_SECRET_ARN`. Their stable names are `incident-triage-demo/controller/app-bearer` and `incident-triage-demo/controller/operator-digest`. Update the existing presenter-only SSM SecureString `/incident-triage-demo/presenter/controller-operator-bearer` with the raw operator bearer before activating its new digest. Handle both raw values only through the private presenter channel.
 
 ### Stage and publish
 
 1. Stop and drain traffic, pause other writers, and reconcile any unresolved checkout outcome. Read the account, Region, healthy aliases, Checkout's unreserved setting, Inventory's cap of 16, the app stack's current `PresenterCredentialGeneration`, the current app and operator secret `VersionId`s, the current run/productVersion, and the order, controller-action, agent-run, and source-object identities. If either secret already has an unexpected `AWSPENDING` version, reconcile it before generating another pair. Keep only the nonsecret IDs and verdicts in the evidence record.
 2. Generate two independent high-entropy values in private presenter storage: one app bearer and one operator bearer. Write the app value to the existing app-bearer ARN as a new `AWSPENDING` version. Hash the separate operator bearer and write only that digest to the existing operator-digest ARN's `AWSPENDING` version; the operator secret never stores the raw operator bearer. Derive the app digest from the app bearer for the temporary Actions secret in the next step. Record the two pending `VersionId`s and the saved current `VersionId`s by reading the secret labels back. The app pending `VersionId` is the new opaque Checkout credential generation. Enter values through the administrator's private input channel or a mode-600 temporary file that is removed immediately; never put a bearer, digest, or secret string in a command line, shell history, browser storage, repository, log, screenshot, or evidence object.
-3. Set the masked `APP_PRESENTER_DIGEST` Actions secret to the digest derived from the staged app bearer only for this dispatch. From `main`, run the checked app workflow with the paired, independent rotation inputs and no controller or agent input:
+3. Set the masked `APP_PRESENTER_DIGEST` Actions secret to the digest derived from the staged app bearer only for this dispatch. From `demo-deploy`, run the checked app workflow with the paired, independent rotation inputs and no controller or agent input:
 
    ```sh
-   gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref main \
+   gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref demo-deploy \
      -f component=app \
      -f rotation_from_generation='<current-PresenterCredentialGeneration>' \
      -f rotation_to_generation='<staged-app-VersionId>'
