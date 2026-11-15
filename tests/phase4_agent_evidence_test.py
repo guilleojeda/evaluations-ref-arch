@@ -145,6 +145,81 @@ class EvidenceProviderTests(unittest.TestCase):
         document = tools._project_policy({"PolicyDocument": {"Version": "2012-10-17", "Statement": [{"Effect": "Deny"}]}})
         self.assertEqual("Deny", document["Statement"][0]["Effect"])
 
+    def test_inventory_configuration_exposes_ordinary_role_backed_numeric_versions(self):
+        boundary = FakeAWSBoundary()
+        prefix = "arn:aws:iam::123456789012:role/"
+        healthy = "IncidentTriageDemoAppInventoryRole"
+        denied = "IncidentTriageDemoAppInventoryDeniedRole"
+        function = "IncidentTriageDemoInventory"
+        def version(number, role, revision="c"):
+            return {"FunctionName": function, "Version": number, "MemorySize": 256, "Description": revision * 40,
+                    "Role": prefix + role, "CodeSha256": "A" * 43 + "=",
+                    "Environment": {"Variables": {"PRESENTER_TOKEN": SECRET_SENTINELS[0]}}}
+
+        boundary.responses[("lambda", "list_versions_by_function")] = lambda request, page: (
+            {"Versions": [version("$LATEST", healthy), *[version(str(number), denied, "d") for number in range(13, 50)],
+                          version("11", healthy)], "NextMarker": "next"}
+            if not page else {"Versions": [version("12", denied)]}
+        )
+        boundary.responses[("lambda", "get_alias")] = {"Name": "live", "FunctionVersion": "12"}
+        boundary.responses[("lambda", "get_function_configuration")] = version("12", denied)
+        boundary.responses[("iam", "get_role")] = lambda request, page: {
+            "Role": {"RoleName": request["RoleName"], "Arn": prefix + request["RoleName"]}
+        }
+        boundary.responses[("iam", "list_role_policies")] = lambda request, page: {
+            "PolicyNames": ["InventoryReadPolicy"] if request["RoleName"] == healthy else []
+        }
+        boundary.responses[("iam", "get_role_policy")] = {"PolicyDocument": {"Version": "2012-10-17", "Statement": [
+            {"Effect": "Allow", "Action": "dynamodb:GetItem", "Resource": "arn:aws:dynamodb:us-east-1:123456789012:table/IncidentTriageDemoInventory"}
+        ]}}
+        tools, _, charges = self.make_tools(boundary)
+        result = tools.read_configuration(resource="inventory")
+        version_calls = [request for service, operation, request in boundary.calls
+                         if service == "lambda" and operation == "list_versions_by_function"]
+        self.assertEqual([function, function], [request.get("FunctionName") for request in version_calls])
+        self.assertEqual("next", version_calls[1].get("Marker"))
+        requested_roles = [request["RoleName"] for service, operation, request in boundary.calls
+                           if service == "iam" and operation == "get_role"]
+        self.assertCountEqual([healthy, denied], requested_roles, "each fixed role is observed once per snapshot")
+        by_number = {entry["configuration"]["Version"]: entry["configuration"] for entry in result["observations"]
+                     if entry.get("kind") == "lambda-version"}
+        self.assertEqual(["12", "11"], list(by_number)[:2])
+        for number, role in (("11", healthy), ("12", denied)):
+            self.assertEqual(prefix + role, by_number[number]["Role"])
+            self.assertEqual(256, by_number[number]["MemorySize"])
+            self.assertEqual("c" * 40, by_number[number]["sourceRevision"])
+            self.assertEqual("0" * 64, by_number[number]["artifactSha256"])
+        allow = next(item for item in result["observations"]
+                     if item.get("kind") == "iam-inline-policy" and item.get("roleName") == healthy)
+        statement = allow["document"]["Statement"][0]
+        self.assertEqual("Allow", statement["Effect"])
+        self.assertEqual("dynamodb:GetItem", statement["Action"])
+        self.assertEqual("arn:aws:dynamodb:us-east-1:123456789012:table/IncidentTriageDemoInventory",
+                         statement["Resource"])
+        rendered = json.dumps(result)
+        self.assertNotIn(SECRET_SENTINELS[0], rendered)
+        self.assertNotIn("Environment", rendered)
+        self.assertNotIn("expectedAnswer", rendered)
+        self.assertEqual([1], charges)
+
+    def test_logs_filter_safe_fields_after_projecting_native_prefixed_json(self):
+        boundary = FakeAWSBoundary()
+        denied = {"operation": "GetItem", "errorName": "AccessDeniedException", "requestId": "visible-denial",
+                  "authorization": SECRET_SENTINELS[0]}
+        unrelated = {"operation": "DescribeTable", "errorName": "AccessDeniedException", "requestId": "other-operation"}
+        boundary.responses[("logs", "filter_log_events")] = {"events": [
+            {"eventId": "denied", "timestamp": 1794265710000, "ingestionTime": 1794265712000,
+             "message": "2026-11-09T23:08:30.000Z abc ERROR " + json.dumps(denied)},
+            {"eventId": "other", "timestamp": 1794265710001, "ingestionTime": 1794265712001,
+             "message": json.dumps(unrelated)},
+        ]}
+        tools, _, charges = self.make_tools(boundary)
+        response = tools.search_logs(resource="inventory", operation="GetItem", error="AccessDeniedException")
+        self.assertEqual(["denied"], [item["eventId"] for item in response["observations"]])
+        self.assertEqual("visible-denial", response["observations"][0]["fields"]["requestId"])
+        self.assertNotIn(SECRET_SENTINELS[0], json.dumps(response))
+        self.assertEqual([1], charges)
+
     def test_missing_inventory_resource_policy_is_explicit_and_complete(self):
         boundary = _DynamoPolicyErrorBoundary("PolicyNotFoundException")
         tools, _, _ = self.make_tools(boundary)

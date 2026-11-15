@@ -53,6 +53,7 @@ export class AgentStack extends DemoStack {
     grant("AppLogs", ["logs:FilterLogEvents"], ["/aws/lambda/IncidentTriageDemoCheckout", "/aws/lambda/IncidentTriageDemoInventory", "/aws/apigateway/IncidentTriageDemoApp"].map((name) => `arn:aws:logs:${REGION}:${ACCOUNT}:log-group:${name}:*`));
     grant("AppMetricReads", ["cloudwatch:GetMetricData", "cloudwatch:GetMetricStatistics"], ["*"], { StringEquals: { "aws:RequestedRegion": REGION } });
     grant("AppFunctionConfiguration", ["lambda:GetFunctionConfiguration", "lambda:GetAlias", "lambda:GetFunctionConcurrency"], ["Checkout", "Inventory"].flatMap((name) => [`arn:aws:lambda:${REGION}:${ACCOUNT}:function:IncidentTriageDemo${name}`, `arn:aws:lambda:${REGION}:${ACCOUNT}:function:IncidentTriageDemo${name}:*`]));
+    grant("InventoryPublishedVersions", ["lambda:ListVersionsByFunction"], [`arn:aws:lambda:${REGION}:${ACCOUNT}:function:IncidentTriageDemoInventory`]);
     grant("InventoryRoleState", ["iam:GetRole", "iam:ListAttachedRolePolicies", "iam:ListRolePolicies", "iam:GetRolePolicy"], ["IncidentTriageDemoAppInventoryRole", "IncidentTriageDemoAppInventoryDeniedRole"].map((name) => `arn:aws:iam::${ACCOUNT}:role/${name}`));
     grant("InventoryReadDenyPolicy", ["iam:GetPolicy", "iam:GetPolicyVersion"], [`arn:aws:iam::${ACCOUNT}:policy/IncidentTriageDemoInventoryReadDeny`]);
     grant("InventoryResourcePolicy", ["dynamodb:GetResourcePolicy"], [`arn:aws:dynamodb:${REGION}:${ACCOUNT}:table/IncidentTriageDemoInventory`]);

@@ -28,6 +28,7 @@ from prompt import PROMPT_SHA256, SYSTEM_PROMPT
 
 
 MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+REPORT_SCHEMA_VERSION = 2
 RUN_SECONDS = 240
 MAX_MODEL_REQUESTS = 12
 MAX_TOOL_CALLS = 12
@@ -79,28 +80,58 @@ class Recommendation(BaseModel):
         WithJsonSchema({
             "type": ["string", "integer", "null"],
             "description": (
-                "For increase actions, provide the integer allocation (memory in MB); "
-                "for Restore inventory access, provide a non-empty policy or version detail; "
-                "for Other, provide a non-empty explanation."
+                "For Increase memory, provide an integer allocation in MB; for Increase "
+                "reserved concurrency, provide a positive integer in executions; for "
+                "Restore inventory access, provide a canonical positive published version "
+                "string; for Other, provide a non-empty explanation."
             ),
         }),
     ]
     unit: str | None
 
+    @model_validator(mode="before")
+    @classmethod
+    def validate_canonical_fields(cls, value: Any) -> Any:
+        """Reject coercible values before Pydantic can normalize them."""
+        if not isinstance(value, Mapping):
+            return value
+        action = value.get("action")
+        target = value.get("target")
+        recommendation_value = value.get("value")
+        unit = value.get("unit")
+        if action == "Increase memory":
+            if target not in {"checkout", "inventory"} or type(recommendation_value) is not int or unit != "MB":
+                raise ValueError("memory recommendations require a resource, integer allocation, and unit MB")
+            if not 128 <= recommendation_value <= 10240:
+                raise ValueError("memory recommendation must use a supported Lambda allocation")
+        elif action == "Increase reserved concurrency":
+            if target not in {"checkout", "inventory"} or type(recommendation_value) is not int or unit != "executions":
+                raise ValueError("reserved concurrency recommendations require a resource, integer allocation, and unit executions")
+            if recommendation_value <= 0:
+                raise ValueError("reserved concurrency recommendation must be positive")
+        elif action == "Restore inventory access":
+            if (
+                target != "inventory"
+                or type(recommendation_value) is not str
+                or re.fullmatch(r"[1-9][0-9]*", recommendation_value) is None
+                or unit != "version"
+            ):
+                raise ValueError("inventory access recommendation requires a canonical positive version and unit version")
+        elif action == "Other":
+            if target is not None or type(recommendation_value) is not str or not recommendation_value.strip() or unit is not None:
+                raise ValueError("Other recommendation requires explanation text with null target and unit")
+        return value
+
     @model_validator(mode="after")
     def validate_supported_action_detail(self) -> "Recommendation":
-        if self.action in {"Increase reserved concurrency", "Increase memory"}:
-            if self.target not in {"checkout", "inventory"} or not isinstance(self.value, int):
-                raise ValueError("resource recommendations require a target and integer value")
-        if self.action == "Increase memory" and not 128 <= int(self.value or 0) <= 10240:
-            raise ValueError("memory recommendation must use a supported Lambda allocation")
-        if self.action == "Increase reserved concurrency" and int(self.value or 0) <= 0:
-            raise ValueError("reserved concurrency recommendation must be positive")
-        if self.action == "Restore inventory access":
-            if self.target != "inventory" or not isinstance(self.value, str) or not self.value.strip():
-                raise ValueError("inventory access recommendation requires inventory and a policy or version detail")
-        if self.action == "Other" and (not isinstance(self.value, str) or not self.value.strip()):
-            raise ValueError("Other recommendation requires an explanation")
+        if self.action == "Increase memory" and (self.target not in {"checkout", "inventory"} or type(self.value) is not int or self.unit != "MB"):
+            raise ValueError("memory recommendations require a resource, integer allocation, and unit MB")
+        if self.action == "Increase reserved concurrency" and (self.target not in {"checkout", "inventory"} or type(self.value) is not int or self.value <= 0 or self.unit != "executions"):
+            raise ValueError("reserved concurrency recommendations require a resource, integer allocation, and unit executions")
+        if self.action == "Restore inventory access" and (self.target != "inventory" or type(self.value) is not str or re.fullmatch(r"[1-9][0-9]*", self.value) is None or self.unit != "version"):
+            raise ValueError("inventory access recommendation requires a canonical positive version and unit version")
+        if self.action == "Other" and (self.target is not None or type(self.value) is not str or not self.value.strip() or self.unit is not None):
+            raise ValueError("Other recommendation requires explanation text with null target and unit")
         return self
 
 
@@ -383,8 +414,11 @@ def _finish(
     assignments = ["#status = :status", "finishedAt = :finishedAt", "#traceRef = :traceRef", "#captureRef = :captureRef"]
     if report is not None:
         names["#report"] = "report"
+        names["#reportSchemaVersion"] = "reportSchemaVersion"
         values[":report"] = dict(report)
+        values[":reportSchemaVersion"] = REPORT_SCHEMA_VERSION
         assignments.append("#report = :report")
+        assignments.append("#reportSchemaVersion = :reportSchemaVersion")
     if failure is not None:
         names["#failure"] = "failure"
         values[":failure"] = dict(failure)
