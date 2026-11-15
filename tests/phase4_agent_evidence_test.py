@@ -151,15 +151,18 @@ class EvidenceProviderTests(unittest.TestCase):
         healthy = "IncidentTriageDemoAppInventoryRole"
         denied = "IncidentTriageDemoAppInventoryDeniedRole"
         function = "IncidentTriageDemoInventory"
-        def version(number, role):
-            return {"FunctionName": function, "Version": number, "MemorySize": 256, "Description": "c" * 40,
+        def version(number, role, revision="c"):
+            return {"FunctionName": function, "Version": number, "MemorySize": 256, "Description": revision * 40,
                     "Role": prefix + role, "CodeSha256": "A" * 43 + "=",
                     "Environment": {"Variables": {"PRESENTER_TOKEN": SECRET_SENTINELS[0]}}}
 
         boundary.responses[("lambda", "list_versions_by_function")] = lambda request, page: (
-            {"Versions": [version("$LATEST", healthy), version("11", healthy)], "NextMarker": "next"}
+            {"Versions": [version("$LATEST", healthy), *[version(str(number), denied, "d") for number in range(13, 50)],
+                          version("11", healthy)], "NextMarker": "next"}
             if not page else {"Versions": [version("12", denied)]}
         )
+        boundary.responses[("lambda", "get_alias")] = {"Name": "live", "FunctionVersion": "12"}
+        boundary.responses[("lambda", "get_function_configuration")] = version("12", denied)
         boundary.responses[("iam", "get_role")] = lambda request, page: {
             "Role": {"RoleName": request["RoleName"], "Arn": prefix + request["RoleName"]}
         }
@@ -175,12 +178,12 @@ class EvidenceProviderTests(unittest.TestCase):
                          if service == "lambda" and operation == "list_versions_by_function"]
         self.assertEqual([function, function], [request.get("FunctionName") for request in version_calls])
         self.assertEqual("next", version_calls[1].get("Marker"))
-        requested_roles = {request["RoleName"] for service, operation, request in boundary.calls
-                           if service == "iam" and operation == "get_role"}
-        self.assertEqual({healthy, denied}, requested_roles)
+        requested_roles = [request["RoleName"] for service, operation, request in boundary.calls
+                           if service == "iam" and operation == "get_role"]
+        self.assertCountEqual([healthy, denied], requested_roles, "each fixed role is observed once per snapshot")
         by_number = {entry["configuration"]["Version"]: entry["configuration"] for entry in result["observations"]
                      if entry.get("kind") == "lambda-version"}
-        self.assertEqual({"11", "12"}, set(by_number))
+        self.assertEqual(["12", "11"], list(by_number)[:2])
         for number, role in (("11", healthy), ("12", denied)):
             self.assertEqual(prefix + role, by_number[number]["Role"])
             self.assertEqual(256, by_number[number]["MemorySize"])

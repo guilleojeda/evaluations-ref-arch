@@ -231,7 +231,7 @@ def fixture_sources() -> dict[str, dict[str, Any]]:
     )
 
     change_history = source_entry(
-        ["inventory"],
+        ["inventory", "gateway"],
         [
             {
                 "EventId": "change-visible",
@@ -317,6 +317,7 @@ class CapturedEvidenceTests(unittest.TestCase):
             self.assertEqual(ORIGIN, payload["origin"])
             self.assertEqual({"logs", "metrics", "configuration", "changeHistory"}, set(payload["sources"]))
             self.assertEqual(1, len(list(Path(directory).iterdir())), "capture is a single envelope file")
+            self.assertEqual(0o600, path.stat().st_mode & 0o777)
 
             manifest = payload.get("manifest")
             self.assertIsInstance(manifest, Mapping)
@@ -381,6 +382,8 @@ class CapturedEvidenceTests(unittest.TestCase):
             filtered_late = second.search_logs(
                 resource="inventory", start=START, end=END, query="request-late"
             )
+            early_filtered = first.search_logs(resource="inventory", start=START, end=END, query="request-late")
+            self.assertEqual("partial", early_filtered["completeness"])
             self.assertIn("log-late", rendered(filtered_late))
             self.assertNotIn("log-early", rendered(filtered_late), "the alternate predicate is applied to captured records")
 
@@ -389,14 +392,52 @@ class CapturedEvidenceTests(unittest.TestCase):
             self.assertIn("change-visible", rendered(first_history))
             self.assertNotIn("change-late", rendered(first_history))
             self.assertIn("change-late", rendered(second_history))
+            gateway_history = second.read_change_history(resource="gateway", start=START, end=END)
+            self.assertEqual([], gateway_history.get("observations", []))
             # The late CloudTrail event has an old EventTime, so filtering only
             # on event time would incorrectly expose it at the first cutoff.
             self.assertIn("EventTime", rendered(second_history))
 
-    def test_configuration_uses_latest_snapshot_known_at_each_reference_cutoff(self):
+    def test_log_query_enforces_resource_scope_and_the_live_structured_predicate(self):
+        sources = fixture_sources()
+        sources["logs"]["scope"].append("gateway")
+        inventory_record = sources["logs"]["observations"][0]
+        inventory_record["fields"]["operation"] = "reserve inventory"
+        sources["logs"]["observations"].append({**inventory_record, "eventId": "gateway-copy", "resource": "gateway"})
+
         with TemporaryDirectory() as directory:
             path = Path(directory) / "capture.json"
-            write_fixture(path)
+            provider_module().write_bundle(path, origin=ORIGIN, sources=sources)
+            tools = self.load(path, CUTOFF_TWO)
+            result = tools.search_logs(resource="inventory", start=START, end=END, operation="reserve inventory", limit=1)
+            self.assertEqual(["log-early"], [item["eventId"] for item in result.get("observations", [])])
+            self.assertFalse(result["truncated"])
+            result = tools.search_logs(resource="inventory", start=START, end=END, operation="reserve")
+            self.assertEqual([], result.get("observations", []))
+            with self.assertRaisesRegex(ValueError, "unsupported CloudWatch filter syntax"):
+                tools.search_logs(resource="inventory", start=START, end=END, filter_pattern='{ $.operation = "reserve inventory" }')
+
+    def test_large_source_diagnostics_keep_the_reference_and_response_bound(self):
+        sources = fixture_sources()
+        sources["logs"]["errors"] = [f"coverage warning {index}: {'x' * 980}" for index in range(30)]
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "capture.json"
+            provider_module().write_bundle(path, origin=ORIGIN, sources=sources)
+            result = self.load(path, CUTOFF_TWO).search_logs(resource="inventory", start=START, end=END)
+            self.assertLessEqual(len(rendered(result).encode()), 12 * 1024)
+            self.assertEqual(CUTOFF_TWO, result["referenceTime"])
+            self.assertEqual("partial", result["completeness"])
+
+    def test_configuration_uses_latest_snapshot_known_at_each_reference_cutoff(self):
+        sources = fixture_sources()
+        sources["configuration"]["observations"].append({
+            "kind": "lambda-version", "function": "IncidentTriageDemoInventory",
+            "observedAt": "2026-11-13T10:06:30.000Z", "availableAt": "2026-11-13T10:06:30.000Z",
+            "configuration": {"FunctionName": "IncidentTriageDemoInventory", "Version": "13"},
+        })
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "capture.json"
+            write_fixture(path, sources)
             first = self.load(path, CUTOFF_ONE)
             second = self.load(path, CUTOFF_TWO)
 
@@ -409,6 +450,8 @@ class CapturedEvidenceTests(unittest.TestCase):
             self.assertIn("11", first_versions | first_alias_versions)
             self.assertNotIn("12", first_versions | first_alias_versions)
             self.assertIn("12", second_versions | second_alias_versions)
+            self.assertNotIn("11", second_alias_versions, "the prior live alias is not the selected snapshot")
+            self.assertNotIn("13", second_versions, "a later published version cannot become the active snapshot")
 
     def test_metrics_require_full_native_buckets_preserve_metadata_and_expose_late_samples_at_second_cutoff(self):
         with TemporaryDirectory() as directory:
@@ -420,6 +463,8 @@ class CapturedEvidenceTests(unittest.TestCase):
 
             first_result = first.read_metrics(resource="inventory", start=START, end=END, metric="Throttles", period_seconds=60)
             second_result = second.read_metrics(resource="inventory", start=START, end=END, metric="Throttles", period_seconds=60)
+            self.assertEqual("partial", first_result["completeness"])
+            self.assertEqual("partial", second_result["completeness"])
             self.assertNotIn("2026-11-13T10:03:00.000Z", rendered(first_result))
             self.assertIn("2026-11-13T10:03:00.000Z", rendered(second_result))
             for result, expected in ((first_result, 2), (second_result, 7)):
@@ -464,7 +509,8 @@ class CapturedEvidenceTests(unittest.TestCase):
             path = Path(directory) / "capture.json"
             write_fixture(path)
             result = self.load(path, CUTOFF_TWO).read_metrics(
-                resource="inventory", start=START, end=END, metric="Invocations", period_seconds=60
+                resource="inventory", start="2026-11-13T10:01:00.000Z", end="2026-11-13T10:02:00.000Z",
+                metric="Invocations", period_seconds=60,
             )
             self.assertEqual("complete", result["completeness"])
             self.assertIn('"Values": [0]', rendered(result))

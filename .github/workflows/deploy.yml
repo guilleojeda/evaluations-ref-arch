@@ -189,6 +189,7 @@ jobs:
         run: |
           uv run --project agent --locked python -m unittest discover -s tests -p 'phase4_*_test.py'
           uv run --project agent --locked python -m unittest discover -s tests -p 'phase10_agent_capacity_evidence_test.py'
+          uv run --project agent --locked python -m unittest discover -s tests -p 'phase13_*_test.py'
           node --test --test-name-pattern="^(agent stack|adapter only)" tests/phase4-agent-infrastructure.test.mjs
           node --test tests/phase4-agent-release.test.mjs
       - name: Run the locked native ARM64 smoke command
