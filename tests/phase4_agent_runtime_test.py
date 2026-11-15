@@ -300,12 +300,12 @@ class RuntimeAcceptanceTests(unittest.TestCase):
             value_schema = schema["properties"]["recommendation"]["properties"]["value"]
             self.assertEqual({"string", "integer", "null"}, set(value_schema["type"]))
             description = value_schema["description"].lower()
-            for meaning in ("integer allocation", "memory in mb", "policy or version detail", "explanation"):
+            for meaning in ("integer", "mb", "version", "explanation"):
                 self.assertIn(meaning, description)
 
             recommendations = (
                 {"action": "Increase memory", "target": "inventory", "value": 512, "unit": "MB"},
-                {"action": "Restore inventory access", "target": "inventory", "value": "policy statement 4", "unit": None},
+                {"action": "Restore inventory access", "target": "inventory", "value": "42", "unit": "version"},
                 {"action": "Other", "target": None, "value": "The evidence does not support a configuration change.", "unit": None},
             )
             for recommendation in recommendations:
@@ -315,6 +315,7 @@ class RuntimeAcceptanceTests(unittest.TestCase):
                     module.InvestigationReport.model_validate(payload)
 
             invalid_recommendations = (
+                {"action": "Restore inventory access", "target": "inventory", "value": "policy statement 4", "unit": None},
                 {"action": "Restore inventory access", "target": "inventory", "value": None, "unit": None},
                 {"action": "Restore inventory access", "target": "inventory", "value": "  ", "unit": None},
                 {"action": "Restore inventory access", "target": "inventory", "unit": None},

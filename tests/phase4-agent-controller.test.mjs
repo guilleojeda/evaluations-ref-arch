@@ -290,6 +290,40 @@ test('investigation discovery is authenticated before any AWS read', async () =>
   assertNoInvocationOrWrites();
 });
 
+test('investigation discovery preserves exact versioned and historical recommendations', async (t) => {
+  const historical = run({ transitionAt: '2026-11-09T11:40:00.000Z' });
+  historical.report.recommendation = { action: 'Restore inventory access', target: 'inventory',
+    value: 'Reinstate the role that could read the Inventory table.', unit: null };
+  const canonical = run({ transitionAt: '2026-11-09T12:05:00.000Z', reportSchemaVersion: 2 });
+  canonical.report.recommendation = { action: 'Restore inventory access', target: 'inventory', value: '42', unit: 'version' };
+  const malformed = run({ transitionAt: '2026-11-09T12:10:00.000Z', reportSchemaVersion: 2 });
+  malformed.report.recommendation = { ...canonical.report.recommendation, value: '042' };
+  reset({ rows: [historical, canonical, malformed] });
+  const originalRows = structuredClone(fixture.rows);
+
+  const subsequent = await call('GET', '/api/investigations');
+  assert.equal(subsequent.statusCode, 200, subsequent.body);
+  const results = responseBody(subsequent).runs;
+  for (const [name, expected] of [['unversioned historical', historical], ['schema 2 canonical', canonical]]) {
+    await t.test(`${name} exact and recent reads preserve what was written`, async () => {
+      const exact = await call('GET', `/api/investigations?transitionAt=${encodeURIComponent(expected.transitionAt)}`);
+      assert.equal(exact.statusCode, 200, exact.body);
+      for (const found of [results.find((item) => item.runId === expected.runId), responseBody(exact).runs[0]]) {
+        assert.equal(found.status, 'complete');
+        assert.equal(found.runId, expected.runId);
+        assert.deepEqual(found.report, expected.report);
+        assert.equal(found.reportSchemaVersion, expected.reportSchemaVersion);
+      }
+    });
+  }
+  await t.test('malformed schema 2 is visibly isolated', () => {
+    assert.equal(results.find((item) => item.runId === malformed.runId)?.failure?.code, 'INVALID_REPORT');
+    assert.equal(results.find((item) => item.runId === malformed.runId)?.report, undefined);
+  });
+  assert.deepEqual(fixture.rows, originalRows, 'reading versions does not rewrite persisted reports');
+  assertNoInvocationOrWrites();
+});
+
 test('exact and recent discovery retain the originating ALARM report after the native alarm returns to OK', async (t) => {
   const oldest = run({ transitionAt: '2026-11-09T11:40:00.000Z', assessment: 'recovered' });
   const latest = run({ transitionAt: '2026-11-09T12:05:00.000Z', assessment: 'unknown' });
