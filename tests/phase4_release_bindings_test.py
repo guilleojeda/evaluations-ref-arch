@@ -11,6 +11,7 @@ ROOT = Path(__file__).parents[1]
 SHA = "a" * 40
 RUNTIME = "arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-abcdefghij"
 ADAPTER = "arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter"
+TEST_DIGEST = "d" * 64
 FAKE_AWS = '''#!/usr/bin/env python3
 import json,os,sys
 from pathlib import Path
@@ -20,21 +21,26 @@ service,op=args[:2]
 if service=='sts' and op=='assume-role': print(json.dumps({'AccessKeyId':'fake','SecretAccessKey':'fake','SessionToken':'fake'}))
 elif service=='sts': print('arn:aws:sts::027224425948:assumed-role/cdk-evaltalk-deploy-role-027224425948-us-east-1/fake')
 elif service=='cloudformation' and op=='describe-stacks':
- if (root/'executed').exists():c['stack']['Parameters']=c['change']['Parameters']
+ if (root/'executed').exists():
+  c['stack']['Parameters']=c['change']['Parameters']
+  c['stack']['Outputs']=[{'OutputKey':k,'OutputValue':v} for k,v in c['afterOutputs'].items()]
  print(json.dumps({'Stacks':[c['stack']]}))
 elif service=='cloudformation' and op=='describe-change-set':
  if not (root/'prepared').exists(): print('does not exist',file=sys.stderr);sys.exit(255)
  print(json.dumps(c['change']))
 elif service=='cloudformation' and op=='get-template': print(json.dumps({'TemplateBody':c['template']}))
 elif service=='cloudformation' and op=='execute-change-set': (root/'executed').write_text('yes');print('{}')
-elif service=='lambda' and op=='get-alias': print(json.dumps({'Name':'live','FunctionVersion':'11','RoutingConfig':{}}))
+elif service=='lambda' and op=='get-alias':
+ fn=args[args.index('--function-name')+1]
+ version='12' if c['checkoutAliasMoved'] and (root/'executed').exists() and fn=='IncidentTriageDemoCheckout' else '11'
+ print(json.dumps({'Name':'live','FunctionVersion':version,'RoutingConfig':{}}))
 elif service=='s3api' and op=='head-object': print(json.dumps({'Metadata':{'sourcerevision':c['sha']},'CacheControl':'no-cache,max-age=0,must-revalidate'}))
 elif service=='s3api' and op=='put-object': print('{}')
 else: print('Unexpected fake operation '+str(args),file=sys.stderr);sys.exit(2)
 '''
 
 class BindingReleaseTests(unittest.TestCase):
-    def run_script(self, component, change_binding, already_bound=False):
+    def run_script(self, component, change_binding, already_bound=False, *, rotation=None):
         with tempfile.TemporaryDirectory(prefix="phase4-bindings-") as directory:
             root = Path(directory)
             (root/'bin').mkdir(); (root/'scripts').mkdir(); (root/'node_modules/.bin').mkdir(parents=True)
@@ -49,7 +55,9 @@ if (memoryIndex < 0 || args[memoryIndex + 1] !== '256,512') process.exitCode = 1
 """)
             for name, content in [('aws',FAKE_AWS),('git','#!/bin/sh\nexit 0\n')]:
                 p=root/'bin'/name;p.write_text(content);p.chmod(0o755)
-            cdk=root/'node_modules/.bin/cdk';cdk.write_text('#!/bin/sh\ntouch "$FIXTURE_ROOT/prepared"\n');cdk.chmod(0o755)
+            cdk=root/'node_modules/.bin/cdk'
+            cdk.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$FIXTURE_ROOT/cdk-args"\ntouch "$FIXTURE_ROOT/prepared"\n')
+            cdk.chmod(0o755)
             assembly=root/f'.artifacts/{component}/cdk';assembly.mkdir(parents=True)
             stack_name='IncidentTriageDemo'+component.title()
             template={'Resources':{}}
@@ -59,15 +67,38 @@ if (memoryIndex < 0 || args[memoryIndex + 1] !== '256,512') process.exitCode = 1
             params={'SourceRevision':SHA,'AlarmAdapterArn':'','AgentRuntimeArn':'','AgentEndpointArn':'','AgentAlarmAdapterArn':'','ControllerOperatorSecretArn':'arn:aws:secretsmanager:us-east-1:027224425948:secret:incident-triage-demo/controller/operator-digest-abcdef','ControllerAppSecretArn':'arn:aws:secretsmanager:us-east-1:027224425948:secret:incident-triage-demo/controller/app-bearer-abcdef'}
             if already_bound: params.update(AlarmAdapterArn=ADAPTER, AgentRuntimeArn=RUNTIME, AgentEndpointArn=RUNTIME+'/runtime-endpoint/faulty', AgentAlarmAdapterArn=ADAPTER)
             desired = {**params, 'AlarmAdapterArn':ADAPTER,'AgentRuntimeArn':RUNTIME,'AgentEndpointArn':RUNTIME+'/runtime-endpoint/faulty','AgentAlarmAdapterArn':ADAPTER}
+            after_outputs = dict(outputs)
+            checkout_republished = False
+            if rotation:
+                current = rotation.get('current', 'initial')
+                published = rotation.get('change_set_generation', rotation.get('to', 'rotation-fixture-next') or current)
+                params.update(PresenterCredentialGeneration=current, PresenterCredentialDigest='****')
+                outputs.update(PresenterCredentialGeneration=current)
+                desired.update(PresenterCredentialDigest='****', PresenterCredentialGeneration=published)
+                checkout_republished = current != published and not rotation.get('reuse_old_version')
+                after_outputs = {**outputs, 'PresenterCredentialGeneration': published,
+                                 'CheckoutLiveVersion': '12' if checkout_republished else '11'}
             change={'StackName':stack_name,'StackId':f'arn:aws:cloudformation:us-east-1:027224425948:stack/{stack_name}/11111111-1111-4111-8111-111111111111','ChangeSetId':'arn:aws:cloudformation:us-east-1:027224425948:changeSet/bind/22222222-2222-4222-8222-222222222222','Status':'CREATE_COMPLETE','ExecutionStatus':'AVAILABLE','Changes':[],'Parameters':[{'ParameterKey':k,'ParameterValue':v} for k,v in desired.items()]}
-            fixture={'sha':SHA,'template':template,'stack':{'StackStatus':'UPDATE_COMPLETE','Outputs':[{'OutputKey':k,'OutputValue':v} for k,v in outputs.items()],'Parameters':[{'ParameterKey':k,'ParameterValue':v} for k,v in params.items()]},'change':change}
+            if rotation and (rotation.get('use_previous_digest') or rotation.get('to') == ''):
+                for parameter in change['Parameters']:
+                    if parameter['ParameterKey'] == 'PresenterCredentialDigest':
+                        parameter.clear()
+                        parameter.update(ParameterKey='PresenterCredentialDigest', UsePreviousValue=True)
+            fixture={'sha':SHA,'template':template,'stack':{'StackStatus':'UPDATE_COMPLETE','Outputs':[{'OutputKey':k,'OutputValue':v} for k,v in outputs.items()],'Parameters':[{'ParameterKey':k,'ParameterValue':v} for k,v in params.items()]},'change':change,'afterOutputs':after_outputs,'checkoutAliasMoved':checkout_republished and not rotation.get('leave_old_alias')}
             (root/'fixture.json').write_text(json.dumps(fixture))
             web=root/'.artifacts/app/web';(web/'assets').mkdir(parents=True);(web/'assets/main.js').write_text('// checked');(web/'index.html').write_text('<html>checked</html>')
             env={**os.environ,'PATH':str(root/'bin')+os.pathsep+os.environ['PATH'],'FIXTURE_ROOT':str(root),'RUNNER_TEMP':str(root),'GITHUB_STEP_SUMMARY':str(root/'summary'),'GITHUB_SHA':SHA,'GITHUB_RUN_ID':'123','PUSH_BASE':SHA,'AWS_REGION':'us-east-1','AWS_ACCOUNT_ID':'027224425948','PHASE0_APP_STACK':'IncidentTriageDemoApp','PHASE0_CONTROLLER_STACK':'IncidentTriageDemoController','PHASE1_WEB_BUCKET':'web','CDK_DEPLOY_ROLE_ARN':'arn:aws:iam::027224425948:role/cdk-evaltalk-deploy-role-027224425948-us-east-1','APP_ALARM_ADAPTER_ARN':ADAPTER if change_binding else '', 'CONTROLLER_AGENT_RUNTIME_ARN':RUNTIME if change_binding else '', 'CONTROLLER_AGENT_ENDPOINT_ARN':RUNTIME+'/runtime-endpoint/faulty' if change_binding else '', 'CONTROLLER_AGENT_ALARM_ADAPTER_ARN':ADAPTER if change_binding else ''}
+            if rotation:
+                env['APP_PRESENTER_DIGEST'] = rotation.get('digest', TEST_DIGEST)
+                env['APP_ROTATION_FROM_GENERATION'] = rotation.get('from', 'initial')
+                env['APP_ROTATION_TO_GENERATION'] = rotation.get('to', 'rotation-fixture-next')
             result=subprocess.run(['bash',str(ROOT/f'scripts/deploy-{component}.sh')],cwd=root,env=env,text=True,capture_output=True,timeout=15)
-            self.assertEqual(0,result.returncode,result.stdout+result.stderr)
             calls=[json.loads(line) for line in (root/'aws-calls.jsonl').read_text().splitlines()]
             executions=[call for call in calls if call[:2]==['cloudformation','execute-change-set']]
+            if rotation:
+                arguments = root/'cdk-args'
+                return result, executions, arguments.read_text().splitlines() if arguments.exists() else []
+            self.assertEqual(0,result.returncode,result.stdout+result.stderr)
             self.assertEqual(1 if change_binding else 0,len(executions),calls)
             if component == 'app':
                 preparer_calls=[json.loads(line) for line in (root/'preparer-args.jsonl').read_text().splitlines()]
@@ -82,5 +113,49 @@ if (memoryIndex < 0 || args[memoryIndex + 1] !== '256,512') process.exitCode = 1
     def test_empty_controller_bindings_preserve_previous_readiness_inputs(self): self.run_script('controller',False,True)
     def test_same_sha_unchanged_app_reuses_release_without_stack_execution(self): self.run_script('app',False)
     def test_same_sha_unchanged_controller_reuses_release_without_stack_execution(self): self.run_script('controller',False)
+
+    def test_app_rotation_applies_new_digest_and_generation_even_at_the_serving_sha(self):
+        result, executions, arguments = self.run_script('app', False, True, rotation={'from': 'initial'})
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+        self.assertEqual(len(executions), 1, 'same-source rotation must execute one inspected update')
+        self.assertIn(f'IncidentTriageDemoApp:PresenterCredentialDigest={TEST_DIGEST}', arguments)
+        self.assertIn('IncidentTriageDemoApp:PresenterCredentialGeneration=rotation-fixture-next', arguments)
+        self.assertNotIn(TEST_DIGEST, result.stdout+result.stderr)
+
+    def test_app_rotation_rejects_invalid_intent_and_an_unexpected_predecessor(self):
+        for inputs in ({'digest': ''}, {'from': ''}, {'to': 'unsafe input'}, {'current': 'some-other-generation'}):
+            with self.subTest(inputs=inputs):
+                result, executions, arguments = self.run_script('app', False, True, rotation=inputs)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(executions, [])
+                self.assertEqual(arguments, [])
+
+    def test_app_rotation_rejects_a_change_set_with_wrong_generation_or_previous_digest(self):
+        for inputs in ({'change_set_generation': 'wrong-generation'}, {'use_previous_digest': True}):
+            with self.subTest(inputs=inputs):
+                result, executions, arguments = self.run_script('app', False, True, rotation=inputs)
+                self.assertEqual(executions, [])
+                self.assertTrue(arguments, 'valid rotation intent must reach change-set preparation')
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_app_same_generation_retry_does_not_republish(self):
+        result, executions, arguments = self.run_script('app', False, True, rotation={'current': 'rotation-fixture-next'})
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+        self.assertEqual(executions, [])
+        self.assertEqual(arguments, [])
+
+    def test_app_rotation_requires_a_new_live_checkout_version(self):
+        for inputs in ({'leave_old_alias': True}, {'reuse_old_version': True}):
+            with self.subTest(inputs=inputs):
+                result, executions, _ = self.run_script('app', False, True, rotation=inputs)
+                self.assertEqual(len(executions), 1, 'readback is checked after the rotation is executed')
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_app_ordinary_release_ignores_a_staged_digest(self):
+        result, executions, arguments = self.run_script('app', True, False, rotation={'from': '', 'to': ''})
+        self.assertEqual(result.returncode, 0, result.stdout+result.stderr)
+        self.assertEqual(len(executions), 1, 'the independent alarm-binding change still applies')
+        self.assertFalse(any('PresenterCredential' in argument for argument in arguments), arguments)
+        self.assertNotIn(TEST_DIGEST, result.stdout+result.stderr)
 
 if __name__=='__main__': unittest.main()

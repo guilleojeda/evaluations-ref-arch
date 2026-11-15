@@ -34,6 +34,10 @@ export function currentManifestKey() {
 export const healthyVersion = '2';
 export const deniedVersion = '3';
 
+function credentialDigest(value) {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
 export const records = new Map();
 export const fixture = {
   appRequests: [],
@@ -69,6 +73,20 @@ export const fixture = {
   accountSettingsMode: 'apply',
   accountConcurrentExecutions: 1000,
   accountOtherReservedConcurrency: 0,
+  // Keep the browser/operator credential, Secrets Manager values, and the
+  // qualified Checkout environment independent so rotation tests can model a
+  // warm process observing a changed secret without conflating it with a
+  // deployed function configuration.
+  operatorBearer,
+  operatorSecretBearer: operatorBearer,
+  workerAppBearer: appBearer,
+  checkoutServingCredentialDigest: undefined,
+  checkoutServingCredentialGeneration: undefined,
+  checkoutQualifiedVersion: undefined,
+  checkoutAliasVersion: undefined,
+  checkoutServingVersion: undefined,
+  secretReads: [],
+  appAuthentication: [],
   alarmReads: [],
   cloudWatchRequests: [],
   cloudWatchMode: 'values',
@@ -229,6 +247,16 @@ export function reset({ baselineRevision = appRevision, revision = appRevision, 
   fixture.accountSettingsMode = 'apply';
   fixture.accountConcurrentExecutions = 1000;
   fixture.accountOtherReservedConcurrency = 0;
+  fixture.operatorBearer = operatorBearer;
+  fixture.operatorSecretBearer = operatorBearer;
+  fixture.workerAppBearer = appBearer;
+  fixture.checkoutServingCredentialDigest = undefined;
+  fixture.checkoutServingCredentialGeneration = undefined;
+  fixture.checkoutQualifiedVersion = undefined;
+  fixture.checkoutAliasVersion = undefined;
+  fixture.checkoutServingVersion = undefined;
+  fixture.secretReads.length = 0;
+  fixture.appAuthentication.length = 0;
   fixture.alarmReads.length = 0;
   fixture.cloudWatchRequests.length = 0;
   fixture.cloudWatchMode = 'values';
@@ -335,7 +363,7 @@ export function reset({ baselineRevision = appRevision, revision = appRevision, 
             { memoryMb: 256, access: 'denied', version: deniedVersion, roleArn: deniedRoleArn },
           ],
         },
-        checkout: { version: '2', aliasArn: `arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoCheckout:live`,
+        checkout: { version: fixture.checkoutQualifiedVersion ?? healthyVersion, aliasArn: `arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoCheckout:live`,
           memory: 256, timeout: 12, cap: 'unreserved', codeSha256: 'fixture-code', role: checkoutRoleArn },
         inventory: { version: healthyVersion, aliasArn: `arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoInventory:live`,
           memory: 256, timeout: 6, cap: 'unreserved', codeSha256: 'fixture-code', role: inventoryRoleArn },
@@ -362,7 +390,7 @@ export function stackXml() {
     ['OrdersTableName', 'IncidentTriageDemoOrders'], ['InventoryTableName', table], ['InventoryRoleArn', inventoryRoleArn], ['PresenterCredentialGeneration', fixture.credentialGeneration],
     ['InventoryDeniedRoleArn', deniedRoleArn],
     ['InventoryVariantsManifestBucket', manifestBucket], ['InventoryVariantsManifestKey', currentManifestKey()],
-    ['CheckoutLiveVersion', healthyVersion], ['InventoryLiveVersion', fixture.inventoryExpectedVersion],
+    ['CheckoutLiveVersion', fixture.checkoutQualifiedVersion ?? healthyVersion], ['InventoryLiveVersion', fixture.inventoryExpectedVersion],
     ['CheckoutLiveAliasArn', `arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoCheckout:live`],
     ['InventoryLiveAliasArn', `arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoInventory:live`],
     ['CheckoutMemorySize', '256'], ['InventoryMemorySize', String(fixture.baselineMemoryMb)], ['InventorySupportedMemoryMb', supportedMemory],
@@ -798,8 +826,11 @@ export async function awsProtocol(request, body) {
   if (target.endsWith('ListStackResources')) return { __xml: resourcesXml() };
   if (!target && request.method === 'GET' && request.url.includes('/aliases/live')) {
     const name = request.url.includes('Checkout') ? 'Checkout' : 'Inventory';
-    fixture.aliasReads.push({ name, version: fixture.aliasVersion[name], revisionId: fixture.aliasRevision });
-    return { FunctionVersion: fixture.aliasVersion[name], RevisionId: fixture.aliasRevision,
+    const version = name === 'Checkout'
+      ? (fixture.checkoutAliasVersion ?? fixture.aliasVersion[name])
+      : fixture.aliasVersion[name];
+    fixture.aliasReads.push({ name, version, revisionId: fixture.aliasRevision });
+    return { FunctionVersion: version, RevisionId: fixture.aliasRevision,
       FunctionArn: `arn:aws:lambda:${region}:${account}:function:IncidentTriageDemo${name}:live`,
       RoutingConfig: name === 'Inventory' && fixture.weightedAlias ? { AdditionalVersionWeights: { '4': 0.1 } } : {} };
   }
@@ -832,15 +863,16 @@ export async function awsProtocol(request, body) {
     const override = fixture.versionOverrides[`${name}:${version}`] ?? fixture.versionOverrides[version] ?? {};
     const config = {
       State: 'Active',
-      Version: override.version ?? version,
+      Version: override.version ?? (name === 'Checkout' ? (fixture.checkoutServingVersion ?? version) : version),
       MemorySize: override.memoryMb ?? (deniedConfig && fixture.deniedConfigMode === 'memory' ? 512 : variant?.memoryMb ?? 256),
       Timeout: override.timeout ?? (name === 'Checkout' ? 12 : 6),
       CodeSha256: override.codeSha256 ?? (deniedConfig && fixture.deniedConfigMode === 'code' ? 'wrong-code' : fixture.manifestCodeSha256),
       Role: name === 'Checkout' ? checkoutRoleArn : override.roleArn ?? variant?.roleArn ?? inventoryRoleArn,
       Environment: { Variables: name === 'Checkout'
         ? { APP_ENVIRONMENT: 'demo', SOURCE_REVISION: fixture.revision,
-          PRESENTER_CREDENTIAL_DIGEST: createHash('sha256').update(appBearer).digest('hex'),
-          PRESENTER_CREDENTIAL_GENERATION: fixture.credentialGeneration, ORDERS_TABLE_NAME: 'IncidentTriageDemoOrders',
+          PRESENTER_CREDENTIAL_DIGEST: fixture.checkoutServingCredentialDigest ?? credentialDigest(fixture.workerAppBearer),
+          PRESENTER_CREDENTIAL_GENERATION: fixture.checkoutServingCredentialGeneration ?? fixture.credentialGeneration,
+          ORDERS_TABLE_NAME: 'IncidentTriageDemoOrders',
           INVENTORY_TABLE_NAME: table, INVENTORY_FUNCTION_NAME: `arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoInventory:live`,
           PRODUCT_SKU: 'demo-widget' }
         : { APP_ENVIRONMENT: 'demo', SOURCE_REVISION: override.sourceRevision ?? (deniedConfig && fixture.deniedConfigMode === 'env' ? newerRevision : fixture.revision), INVENTORY_TABLE_NAME: override.inventoryTableArn ?? tableArn, PRODUCT_SKU: 'demo-widget' } },
@@ -890,8 +922,9 @@ export async function awsProtocol(request, body) {
     return request.method === 'DELETE' ? { __noContent: true } : { ReservedConcurrentExecutions: next };
   }
   if (target.endsWith('GetSecretValue')) {
-    return { SecretString: body.SecretId.endsWith(':operator')
-      ? createHash('sha256').update(operatorBearer).digest('hex') : appBearer };
+    const operator = body.SecretId.endsWith(':operator');
+    fixture.secretReads.push({ kind: operator ? 'operator' : 'app' });
+    return { SecretString: operator ? credentialDigest(fixture.operatorSecretBearer) : fixture.workerAppBearer };
   }
   if (!target && request.method === 'PUT' && !request.url.includes('/invocations')) {
     const path = request.url.startsWith('/') ? request.url.slice(1) : request.url;
@@ -1001,9 +1034,9 @@ export function awsEnvironment(port) {
   delete process.env.AWS_SESSION_TOKEN;
 }
 
-export function httpEvent(method, path, body) {
+export function httpEvent(method, path, body, bearer = fixture.operatorBearer) {
   return { rawPath: path, requestContext: { http: { method } },
-    headers: { authorization: `Bearer ${operatorBearer}` }, body: body && JSON.stringify(body) };
+    headers: { authorization: `Bearer ${bearer}` }, body: body && JSON.stringify(body) };
 }
 
 export function appResponse(status, body) {
@@ -1131,6 +1164,30 @@ export function appFetch(url, init = {}) {
     }
     return response;
   };
+  const authorization = init.headers instanceof Headers
+    ? init.headers.get('authorization')
+    : Object.entries(init.headers ?? {}).find(([key]) => key.toLowerCase() === 'authorization')?.[1];
+  const suppliedBearer = typeof authorization === 'string' ? authorization.match(/^Bearer ([^\s]+)$/)?.[1] : undefined;
+  // Existing controller tests use this helper as an app-response stub without
+  // headers. Treat that narrow helper form as the original fixture bearer while
+  // still authenticating every production worker request (which always sends a
+  // header) and every explicit Phase 11 old/new bearer probe.
+  const authCandidate = suppliedBearer ?? appBearer;
+  const authenticated = credentialDigest(authCandidate) ===
+    (fixture.checkoutServingCredentialDigest ?? credentialDigest(fixture.workerAppBearer));
+  fixture.appAuthentication.push({
+    path: target.pathname,
+    method,
+    credentialPresent: Boolean(suppliedBearer),
+    authenticated,
+    servingVersion: fixture.checkoutServingVersion ?? fixture.checkoutAliasVersion ?? fixture.aliasVersion.Checkout,
+    servingGeneration: fixture.checkoutServingCredentialGeneration ?? fixture.credentialGeneration,
+  });
+  if (!authenticated) {
+    return Promise.resolve(finish(appResponse(401, {
+      code: 'UNAUTHORIZED', message: 'A valid presenter credential is required',
+    })));
+  }
   const reply = () => {
     if (catalogFetch && fixture.catalogResponseStatuses.has(catalogFetch.ordinal)) {
       return finish(appResponse(fixture.catalogResponseStatuses.get(catalogFetch.ordinal), { code: 'FIXTURE_CATALOG_STATUS' }));

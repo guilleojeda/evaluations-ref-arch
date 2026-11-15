@@ -54,6 +54,41 @@ function grants(statements, action) {
     .flatMap(({ Resource }) => [Resource].flat());
 }
 
+test('app publishes Checkout with its credential generation and routes every business request to its live alias', () => {
+  const { Parameters, Resources, Outputs } = template('app', 'IncidentTriageDemoApp');
+  const [checkoutId, checkout] = resourcesOf(Resources, 'AWS::Lambda::Function')
+    .find(([, resource]) => resource.Properties.FunctionName === 'IncidentTriageDemoCheckout');
+  const [aliasId, alias] = resourcesOf(Resources, 'AWS::Lambda::Alias')
+    .find(([, resource]) => resource.Properties.FunctionName.Ref === checkoutId);
+  const [versionId, attribute] = alias.Properties.FunctionVersion['Fn::GetAtt'];
+  assert.equal(alias.Properties.Name, 'live');
+  assert.equal(alias.Properties.RoutingConfig, undefined);
+  assert.equal(attribute, 'Version');
+  assert.equal(Resources[versionId].Type, 'AWS::Lambda::Version');
+  assert.deepEqual(Resources[versionId].Properties.FunctionName, { Ref: checkoutId });
+  assert.deepEqual(Resources[versionId].Properties.Description,
+    { 'Fn::Join': [' ', [{ Ref: 'SourceRevision' }, { Ref: 'PresenterCredentialGeneration' }]] });
+  assert.equal(Parameters.PresenterCredentialDigest.NoEcho, true);
+  const environment = checkout.Properties.Environment.Variables;
+  assert.deepEqual(environment.PRESENTER_CREDENTIAL_DIGEST, { Ref: 'PresenterCredentialDigest' });
+  assert.deepEqual(environment.PRESENTER_CREDENTIAL_GENERATION, { Ref: 'PresenterCredentialGeneration' });
+  assert.deepEqual(Outputs.PresenterCredentialGeneration.Value, { Ref: 'PresenterCredentialGeneration' });
+  assert.equal(Outputs.PresenterCredentialDigest, undefined);
+
+  const routes = resourcesOf(Resources, 'AWS::ApiGatewayV2::Route').map(([, resource]) => resource.Properties);
+  assert.deepEqual(routes.map(({ RouteKey }) => RouteKey).sort(),
+    ['GET /api/orders/{checkoutId}', 'GET /api/products', 'POST /api/checkout']);
+  for (const route of routes) {
+    const [, [, { Ref: integrationId }]] = route.Target['Fn::Join'];
+    assert.equal(Resources[integrationId].Type, 'AWS::ApiGatewayV2::Integration');
+    assert.deepEqual(Resources[integrationId].Properties.IntegrationUri, { Ref: aliasId });
+  }
+  const permissions = resourcesOf(Resources, 'AWS::Lambda::Permission')
+    .map(([, resource]) => resource.Properties).filter(({ Principal }) => Principal === 'apigateway.amazonaws.com');
+  assert.ok(permissions.length > 0);
+  assert.ok(permissions.every(({ FunctionName }) => FunctionName.Ref === aliasId));
+});
+
 test('app alarm watches the real HTTP API stage and publishes the target for the controller', () => {
   const { Resources, Outputs } = template('app', 'IncidentTriageDemoApp');
   const [[apiId]] = resourcesOf(Resources, 'AWS::ApiGatewayV2::Api');
