@@ -3604,6 +3604,10 @@ async function traffic(action: Action): Promise<void> {
     context = await surgeTrafficContext(action, target, bearer, run);
   } else {
     const release = await currentReleaseContext(bearer, target);
+    const savedGeneration = record(baseline.settings)?.credentialGeneration;
+    if (typeof savedGeneration !== "string" || savedGeneration !== release.deploymentIdentity.credentialGeneration) {
+      throw new ActionFailure("The saved readiness credential generation does not match the current app release. Check readiness before starting traffic.");
+    }
     if (baseline.deploymentIdentity && !sameDeploymentIdentity(baseline.deploymentIdentity, release.deploymentIdentity)) {
       throw new ActionFailure("The app release changed. Check readiness before starting traffic.");
     }

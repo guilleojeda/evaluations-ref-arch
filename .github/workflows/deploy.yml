@@ -12,6 +12,16 @@ on:
           - app
           - controller
           - agent
+      rotation_from_generation:
+        description: Current app credential generation (app only; leave blank for an ordinary release)
+        required: false
+        default: ''
+        type: string
+      rotation_to_generation:
+        description: New app credential generation (app only; leave blank for an ordinary release)
+        required: false
+        default: ''
+        type: string
   push:
     branches:
       - main
@@ -44,6 +54,8 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       components: ${{ steps.select.outputs.components }}
+      rotation_from_generation: ${{ steps.select.outputs.rotation_from_generation }}
+      rotation_to_generation: ${{ steps.select.outputs.rotation_to_generation }}
     steps:
       - name: Check out revisions
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -52,14 +64,47 @@ jobs:
       - name: Select changed components
         id: select
         shell: bash
+        env:
+          DISPATCH_COMPONENT: ${{ inputs.component }}
+          DISPATCH_ROTATION_FROM: ${{ inputs.rotation_from_generation }}
+          DISPATCH_ROTATION_TO: ${{ inputs.rotation_to_generation }}
         run: |
           set -euo pipefail
           if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            component='${{ inputs.component }}'
+            component="$DISPATCH_COMPONENT"
+            rotation_from="${DISPATCH_ROTATION_FROM:-}"
+            rotation_to="${DISPATCH_ROTATION_TO:-}"
             case "$component" in app|controller|agent) ;; *) echo "Invalid component" >&2; exit 1 ;; esac
+            case "$rotation_from$rotation_to" in
+              '') ;;
+              *)
+                [[ "$component" == app ]] || { echo "Credential rotation is only valid for the app component" >&2; exit 1; }
+                [[ -n "$rotation_from" && -n "$rotation_to" ]] || {
+                  echo "Credential rotation requires both generation inputs" >&2
+                  exit 1
+                }
+                [[ "${#rotation_from}" -le 128 && "${#rotation_to}" -le 128 && "$rotation_from" =~ ^[A-Za-z0-9._-]+$ && "$rotation_to" =~ ^[A-Za-z0-9._-]+$ ]] || {
+                  echo "Credential generation inputs contain unsupported characters" >&2
+                  exit 1
+                }
+                [[ "$rotation_from" != "$rotation_to" ]] || {
+                  echo "Credential rotation generations must differ" >&2
+                  exit 1
+                }
+                ;;
+            esac
             echo "components=$(node -p 'JSON.stringify([process.argv[1]])' "$component")" >> "$GITHUB_OUTPUT"
+            case "$rotation_from$rotation_to" in
+              '') ;;
+              *)
+                echo "rotation_from_generation=$rotation_from" >> "$GITHUB_OUTPUT"
+                echo "rotation_to_generation=$rotation_to" >> "$GITHUB_OUTPUT"
+                ;;
+            esac
             exit 0
           fi
+          echo 'rotation_from_generation=' >> "$GITHUB_OUTPUT"
+          echo 'rotation_to_generation=' >> "$GITHUB_OUTPUT"
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
             base_ref='${{ github.event.pull_request.base.sha }}'
             candidate='${{ github.event.pull_request.head.sha }}'
@@ -132,6 +177,7 @@ jobs:
           node --test tests/phase6-controller-recovery.test.mjs tests/phase6-controller-recovery-display.test.mjs tests/phase6-controller-recovery-infrastructure.test.mjs tests/phase7-controller-request-limits.test.mjs tests/phase8-controller-reset.test.mjs tests/phase8-controller-reset-infrastructure.test.mjs
           node --test tests/phase9-controller-capacity.test.mjs
           node --test tests/phase10-controller-surge.test.mjs tests/phase10-controller-metrics.test.mjs tests/phase10-controller-infrastructure.test.mjs
+          node --test tests/phase11-controller-credential-rotation.test.mjs
           node --test --test-name-pattern="^controller evidence" tests/phase3-inventory-denial-infrastructure.test.mjs
           node --test tests/phase4-agent-controller.test.mjs
           node --test --test-name-pattern="^controller can read" tests/phase4-agent-infrastructure.test.mjs
@@ -319,6 +365,8 @@ jobs:
         env:
           APP_PRESENTER_DIGEST: ${{ secrets.APP_PRESENTER_DIGEST }}
           APP_ALARM_ADAPTER_ARN: ${{ vars.APP_ALARM_ADAPTER_ARN }}
+          APP_ROTATION_FROM_GENERATION: ${{ needs.route.outputs.rotation_from_generation }}
+          APP_ROTATION_TO_GENERATION: ${{ needs.route.outputs.rotation_to_generation }}
           PUSH_BASE: ${{ github.event.before }}
         run: bash scripts/deploy-app.sh
 

@@ -68,11 +68,30 @@ test('manual deployment routing selects exactly the requested independent compon
   const block = workflow.match(/          if \[\[ "\$\{\{ github.event_name \}\}" == "workflow_dispatch" \]\]; then[\s\S]*?          fi/)[0];
   const directory = mkdtempSync(join(tmpdir(), 'phase4-manual-route-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
-  for (const component of ['app', 'controller', 'agent', 'invalid']) {
-    const output = join(directory, component);
-    const script = block.replaceAll('${{ github.event_name }}', 'workflow_dispatch').replaceAll('${{ inputs.component }}', component);
-    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', script], { env: { ...process.env, GITHUB_OUTPUT: output }, encoding: 'utf8' });
-    assert.equal(result.status, component === 'invalid' ? 1 : 0, result.stderr);
-    if (component !== 'invalid') assert.equal(readFileSync(output, 'utf8').trim(), `components=["${component}"]`);
+  const cases = [
+    { component: 'app' },
+    { component: 'controller' },
+    { component: 'agent' },
+    { component: 'app', from: 'initial', to: 'next-generation' },
+    { component: 'invalid', reject: true },
+    { component: 'controller', from: 'initial', to: 'next-generation', reject: true },
+    { component: 'app', to: 'next-generation', reject: true },
+    { component: 'app', from: 'initial', to: 'initial', reject: true },
+    { component: 'app', from: 'initial', to: 'invalid generation', reject: true },
+  ];
+  const script = block.replaceAll('${{ github.event_name }}', 'workflow_dispatch');
+  for (const [index, { component, from = '', to = '', reject = false }] of cases.entries()) {
+    const output = join(directory, String(index));
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', script], {
+      env: { ...process.env, GITHUB_OUTPUT: output, DISPATCH_COMPONENT: component,
+        DISPATCH_ROTATION_FROM: from, DISPATCH_ROTATION_TO: to },
+      encoding: 'utf8',
+    });
+    assert.equal(result.status, reject ? 1 : 0, result.stderr);
+    if (!reject) {
+      const expected = [`components=["${component}"]`];
+      if (from) expected.push(`rotation_from_generation=${from}`, `rotation_to_generation=${to}`);
+      assert.deepEqual(readFileSync(output, 'utf8').trim().split('\n'), expected);
+    }
   }
 });
