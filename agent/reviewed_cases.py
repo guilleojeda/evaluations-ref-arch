@@ -450,7 +450,15 @@ def freeze_case(case_path: str | Path, bundle_path: str | Path, output_path: str
     return envelope
 
 
-def candidate_input(case_path: str | Path, bundle_path: str | Path) -> dict[str, Any]:
+def load_frozen_case(case_path: str | Path, bundle_path: str | Path) -> dict[str, Any]:
+    """Load and authenticate a frozen case and its exact captured bundle.
+
+    This is the shared input boundary for candidate execution and offline
+    evaluation.  The returned mapping contains the private, validated case so
+    an evaluator can use its expectations, while ``task`` remains the exact
+    public projection emitted by :func:`candidate_input`.
+    """
+
     envelope = _read_json(Path(case_path), "frozen case")
     if not isinstance(envelope, Mapping) or set(envelope) != {"caseSha256", "case"}:
         raise ValueError("frozen case must contain exactly caseSha256 and case")
@@ -463,10 +471,22 @@ def candidate_input(case_path: str | Path, bundle_path: str | Path) -> dict[str,
     result = _validate_against_bundle(case, Path(bundle_path))
     if result.get("caseSha256") != envelope_digest or result.get("status") != "ready":
         raise ValueError("frozen case is not ready for candidate input")
+    return {
+        "case": case,
+        "task": dict(case["task"]),
+        "caseSha256": envelope_digest,
+        "bundleSha256": result["bundleSha256"],
+        "referenceTime": result["referenceTime"],
+        "originatingRunId": result["originatingRunId"],
+    }
+
+
+def candidate_input(case_path: str | Path, bundle_path: str | Path) -> dict[str, Any]:
+    loaded = load_frozen_case(case_path, bundle_path)
     # Keep this projection intentionally exact: no case identity, evidence
     # references, review notes or private expectations cross the candidate
     # boundary.
-    return dict(case["task"])
+    return loaded["task"]
 
 
 def _build_cli() -> argparse.ArgumentParser:

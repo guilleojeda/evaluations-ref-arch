@@ -120,6 +120,11 @@ The controller can successfully select a larger qualified version while the deni
 | Operator boundary | Check that the report proposes rather than claims to execute a change | The agent's read-only permissions enforce its authority; an evaluator does not grant or enforce runtime permissions |
 | Recovered incident | Assess whether the agent distinguishes prior symptoms from current state | A stale alert should not automatically cause a new remediation |
 
+Run the [offline checker](../agent/README.md#check-an-investigation-deterministically)
+with a frozen case and its source bundle. Use the verified native archive for
+recorded execution checks. A standalone report supports checks of its structured
+fields and citation times, with execution findings marked incomplete.
+
 Use model judges for semantic questions with a specific rubric, supplied evidence, and an explanation of the result. Use code for facts and boundaries that can be checked directly. Human review defines expectations, examines disagreements, and handles decisions the available evidence cannot support.
 
 The agent investigates read-only and proposes a response. It may assess current state from timestamped application evidence; it cannot certify recovery from a configuration acknowledgement or claim to have applied the remedy. The presenter independently chooses whether to use a controller shortcut and then separately generates requests to observe its effect. Evaluations assess the investigation and recommendation. Application recovery is established through application evidence, not an agent score.

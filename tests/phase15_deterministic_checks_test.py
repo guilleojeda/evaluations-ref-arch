@@ -185,10 +185,13 @@ def write_native_archive(
     *,
     reorder: bool = False,
     late_result: bool = False,
+    late_ingestion: bool = False,
     out_of_scope: bool = False,
     forbidden_tool: bool = False,
     unlinked_calls: bool = False,
     missing_trace: bool = False,
+    span_outside_result: bool = False,
+    overlapping_spans: bool = False,
     mismatch: str | None = None,
 ) -> dict[str, Any]:
     """Write a bounded native trace archive and return its parsed value."""
@@ -209,6 +212,8 @@ def write_native_archive(
     results = []
     for index, (tool, resource, observed_at) in enumerate(successful):
         result = _tool_result(tool, resource, observed_at, late=late_result and index == 4)
+        if late_ingestion and index == 4:
+            result["observations"][0]["ingestionTime"] = _iso_to_ns(AFTER_REFERENCE) // 1_000_000
         if out_of_scope and index == 4:
             result["scope"] = ["orders"]
             result["observations"][0]["resource"] = "orders"
@@ -327,6 +332,17 @@ def write_native_archive(
                 "signals": {"tool": True, "investigation": True, "model": False, "report": False},
             }
         )
+    # These two fixtures distinguish a true interval join from nearest-time or
+    # fixed-order heuristics.  The query result remains authenticated and its
+    # observation timestamp is unchanged; only the retained trace interval is
+    # moved or made ambiguous.
+    if span_outside_result:
+        spans[4]["startTime"] = _iso_to_ns("2026-11-13T10:01:31.000Z")
+        spans[4]["endTime"] = _iso_to_ns("2026-11-13T10:01:32.000Z")
+    if overlapping_spans:
+        for index in (0, 3):
+            spans[index]["startTime"] = _iso_to_ns("2026-11-13T10:01:00.000Z")
+            spans[index]["endTime"] = _iso_to_ns("2026-11-13T10:03:00.000Z")
     if reorder:
         results.reverse()
         result_document["results"] = results
@@ -364,7 +380,12 @@ def write_native_archive(
         "reportPresent": report is not None,
         "reportSha256": _json_digest(report) if report is not None else None,
         "traceRef": ({**trace_ref, "runtimeSessionId": session_id} if mismatch == "session" else trace_ref),
-        "captureRef": {"completeness": "complete", "sources": []},
+        "captureRef": {
+            "completeness": "complete",
+            "sources": [],
+            "bucket": "phase15-fake-bucket",
+            "queryResultsKey": f"phase15/{run_id}/query-results.json",
+        },
         "originatingEvent": {"alarmArn": alarm_arn, "time": TRANSITION, "source": "aws.cloudwatch"},
         "provenance": {"runId": run_id, "runtimeSessionId": session_id, "transitionAt": TRANSITION},
     }
@@ -378,7 +399,12 @@ def write_native_archive(
         "inputs": {"transitionAt": TRANSITION, "runId": run_id},
         "run": run,
         "capture": {
-            "captureRef": {"runId": run_id, "completeness": "complete"},
+            "captureRef": {
+                "runId": run_id,
+                "completeness": "complete",
+                "bucket": "phase15-fake-bucket",
+                "queryResultsKey": f"phase15/{run_id}/query-results.json",
+            },
             "configurationObservedAt": "2026-11-13T10:02:10.000Z",
             "coveredFrom": START,
             "coveredThrough": REFERENCE,
@@ -667,12 +693,27 @@ class DeterministicChecksAcceptanceTests(unittest.TestCase):
         self.assertEqual("pass", result["findings"]["target_value"]["verdict"])
         self.assertEqual("pass", result["findings"]["source_scope"]["verdict"])
 
+    def test_result_without_a_unique_trace_interval_join_is_incomplete(self):
+        report = report_for(recommendation("Restore inventory access", "inventory", "75", "version"))
+        for condition in ("span_outside_result", "overlapping_spans"):
+            with self.subTest(condition=condition):
+                frozen, archive, _case = self.make_record_case(
+                    report,
+                    archive_kwargs={condition: True},
+                    name=f"ambiguous-join-{condition}",
+                )
+                completed, result = self.deterministic(frozen, record=archive)
+                self.assertEqual(2, completed.returncode, completed.stderr)
+                self.assertEqual("incomplete", result["status"])
+                self.assertEqual("incomplete", result["findings"]["source_scope"]["status"])
+                self.assertIsNone(result["findings"]["source_scope"]["verdict"])
+
     def test_post_cutoff_observation_fails_as_of_check_while_historical_snapshot_passes(self):
         report = report_for(recommendation("Restore inventory access", "inventory", "75", "version"))
-        for late, verdict in ((False, "pass"), (True, "fail")):
-            with self.subTest(late=late):
+        for condition, verdict in ((None, "pass"), ("late_result", "fail"), ("late_ingestion", "fail")):
+            with self.subTest(condition=condition):
                 frozen, archive, _case = self.make_record_case(
-                    report, archive_kwargs={"late_result": late}, name=f"late-result-{late}"
+                    report, archive_kwargs={condition: True} if condition else {}, name=f"cutoff-{condition}"
                 )
                 completed, result = self.deterministic(frozen, record=archive)
                 self.assertEqual(0, completed.returncode, completed.stderr)

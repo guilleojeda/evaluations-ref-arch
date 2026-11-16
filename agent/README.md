@@ -139,6 +139,44 @@ manifest. Review coverage using the corresponding `*-prepared.json` file.
 For the candidate task, pass the matching `*-prepared.frozen.json` envelope
 directly to `candidate-input`.
 
+## Check an investigation deterministically
+
+Pass a frozen case and its matching captured bundle. The recorded native
+archive supplies the run, trace, session, and report provenance.
+
+```sh
+uv run --offline --project agent --locked python agent/deterministic_checks.py \
+  --case "$frozen_case" --bundle "$source_bundle" --record "$native_archive"
+```
+
+Pass a standalone structured report to check its fields and citations.
+
+```sh
+uv run --offline --project agent --locked python agent/deterministic_checks.py \
+  --case "$frozen_case" --bundle "$source_bundle" --report "$report_json"
+```
+
+Both commands emit JSON only on standard output. The result has `status`
+(`complete`, `incomplete`, or `error`), `inputKind` (`recorded_live` or
+`report_only`), verified identity fields, and separate findings for
+`report_structure`, `assessment`, `action`, `target`, `target_value`,
+`source_scope`, `as_of_time`, and `operator_boundary`. Each finding includes
+its own status, nullable `verdict` (`pass` or `fail`), and reason.
+
+Exit status 0 means every applicable check completed. Read the individual
+verdicts to see which findings passed or failed. Exit status 2 means an input
+or check is incomplete or invalid. The recorded path verifies the case,
+bundle, report, run, alarm transition, trace, and Runtime session identities.
+Equivalent read-only query orders are accepted, while missing or unlinked
+activity remains incomplete. The report-only path can check report fields and
+explicit citation timing, but its execution-dependent source and operator
+findings remain incomplete. Treat constructed reports as controls and retain the recorded identity when
+showing a genuine saved result.
+
+Keep cases, bundles, reports, and native spans in private evidence storage or a
+private operator workspace. The checker runs offline and emits only the findings and their input
+identities. Semantic evaluation and release policy use separate steps.
+
 ## Local health and invalid-event smoke
 
 Start the local Runtime entrypoint in one terminal:
