@@ -21,7 +21,8 @@ from typing import Any, Mapping, Sequence
 
 from pydantic import ValidationError
 
-from main import InvestigationReport
+from captured_evidence import _epoch_nanoseconds, _log_available_at
+from investigation import InvestigationReport
 from reviewed_cases import TOOLS, load_frozen_case
 
 
@@ -695,6 +696,135 @@ def check_report(report: Mapping[str, Any], loaded_case: Mapping[str, Any]) -> d
     """
 
     return _report_result(loaded_case, report, input_kind="report_only")
+
+
+def _check_captured_times(results: list[dict[str, Any]], reference_time: int) -> dict[str, Any]:
+    missing = not results
+    for item in results:
+        result = item["result"]
+        if _optional_time(result.get("referenceTime")) != reference_time:
+            return _finding("complete", "fail", "a returned source used a different reference time")
+        observations = result.get("observations", [])
+        if not isinstance(observations, list):
+            missing = True
+            continue
+        for observation in observations:
+            if not isinstance(observation, Mapping):
+                missing = True
+                continue
+            if item["tool"] == "read_metrics":
+                available = observation.get("availability")
+                buckets = observation.get("Timestamps")
+                query = result.get("query")
+                period = query.get("periodSeconds") if isinstance(query, Mapping) else None
+                if (
+                    not isinstance(available, list) or not isinstance(buckets, list)
+                    or len(available) != len(buckets) or type(period) is not int or period <= 0
+                ):
+                    missing = True
+                    continue
+                times = [_optional_time(value) for value in available]
+                for bucket in buckets:
+                    start = _optional_time(bucket)
+                    times.append(start + period * 1_000_000_000 if start is not None else None)
+            elif item["tool"] == "search_logs":
+                available = _log_available_at(observation)
+                if available is None:
+                    available = result.get("acquiredAt", result.get("observedAt"))
+                times = []
+                for value in (observation.get("timestamp"), available):
+                    try:
+                        times.append(_epoch_nanoseconds(value))
+                    except (TypeError, ValueError, OverflowError):
+                        times.append(None)
+            else:
+                available = observation.get("availableAt")
+                if available is None:
+                    # The captured provider uses this source bound only for a
+                    # record without a more precise availability timestamp.
+                    available = result.get("acquiredAt", result.get("observedAt"))
+                times = [_optional_time(observation[key]) for key in ("observedAt", "timestamp", "EventTime") if key in observation]
+                times.append(_optional_time(available))
+            for observed in times:
+                if observed is None:
+                    missing = True
+                elif observed > reference_time:
+                    return _finding("complete", "fail", "a captured observation was unavailable at the reviewed cutoff")
+    if missing:
+        return _finding("incomplete", None, "some returned source observations do not establish availability")
+    return _finding("complete", "pass", "returned captured observations were available at the reviewed cutoff")
+
+
+def check_captured_report(
+    report: Mapping[str, Any],
+    loaded_case: Mapping[str, Any],
+    ledger: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Grade a fresh captured run whose local ledger came from the actual agent."""
+    result = _report_result(loaded_case, report, input_kind="captured_execution")
+    findings = result["findings"]
+    calls = ledger.get("toolCalls")
+    reads: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    incomplete = not isinstance(calls, list)
+    forbidden = False
+    for call in calls if isinstance(calls, list) else []:
+        if not isinstance(call, dict):
+            incomplete = True
+            continue
+        tool = call.get("tool")
+        call_id = call.get("callId")
+        status = call.get("status")
+        if not isinstance(tool, str) or not tool:
+            incomplete = True
+            continue
+        if tool not in TOOLS and tool != REPORT_TOOL:
+            forbidden = True
+        arguments = call.get("arguments")
+        arguments_valid = "arguments" in call
+        if status in ("success", "ok"):
+            # Successful tools must have the object-shaped request required by
+            # the reviewed tool contract. Failed calls retain their raw JSON
+            # argument value; the native telemetry parser validates its JSON.
+            arguments_valid = isinstance(arguments, Mapping)
+        if (
+            not isinstance(call_id, str) or not call_id or call_id in seen
+            or not arguments_valid or status not in ("success", "ok", "error")
+            or "result" not in call or call["result"] is None
+        ):
+            incomplete = True
+            continue
+        seen.add(call_id)
+        returned = call["result"]
+        if tool in TOOLS:
+            if isinstance(returned, Mapping) and (status != "error" or "scope" in returned or "observations" in returned):
+                reads.append(call)
+            elif status != "error":
+                incomplete = True
+    if forbidden:
+        findings["operator_boundary"] = _finding("complete", "fail", "a non-read operation appeared in the observed tool roster")
+    elif incomplete or not seen:
+        findings["operator_boundary"] = _finding("incomplete", None, "the tool roster or outcomes are unavailable")
+    else:
+        findings["operator_boundary"] = _finding("complete", "pass", "observed calls used only the four reads and the report tool")
+    scope = _check_scope(reads, set(loaded_case["task"]["allowedResources"]))
+    timing = _check_captured_times(reads, _parse_time(loaded_case["referenceTime"], "case referenceTime"))
+    citations = findings["as_of_time"]
+    if citations["verdict"] != "fail":
+        if timing["verdict"] == "fail" or citations["verdict"] == "pass":
+            findings["as_of_time"] = timing
+    for name, finding in (("source_scope", scope), ("as_of_time", findings["as_of_time"])):
+        findings[name] = (
+            _finding("incomplete", None, "some tool calls lack a complete identity or result")
+            if incomplete and finding["verdict"] == "pass" else finding
+        )
+    result["traceLinkage"] = (
+        {"status": "incomplete", "reason": "some local tool ledger entries are unverified"}
+        if incomplete else {"status": "complete", "reason": "all local tool ledger outcomes are retained"}
+    )
+    if all(finding["status"] == "complete" for finding in findings.values()) and not incomplete:
+        result["status"] = "complete"
+    return result
 
 
 def _error_result(input_kind: str, identity: Mapping[str, Any], reason: str) -> dict[str, Any]:

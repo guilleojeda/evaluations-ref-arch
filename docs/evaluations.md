@@ -16,7 +16,7 @@ Turning a failed run into a case requires reviewing the expected answer and beha
 
 ## Worked case: Inventory access denied
 
-This is a planned semantic example, not run data: no trace, measurement, or evaluation result exists yet. It shows what one reviewed access-denied case must connect before the example can be presented as evidence.
+This table describes the evidence needed to demonstrate a memory recommendation on a reviewed access-denied case. The recorded S2 evidence is summarized below.
 
 | Part of the example | What it must establish |
 | --- | --- |
@@ -149,6 +149,34 @@ The useful feedback sequence is:
 4. Compare faulty and corrected candidates.
 5. Feed the selected evaluation evidence into the release policy.
 
+## S2: Run and score the captured baseline
+
+The [captured-run commands](../agent/README.md#run-and-score-the-captured-baseline-s2)
+save one execution and separately score its verified CloudWatch session. The
+baseline uses the prepared denial case, its exact evidence cutoff, and the
+faulty candidate's saved source and settings. The historical live denial
+report remains a separate incident artifact.
+
+The custom AgentCore SESSION evaluator returns two categorical findings in
+one call. Diagnosis support checks whether the causal explanation follows from
+the available evidence. Evidence grounding checks whether material claims and
+citations match the observations the agent received. The deterministic
+recommendation checks still evaluate the action, target, and value
+independently. The saved result keeps each verdict and its reason.
+
+The first frozen-case run recommended restoring Inventory access. Its
+deterministic cutoff check failed on a citation beyond the reviewed time.
+Haiku 4.5 passed both semantic findings in two provisional scoring attempts.
+Both explanations treated an empty, clipped tool response as evidence through
+the full requested window. The fresh memory recommendation remains unverified.
+
+Judge calibration uses labeled, constructed controls grounded in retained
+evidence. Development and holdout controls come from separate incidents. The
+reference contrast changes a reviewed assertion while keeping the session
+fixed. This small sample covers the reviewed examples
+and their counterexamples. Record the evaluated configurations, disagreements,
+and explicit repeat alongside the baseline evidence.
+
 ## S3: Fresh candidate before deployment
 
 Prepare a small local runner before the talk. It executes the shared agent constructor with the selected prompt, the reviewed case's captured providers, and its effective investigation reference time. It does not need the complete Strands experiment introduced at S4, and it does not deploy the repaired candidate or invoke the live alarm adapter.
@@ -249,4 +277,4 @@ Check that the judge can handle the supplied evidence and context, then validate
 
 ## Open decisions
 
-The [scenario contracts](demo-scenarios.md) define the two incident families and the recovered/stale-alert condition. The [instruction versions](components/operations-agent.md#instruction-versions) specify the planned faulty, repaired, and regressed rules; the denied-read action check is the required regression's failure witness. The S3 section specifies local execution and AgentCore scoring before deployment; S4 reuses the execution function through Strands. Exact live-event/run wire formats and discovery indexes, concrete capture contents and their file/schema/provider, telemetry and evaluator adapters, the S4/S5 semantic evaluator backend, final rehearsed prompt wording, optional additional candidate variants, judge rubrics/models, numerical release thresholds, holdout selection, and measurement repetitions remain open. The [demo script](demo-script.md) records how these cases enter the S0–S5 teaching sequence.
+The [scenario contracts](demo-scenarios.md) define the two incident families and the recovered/stale-alert condition. The [instruction versions](components/operations-agent.md#instruction-versions) specify the planned faulty, repaired, and regressed rules; the denied-read action check is the required regression's failure witness. The S3 section specifies local execution and AgentCore scoring before deployment; S4 reuses the execution function through Strands. Exact live-event/run wire formats and discovery indexes, concrete capture contents and their file/schema/provider, final rehearsed prompt wording, optional additional candidate variants, and release evaluation holdouts and repetitions remain open. The AgentCore evaluation definition and calibration results are versioned with the scored inputs. The [demo script](demo-script.md) records how these cases enter the S0–S5 teaching sequence.
