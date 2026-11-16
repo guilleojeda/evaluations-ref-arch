@@ -137,6 +137,12 @@ gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref demo-de
 
 The values are `RuntimeArn`, `FaultyEndpointArn`, and `AlarmAdapterArn` from the agent stack outputs. When the controller release completes, open the dashboard and verify the endpoint is ready and the alarm binding is bound. These checks are read-only control-plane observations; they do not prove an inference occurred. Complete the actual alarm-triggered journey through the controller after readiness.
 
+## Captured evidence and Inventory version reads
+
+The Runtime's `lambda:ListVersionsByFunction` grant covers the exact Inventory function. It complements the existing qualified configuration and role reads. Apply the checked [administrator bootstrap policy](../infrastructure/bootstrap/README.md#1-provision-the-scoped-execution-policy) before publishing an agent that uses this grant. Verify the effective Runtime role and its permissions boundary.
+
+Use the [agent capture commands](../agent/README.md#export-and-query-captured-evidence) to save ordinary evidence while the relevant configuration is still observable. Store exports with the demo's private evidence. Query a saved bundle locally with its explicit reference time.
+
 ## Phase 10 surge and native metric reader
 
 Phase 10 uses the `demo-deploy` release workflow. Configure the existing finite worker Lambda at **1,024 MB**, a 90-second timeout, and zero asynchronous retries to give catalog production room during calibration. This is a controller-side producer setting only: Inventory and Checkout memory, aliases, access, and app code stay fixed across the capacity comparison. Higher producer memory does not prove the requested fetch rate was achieved.

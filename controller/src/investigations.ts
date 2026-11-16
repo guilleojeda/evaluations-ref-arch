@@ -37,6 +37,7 @@ const projectionNames = {
   "#deadlineAt": "deadlineAt",
   "#finishedAt": "finishedAt",
   "#report": "report",
+  "#reportSchemaVersion": "reportSchemaVersion",
   "#failure": "failure",
   "#traceRef": "traceRef",
   "#captureRef": "captureRef",
@@ -171,7 +172,60 @@ function citation(value: unknown): InvestigationCitation {
   };
 }
 
-function report(value: unknown): InvestigationReport | undefined {
+function canonicalRecommendation(value: Record<string, unknown>): InvestigationRecommendation {
+  const keys = Object.keys(value).sort();
+  if (keys.join(",") !== "action,target,unit,value") {
+    throw new InvestigationReadError("A schema 2 investigation recommendation has an invalid shape.");
+  }
+  const action = value.action;
+  if (action !== "Increase reserved concurrency" && action !== "Increase memory" &&
+      action !== "Restore inventory access" && action !== "Other") {
+    throw new InvestigationReadError("A schema 2 investigation recommendation has an invalid action.");
+  }
+  const target = value.target;
+  const recommendedValue = value.value;
+  const unit = value.unit;
+  if (action === "Increase memory") {
+    if ((target !== "checkout" && target !== "inventory") || typeof recommendedValue !== "number" ||
+        !Number.isSafeInteger(recommendedValue) || recommendedValue < 128 || recommendedValue > 10_240 || unit !== "MB") {
+      throw new InvestigationReadError("A schema 2 memory recommendation has invalid target, value, or unit.");
+    }
+  } else if (action === "Increase reserved concurrency") {
+    if ((target !== "checkout" && target !== "inventory") || typeof recommendedValue !== "number" ||
+        !Number.isSafeInteger(recommendedValue) || recommendedValue <= 0 || unit !== "executions") {
+      throw new InvestigationReadError("A schema 2 concurrency recommendation has invalid target, value, or unit.");
+    }
+  } else if (action === "Restore inventory access") {
+    if (target !== "inventory" || typeof recommendedValue !== "string" || !/^[1-9][0-9]*$/.test(recommendedValue) || unit !== "version") {
+      throw new InvestigationReadError("A schema 2 restoration recommendation has invalid target, value, or unit.");
+    }
+  } else if (target !== null || typeof recommendedValue !== "string" || !recommendedValue.trim() || unit !== null) {
+    throw new InvestigationReadError("A schema 2 Other recommendation has invalid target, value, or unit.");
+  }
+  return { action, target, value: recommendedValue, unit };
+}
+
+function legacyRecommendation(value: Record<string, unknown>): InvestigationRecommendation {
+  const recommendation: InvestigationRecommendation = {
+    action: stringField(value, "action", 160),
+  };
+  const target = value.target;
+  if (target === null || typeof target === "string") recommendation.target = target;
+  else if (target !== undefined) throw new InvestigationReadError("An investigation report has an invalid target.");
+  const recommendedValue = value.value;
+  if (recommendedValue === null || typeof recommendedValue === "string" || typeof recommendedValue === "number") {
+    recommendation.value = recommendedValue;
+  } else if (recommendedValue !== undefined) throw new InvestigationReadError("An investigation report has an invalid recommendation value.");
+  const unit = value.unit;
+  if (unit === null || typeof unit === "string") recommendation.unit = unit;
+  else if (unit !== undefined) throw new InvestigationReadError("An investigation report has an invalid recommendation unit.");
+  if (typeof value.explanation === "string") recommendation.explanation = value.explanation;
+  if (typeof value.policy === "string") recommendation.policy = value.policy;
+  if (typeof value.policyDetail === "string") recommendation.policyDetail = value.policyDetail;
+  return recommendation;
+}
+
+function report(value: unknown, schemaVersion?: number): InvestigationReport | undefined {
   if (value === undefined || value === null) return undefined;
   if (!isRecord(value) || typeof value.assessment !== "string" ||
       !["ongoing", "recovered", "unknown"].includes(value.assessment)) {
@@ -179,22 +233,9 @@ function report(value: unknown): InvestigationReport | undefined {
   }
   const rawRecommendation = value.recommendation;
   if (!isRecord(rawRecommendation)) throw new InvestigationReadError("An investigation report has no recommendation.");
-  const recommendation: InvestigationRecommendation = {
-    action: stringField(rawRecommendation, "action", 160),
-  };
-  const target = rawRecommendation.target;
-  if (target === null || typeof target === "string") recommendation.target = target;
-  else if (target !== undefined) throw new InvestigationReadError("An investigation report has an invalid target.");
-  const recommendedValue = rawRecommendation.value;
-  if (recommendedValue === null || typeof recommendedValue === "string" || typeof recommendedValue === "number") {
-    recommendation.value = recommendedValue;
-  } else if (recommendedValue !== undefined) throw new InvestigationReadError("An investigation report has an invalid recommendation value.");
-  const unit = rawRecommendation.unit;
-  if (unit === null || typeof unit === "string") recommendation.unit = unit;
-  else if (unit !== undefined) throw new InvestigationReadError("An investigation report has an invalid recommendation unit.");
-  if (typeof rawRecommendation.explanation === "string") recommendation.explanation = rawRecommendation.explanation;
-  if (typeof rawRecommendation.policy === "string") recommendation.policy = rawRecommendation.policy;
-  if (typeof rawRecommendation.policyDetail === "string") recommendation.policyDetail = rawRecommendation.policyDetail;
+  const recommendation = schemaVersion === 2
+    ? canonicalRecommendation(rawRecommendation)
+    : legacyRecommendation(rawRecommendation);
   if (!Array.isArray(value.evidence) || value.evidence.length === 0 || value.evidence.length > 64) {
     throw new InvestigationReadError("An investigation report has no bounded source citations.");
   }
@@ -233,19 +274,24 @@ function run(value: unknown, alarmArn: string, transitionAt?: string): Investiga
   if (artifactSha256 !== undefined && !/^[a-f0-9]{64}$/i.test(artifactSha256)) {
     throw new InvestigationReadError("An investigation record contains an invalid artifact digest.");
   }
+  const reportSchemaVersion = value.reportSchemaVersion;
+  if (reportSchemaVersion !== undefined &&
+      (typeof reportSchemaVersion !== "number" || !Number.isSafeInteger(reportSchemaVersion) || reportSchemaVersion !== 2)) {
+    throw new InvestigationReadError("An investigation record contains an invalid report schema version.");
+  }
   const failureValue = failure(value.failure);
   let reportValue: InvestigationReport | undefined;
   let reportRejected = false;
   if (status === "complete" && value.report !== undefined && value.report !== null && !failureValue) {
     try {
-      reportValue = report(value.report);
+      reportValue = report(value.report, reportSchemaVersion);
     } catch (error) {
       if (!(error instanceof InvestigationReadError)) throw error;
       status = "failed";
       reportRejected = true;
     }
   } else {
-    reportValue = report(value.report);
+    reportValue = report(value.report, reportSchemaVersion);
   }
   const traceRef = reference(value.traceRef, "trace");
   const captureRef = reference(value.captureRef, "capture");
@@ -273,6 +319,7 @@ function run(value: unknown, alarmArn: string, transitionAt?: string): Investiga
     startedAt,
     deadlineAt,
     ...(finishedAtValue ? { finishedAt: timestamp(finishedAtValue) } : {}),
+    ...(reportSchemaVersion !== undefined ? { reportSchemaVersion: reportSchemaVersion as 2 } : {}),
     ...(reportValue ? { report: reportValue } : {}),
     ...(reportedFailure ? { failure: reportedFailure } : {}),
     ...(traceRef ? { traceRef } : {}),

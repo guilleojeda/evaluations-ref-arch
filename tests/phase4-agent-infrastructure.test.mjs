@@ -267,6 +267,11 @@ test('adapter only forwards to the selected endpoint; Runtime owns the run claim
 
   const runtimeStatements = roleStatements(Resources, runtimeRoleId);
   const runtimeAllows = runtimeStatements.filter(({ Effect }) => Effect === 'Allow');
+  const versionReadResources = runtimeAllows
+    .filter((statement) => actionList(statement).includes('lambda:ListVersionsByFunction'))
+    .flatMap(resourceList);
+  assert.deepEqual(versionReadResources, [`arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoInventory`],
+    'Runtime version discovery is restricted to the named Inventory function');
   assert.ok(runtimeAllows.some((statement) => actionList(statement).includes('dynamodb:PutItem') &&
     resourceList(statement).some((resource) => references(resource, tableId))),
   'Runtime must be able to conditionally create its one running claim in the dedicated table');

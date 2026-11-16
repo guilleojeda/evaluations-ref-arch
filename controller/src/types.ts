@@ -546,6 +546,7 @@ export interface InvestigationRun {
   startedAt: string;
   deadlineAt: string;
   finishedAt?: string;
+  reportSchemaVersion?: 2;
   report?: InvestigationReport;
   failure?: InvestigationFailure;
   traceRef?: { [key: string]: JsonValue };
