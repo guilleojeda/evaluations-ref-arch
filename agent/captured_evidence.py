@@ -204,17 +204,22 @@ def write_bundle(path: str | Path, *, origin: Mapping[str, Any], sources: Mappin
     return target
 
 
-def _load_bundle(path: str | Path) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+def _load_bundle(
+    path: str | Path, *, expected_sha256: str | None = None
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
     target = _as_path(path)
     try:
-        size = target.stat().st_size
+        with target.open("rb") as stream:
+            raw = stream.read(MAX_BUNDLE_BYTES + 1)
     except OSError as exc:
         raise ValueError(f"cannot read bundle: {target}") from exc
-    if size > MAX_BUNDLE_BYTES:
+    if len(raw) > MAX_BUNDLE_BYTES:
         raise ValueError(f"bundle exceeds {MAX_BUNDLE_BYTES} bytes")
+    if expected_sha256 is not None and hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise ValueError("case evidence bundleSha256 does not match the selected bundle")
     try:
-        payload = json.loads(target.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError("bundle is not valid UTF-8 JSON") from exc
     if not isinstance(payload, Mapping):
         raise ValueError("bundle envelope must be an object")
@@ -294,6 +299,7 @@ class CapturedEvidenceTools(EvidenceTools):
         charge_tool_call: Callable[[], Any] | None = None,
     ) -> None:
         origin = payload["origin"]
+        self.origin = dict(origin)
         self.session = None
         self.account_id = str(origin.get("accountId", ""))
         self.region = str(origin.get("region", ""))
@@ -317,10 +323,11 @@ class CapturedEvidenceTools(EvidenceTools):
         path: str | Path,
         *,
         reference_time: str,
+        expected_sha256: str | None = None,
         deadline_monotonic: float | None = None,
         charge_tool_call: Callable[[], Any] | None = None,
     ) -> "CapturedEvidenceTools":
-        payload, sources = _load_bundle(path)
+        payload, sources = _load_bundle(path, expected_sha256=expected_sha256)
         try:
             reference = _iso(_parse_time(reference_time))
         except (TypeError, ValueError) as exc:

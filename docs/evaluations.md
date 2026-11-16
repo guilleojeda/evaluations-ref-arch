@@ -37,7 +37,57 @@ Retain the raw source evidence from S0, including configuration before recovery 
 
 The regression tools query only their referenced captures. They do not fall back to current AWS state or include evidence from after the case reference time. Logs and metrics preserve the candidate's requested windows; configuration reflects values at the reference time; bounded history includes only changes effective by then. Relative query windows, freshness, and current-state assessment use the case reference time, with real execution timestamps recorded separately. Partial results and unavailable coverage stay visible in the tool output. Each candidate chooses its own queries, windows, and order. Do not replay a saved tool-call sequence, inject scenario labels or expected answers, or replace candidate outputs. A fixed captured trace can be judged again, but that is not execution of a changed candidate.
 
-Every regression execution has its own identity, separate from the originating live alarm's deduplication identity. Retain the original alarm and case provenance alongside the regression identity so repeated candidates do not appear as new live events or overwrite a live run. The capture file/schema and provider implementation remain open; prepare the captured-provider/backend plumbing before the talk. Preserve the same case meaning and criteria across evaluation paths without claiming an automatic format interchange.
+Every regression execution has its own identity, separate from the originating live alarm's deduplication identity. Retain the original alarm and case provenance alongside the regression identity so repeated candidates do not appear as new live events or overwrite a live run. The delivered Phase 13 capture schema and provider are the S1 input boundary; any later capture/provider change is a new identified input that requires its own digest and review. Preserve the same case meaning and criteria across evaluation paths without claiming an automatic format interchange.
+
+## S1: Author, validate, freeze, and hand off
+
+The S1 entry starts with the named private Phase 14 receipt and flat import
+archive. The receipt records each exact private source-object SHA-256; compare
+the archive digest with the import log/operator notes and verify imported
+members with the archive's `SHA256SUMS` file. The archive/manifest is staging
+only: extract it to a private work directory outside the editable checkout,
+keep the frozen envelope in a separate private directory, and keep any matching
+original trace private. The presenter opens the draft and trace in the browser
+IDE, inspects the cutoff evidence, fills and saves the reviewed remedy, and
+then runs the same offline commands for the saved case. There is no separate
+`author` CLI command; authoring is the browser file-editor save that precedes
+validation. A prepared denial, capacity, or recovery set is an independent
+entry: select its named private case/bundle pair rather than inheriting the
+just-reviewed case or silently substituting another asset.
+
+Follow the executable [S1 command walkthrough in the agent README](../agent/README.md#review-and-freeze-a-case-s1). It creates a new private import
+directory, verifies the receipt/archive handoff and `SHA256SUMS`, copies the
+manifest-named draft into a separate work directory, opens it with `code -r`,
+and runs `validate`, `freeze`, then `candidate-input` with `--offline`.
+
+`validate` is the review boundary: it checks structure, provenance, source
+availability at the case's reference time, and required/optional coverage. A
+blank remedy, missing required observation, malformed record, bundle digest
+mismatch, or late observation is not ready. `freeze` refuses an existing output
+path and writes the immutable `{caseSha256, case}` envelope only after the
+same checks pass. The envelope binds the normalized reviewed meaning to the
+verified bundle bytes; changes to meaning, cutoff, or evidence require a new
+identified review and identity.
+
+The case's private evidence records the originating alarm and transition,
+genuine originating run ID, bundle SHA-256, and named tool/resource/argument
+references with required or optional reasons. A genuine `originatingRunId`
+stays distinct from any acquisition; when a bundle was acquired separately,
+its `acquisitionId` matches the bundle's `origin.runId`.
+Keep the exact source bytes, original trace, reviewer coverage justification,
+and evaluator-only expectations in private evidence storage or the private
+browser workspace. Do not put raw incident data or evaluator-only case assets
+in tracked code, the Runtime ZIP, or CI artifacts; retain their exact object
+keys and SHA-256 values in the private incident record.
+
+`candidate-input` verifies the frozen envelope and bundle again, then emits
+only the public task fields: alarm context, effective time/window, affected
+service, observed symptoms, and allowed resources. It must not expose
+expectations, admissible actions, diagnosis, reviewer notes, coverage
+references, tool observations, trace content, the case identity, or a score to
+the candidate. The output is a task handoff, not a case review result or an
+evaluation score. All three commands run with AWS credentials and metadata
+access disabled once the private assets are staged.
 
 ## Recommendation correctness
 

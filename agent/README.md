@@ -62,6 +62,83 @@ narrow logs by projected fields. Inspect the returned window, observations and
 completeness before using a result as evidence. A partial or unavailable source
 can leave a conclusion uncertain.
 
+## Review and freeze a case (S1)
+
+Use the private S1 archive from the verified S3 manifest. Compare its SHA-256
+with the recorded archive digest before extraction, then verify every imported
+file against `SHA256SUMS`. In the browser IDE terminal, from the repository root:
+
+```sh
+umask 077
+review_root="${PRIVATE_REVIEW_ROOT:?set a directory outside the editable checkout}"
+archive="${PHASE14_IMPORT_ARCHIVE:?set the verified private archive path}"
+mkdir -p "$review_root"
+session="$(mktemp -d "$review_root/s1.XXXXXX")"
+mkdir "$session/import" "$session/edit" "$session/frozen"
+sha256sum "$archive" # Compare with the recorded archive SHA-256.
+tar -xzf "$archive" -C "$session/import"
+(cd "$session/import" && sha256sum -c SHA256SUMS)
+
+case_file="$session/edit/denial.reviewed.json"
+bundle="$session/import/denial.json"
+frozen="$session/frozen/denial.frozen.json"
+candidate="$session/denial.candidate-task.json"
+cp "$session/import/denial-session-draft.json" "$case_file"
+code -r "$session/import/denial-trace-pointer.json" "$case_file"
+```
+
+The draft starts with an empty `admissibleRecommendations` list. Run
+`validate` once to see the incomplete review and its source coverage. Inspect
+the matched original trace reference and the captured sources at the displayed
+cutoff, then fill in and save the reviewed action, target, value, and unit in
+the browser editor.
+
+Validate the saved review against the same staged bundle before freezing it.
+This command is offline: it does not discover credentials, query AWS, or use a
+live fallback. It reports `ready`, `incomplete`, or `invalid` and shows
+required/optional source coverage:
+
+```sh
+uv run --offline --project agent --locked python agent/reviewed_cases.py validate \
+  --case "$case_file" --bundle "$bundle"
+```
+
+Freeze only a `ready` review. The frozen envelope is immutable input for later
+evaluation, so put it in the separate private frozen directory and choose a new
+path for every changed meaning, cutoff, or evidence set:
+
+```sh
+uv run --offline --project agent --locked python agent/reviewed_cases.py freeze \
+  --case "$case_file" --bundle "$bundle" --output "$frozen"
+```
+
+Hand the candidate runner only the public task projection. It verifies the
+frozen envelope and bundle, then writes JSON containing the allowlisted alarm,
+time/window, service, symptoms, and resource-scope fields; expected actions,
+diagnosis, reviewer notes, coverage references, tool observations, trace data,
+and the original report remain evaluator-only:
+
+```sh
+uv run --offline --project agent --locked python agent/reviewed_cases.py candidate-input \
+  --case "$frozen" --bundle "$bundle" > "$candidate"
+```
+
+The case retains provenance independently of that projection: the originating
+alarm and transition, genuine originating run ID, bundle SHA-256, named
+tool/resource/argument references with required or optional reasons, and the
+case reference time. A genuine `originatingRunId` stays distinct from any
+acquisition; when a bundle came from a separate acquisition, its `acquisitionId`
+matches the bundle's `origin.runId`. The frozen `caseSha256` binds
+the reviewed meaning to the verified bundle digest. Keep those IDs, exact
+source bytes, trace references, and the review coverage justification in the
+private incident record; never replace a missing or mismatched asset with live
+state.
+
+For independent entry, use the prepared case and bundle pair from the verified
+manifest. Review coverage using the corresponding `*-prepared.json` file.
+For the candidate task, pass the matching `*-prepared.frozen.json` envelope
+directly to `candidate-input`.
+
 ## Local health and invalid-event smoke
 
 Start the local Runtime entrypoint in one terminal:
