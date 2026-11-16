@@ -635,6 +635,7 @@ def _report_result(
     elif report is not None:
         identity["reportSha256"] = _digest(report)
     findings = _blank_findings("incomplete", "report or execution evidence is unavailable")
+    links = None
     report_model, structure_error = _validate_report(report)
     if report is None and archive is not None:
         findings["report_structure"] = _finding("incomplete", None, "report is missing from the authenticated run")
@@ -672,14 +673,21 @@ def _report_result(
     status = "complete"
     if any(finding["status"] == "error" for finding in findings.values()):
         status = "error"
-    elif any(finding["status"] == "incomplete" for finding in findings.values()):
+    elif (links is not None and links["status"] == "incomplete") or any(
+        finding["status"] == "incomplete" for finding in findings.values()
+    ):
         status = "incomplete"
-    return {
+    result = {
         "status": status,
         "inputKind": input_kind,
         "identity": identity,
         "findings": findings,
     }
+    if links is not None:
+        # Known quality failures can occupy both scope and timing findings.
+        # Keep missing linkage visible even in that case.
+        result["traceLinkage"] = {"status": links["status"], "reason": links["reason"]}
+    return result
 
 
 def check_report(report: Mapping[str, Any], loaded_case: Mapping[str, Any]) -> dict[str, Any]:

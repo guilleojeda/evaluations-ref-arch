@@ -161,7 +161,9 @@ Both commands emit JSON only on standard output. The result has `status`
 `report_only`), verified identity fields, and separate findings for
 `report_structure`, `assessment`, `action`, `target`, `target_value`,
 `source_scope`, `as_of_time`, and `operator_boundary`. Each finding includes
-its own status, nullable `verdict` (`pass` or `fail`), and reason.
+its own status, nullable `verdict` (`pass` or `fail`), and reason. Recorded
+results also show `traceLinkage` so missing joins remain visible alongside
+known scope or timing failures.
 
 Exit status 0 means every applicable check completed. Read the individual
 verdicts to see which findings passed or failed. Exit status 2 means an input
@@ -170,8 +172,8 @@ bundle, report, run, alarm transition, trace, and Runtime session identities.
 Equivalent read-only query orders are accepted, while missing or unlinked
 activity remains incomplete. The report-only path can check report fields and
 explicit citation timing, but its execution-dependent source and operator
-findings remain incomplete. Treat constructed reports as controls and retain the recorded identity when
-showing a genuine saved result.
+findings remain incomplete. Treat constructed reports as controls and retain
+the recorded identity when showing a genuine saved result.
 
 Keep cases, bundles, reports, and native spans in private evidence storage or a
 private operator workspace. The checker runs offline and emits only the findings and their input

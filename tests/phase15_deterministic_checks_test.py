@@ -829,6 +829,22 @@ class DeterministicChecksAcceptanceTests(unittest.TestCase):
                 _completed, result = self.deterministic(frozen, record=archive)
                 self.assertEqual("fail", result["findings"]["source_scope"]["verdict"])
 
+    def test_incomplete_linkage_stays_visible_with_known_scope_and_time_failures(self):
+        report = report_for(
+            recommendation("Restore inventory access", "inventory", "75", "version"), late_citation=True
+        )
+        for gap in ("span_outside_result", "unlinked_calls"):
+            with self.subTest(gap=gap):
+                frozen, archive, _case = self.make_record_case(
+                    report, archive_kwargs={gap: True, "out_of_scope": True}, name=f"independent-gap-{gap}"
+                )
+                completed, result = self.deterministic(frozen, record=archive)
+                self.assertEqual(2, completed.returncode, completed.stderr)
+                self.assertEqual("incomplete", result["status"])
+                self.assertEqual("incomplete", result["traceLinkage"]["status"])
+                for name in ("source_scope", "as_of_time"):
+                    self.assertEqual("fail", result["findings"][name]["verdict"])
+
     def test_missing_report_cannot_be_graded(self):
         frozen, archive, _case = self.make_record_case(None, name="missing-report", archive_kwargs={"late_result": True})
         completed, result = self.deterministic(frozen, record=archive)
