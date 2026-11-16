@@ -250,7 +250,10 @@ class CapturedBaselineAcceptance(unittest.TestCase):
                     "referenceTime": "2026-11-13T10:05:00.000Z",
                     "completeness": "partial",
                     "truncated": True,
-                    "gaps": ["capture coverage ends at 2026-11-13T10:04:59.123456Z"],
+                    "gaps": [
+                        "capture coverage ends at 2026-11-13T10:04:59.123456Z",
+                        "logs has no captured scope for gateway",
+                    ],
                     "errors": [],
                     "observations": [
                         {
@@ -279,6 +282,7 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         self.assertIn("availableAt=missing", projection)
         self.assertIn("referenceTime=2026-11-13T10:05:00.000Z", projection)
         self.assertIn("capture coverage ends at 2026-11-13T10:04:59.123456Z", projection)
+        self.assertIn("additional gaps detailed in native result", projection)
         self.assertIn("omittedRows=unknown", projection)
         self.assertNotIn("ignore this free text", projection)
 

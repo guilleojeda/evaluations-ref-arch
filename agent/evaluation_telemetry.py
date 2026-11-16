@@ -664,6 +664,8 @@ def _timing_gap_windows(value: Any) -> str:
                 if timestamp not in {"missing", "invalid"}:
                     bounds.append(f"{label} {timestamp}")
                 break
+    if len(bounds) < len(value):
+        bounds.append("additional gaps detailed in native result")
     return "|".join(bounds) if bounds else "none"
 
 
