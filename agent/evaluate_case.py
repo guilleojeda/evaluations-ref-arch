@@ -160,7 +160,8 @@ def _summary(result: dict[str, Any]) -> dict[str, Any]:
         key: result[key] for key in (
             "status", "kind", "executionId", "scoringAttemptId", "identity", "evaluator",
             "reason", "diagnostic", "deterministic", "elapsedSeconds", "waitSeconds", "scoringSeconds",
-            "usage", "modelRequestCount", "evidenceToolCallCount", "failure", "telemetryError",
+            "usage", "modelRequestCount", "evidenceToolCallCount", "evidenceProviderCallCount",
+            "failure", "telemetryError",
         ) if key in result
     }
     semantic = result.get("semantic")

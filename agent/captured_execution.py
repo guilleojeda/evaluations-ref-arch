@@ -620,6 +620,7 @@ def _run_snapshot(
             "deterministic": None,
             "modelRequestCount": 0,
             "evidenceToolCallCount": 0,
+            "evidenceProviderCallCount": 0,
             "usage": {},
         }
         _write_json_atomic(run_dir / "execution.json", record)
@@ -683,7 +684,14 @@ def _run_snapshot(
                 timer.daemon = True
                 timer.start()
                 public_task = json.dumps(task, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-                report = invoke_agent(agent, public_task, cancel_signal=cancel_signal)
+                report = invoke_agent(
+                    agent,
+                    public_task,
+                    deadline_monotonic=deadline,
+                    cancel_signal=cancel_signal,
+                )
+                if report is None:
+                    raise TimeoutError("captured investigation deadline exceeded after agent returned")
             finally:
                 detach(baggage_token)
             if timer is not None:
@@ -695,7 +703,7 @@ def _run_snapshot(
             record["report"] = report
             identity["reportSha256"] = _sha256(_json_bytes(report))
             record["modelRequestCount"] = bounded_model.requests
-            record["evidenceToolCallCount"] = tool_budget.calls
+            record["evidenceProviderCallCount"] = tool_budget.calls
             record["usage"] = _usage(observer.spans)
             raw_spans = _span_documents(observer.spans)
             _write_json_atomic(run_dir / "strands.native-spans.json", {"spans": raw_spans})
@@ -706,8 +714,10 @@ def _run_snapshot(
                 raise ValueError("structured report differs from the actual InvestigationReport span")
             if bounded_model.requests != len(projection.get("modelCalls", [])):
                 raise ValueError("actual Bedrock request count differs from native model spans")
-            if tool_budget.calls != len(projection.get("toolCalls", [])):
-                raise ValueError("captured evidence tool count differs from native tool spans")
+            tool_attempts = projection.get("toolCalls", [])
+            if tool_budget.calls > len(tool_attempts) or tool_budget.calls > MAX_TOOL_CALLS:
+                raise ValueError("captured provider tool count exceeds observed attempts or its shared cap")
+            record["evidenceToolCallCount"] = len(tool_attempts)
             trace_id = _verify_native_identity(
                 observer.spans,
                 projection,
@@ -733,13 +743,14 @@ def _run_snapshot(
                     _write_json_atomic(run_dir / "strands.native-spans.json", {"spans": raw_spans})
                     record["nativeSpansSha256"] = _sha256(_json_bytes({"spans": raw_spans}))
                     record["modelRequestCount"] = locals().get("bounded_model").requests if "bounded_model" in locals() else 0
-                    record["evidenceToolCallCount"] = locals().get("tool_budget").calls if "tool_budget" in locals() else 0
+                    record["evidenceProviderCallCount"] = locals().get("tool_budget").calls if "tool_budget" in locals() else 0
                     record["usage"] = _usage(observer.spans)
                     projection = execution_content(observer.spans)
                     record["ledger"] = {
                         name: projection[name]
                         for name in ("agentSpanId", "modelCalls", "toolCalls", "reportSpanId")
                     }
+                    record["evidenceToolCallCount"] = len(projection["toolCalls"])
                     if record.get("report") is not None and _json_bytes(projection.get("report")) != _json_bytes(record["report"]):
                         record["telemetryError"] = "structured report differs from the actual report span"
                     else:
@@ -912,6 +923,14 @@ def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any],
             raise ValueError("saved model request count differs from native spans")
         if record.get("evidenceToolCallCount") != len(expected_ledger["toolCalls"]):
             raise ValueError("saved evidence-tool count differs from native spans")
+        provider_call_count = record.get("evidenceProviderCallCount")
+        if (
+            type(provider_call_count) is not int
+            or provider_call_count < 0
+            or provider_call_count > MAX_TOOL_CALLS
+            or provider_call_count > len(expected_ledger["toolCalls"])
+        ):
+            raise ValueError("saved provider-call count exceeds observed attempts or the shared cap")
         findings = check_captured_report(report, loaded_case, expected_ledger)
         if _json_bytes(record.get("deterministic")) != _json_bytes(findings):
             raise ValueError("saved deterministic findings differ from the authenticated report and ledger")

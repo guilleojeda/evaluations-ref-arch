@@ -68,11 +68,11 @@ class EvaluationService:
 class ScriptedBedrock:
     """ConverseStream responses for real Strands and captured tools."""
 
-    def __init__(self, report, task):
+    def __init__(self, report, task, reads=None):
         self.report = report
         self.task = task
         self.requests = []
-        self.reads = iter(({"resource": "inventory", "service": "gateway"}, {"resource": "inventory"}))
+        self.reads = iter(reads if reads is not None else ({"resource": "inventory", "service": "gateway"}, {"resource": "inventory"}))
         self.region_name = "us-east-1"
         self.meta = SimpleNamespace(
             region_name=self.region_name,
@@ -194,7 +194,15 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         from evaluate_case import run_captured_case
         from opentelemetry.sdk.trace import TracerProvider
 
-        bedrock = ScriptedBedrock(report, case["task"])
+        bedrock = ScriptedBedrock(
+            report,
+            case["task"],
+            reads=(
+                {"resource": "inventory", "limit": "not-an-integer"},
+                {"resource": "inventory", "service": "gateway"},
+                {"resource": "inventory"},
+            ),
+        )
         from opentelemetry import trace
         trace.set_tracer_provider(TracerProvider())
         run_dir = Path(run_captured_case(reviewed, self.bundle, self.output_root, model_session=bedrock))
@@ -234,6 +242,8 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         self.assertEqual(scored["status"], "complete", scored)
         self.assertEqual(len(evaluate_calls), 1)
         self.assertEqual(evaluate_calls[0]["evaluationInput"]["sessionSpans"], native_spans)
+        self.assertEqual(record["evidenceToolCallCount"], 3)
+        self.assertEqual(record["evidenceProviderCallCount"], 2)
 
         self.assertTrue(run_dir.is_dir())
         self.assertGreaterEqual(len(bedrock.requests), 3)
@@ -260,8 +270,17 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         self.assertEqual(shown["report"], report)
         self.assertNotEqual(shown["identity"]["executionId"], self.loaded["originatingRunId"])
         tools = shown["ledger"]["toolCalls"]
-        self.assertEqual([step["arguments"].get("service") for step in tools if step["tool"] == "search_logs"], ["gateway", None])
+        self.assertEqual(
+            [step["arguments"].get("service") for step in tools if step["tool"] == "search_logs"],
+            [None, "gateway", None],
+        )
+        self.assertTrue(any(
+            step["status"] == "error" and step["arguments"].get("limit") == "not-an-integer"
+            for step in tools
+        ))
         self.assertTrue(any(step["status"] == "error" and step["arguments"].get("service") == "gateway" for step in tools))
+        self.assertEqual(shown["evidenceToolCallCount"], 3)
+        self.assertEqual(shown["evidenceProviderCallCount"], 2)
         self.assertEqual(len(shown["ledger"]["modelCalls"]), len(bedrock.requests))
         findings = shown["deterministic"]["findings"]
         self.assertEqual((findings["action"]["verdict"], findings["target"]["verdict"]), ("fail", "pass"))

@@ -221,16 +221,22 @@ def create_agent(
     return agent, bounded_model
 
 
-def invoke_agent(agent: Any, prompt: str, *, cancel_signal: Event) -> dict[str, Any]:
-    """Invoke the constructed agent once and validate its structured report."""
+def invoke_agent(
+    agent: Any,
+    prompt: str,
+    *,
+    deadline_monotonic: float,
+    cancel_signal: Event,
+) -> dict[str, Any] | None:
+    """Invoke once; return None only when a normal result arrives after cancellation."""
 
     result = agent(
         prompt,
         limits={"turns": MAX_TURNS, "structured_output_attempts": 1},
         cancel_signal=cancel_signal,
     )
-    if cancel_signal.is_set():
-        raise TimeoutError("investigation deadline exceeded")
+    if cancel_signal.is_set() or time.monotonic() >= deadline_monotonic:
+        return None
     structured = getattr(result, "structured_output", None)
     if isinstance(structured, InvestigationReport):
         return structured.model_dump(mode="json")

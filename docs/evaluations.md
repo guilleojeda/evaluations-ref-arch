@@ -165,9 +165,9 @@ recommendation checks still evaluate the action, target, and value
 independently. The saved result keeps each verdict and its reason.
 
 Judge calibration uses labeled, constructed controls grounded in retained
-evidence. Development and holdout incident families are distinct, and the
-reference contrast isolates the effect of changing a reviewed assertion while
-keeping the session fixed. This small sample covers the reviewed examples
+evidence. Development and holdout controls come from separate incidents. The
+reference contrast changes a reviewed assertion while keeping the session
+fixed. This small sample covers the reviewed examples
 and their counterexamples. Record the evaluated configurations, disagreements,
 and explicit repeat alongside the baseline evidence.
 

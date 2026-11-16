@@ -497,9 +497,10 @@ def invoke(payload: Any, context: RequestContext) -> dict[str, Any]:
             report_value = invoke_agent(
                 agent,
                 _runtime_prompt(event, transition_at, started_at),
+                deadline_monotonic=deadline_monotonic,
                 cancel_signal=cancel_signal,
             )
-            if cancel_signal.is_set() or time.monotonic() >= deadline_monotonic:
+            if report_value is None or cancel_signal.is_set() or time.monotonic() >= deadline_monotonic:
                 return {"status": "running", "runId": run_id, "transitionAt": transition_at}
 
             query_capture = evidence.persist_query_results([])
