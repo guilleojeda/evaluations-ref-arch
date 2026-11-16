@@ -476,7 +476,8 @@ def load_frozen_case(case_path: str | Path, bundle_path: str | Path) -> dict[str
         "task": dict(case["task"]),
         "caseSha256": envelope_digest,
         "bundleSha256": result["bundleSha256"],
-        "referenceTime": result["referenceTime"],
+        # Grading uses the frozen task cutoff, including its recorded precision.
+        "referenceTime": case["task"]["referenceTime"],
         "originatingRunId": result["originatingRunId"],
     }
 

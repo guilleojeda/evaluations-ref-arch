@@ -37,10 +37,7 @@ FINDINGS = (
 )
 REPORT_TOOL = "InvestigationReport"
 ARCHIVE_SCHEMA = "phase4-capture-investigation/v1"
-TIMESTAMP_PATTERN = re.compile(
-    r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
-    r"(?:\.([0-9]{1,9}))?(?:Z|[+-](?:[01][0-9]|2[0-3]):?[0-5][0-9])$"
-)
+SUBMICROSECOND_FRACTION = re.compile(r"[.,]([0-9]{7,})(?=Z$|[+-])")
 UTC_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
@@ -96,19 +93,17 @@ def _parse_time(value: Any, label: str) -> int:
     if not isinstance(value, str) or not value.strip():
         raise CheckerInputError(f"{label} is not a timezone-qualified timestamp")
     text = value.strip()
-    match = TIMESTAMP_PATTERN.fullmatch(text)
-    if match is None:
-        raise CheckerInputError(f"{label} is not a timezone-qualified timestamp")
     try:
         parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
     except ValueError as exc:
         raise CheckerInputError(f"{label} is not a valid timestamp") from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise CheckerInputError(f"{label} is not timezone-qualified")
-    # Datetime validates the calendar and offset but retains only microseconds.
-    fraction = int((match.group(1) or "").ljust(9, "0"))
-    delta = parsed.replace(microsecond=0) - UTC_EPOCH
-    return (delta.days * 86_400 + delta.seconds) * 1_000_000_000 + fraction
+    # Accept the same ISO forms as case review and keep nanoseconds where supplied.
+    delta = parsed - UTC_EPOCH
+    match = SUBMICROSECOND_FRACTION.search(text)
+    extra_ns = int(match.group(1)[6:9].ljust(3, "0")) if match else 0
+    return (delta.days * 86_400 + delta.seconds) * 1_000_000_000 + delta.microseconds * 1_000 + extra_ns
 
 
 def _optional_time(value: Any) -> int | None:

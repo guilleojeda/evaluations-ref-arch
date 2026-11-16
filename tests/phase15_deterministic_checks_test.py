@@ -721,13 +721,25 @@ class DeterministicChecksAcceptanceTests(unittest.TestCase):
     def test_report_only_cutoff_has_full_precision_and_null_is_invalid_structure(self):
         restore = recommendation("Restore inventory access", "inventory", "75", "version")
         report = report_for(restore)
-        frozen, _archive, _case = self.make_record_case(report, name="report-cutoff-precision")
+        frozen, archive, case = self.make_record_case(report, name="report-cutoff-precision")
         cases = ((REFERENCE, "pass"), ("2026-11-13T10:05:00.000000001Z", "fail"))
         for instant, verdict in cases:
             with self.subTest(instant=instant):
                 report["evidence"][2]["observedAt"] = instant
                 _completed, result = self.deterministic(frozen, report=report)
                 self.assertEqual(verdict, result["findings"]["as_of_time"]["verdict"])
+
+        precise_cutoff = "2026-11-13 10:05:00.000900+00:00"
+        case["task"]["referenceTime"] = precise_cutoff
+        case["task"]["transitionAt"] = "2026-11-13 10:05:00+00:00"
+        precise_case = self.freeze_case(case, name="exact-frozen-cutoff")
+        report["evidence"][2]["observedAt"] = "2026-11-13T10:05:00.000800Z"
+        _completed, result = self.deterministic(precise_case, report=report)
+        self.assertEqual(precise_cutoff, result["identity"]["referenceTime"])
+        self.assertEqual("pass", result["findings"]["as_of_time"]["verdict"])
+        completed, result = self.deterministic(precise_case, record=archive)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(precise_cutoff, result["identity"]["referenceTime"])
 
         null_report = self.directory / "null.json"
         self.write_json(null_report, None)
