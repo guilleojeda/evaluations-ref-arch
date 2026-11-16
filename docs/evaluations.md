@@ -16,7 +16,7 @@ Turning a failed run into a case requires reviewing the expected answer and beha
 
 ## Worked case: Inventory access denied
 
-This is a planned semantic example, not run data: no trace, measurement, or evaluation result exists yet. It shows what one reviewed access-denied case must connect before the example can be presented as evidence.
+This table describes the evidence needed to demonstrate a memory recommendation on a reviewed access-denied case. The recorded S2 evidence is summarized below.
 
 | Part of the example | What it must establish |
 | --- | --- |
@@ -163,6 +163,12 @@ the available evidence. Evidence grounding checks whether material claims and
 citations match the observations the agent received. The deterministic
 recommendation checks still evaluate the action, target, and value
 independently. The saved result keeps each verdict and its reason.
+
+The first frozen-case run recommended restoring Inventory access. Its
+deterministic cutoff check failed on a citation beyond the reviewed time.
+Haiku 4.5 passed both semantic findings in two provisional scoring attempts.
+Both explanations treated an empty, clipped tool response as evidence through
+the full requested window. The fresh memory recommendation remains unverified.
 
 Judge calibration uses labeled, constructed controls grounded in retained
 evidence. Development and holdout controls come from separate incidents. The

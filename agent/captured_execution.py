@@ -294,11 +294,11 @@ class _ToolBudget:
         self.calls = 0
 
     def __call__(self) -> None:
-        self.calls += 1
-        if self.calls > MAX_TOOL_CALLS:
+        if self.calls >= MAX_TOOL_CALLS:
             from investigation import ToolBudgetExceeded
 
             raise ToolBudgetExceeded("tool call limit reached")
+        self.calls += 1
 
 
 def _span_observer() -> Any:

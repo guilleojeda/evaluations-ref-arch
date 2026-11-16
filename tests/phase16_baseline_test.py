@@ -47,8 +47,9 @@ LOCK_DIGEST = "c" * 64
 class EvaluationService:
     """Substitute only for the AWS Evaluate service."""
 
-    def __init__(self):
+    def __init__(self, session_id=SESSION_ID):
         self.calls = []
+        self.session_id = session_id
 
     def evaluate(self, **request):
         self.calls.append(request)
@@ -57,7 +58,7 @@ class EvaluationService:
                 {
                     "evaluatorId": EVALUATOR_ID,
                     "evaluationDimensionName": dimension,
-                    "context": {"spanContext": {"sessionId": SESSION_ID}},
+                    "context": {"spanContext": {"sessionId": self.session_id}},
                     "label": "pass",
                     "explanation": "The synthetic session supports this criterion.",
                 }
@@ -110,6 +111,41 @@ class ScriptedBedrock:
         events.extend((
             {"contentBlockStop": {"contentBlockIndex": 0}},
             {"messageStop": {"stopReason": "tool_use" if name else "end_turn"}},
+            {"metadata": {"usage": {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}, "metrics": {"latencyMs": 1}}},
+        ))
+        return {"stream": iter(events)}
+
+
+class OverBudgetScriptedBedrock(ScriptedBedrock):
+    """Emit one native response with 13 reads, then return the report."""
+
+    def converse_stream(self, **request):
+        self.requests.append(copy.deepcopy(request))
+        forced = request.get("toolConfig", {}).get("toolChoice", {}).get("tool", {}).get("name")
+        if forced == "InvestigationReport" or len(self.requests) > 1:
+            requested = [("InvestigationReport", self.report)]
+        else:
+            requested = [("search_logs", {"resource": "inventory"}) for _ in range(13)]
+        events = [{"messageStart": {"role": "assistant"}}]
+        for index, (name, arguments) in enumerate(requested):
+            call_id = f"tool-{len(self.requests)}-{index}"
+            events.extend((
+                {
+                    "contentBlockStart": {
+                        "contentBlockIndex": index,
+                        "start": {"toolUse": {"toolUseId": call_id, "name": name}},
+                    }
+                },
+                {
+                    "contentBlockDelta": {
+                        "contentBlockIndex": index,
+                        "delta": {"toolUse": {"input": json.dumps(arguments)}},
+                    }
+                },
+                {"contentBlockStop": {"contentBlockIndex": index}},
+            ))
+        events.extend((
+            {"messageStop": {"stopReason": "tool_use"}},
             {"metadata": {"usage": {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}, "metrics": {"latencyMs": 1}}},
         ))
         return {"stream": iter(events)}
@@ -219,37 +255,20 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         from evaluation_telemetry import score_execution
 
         record, reopened_case, native_spans = load_execution(run_dir)
-        evaluate_calls = []
-
-        class RecordingEvaluate:
-            def evaluate(self, **request):
-                evaluate_calls.append(request)
-                session_id = request["evaluationReferenceInputs"][0]["context"]["spanContext"]["sessionId"]
-                return {
-                    "evaluationResults": [
-                        {
-                            "evaluatorId": EVALUATOR_ID,
-                            "evaluationDimensionName": dimension,
-                            "context": {"spanContext": {"sessionId": session_id}},
-                            "label": "pass",
-                            "explanation": "The captured native spans reached the evaluator.",
-                        }
-                        for dimension in ("diagnosis_support", "evidence_grounding")
-                    ]
-                }
+        evaluate = EvaluationService(session_id=record["identity"]["sessionId"])
 
         scored = score_execution(
             record,
             reopened_case,
             fetch_session=lambda _session_id, _trace_id: copy.deepcopy(native_spans),
-            evaluation_client=RecordingEvaluate(),
+            evaluation_client=evaluate,
             evaluator_id=EVALUATOR_ID,
             wait_seconds=0,
             verified_spans=native_spans,
         )
         self.assertEqual(scored["status"], "complete", scored)
-        self.assertEqual(len(evaluate_calls), 1)
-        self.assertEqual(evaluate_calls[0]["evaluationInput"]["sessionSpans"], native_spans)
+        self.assertEqual(len(evaluate.calls), 1)
+        self.assertEqual(evaluate.calls[0]["evaluationInput"]["sessionSpans"], native_spans)
         self.assertEqual(record["evidenceToolCallCount"], 3)
         self.assertEqual(record["evidenceProviderCallCount"], 2)
 
@@ -329,6 +348,59 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         self.assertEqual(interrupted["report"], report)
         self.assertEqual(interrupted["deterministic"]["inputKind"], "report_only")
         self.assertEqual(interrupted["deterministic"]["findings"]["action"]["verdict"], "fail")
+
+    def test_tool_budget_rejection_keeps_native_attempt_and_scoreable_ledger(self):
+        from captured_execution import load_execution
+        from evaluate_case import run_captured_case
+        from evaluation_telemetry import score_execution
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+
+        report = report_for(recommendation("Restore inventory access", "inventory", "75", "version"))
+        report["evidence"] = [{
+            "source": "cloudwatch",
+            "resource": "inventory",
+            "windowStart": self.case["task"]["incidentWindow"]["start"],
+            "windowEnd": self.case["task"]["referenceTime"],
+            "observedAt": self.case["task"]["referenceTime"],
+            "finding": "The returned Inventory read was denied.",
+        }]
+        bedrock = OverBudgetScriptedBedrock(report, self.case["task"])
+        if not isinstance(trace.get_tracer_provider(), TracerProvider):
+            trace.set_tracer_provider(TracerProvider())
+
+        run_dir = Path(run_captured_case(
+            self.frozen, self.bundle, self.output_root, model_session=bedrock,
+        ))
+        record, loaded_case, native_spans = load_execution(run_dir)
+
+        self.assertEqual(record["status"], "complete", record)
+        self.assertEqual(len(bedrock.requests), 2)
+        self.assertEqual(record["modelRequestCount"], 2)
+        self.assertEqual(record["evidenceToolCallCount"], 13)
+        self.assertEqual(record["evidenceProviderCallCount"], 12)
+        calls = record["ledger"]["toolCalls"]
+        self.assertEqual(len(calls), 13)
+        self.assertEqual([call["status"] for call in calls[:12]], ["success"] * 12)
+        self.assertEqual(calls[-1]["tool"], "search_logs")
+        self.assertEqual(calls[-1]["status"], "error")
+        self.assertIn("ToolBudgetExceeded", calls[-1]["result"]["error"])
+
+        evaluate = EvaluationService(session_id=record["identity"]["sessionId"])
+        scored = score_execution(
+            record,
+            loaded_case,
+            fetch_session=lambda _session_id, _trace_id: copy.deepcopy(native_spans),
+            evaluation_client=evaluate,
+            evaluator_id=EVALUATOR_ID,
+            wait_seconds=0,
+            verified_spans=native_spans,
+        )
+        self.assertEqual(scored["status"], "complete", scored)
+        self.assertEqual(scored["deterministic"]["status"], "complete")
+        self.assertEqual(scored["deterministic"]["findings"]["action"]["verdict"], "pass")
+        self.assertEqual(scored["telemetry"]["status"], "complete")
+        self.assertEqual(len(evaluate.calls), 1)
 
     def test_run_refuses_modified_frozen_input_before_any_cloud_work(self):
         envelope = json.loads(self.frozen.read_text())
