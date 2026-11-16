@@ -151,6 +151,26 @@ class OverBudgetScriptedBedrock(ScriptedBedrock):
         return {"stream": iter(events)}
 
 
+class FailedArgumentsScriptedBedrock(ScriptedBedrock):
+    """Emit one native tool request with a schema-invalid array argument."""
+
+    def converse_stream(self, **request):
+        if self.requests:
+            return super().converse_stream(**request)
+        self.requests.append(copy.deepcopy(request))
+        call_id = "tool-1"
+        arguments = [{"resource": "inventory"}]
+        events = [
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockStart": {"contentBlockIndex": 0, "start": {"toolUse": {"toolUseId": call_id, "name": "search_logs"}}}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"toolUse": {"input": json.dumps(arguments)}}}},
+            {"contentBlockStop": {"contentBlockIndex": 0}},
+            {"messageStop": {"stopReason": "tool_use"}},
+            {"metadata": {"usage": {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}, "metrics": {"latencyMs": 1}}},
+        ]
+        return {"stream": iter(events)}
+
+
 def session_span(span_id, name, *, operation, events, **attributes):
     span = {
         "spanId": span_id,
@@ -402,6 +422,51 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         self.assertEqual(scored["telemetry"]["status"], "complete")
         self.assertEqual(len(evaluate.calls), 1)
 
+    def test_native_failed_array_arguments_are_retained_and_scoreable(self):
+        from captured_execution import load_execution
+        from evaluate_case import run_captured_case
+        from evaluation_telemetry import score_execution
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+
+        report = report_for(recommendation("Increase memory", "inventory", 512, "MB"))
+        report["evidence"] = [{
+            "source": "cloudwatch",
+            "resource": "inventory",
+            "windowStart": self.case["task"]["incidentWindow"]["start"],
+            "windowEnd": self.case["task"]["referenceTime"],
+            "observedAt": self.case["task"]["referenceTime"],
+            "finding": "The returned Inventory read was denied.",
+        }]
+        if not isinstance(trace.get_tracer_provider(), TracerProvider):
+            trace.set_tracer_provider(TracerProvider())
+        bedrock = FailedArgumentsScriptedBedrock(report, self.case["task"])
+        run_dir = Path(run_captured_case(
+            self.frozen, self.bundle, self.output_root, model_session=bedrock,
+        ))
+        record, loaded_case, native_spans = load_execution(run_dir)
+        calls = record["ledger"]["toolCalls"]
+        self.assertEqual(calls[0]["status"], "error")
+        self.assertEqual(calls[0]["arguments"], [{"resource": "inventory"}])
+        self.assertEqual(calls[0]["result"], {
+            "error": "Error: Validation failed for input parameters: "
+            "strands.tools.decorator.Search_logsTool() argument after ** must be a mapping, not list",
+        })
+
+        evaluate = EvaluationService(session_id=record["identity"]["sessionId"])
+        scored = score_execution(
+            record, loaded_case,
+            fetch_session=lambda _session_id, _trace_id: copy.deepcopy(native_spans),
+            evaluation_client=evaluate,
+            evaluator_id=EVALUATOR_ID,
+            wait_seconds=0,
+            verified_spans=native_spans,
+        )
+        self.assertEqual(scored["status"], "complete", scored)
+        self.assertEqual(scored["deterministic"]["findings"]["operator_boundary"]["status"], "complete")
+        self.assertEqual(scored["telemetry"]["status"], "complete")
+        self.assertEqual(len(evaluate.calls), 1)
+
     def test_run_refuses_modified_frozen_input_before_any_cloud_work(self):
         envelope = json.loads(self.frozen.read_text())
         envelope["case"]["task"]["symptoms"][0] += " Modified after review."
@@ -438,7 +503,9 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         ).hexdigest()
         arguments = {"resource": "inventory"}
         returned = {"coverage": "partial", "observations": []}
-        rejected_arguments = {"resource": "invented"}
+        # The failed native call retains the raw JSON value the model sent;
+        # Strands does not coerce a rejected array into the tool's object schema.
+        rejected_arguments = [{"resource": "invented"}]
         rejected_result = {"error": "Requested resource is unsupported."}
         model_input = "Inspect Inventory."
         model_output = "I will check Inventory."
@@ -576,6 +643,10 @@ class CapturedBaselineAcceptance(unittest.TestCase):
                 "gen_ai.system.message", "gen_ai.assistant.message", "gen_ai.tool.message",
             }
         ]
+        successful_arguments_array = copy.deepcopy(ready)
+        successful_arguments_array[2]["events"][0]["attributes"]["content"] = json.dumps(
+            [{"resource": "inventory"}]
+        )
 
         for case, mutation in (
             ("empty", []),
@@ -587,6 +658,7 @@ class CapturedBaselineAcceptance(unittest.TestCase):
             ("unmatched trace", [{**ready[0], "traceId": "9" * 32}, *ready[1:]]),
             ("conflicting duplicate span", [*ready, different_report[-1]]),
             ("wrong tool payload", wrong_tool),
+            ("successful tool arguments are not an object", successful_arguments_array),
             ("truncated report", truncated_report),
             ("different report", different_report),
             ("different candidate snapshot", other_snapshot),
@@ -671,6 +743,15 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         self.assertNotEqual(first["scoringAttemptId"], rejudged["scoringAttemptId"])
         self.assertEqual(first["deterministic"]["findings"]["action"]["verdict"], "fail")
         self.assertEqual(first["deterministic"]["findings"]["target"]["verdict"], "pass")
+        self.assertEqual(first["deterministic"]["findings"]["operator_boundary"]["status"], "complete")
+        from evaluation_telemetry import execution_content
+
+        failed = next(
+            call for call in execution_content(ready)["toolCalls"]
+            if call["callId"] == "configuration-2"
+        )
+        self.assertEqual(failed["arguments"], rejected_arguments)
+        self.assertEqual(failed["result"], rejected_result)
         self.assertEqual(len(service.calls), 2)
         for request in service.calls:
             self.assertEqual(request["evaluationInput"]["sessionSpans"], ready)

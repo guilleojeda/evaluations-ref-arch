@@ -194,13 +194,11 @@ def _verify_exporter_setup() -> Any:
     if traces_headers.get("x-aws-log-stream") != "spans":
         missing.append("OTEL_EXPORTER_OTLP_TRACES_HEADERS.x-aws-log-stream")
     trace_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-    generic_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
-    if trace_endpoint is not None and trace_endpoint.rstrip("/") != TRACE_ENDPOINT:
+    if trace_endpoint is None or trace_endpoint.rstrip("/") != TRACE_ENDPOINT:
         missing.append("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-    if generic_endpoint is not None and generic_endpoint.rstrip("/") not in {
-        "https://xray.us-east-1.amazonaws.com",
-    }:
-        missing.append("OTEL_EXPORTER_OTLP_ENDPOINT")
+    trace_protocol = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")
+    if trace_protocol is not None and trace_protocol != "http/protobuf":
+        missing.append("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL")
     if missing:
         raise ValueError("production telemetry exporter setup is incomplete: " + ", ".join(sorted(set(missing))))
 
@@ -210,6 +208,19 @@ def _verify_exporter_setup() -> Any:
     provider = trace.get_tracer_provider()
     if not isinstance(provider, TracerProvider):
         raise ValueError("production run must start through the locked ADOT opentelemetry-instrument launcher")
+    try:
+        from amazon.opentelemetry.distro.exporter.otlp.aws.traces.otlp_aws_span_exporter import OTLPAwsSpanExporter
+        from opentelemetry.sdk.trace.export import BatchSpanProcessor
+    except ImportError as exc:
+        raise ValueError("locked ADOT AWS OTLP trace exporter is unavailable") from exc
+    active_processors = getattr(getattr(provider, "_active_span_processor", None), "_span_processors", None)
+    sampled_exporters = [
+        getattr(processor, "span_exporter", None)
+        for processor in active_processors or ()
+        if isinstance(processor, BatchSpanProcessor)
+    ]
+    if not any(isinstance(exporter, OTLPAwsSpanExporter) for exporter in sampled_exporters):
+        raise ValueError("production telemetry sampled exporter is not the signed AWS X-Ray OTLP exporter")
     return provider
 
 
@@ -830,13 +841,15 @@ def _verify_model_request_attempts(
 
     from strands.models import _native_output
 
-    attempts = record.get("modelRequestAttempts")
-    if attempts is None:
+    if "modelRequestAttempts" not in record:
         # Earlier Phase 16 runs retained only Strands chat spans. Keep those
         # complete archives readable when every physical call had a span.
+        if "modelResponseCount" in record or "modelSpanCount" in record:
+            raise ValueError("physical model request attempts are missing from the saved execution")
         if record.get("modelRequestCount") != model_span_count:
             raise ValueError("legacy model request count differs from native model spans")
         return
+    attempts = record["modelRequestAttempts"]
     if not isinstance(attempts, list) or not attempts or len(attempts) > max_requests:
         raise ValueError("physical model request attempts are missing or exceed the shared limit")
     if record.get("modelRequestCount") != len(attempts):

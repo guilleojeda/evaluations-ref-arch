@@ -780,9 +780,16 @@ def check_captured_report(
             continue
         if tool not in TOOLS and tool != REPORT_TOOL:
             forbidden = True
+        arguments = call.get("arguments")
+        arguments_valid = "arguments" in call
+        if status in ("success", "ok"):
+            # Successful tools must have the object-shaped request required by
+            # the reviewed tool contract. Failed calls retain their raw JSON
+            # argument value; the native telemetry parser validates its JSON.
+            arguments_valid = isinstance(arguments, Mapping)
         if (
             not isinstance(call_id, str) or not call_id or call_id in seen
-            or not isinstance(call.get("arguments"), Mapping) or status not in ("success", "ok", "error")
+            or not arguments_valid or status not in ("success", "ok", "error")
             or "result" not in call or call["result"] is None
         ):
             incomplete = True

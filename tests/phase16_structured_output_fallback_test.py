@@ -199,6 +199,12 @@ class StructuredOutputFallbackAcceptance(unittest.TestCase):
                 self.assertEqual(scored["status"], "complete", scored)
                 self.assertEqual(len(evaluate.calls), 1)
 
+                del record["modelRequestAttempts"]
+                record["modelRequestCount"] = record["modelSpanCount"]
+                (Path(run_dir) / "execution.json").write_text(json.dumps(record), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "physical model request attempts are missing"):
+                    load_execution(run_dir)
+
 
 if __name__ == "__main__":
     unittest.main()

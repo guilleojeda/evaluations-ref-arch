@@ -459,7 +459,11 @@ def _tool_payload(span: Mapping[str, Any]) -> dict[str, Any]:
             if status != "error" or result_text.lstrip().startswith(("{", "[")):
                 raise
             result = {"error": result_text}
-    if not isinstance(arguments, Mapping):
+    # A failed native tool call can retain the model's raw JSON request even
+    # when the request is not an object (for example, a list rejected by the
+    # tool schema).  Successful tools still need object arguments so their
+    # recorded result can be joined to the reviewed tool contract.
+    if status != "error" and not isinstance(arguments, Mapping):
         raise TelemetryIncomplete("tool arguments are not an object")
     if not isinstance(result, Mapping):
         raise TelemetryIncomplete("tool result is not an object")
@@ -467,7 +471,7 @@ def _tool_payload(span: Mapping[str, Any]) -> dict[str, Any]:
         "spanId": span_id,
         "callId": call_id,
         "tool": tool_name,
-        "arguments": dict(arguments),
+        "arguments": arguments,
         "status": status,
         "result": dict(result),
     }
