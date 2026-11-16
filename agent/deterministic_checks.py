@@ -291,14 +291,39 @@ def _trace_tool_spans(archive: Mapping[str, Any]) -> tuple[list[Mapping[str, Any
     if not isinstance(trace, Mapping) or not isinstance(trace.get("spans"), list):
         return None, False
     tools: list[Mapping[str, Any]] = []
+    evidence_ids: list[str] = []
+    report_calls = 0
     complete = bool(trace["spans"])
     for span in trace["spans"]:
         if not isinstance(span, Mapping):
             complete = False
             continue
         tool = _span_tool(span)
-        if tool is not None or _signal(span, "tool"):
+        evidence_tool = _signal(span, "tool")
+        report_tool = _signal(span, "reportTool")
+        if evidence_tool:
+            if isinstance(span.get("id"), str) and span["id"]:
+                evidence_ids.append(span["id"])
+            else:
+                complete = False
+        if report_tool:
+            report_calls += 1
+        if tool is not None or evidence_tool or report_tool:
             tools.append(span)
+    summary = trace.get("spanSummary")
+    entries = summary.get("toolSpans") if isinstance(summary, Mapping) else None
+    if not isinstance(entries, list) or not all(
+        isinstance(entry, Mapping) and isinstance(entry.get("id"), str) for entry in entries
+    ):
+        return tools, False
+    advertised_ids = [entry["id"] for entry in entries]
+    complete = (
+        complete
+        and summary.get("tools") == len(evidence_ids)
+        and summary.get("reportToolCalls") == report_calls
+        and len(set(advertised_ids)) == len(advertised_ids)
+        and sorted(advertised_ids) == sorted(evidence_ids)
+    )
     return tools, complete
 
 
@@ -370,9 +395,7 @@ def _observation_resources(result: Mapping[str, Any]) -> set[str]:
     return resources
 
 
-def _check_scope_and_links(archive: Mapping[str, Any], allowed_resources: set[str]) -> dict[str, Any]:
-    results = _query_results(archive)
-    spans, trace_present = _trace_tool_spans(archive)
+def _check_scope(results: list[Any] | None, allowed_resources: set[str]) -> dict[str, Any]:
     if not results:
         return _finding("incomplete", None, "retained query results are unavailable")
 
@@ -399,8 +422,13 @@ def _check_scope_and_links(archive: Mapping[str, Any], allowed_resources: set[st
             return _finding("complete", "fail", "a retained observation was outside the reviewed resource scope")
     if missing_scope:
         return _finding("incomplete", None, "retained results have missing or malformed scope")
-    if spans is None or not trace_present:
-        return _finding("incomplete", None, "retained trace spans are unavailable")
+    return _finding("complete", "pass", "retained results are within the reviewed resource scope")
+
+
+def _check_links(archive: Mapping[str, Any], results: list[Any] | None) -> dict[str, Any]:
+    spans, trace_present = _trace_tool_spans(archive)
+    if not results or spans is None or not trace_present:
+        return _finding("incomplete", None, "retained results or trace spans are unavailable")
     query_spans = [item for item in spans if _span_tool(item) != REPORT_TOOL]
     if not query_spans:
         return _finding("incomplete", None, "no correlatable read evidence was retained")
@@ -408,11 +436,11 @@ def _check_scope_and_links(archive: Mapping[str, Any], allowed_resources: set[st
     # An explicit, wrong call identity is not allowed to fall back to time.
     matched_spans: set[int] = set()
     for result in results:
-        result_tool = result.get("tool")
+        result_tool = result.get("tool") if isinstance(result, Mapping) else None
         if not isinstance(result_tool, str) or result_tool not in TOOLS:
             return _finding("incomplete", None, "a retained query result lacks a supported tool identity")
         call_id = result.get("toolCallId")
-        result_ns = _span_ns(_result_time(result))
+        result_ns = _optional_time(_result_time(result))
         if call_id is None and result_ns is None:
             return _finding("incomplete", None, "a retained result has no observation timestamp")
         matching: list[int] = []
@@ -436,7 +464,7 @@ def _check_scope_and_links(archive: Mapping[str, Any], allowed_resources: set[st
     if len(matched_spans) != len(query_spans):
         # Includes failed calls with no retained request/result body.
         return _finding("incomplete", None, "some recorded tool activity has no retained result join")
-    return _finding("complete", "pass", "retained read results joined to the observed tool roster within scope")
+    return _finding("complete", "pass", "retained read results joined to the observed tool roster")
 
 
 def _check_operator_boundary(archive: Mapping[str, Any]) -> dict[str, Any]:
@@ -465,8 +493,7 @@ def _check_operator_boundary(archive: Mapping[str, Any]) -> dict[str, Any]:
     return _finding("complete", "pass", "the observed tool roster is limited to allowlisted reads and the report tool")
 
 
-def _check_live_result_times(archive: Mapping[str, Any], reference_time: int) -> dict[str, Any]:
-    results = _query_results(archive)
+def _check_live_result_times(results: list[Any] | None, reference_time: int) -> dict[str, Any]:
     if results is None:
         return _finding("incomplete", None, "retained query results are unavailable for the live cutoff check")
     missing = False
@@ -475,16 +502,17 @@ def _check_live_result_times(archive: Mapping[str, Any], reference_time: int) ->
         if not isinstance(result, Mapping):
             missing = True
             continue
-        timestamps = [result.get("observedAt")]
+        timestamps = [_optional_time(result.get("observedAt"))]
         observations = result.get("observations")
         if isinstance(observations, list):
             for observation in observations:
                 if isinstance(observation, Mapping):
-                    timestamps.extend(
-                        observation[key] for key in ("availableAt", "observedAt", "ingestionTime") if key in observation
-                    )
-        for value in timestamps:
-            observed = _observation_time(value)
+                    timestamps.extend(_optional_time(observation[key]) for key in ("availableAt", "observedAt") if key in observation)
+                    if "ingestionTime" in observation:
+                        # Projected CloudWatch log ingestionTime is epoch milliseconds.
+                        ingestion = observation["ingestionTime"]
+                        timestamps.append(ingestion * 1_000_000 if type(ingestion) is int else _optional_time(ingestion))
+        for observed in timestamps:
             if observed is None:
                 missing = True
             elif observed > reference_time:
@@ -492,11 +520,6 @@ def _check_live_result_times(archive: Mapping[str, Any], reference_time: int) ->
     if missing or not results:
         return _finding("incomplete", None, "retained live result observation times are incomplete")
     return _finding("complete", "pass", "retained live result observations were available by the reviewed cutoff")
-
-
-def _observation_time(value: Any) -> int | None:
-    # Projected CloudWatch log ingestionTime is epoch milliseconds.
-    return value * 1_000_000 if type(value) is int else _optional_time(value)
 
 
 def _identity_for_case(loaded: Mapping[str, Any]) -> dict[str, Any]:
@@ -557,7 +580,7 @@ def _verify_archive(archive_path: Path, loaded: Mapping[str, Any]) -> tuple[dict
         trace_trace_ref.get("runtimeSessionId"),
         provenance.get("runtimeSessionId"),
     }
-    if len(session_ids) != 1 or None in session_ids:
+    if len(session_ids) != 1 or not all(isinstance(value, str) and value.strip() for value in session_ids):
         raise CheckerInputError("native Runtime session identity is inconsistent")
     session_id = next(iter(session_ids))
     candidate_id = provenance.get("candidateId")
@@ -634,15 +657,17 @@ def _report_result(
         findings["operator_boundary"] = _finding("incomplete", None, "report-only input has no recorded operator activity")
     else:
         allowed_resources = {resource.lower() for resource in loaded["task"]["allowedResources"]}
-        scope = _check_scope_and_links(archive, allowed_resources)
-        findings["source_scope"] = scope
+        results = _query_results(archive)
+        scope = _check_scope(results, allowed_resources)
+        links = _check_links(archive, results)
+        findings["source_scope"] = links if scope["verdict"] == "pass" and links["status"] == "incomplete" else scope
         findings["operator_boundary"] = _check_operator_boundary(archive)
         reference_time = _parse_time(loaded["referenceTime"], "case referenceTime")
-        live_time = _check_live_result_times(archive, reference_time)
+        live_time = _check_live_result_times(results, reference_time)
         if findings["as_of_time"]["verdict"] != "fail":
             if live_time["verdict"] == "fail" or live_time["status"] == "incomplete":
                 findings["as_of_time"] = live_time
-            elif scope["verdict"] != "pass":
+            elif links["status"] == "incomplete":
                 findings["as_of_time"] = _finding("incomplete", None, "recorded activity lacks complete linked cutoff evidence")
     status = "complete"
     if any(finding["status"] == "error" for finding in findings.values()):

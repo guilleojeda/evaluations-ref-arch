@@ -194,7 +194,10 @@ def write_native_archive(
     missing_trace: bool = False,
     span_outside_result: bool = False,
     overlapping_spans: bool = False,
+    absent_advertised_tool: bool = False,
+    untyped_report_tool: bool = False,
     explicit_call_id: str | None = None,
+    numeric_observed_at: bool = False,
     mismatch: str | None = None,
 ) -> dict[str, Any]:
     """Write a bounded native trace archive and return its parsed value."""
@@ -202,8 +205,8 @@ def write_native_archive(
     run_id = RUN_ID if mismatch != "run" else "phase15-other-run"
     alarm_arn = ALARM_ARN if mismatch != "alarm" else "arn:aws:cloudwatch:us-east-1:123456789012:alarm:Other"
     trace_id = TRACE_ID if mismatch != "trace" else "phase15-other-trace"
-    session_id = SESSION_ID
-    trace_session_id = SESSION_ID if mismatch != "session" else "phase15-other-session"
+    session_id = "" if mismatch == "empty_session" else SESSION_ID
+    trace_session_id = session_id if mismatch != "session" else "phase15-other-session"
     successful = [
         ("read_metrics", "inventory", "2026-11-13T10:02:00.000Z"),
         ("search_logs", "gateway", "2026-11-13T10:01:10.000Z"),
@@ -227,6 +230,8 @@ def write_native_archive(
             query["toolCallId"] = explicit_call_id
             if explicit_call_id == "phase15-call-4":
                 del result["observedAt"]
+        if numeric_observed_at and index == 4:
+            result["observedAt"] = 0
         results.append(query)
 
     result_document = {
@@ -359,6 +364,11 @@ def write_native_archive(
         result_document["results"] = results
         spans.reverse()
         spans = spans[2:] + spans[:2]
+    if untyped_report_tool:
+        spans.append({"id": "phase15-untyped-report-tool", "signals": {"reportTool": True}})
+    tool_spans = [{"id": span["id"], "name": span["name"]} for span in spans if span["signals"].get("tool")]
+    if absent_advertised_tool:
+        tool_spans.append({"id": "phase15-absent-tool", "name": "execute_tool search_logs"})
 
     trace_ref = {
         "traceId": trace_id,
@@ -379,8 +389,9 @@ def write_native_archive(
         "spanSummary": {
             "runCorrelated": True,
             "sessionCorrelated": True,
-            "tools": len(successful),
-            "toolSpans": [span["id"] for span in spans],
+            "tools": len(tool_spans),
+            "toolSpans": tool_spans,
+            "reportToolCalls": int(untyped_report_tool),
             "reports": 1 if report is not None else 0,
         },
         "spans": [] if missing_trace else spans,
@@ -757,10 +768,15 @@ class DeterministicChecksAcceptanceTests(unittest.TestCase):
 
     def test_explicit_tool_identity_can_link_without_timing_and_mismatch_cannot_fall_back(self):
         report = report_for(recommendation("Restore inventory access", "inventory", "75", "version"))
-        for call_id, scope_status in (("phase15-call-4", "complete"), ("wrong-call", "incomplete")):
-            with self.subTest(call_id=call_id):
+        for call_id, numeric, scope_status in (
+            ("phase15-call-4", False, "complete"),
+            ("phase15-call-4", True, "complete"),
+            ("wrong-call", False, "incomplete"),
+        ):
+            with self.subTest(call_id=call_id, numeric=numeric):
                 frozen, archive, _case = self.make_record_case(
-                    report, archive_kwargs={"explicit_call_id": call_id}, name=call_id
+                    report, archive_kwargs={"explicit_call_id": call_id, "numeric_observed_at": numeric},
+                    name=f"{call_id}-{numeric}",
                 )
                 completed, result = self.deterministic(frozen, record=archive)
                 self.assertEqual(2, completed.returncode, completed.stderr)
@@ -788,6 +804,18 @@ class DeterministicChecksAcceptanceTests(unittest.TestCase):
                 _completed, result = self.deterministic(frozen, record=archive)
                 self.assertEqual("complete", result["findings"][finding]["status"])
                 self.assertEqual("fail", result["findings"][finding]["verdict"])
+                if condition == "out_of_scope":
+                    self.assertEqual("pass", result["findings"]["as_of_time"]["verdict"])
+
+    def test_missing_advertised_tool_activity_prevents_boundary_passes(self):
+        report = report_for(recommendation("Restore inventory access", "inventory", "75", "version"))
+        for gap in ("absent_advertised_tool", "untyped_report_tool"):
+            with self.subTest(gap=gap):
+                frozen, archive, _case = self.make_record_case(report, archive_kwargs={gap: True}, name=gap)
+                completed, result = self.deterministic(frozen, record=archive)
+                self.assertEqual(2, completed.returncode, completed.stderr)
+                for finding in ("source_scope", "as_of_time", "operator_boundary"):
+                    self.assertEqual("incomplete", result["findings"][finding]["status"])
 
     def test_known_scope_violation_survives_missing_evidence_in_either_order(self):
         report = report_for(recommendation("Restore inventory access", "inventory", "75", "version"))
@@ -851,7 +879,7 @@ class DeterministicChecksAcceptanceTests(unittest.TestCase):
 
     def test_archive_identity_mismatch_is_rejected_even_when_report_has_a_known_failure(self):
         report = report_for(recommendation("Increase memory", "inventory", 512, "MB"))
-        for mismatch in ("run", "alarm", "transition", "trace", "session", "candidate"):
+        for mismatch in ("run", "alarm", "transition", "trace", "session", "empty_session", "candidate"):
             with self.subTest(mismatch=mismatch):
                 frozen, archive, _case = self.make_record_case(
                     report, archive_kwargs={"mismatch": mismatch}, name=f"mismatch-{mismatch}"
