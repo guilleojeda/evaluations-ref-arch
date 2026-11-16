@@ -10,175 +10,39 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event, Timer
-from typing import Annotated, Any, Literal, Mapping
+from typing import Any, Mapping
 
 import boto3
 from bedrock_agentcore.runtime import BedrockAgentCoreApp, RequestContext
-from botocore.config import Config
 from botocore.exceptions import ClientError
 from opentelemetry import trace
 from opentelemetry.trace import Status, StatusCode
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-from pydantic.json_schema import WithJsonSchema
 from strands import Agent
-from strands.models import BedrockModel
 
 from evidence import EvidenceTools
-from prompt import PROMPT_SHA256, SYSTEM_PROMPT
+from investigation import (
+    MAX_MODEL_REQUESTS,
+    MAX_TOOL_CALLS,
+    MODEL_ID,
+    REPORT_SCHEMA_VERSION,
+    RUN_SECONDS,
+    BoundedBedrockClient,
+    InvestigationReport,
+    ModelRequestBudgetExceeded,
+    ToolBudgetExceeded,
+    create_agent,
+    invoke_agent,
+)
+from prompt import PROMPT_SHA256
 
 
-MODEL_ID = "us.anthropic.claude-sonnet-4-6"
-REPORT_SCHEMA_VERSION = 2
-RUN_SECONDS = 240
-MAX_MODEL_REQUESTS = 12
-MAX_TOOL_CALLS = 12
 FAULTY_ENDPOINT = "faulty"
 RUNTIME_ARN_PREFIX = "arn:aws:bedrock-agentcore:"
 MANIFEST_PATH = Path(__file__).with_name("agent-manifest.json")
-CITATION_TIMESTAMP_PATTERN = re.compile(
-    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?(?:Z|[+-](?:[01][0-9]|2[0-3]):?[0-5][0-9])"
-)
-
-
-class EvidenceCitation(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    source: str = Field(min_length=1, max_length=80)
-    resource: str = Field(min_length=1, max_length=240)
-    windowStart: str = Field(min_length=1, max_length=64)
-    windowEnd: str = Field(min_length=1, max_length=64)
-    observedAt: str = Field(min_length=1, max_length=64)
-    finding: str = Field(min_length=1, max_length=2000)
-
-    @field_validator("windowStart", "windowEnd", "observedAt")
-    @classmethod
-    def validate_timezone_qualified_timestamp(cls, value: str) -> str:
-        if not CITATION_TIMESTAMP_PATTERN.fullmatch(value):
-            raise ValueError("citation timestamps must be timezone-qualified ISO-8601 values")
-        try:
-            parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
-        except ValueError as exc:
-            raise ValueError("citation timestamps must be valid calendar and clock values") from exc
-        if parsed.tzinfo is None or parsed.utcoffset() is None:
-            raise ValueError("citation timestamps must include a timezone")
-        return value
-
-
-class Recommendation(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    action: Literal[
-        "Increase reserved concurrency",
-        "Increase memory",
-        "Restore inventory access",
-        "Other",
-    ]
-    target: Literal["checkout", "inventory"] | None
-    # Strands' locked JSON Schema converter omits the string branch of this union.
-    value: Annotated[
-        str | int | None,
-        WithJsonSchema({
-            "type": ["string", "integer", "null"],
-            "description": (
-                "For Increase memory, provide an integer allocation in MB; for Increase "
-                "reserved concurrency, provide a positive integer in executions; for "
-                "Restore inventory access, provide a canonical positive published version "
-                "string; for Other, provide a non-empty explanation."
-            ),
-        }),
-    ]
-    unit: str | None
-
-    @model_validator(mode="before")
-    @classmethod
-    def validate_canonical_fields(cls, value: Any) -> Any:
-        """Reject coercible values before Pydantic can normalize them."""
-        if not isinstance(value, Mapping):
-            return value
-        action = value.get("action")
-        target = value.get("target")
-        recommendation_value = value.get("value")
-        unit = value.get("unit")
-        if action == "Increase memory":
-            if target not in {"checkout", "inventory"} or type(recommendation_value) is not int or unit != "MB":
-                raise ValueError("memory recommendations require a resource, integer allocation, and unit MB")
-            if not 128 <= recommendation_value <= 10240:
-                raise ValueError("memory recommendation must use a supported Lambda allocation")
-        elif action == "Increase reserved concurrency":
-            if target not in {"checkout", "inventory"} or type(recommendation_value) is not int or unit != "executions":
-                raise ValueError("reserved concurrency recommendations require a resource, integer allocation, and unit executions")
-            if recommendation_value <= 0:
-                raise ValueError("reserved concurrency recommendation must be positive")
-        elif action == "Restore inventory access":
-            if (
-                target != "inventory"
-                or type(recommendation_value) is not str
-                or re.fullmatch(r"[1-9][0-9]*", recommendation_value) is None
-                or unit != "version"
-            ):
-                raise ValueError("inventory access recommendation requires a canonical positive version and unit version")
-        elif action == "Other":
-            if target is not None or type(recommendation_value) is not str or not recommendation_value.strip() or unit is not None:
-                raise ValueError("Other recommendation requires explanation text with null target and unit")
-        return value
-
-    @model_validator(mode="after")
-    def validate_supported_action_detail(self) -> "Recommendation":
-        if self.action == "Increase memory" and (self.target not in {"checkout", "inventory"} or type(self.value) is not int or self.unit != "MB"):
-            raise ValueError("memory recommendations require a resource, integer allocation, and unit MB")
-        if self.action == "Increase reserved concurrency" and (self.target not in {"checkout", "inventory"} or type(self.value) is not int or self.value <= 0 or self.unit != "executions"):
-            raise ValueError("reserved concurrency recommendations require a resource, integer allocation, and unit executions")
-        if self.action == "Restore inventory access" and (self.target != "inventory" or type(self.value) is not str or re.fullmatch(r"[1-9][0-9]*", self.value) is None or self.unit != "version"):
-            raise ValueError("inventory access recommendation requires a canonical positive version and unit version")
-        if self.action == "Other" and (self.target is not None or type(self.value) is not str or not self.value.strip() or self.unit is not None):
-            raise ValueError("Other recommendation requires explanation text with null target and unit")
-        return self
-
-
-class InvestigationReport(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    assessment: Literal["ongoing", "recovered", "unknown"]
-    summary: str = Field(min_length=1, max_length=4000)
-    recommendation: Recommendation
-    evidence: list[EvidenceCitation] = Field(min_length=1, max_length=30)
-    uncertainties: list[str] = Field(max_length=30)
-    alternatives: list[str] = Field(max_length=30)
 
 
 class InvalidInvocation(ValueError):
     """The payload is not a trusted, direct CloudWatch alarm invocation."""
-
-
-class ToolBudgetExceeded(RuntimeError):
-    pass
-
-
-class ModelRequestBudgetExceeded(RuntimeError):
-    pass
-
-
-class BoundedBedrockClient:
-    """Count every outbound ConverseStream request, including SDK fallbacks."""
-
-    def __init__(self, client: Any, *, deadline_monotonic: float, cancel_signal: Event) -> None:
-        self._client = client
-        self.deadline_monotonic = deadline_monotonic
-        self.cancel_signal = cancel_signal
-        self.requests = 0
-
-    def converse_stream(self, **request: Any) -> Any:
-        if self.cancel_signal.is_set() or time.monotonic() >= self.deadline_monotonic:
-            raise TimeoutError("investigation deadline exceeded before model request")
-        if self.requests >= MAX_MODEL_REQUESTS:
-            raise ModelRequestBudgetExceeded("model request limit reached")
-        self.requests += 1
-        return self._client.converse_stream(**request)
-
-    def __getattr__(self, name: str) -> Any:
-        # BedrockModel also reads public client metadata such as the operation
-        # model; keep those public SDK surfaces intact while counting requests.
-        return getattr(self._client, name)
 
 
 app = BedrockAgentCoreApp()
@@ -616,30 +480,13 @@ def invoke(payload: Any, context: RequestContext) -> dict[str, Any]:
             if time.monotonic() >= deadline_monotonic:
                 return {"status": "running", "runId": run_id, "transitionAt": transition_at}
 
-            model = BedrockModel(
-                model_id=config["AGENT_MODEL_ID"],
+            agent, _bounded_model = create_agent(
+                evidence,
                 region_name=config["AGENT_REGION"],
-                max_tokens=64_000,
-                boto_client_config=Config(
-                    connect_timeout=10,
-                    read_timeout=180,
-                    retries={"total_max_attempts": 1},
-                ),
-            )
-            model.client = BoundedBedrockClient(
-                model.client,
                 deadline_monotonic=deadline_monotonic,
                 cancel_signal=cancel_signal,
-            )
-            agent = Agent(
-                model=model,
-                tools=evidence.tools(),
-                system_prompt=SYSTEM_PROMPT,
-                structured_output_model=InvestigationReport,
                 trace_attributes=span_attributes,
-                # Provider and Strands retries would add unbudgeted model
-                # requests. Event-loop turns include structured-output cycles.
-                retry_strategy=None,
+                agent_class=Agent,
             )
             remaining = max(0.0, deadline_monotonic - time.monotonic())
             if remaining <= 0:
@@ -647,20 +494,13 @@ def invoke(payload: Any, context: RequestContext) -> dict[str, Any]:
             timer = Timer(remaining, cancel_signal.set)
             timer.daemon = True
             timer.start()
-            result = agent(
+            report_value = invoke_agent(
+                agent,
                 _runtime_prompt(event, transition_at, started_at),
-                limits={"turns": MAX_MODEL_REQUESTS, "structured_output_attempts": 1},
                 cancel_signal=cancel_signal,
             )
             if cancel_signal.is_set() or time.monotonic() >= deadline_monotonic:
                 return {"status": "running", "runId": run_id, "transitionAt": transition_at}
-            structured = getattr(result, "structured_output", None)
-            if isinstance(structured, InvestigationReport):
-                report_value = structured.model_dump(mode="json")
-            elif isinstance(structured, Mapping):
-                report_value = InvestigationReport.model_validate(structured).model_dump(mode="json")
-            else:
-                raise ValueError("model did not return a structured report")
 
             query_capture = evidence.persist_query_results([])
             capture_ref.update(query_capture.get("captureRef", {}))

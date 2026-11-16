@@ -239,6 +239,28 @@ For a fixed suite and configuration, the recurring estimate is the measured cost
 
 Focused development runs provide quick feedback on relevant cases. The release gate still runs its reviewed required suite, and local subsets must not be presented as a complete release result. Explain the tradeoff in both dollars and feedback time; avoid claiming a universal savings or productivity improvement. No suite price or monthly budget has been measured for this project yet.
 
+### Interpreting the S2 baseline
+
+The [captured-run commands](../agent/README.md#run-and-score-the-captured-baseline-s2)
+save one execution and separately score its verified CloudWatch session. The
+baseline uses the prepared denial case, its exact evidence cutoff, and the
+faulty candidate's saved source and settings. The historical live denial
+report remains a separate incident artifact.
+
+The custom AgentCore SESSION evaluator returns two categorical findings in
+one call. Diagnosis support checks whether the causal explanation follows from
+the available evidence. Evidence grounding checks whether material claims and
+citations match the observations the agent received. The deterministic
+recommendation checks still evaluate the action, target, and value
+independently. The saved result keeps each verdict and its reason.
+
+Judge calibration uses labeled, constructed controls grounded in retained
+evidence. Development and holdout incident families are distinct, and the
+reference contrast isolates the effect of changing a reviewed assertion while
+keeping the session fixed. This small sample covers the reviewed examples
+and their counterexamples. Record the evaluated configurations, disagreements,
+and explicit repeat alongside the baseline evidence.
+
 ### Choosing a judge model
 
 Select the judge independently from the agent, within the options supported by the chosen evaluation product and evaluator. Compare models using the same evidence, rubric, and human-reviewed examples, inspecting false passes, false failures, explanations, latency, and total scoring cost. Choose the least expensive supported model that meets the reviewed quality requirements for these decisions. Model size, price, or identity with the agent model does not establish judge quality.

@@ -19,10 +19,12 @@ import hashlib
 import json
 import math
 import os
+import re
 import sys
 import tempfile
 import time
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
@@ -42,6 +44,8 @@ SCHEMA_VERSION = 1
 SOURCE_NAMES = ("logs", "metrics", "configuration", "changeHistory")
 MAX_BUNDLE_BYTES = 2 * 1024 * 1024
 SUPPORTED_METRIC_PERIODS = frozenset({1, 5, 10, 20, 30, 60, 120, 300, 600, 900, 1800})
+_UTC_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
+_FRACTION_RE = re.compile(r"[.,]([0-9]{1,9})(?=Z$|[+-][0-9]{2}:?[0-9]{2}$)")
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -75,8 +79,56 @@ def _parse_time(value: Any) -> datetime:
     return parsed.astimezone(timezone.utc)
 
 
+def _epoch_nanoseconds(value: Any) -> int:
+    """Compare ISO instants at their supplied precision, up to nanoseconds."""
+
+    if isinstance(value, (int, float, Decimal)) and not isinstance(value, bool):
+        try:
+            numeric = Decimal(str(value))
+        except InvalidOperation as exc:
+            raise ValueError("timestamp must be finite") from exc
+        if not numeric.is_finite():
+            raise ValueError("timestamp must be finite")
+        if abs(numeric) > 10_000_000_000:
+            numeric /= 1000
+        return int(numeric * 1_000_000_000)
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            value = value.replace(tzinfo=timezone.utc)
+        parsed = value.astimezone(timezone.utc)
+        delta = parsed.replace(microsecond=0) - _UTC_EPOCH
+        return (delta.days * 86_400 + delta.seconds) * 1_000_000_000 + parsed.microsecond * 1_000
+
+    text = str(value).strip()
+    if text.endswith("Z"):
+        parse_text = text[:-1] + "+00:00"
+    else:
+        parse_text = text
+    fraction_match = _FRACTION_RE.search(text)
+    fraction_ns = int(fraction_match.group(1).ljust(9, "0")) if fraction_match else 0
+    if fraction_match:
+        parse_text = parse_text[:fraction_match.start()] + parse_text[fraction_match.end():]
+    try:
+        parsed = datetime.fromisoformat(parse_text)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("timestamp must be an ISO timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("timestamp must include a timezone")
+    parsed_utc = parsed.astimezone(timezone.utc)
+    delta = parsed_utc - _UTC_EPOCH
+    seconds = delta.days * 86_400 + delta.seconds
+    return seconds * 1_000_000_000 + fraction_ns
+
+
 def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _iso_nanoseconds(value: int) -> str:
+    seconds, nanos = divmod(value, 1_000_000_000)
+    base = datetime.fromtimestamp(seconds, timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+    fraction = f".{nanos:09d}".rstrip("0") if nanos else ""
+    return f"{base}{fraction}Z"
 
 
 def _window(value: Any, *, allow_snapshot: bool = False) -> tuple[str, str]:
@@ -295,6 +347,7 @@ class CapturedEvidenceTools(EvidenceTools):
         sources: Mapping[str, Mapping[str, Any]],
         *,
         reference_time: str,
+        allowed_resources: Iterable[str] | None = None,
         deadline_monotonic: float | None = None,
         charge_tool_call: Callable[[], Any] | None = None,
     ) -> None:
@@ -308,9 +361,17 @@ class CapturedEvidenceTools(EvidenceTools):
         self.source_prefix = ""
         self.run_id = self._safe_component(origin.get("runId", "capture"))
         self.alarm_arn = str(origin.get("alarmArn", ""))
-        self.transition_at = _iso(_parse_time(reference_time))
+        # Keep the reviewed cutoff byte-for-byte in returned evidence.  Its
+        # comparisons below use nanosecond precision rather than datetime's
+        # microsecond precision.
+        self.transition_at = str(reference_time)
         self.started_at = str(origin.get("startedAt", self.transition_at))
         self.reference_time = self.transition_at
+        self.allowed_resources = None if allowed_resources is None else frozenset(allowed_resources)
+        if self.allowed_resources is not None and (
+            not self.allowed_resources or not self.allowed_resources <= {"gateway", "checkout", "inventory"}
+        ):
+            raise ValueError("allowed_resources must contain supported application resources")
         self.deadline_monotonic = float(deadline_monotonic if deadline_monotonic is not None else time.monotonic() + 60)
         self.charge_tool_call = charge_tool_call or (lambda: None)
         self._query_results: list[dict[str, Any]] = []
@@ -324,15 +385,56 @@ class CapturedEvidenceTools(EvidenceTools):
         *,
         reference_time: str,
         expected_sha256: str | None = None,
+        allowed_resources: Iterable[str] | None = None,
         deadline_monotonic: float | None = None,
         charge_tool_call: Callable[[], Any] | None = None,
     ) -> "CapturedEvidenceTools":
         payload, sources = _load_bundle(path, expected_sha256=expected_sha256)
         try:
-            reference = _iso(_parse_time(reference_time))
+            _epoch_nanoseconds(reference_time)
         except (TypeError, ValueError) as exc:
             raise ValueError("reference_time must be an ISO timestamp") from exc
-        return cls(payload, sources, reference_time=reference, deadline_monotonic=deadline_monotonic, charge_tool_call=charge_tool_call)
+        return cls(
+            payload,
+            sources,
+            reference_time=reference_time,
+            allowed_resources=allowed_resources,
+            deadline_monotonic=deadline_monotonic,
+            charge_tool_call=charge_tool_call,
+        )
+
+    def _check_allowed_resources(self, resources: Sequence[str]) -> tuple[str, ...]:
+        selected = tuple(resources)
+        if self.allowed_resources is not None:
+            disallowed = sorted(set(selected) - self.allowed_resources)
+            if disallowed:
+                raise ValueError(f"out-of-scope captured resource: {', '.join(disallowed)}")
+        return selected
+
+    def _log_resources(self, resource: str) -> tuple[str, ...]:
+        return self._check_allowed_resources(super()._log_resources(resource))
+
+    def _metric_resources(self, resource: str) -> tuple[str, ...]:
+        return self._check_allowed_resources(super()._metric_resources(resource))
+
+    def _configuration_resources(self, resource: str) -> tuple[str, ...]:
+        return self._check_allowed_resources(super()._configuration_resources(resource))
+
+    def _history_resources(self, resource: str) -> tuple[str, ...]:
+        return self._check_allowed_resources(super()._history_resources(resource))
+
+    def _validated_window(self, start: str | None, end: str | None) -> tuple[str, str]:
+        if start is None and end is None:
+            end = self.reference_time
+            start = _iso(_parse_time(end) - timedelta(minutes=10))
+        elif start is None or end is None:
+            raise ValueError("start and end must be supplied together")
+        start_ns, end_ns = _epoch_nanoseconds(start), _epoch_nanoseconds(end)
+        if end_ns <= start_ns:
+            raise ValueError("evidence window end must be after start")
+        if end_ns - start_ns > 1_800 * 1_000_000_000:
+            raise ValueError("evidence window cannot exceed 30 minutes")
+        return str(start), str(end)
 
     def _source(self, name: str, resources: Sequence[str]) -> tuple[dict[str, Any], list[str]]:
         source = self._sources[name]
@@ -389,8 +491,8 @@ class CapturedEvidenceTools(EvidenceTools):
     def _coverage_gap(self, source: Mapping[str, Any], requested: tuple[str, str]) -> list[str]:
         try:
             captured = _window(source.get("window"))
-            req_start, req_end = _parse_time(requested[0]), _parse_time(requested[1])
-            cap_start, cap_end = _parse_time(captured[0]), _parse_time(captured[1])
+            req_start, req_end = _epoch_nanoseconds(requested[0]), _epoch_nanoseconds(requested[1])
+            cap_start, cap_end = _epoch_nanoseconds(captured[0]), _epoch_nanoseconds(captured[1])
             gaps: list[str] = []
             if req_start < cap_start:
                 gaps.append(f"capture coverage starts at {captured[0]}")
@@ -400,17 +502,14 @@ class CapturedEvidenceTools(EvidenceTools):
         except (TypeError, ValueError):
             return ["source coverage window is unavailable"]
 
-    def _available_at(self, observation: Mapping[str, Any], source: Mapping[str, Any]) -> datetime | None:
+    def _available_at_ns(self, observation: Mapping[str, Any], source: Mapping[str, Any]) -> int | None:
         value = observation.get("availableAt")
         if value is None:
-            # ``acquiredAt`` is a post-call bound added by export_bundle.  A
-            # hand-authored/legacy fixture may only have observedAt; that is
-            # still an explicit audited bound, but never assume the event time.
             value = source.get("acquiredAt", source.get("observedAt"))
         if value is None:
             return None
         try:
-            return _parse_time(value)
+            return _epoch_nanoseconds(value)
         except (TypeError, ValueError, OverflowError):
             return None
 
@@ -421,10 +520,12 @@ class CapturedEvidenceTools(EvidenceTools):
         source, missing = self._source("logs", resources)
         captured_resources = set(resources) - set(missing)
         gaps = self._coverage_gap(source, window) + [f"logs has no captured scope for {resource}" for resource in missing]
-        start_at, end_at = _parse_time(window[0]), min(_parse_time(window[1]), _parse_time(self.reference_time))
-        if _parse_time(window[1]) > _parse_time(self.reference_time):
+        start_ns, requested_end_ns = _epoch_nanoseconds(window[0]), _epoch_nanoseconds(window[1])
+        reference_ns = _epoch_nanoseconds(self.reference_time)
+        end_ns = min(requested_end_ns, reference_ns)
+        if requested_end_ns > reference_ns:
             gaps.append("reference time clips the requested log window")
-        if end_at <= start_at:
+        if end_ns <= start_ns:
             gaps.append("requested log window is after the reference time")
         records: list[dict[str, Any]] = []
         unavailable_match = False
@@ -434,21 +535,21 @@ class CapturedEvidenceTools(EvidenceTools):
                 if not isinstance(item, Mapping) or item.get("resource") not in captured_resources:
                     continue
                 try:
-                    event_at = _parse_time(item.get("timestamp"))
+                    event_at_ns = _epoch_nanoseconds(item.get("timestamp"))
                 except (TypeError, ValueError, OverflowError):
                     gaps.append("log record without a valid event timestamp")
                     continue
                 # Native ingestion is an observation bound even when the
                 # exporter downloaded the log records much later.
                 if "availableAt" not in item and item.get("ingestionTime") is not None:
-                    available_at = self._available_at({"availableAt": item["ingestionTime"]}, source)
+                    available_at_ns = self._available_at_ns({"availableAt": item["ingestionTime"]}, source)
                 else:
-                    available_at = self._available_at(item, source)
-                if event_at < start_at or event_at >= end_at:
+                    available_at_ns = self._available_at_ns(item, source)
+                if event_at_ns < start_ns or event_at_ns >= end_ns:
                     continue
                 if not self._matches_log_filter(item, filter_pattern, predicate):
                     continue
-                if available_at is None or available_at > _parse_time(self.reference_time):
+                if available_at_ns is None or available_at_ns > reference_ns:
                     unavailable_match = True
                     continue
                 records.append(dict(item))
@@ -527,15 +628,18 @@ class CapturedEvidenceTools(EvidenceTools):
         selected_ids = {str(entry.get("Id")) for entry in selected}
         query_metrics = [dict(item) for item in selected]
         gaps = self._coverage_gap(source, window) + [f"metrics has no captured scope for {resource}" for resource in missing]
-        start_at, end_at = _parse_time(window[0]), min(_parse_time(window[1]), _parse_time(self.reference_time))
-        if _parse_time(window[1]) > _parse_time(self.reference_time):
+        start_ns, requested_end_ns = _epoch_nanoseconds(window[0]), _epoch_nanoseconds(window[1])
+        reference_ns = _epoch_nanoseconds(self.reference_time)
+        end_ns = min(requested_end_ns, reference_ns)
+        if requested_end_ns > reference_ns:
             gaps.append("reference time clips the requested metric window")
         # CloudWatch periods are intervals, not point samples.  A request that
         # cuts either boundary through a native bucket is necessarily partial,
         # even when one complete bucket remains in the returned observation.
-        if start_at.timestamp() % native_period or end_at.timestamp() % native_period:
+        bucket_ns = native_period * 1_000_000_000
+        if start_ns % bucket_ns or end_ns % bucket_ns:
             gaps.append("requested window cuts a native metric bucket")
-        candidates: dict[tuple[str, str], tuple[datetime, dict[str, Any], int]] = {}
+        candidates: dict[tuple[str, str], tuple[int, dict[str, Any], int]] = {}
         observations = source.get("observations", [])
         if isinstance(observations, list):
             for order, item in enumerate(observations):
@@ -544,8 +648,8 @@ class CapturedEvidenceTools(EvidenceTools):
                 item_name = str(item.get("Label", ""))
                 if str(item.get("Id")) not in selected_ids:
                     continue
-                available_at = self._available_at(item, source)
-                if available_at is None or available_at > _parse_time(self.reference_time):
+                available_at_ns = self._available_at_ns(item, source)
+                if available_at_ns is None or available_at_ns > reference_ns:
                     continue
                 timestamps, values = item.get("Timestamps"), item.get("Values")
                 if not isinstance(timestamps, list) or not isinstance(values, list):
@@ -553,35 +657,36 @@ class CapturedEvidenceTools(EvidenceTools):
                     continue
                 for timestamp, value in zip(timestamps, values):
                     try:
-                        bucket_start = _parse_time(timestamp)
+                        bucket_start_ns = _epoch_nanoseconds(timestamp)
                     except (TypeError, ValueError, OverflowError):
                         gaps.append("metric observation has an invalid timestamp")
                         continue
-                    bucket_end = bucket_start + timedelta(seconds=native_period)
-                    if bucket_start < start_at or bucket_end > end_at or bucket_start >= _parse_time(self.reference_time):
+                    bucket_end_ns = bucket_start_ns + bucket_ns
+                    if bucket_start_ns < start_ns or bucket_end_ns > end_ns or bucket_start_ns >= reference_ns:
                         continue
-                    if bucket_end > _parse_time(self.reference_time):
+                    if bucket_end_ns > reference_ns:
                         continue
+                    bucket_start = _parse_time(timestamp)
                     key = (str(item.get("Id", item_name)), _iso(bucket_start))
                     previous = candidates.get(key)
-                    if previous is None or (available_at, order) >= (previous[0], previous[2]):
-                        candidates[key] = (available_at, {"timestamp": _iso(bucket_start), "value": value, "item": dict(item)}, order)
+                    if previous is None or (available_at_ns, order) >= (previous[0], previous[2]):
+                        candidates[key] = (available_at_ns, {"timestamp": _iso(bucket_start), "value": value, "item": dict(item)}, order)
 
         by_series: dict[str, dict[str, Any]] = {}
-        for (_, _), (available_at, bucket, _) in sorted(candidates.items(), key=lambda pair: pair[0][1]):
+        for (_, _), (available_at_ns, bucket, _) in sorted(candidates.items(), key=lambda pair: pair[0][1]):
             item = bucket["item"]
             series_id = str(item.get("Id", item.get("Label", "metric")))
             series = by_series.setdefault(series_id, {key: item[key] for key in ("Id", "Label", "StatusCode", "Messages") if key in item})
             series.setdefault("Timestamps", []).append(bucket["timestamp"])
             series.setdefault("Values", []).append(bucket["value"])
-            series.setdefault("availability", []).append(_iso(available_at))
+            series.setdefault("availability", []).append(_iso_nanoseconds(available_at_ns))
             if item.get("StatusCode") not in (None, "Complete"):
                 gaps.append(f"metric {series_id} returned status {item.get('StatusCode')}")
         records = list(by_series.values())
         truncated = len(records) > limit
         if truncated:
             records = records[:limit]
-        full_buckets = max(0, math.floor(end_at.timestamp() / native_period) - math.ceil(start_at.timestamp() / native_period))
+        full_buckets = max(0, end_ns // bucket_ns - (start_ns + bucket_ns - 1) // bucket_ns)
         for series_id in sorted(selected_ids):
             sample_count = len(by_series.get(series_id, {}).get("Timestamps", []))
             if sample_count < full_buckets:
@@ -597,7 +702,7 @@ class CapturedEvidenceTools(EvidenceTools):
         captured_resources = set(resources) - set(missing)
         gaps = [f"configuration has no captured scope for {resource}" for resource in missing]
         records: list[dict[str, Any]] = []
-        reference = _parse_time(self.reference_time)
+        reference_ns = _epoch_nanoseconds(self.reference_time)
         observations = source.get("observations", [])
         if isinstance(observations, list):
             for item in observations:
@@ -608,23 +713,23 @@ class CapturedEvidenceTools(EvidenceTools):
                 if resource not in captured_resources:
                     continue
                 observed_value = item.get("observedAt", source.get("observedAt"))
-                available_at = self._available_at(item, source)
                 try:
-                    observed_at = _parse_time(observed_value)
+                    observed_at_ns = _epoch_nanoseconds(observed_value)
                 except (TypeError, ValueError, OverflowError):
                     gaps.append("configuration snapshot has an invalid observation time")
                     continue
-                if observed_at > reference or available_at is None or available_at > reference:
+                available_at_ns = self._available_at_ns(item, source)
+                if observed_at_ns > reference_ns or available_at_ns is None or available_at_ns > reference_ns:
                     continue
                 projected = dict(item)
-                projected["observedAt"] = _iso(observed_at)
-                projected["observationAgeSeconds"] = max(0, int((reference - observed_at).total_seconds()))
+                projected["observedAt"] = str(observed_value)
+                projected["observationAgeSeconds"] = max(0, (reference_ns - observed_at_ns) // 1_000_000_000)
                 records.append(projected)
         # Select the latest eligible Lambda snapshot per resource first.  Only
         # records explicitly observed at that same snapshot time are allowed to
         # join it; this prevents a current IAM/table read from being mixed with
         # an older alias/configuration observation.
-        lambda_latest: dict[str, datetime] = {}
+        lambda_latest: dict[str, int] = {}
         for item in records:
             function = str(item.get("function", ""))
             if not function or item.get("kind") != "lambda":
@@ -632,7 +737,7 @@ class CapturedEvidenceTools(EvidenceTools):
             resource = "inventory" if function == INVENTORY_FUNCTION else "checkout" if function == CHECKOUT_FUNCTION else None
             if resource is None:
                 continue
-            observed = _parse_time(item.get("observedAt", source.get("observedAt")))
+            observed = _epoch_nanoseconds(item.get("observedAt", source.get("observedAt")))
             if resource not in lambda_latest or observed > lambda_latest[resource]:
                 lambda_latest[resource] = observed
         selected: list[dict[str, Any]] = []
@@ -641,7 +746,7 @@ class CapturedEvidenceTools(EvidenceTools):
             resource = "inventory" if function == INVENTORY_FUNCTION or not function else "checkout" if function == CHECKOUT_FUNCTION else None
             if resource is None:
                 continue
-            observed = _parse_time(item.get("observedAt", source.get("observedAt")))
+            observed = _epoch_nanoseconds(item.get("observedAt", source.get("observedAt")))
             anchor = lambda_latest.get(resource)
             if anchor is None or observed == anchor:
                 selected.append(item)
@@ -661,8 +766,10 @@ class CapturedEvidenceTools(EvidenceTools):
             selected_names.update(INVENTORY_ROLE_NAMES | {INVENTORY_DENY_POLICY_NAME})
         selected_names.discard("")
         gaps = self._coverage_gap(source, window) + [f"change history has no captured scope for {resource}" for resource in missing]
-        start_at, end_at = _parse_time(window[0]), min(_parse_time(window[1]), _parse_time(self.reference_time))
-        if _parse_time(window[1]) > _parse_time(self.reference_time):
+        start_ns, requested_end_ns = _epoch_nanoseconds(window[0]), _epoch_nanoseconds(window[1])
+        reference_ns = _epoch_nanoseconds(self.reference_time)
+        end_ns = min(requested_end_ns, reference_ns)
+        if requested_end_ns > reference_ns:
             gaps.append("reference time clips the requested change window")
         records: list[dict[str, Any]] = []
         unavailable_match = False
@@ -672,12 +779,12 @@ class CapturedEvidenceTools(EvidenceTools):
                 if not isinstance(item, Mapping):
                     continue
                 try:
-                    event_at = _parse_time(item.get("EventTime"))
+                    event_at_ns = _epoch_nanoseconds(item.get("EventTime"))
                 except (TypeError, ValueError, OverflowError):
                     gaps.append("change event without a valid EventTime")
                     continue
-                available_at = self._available_at(item, source)
-                if event_at < start_at or event_at >= end_at:
+                available_at_ns = self._available_at_ns(item, source)
+                if event_at_ns < start_ns or event_at_ns >= end_ns:
                     continue
                 resource_values = {str(item["lookupResource"])} if item.get("lookupResource") else set()
                 resource_values.update(str(entry["ResourceName"]) for entry in item.get("Resources", [])
@@ -687,7 +794,7 @@ class CapturedEvidenceTools(EvidenceTools):
                     continue
                 if not any(selected_names.intersection(value.replace("/", ":").split(":")) for value in resource_values):
                     continue
-                if available_at is None or available_at > _parse_time(self.reference_time):
+                if available_at_ns is None or available_at_ns > reference_ns:
                     unavailable_match = True
                     continue
                 records.append(dict(item))

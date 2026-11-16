@@ -24,7 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 PROJECT = ROOT / "agent"
 OUTPUT = ROOT / ".artifacts" / "agent" / "runtime.zip"
 ADAPTER_OUTPUT = ROOT / ".artifacts" / "agent" / "alarm-adapter.zip"
-RUNTIME_MODULES = ("main.py", "evidence.py", "prompt.py")
+RUNTIME_MODULES = ("main.py", "investigation.py", "evidence.py", "prompt.py")
 
 
 def run(*args: str, cwd: Path = ROOT, quiet: bool = False) -> None:
