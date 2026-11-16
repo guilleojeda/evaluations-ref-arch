@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime
 import hashlib
 from itertools import count
 import json
@@ -166,6 +167,13 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         bundle = json.loads(self.bundle.read_text())
         logs = bundle["sources"]["logs"]
         logs["observedAt"] = "2026-11-13T10:06:30.000Z"
+        early = next(log for log in logs["observations"] if log["eventId"] == "log-early")
+        for key in ("timestamp", "ingestionTime"):
+            early[key] = int(datetime.fromisoformat(early[key]).timestamp() * 1000)
+        early.pop("availableAt")
+        late = next(log for log in logs["observations"] if log["eventId"] == "log-late")
+        late["observedAt"] = late.pop("availableAt")
+        late.pop("ingestionTime")
         logs["scope"].append("gateway")
         logs["observations"].append({
             "resource": "gateway",
@@ -252,6 +260,7 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         self.assertNotIn("PRIVATE_REFERENCE_FOR_JUDGE", requests)
         self.assertNotIn("excluded-gateway-request", requests)
         self.assertNotIn("request-future", requests)
+        self.assertIn("request-early", requests)
         self.assertIn("request-late", requests)
         self.assertIn(case["task"]["referenceTime"], requests)
         self.assertEqual(

@@ -120,6 +120,14 @@ def _epoch_nanoseconds(value: Any) -> int:
     return seconds * 1_000_000_000 + fraction_ns
 
 
+def _log_available_at(observation: Mapping[str, Any]) -> Any:
+    for field in ("availableAt", "ingestionTime", "observedAt"):
+        value = observation.get(field)
+        if value is not None:
+            return value
+    return None
+
+
 def _iso(value: datetime) -> str:
     return value.astimezone(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
@@ -539,12 +547,7 @@ class CapturedEvidenceTools(EvidenceTools):
                 except (TypeError, ValueError, OverflowError):
                     gaps.append("log record without a valid event timestamp")
                     continue
-                # Native ingestion is an observation bound even when the
-                # exporter downloaded the log records much later.
-                if "availableAt" not in item and item.get("ingestionTime") is not None:
-                    available_at_ns = self._available_at_ns({"availableAt": item["ingestionTime"]}, source)
-                else:
-                    available_at_ns = self._available_at_ns(item, source)
+                available_at_ns = self._available_at_ns({"availableAt": _log_available_at(item)}, source)
                 if event_at_ns < start_ns or event_at_ns >= end_ns:
                     continue
                 if not self._matches_log_filter(item, filter_pattern, predicate):

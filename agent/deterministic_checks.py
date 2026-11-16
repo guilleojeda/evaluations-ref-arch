@@ -21,6 +21,7 @@ from typing import Any, Mapping, Sequence
 
 from pydantic import ValidationError
 
+from captured_evidence import _epoch_nanoseconds, _log_available_at
 from investigation import InvestigationReport
 from reviewed_cases import TOOLS, load_frozen_case
 
@@ -726,20 +727,24 @@ def _check_captured_times(results: list[dict[str, Any]], reference_time: int) ->
                 for bucket in buckets:
                     start = _optional_time(bucket)
                     times.append(start + period * 1_000_000_000 if start is not None else None)
+            elif item["tool"] == "search_logs":
+                available = _log_available_at(observation)
+                if available is None:
+                    available = result.get("acquiredAt", result.get("observedAt"))
+                times = []
+                for value in (observation.get("timestamp"), available):
+                    try:
+                        times.append(_epoch_nanoseconds(value))
+                    except (TypeError, ValueError, OverflowError):
+                        times.append(None)
             else:
                 available = observation.get("availableAt")
-                if available is None and item["tool"] == "search_logs":
-                    available = observation.get("ingestionTime")
                 if available is None:
                     # The captured provider uses this source bound only for a
                     # record without a more precise availability timestamp.
                     available = result.get("acquiredAt", result.get("observedAt"))
                 times = [_optional_time(observation[key]) for key in ("observedAt", "timestamp", "EventTime") if key in observation]
-                times.append(
-                    available * 1_000_000
-                    if type(available) is int and observation.get("ingestionTime") == available
-                    else _optional_time(available)
-                )
+                times.append(_optional_time(available))
             for observed in times:
                 if observed is None:
                     missing = True
