@@ -373,17 +373,28 @@ class CapturedBaselineAcceptance(unittest.TestCase):
                     execution_path.write_bytes(pristine_execution)
 
         with patch.object(trace.get_tracer_provider(), "force_flush", return_value=False):
-            interrupted_dir = run_captured_case(
+            delayed_dir = run_captured_case(
                 reviewed, self.bundle, self.output_root,
                 model_session=ScriptedBedrock(report, case["task"]),
             )
-        interrupted, _, _ = load_execution(interrupted_dir)
-        self.assertEqual(interrupted["status"], "interrupted")
-        self.assertEqual(interrupted["report"], report)
-        self.assertEqual(interrupted["reportSource"], "report_tool")
-        self.assertTrue(interrupted["ledger"]["reportSpanId"])
-        self.assertEqual(interrupted["deterministic"]["inputKind"], "report_only")
-        self.assertEqual(interrupted["deterministic"]["findings"]["action"]["verdict"], "fail")
+        delayed, delayed_case, delayed_spans = load_execution(delayed_dir)
+        self.assertEqual(delayed["status"], "complete")
+        self.assertEqual(delayed["report"], report)
+        self.assertIn("did not confirm export", delayed["telemetryWarning"])
+        self.assertEqual(delayed["deterministic"]["inputKind"], "captured_execution")
+        self.assertEqual(delayed["deterministic"]["findings"]["action"]["verdict"], "fail")
+        delayed_evaluate = EvaluationService(session_id=delayed["identity"]["sessionId"])
+        for available, status, calls in (([], "incomplete", 0), (delayed_spans, "complete", 1)):
+            attempt = score_execution(
+                delayed, delayed_case,
+                fetch_session=lambda _session_id, _trace_id: available,
+                evaluation_client=delayed_evaluate,
+                evaluator_id=EVALUATOR_ID,
+                wait_seconds=0,
+                verified_spans=delayed_spans,
+            )
+            self.assertEqual(attempt["status"], status, attempt)
+            self.assertEqual(len(delayed_evaluate.calls), calls)
 
     def test_tool_budget_rejection_keeps_native_attempt_and_scoreable_ledger(self):
         from captured_execution import load_execution

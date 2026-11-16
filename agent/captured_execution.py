@@ -716,7 +716,7 @@ def _run_snapshot(
             identity["reportSha256"] = _sha256(_json_bytes(report))
             record["deterministic"] = check_report(report, loaded_case)
             if not provider.force_flush(timeout_millis=30_000):
-                raise ValueError("native telemetry provider did not flush the captured session")
+                record["telemetryWarning"] = "trace exporter did not confirm export during flush"
 
             record["modelRequestCount"] = bounded_model.requests
             record["modelRequestAttempts"] = bounded_model.attempts
