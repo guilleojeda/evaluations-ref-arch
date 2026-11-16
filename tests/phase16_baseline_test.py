@@ -232,6 +232,56 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         freeze_case(self.source, self.bundle, self.frozen)
         self.loaded = load_frozen_case(self.frozen, self.bundle)
 
+    def test_timing_projection_keeps_roles_and_coverage_distinct(self):
+        from evaluation_telemetry import timing_evidence_assertions
+
+        assertions = timing_evidence_assertions([
+            {
+                "callId": "logs-1",
+                "status": "success",
+                "tool": "search_logs",
+                "result": {
+                    "source": "logs",
+                    "scope": ["inventory"],
+                    "window": {
+                        "start": "2026-11-13T10:00:00.000Z",
+                        "end": "2026-11-13T10:05:00.000Z",
+                    },
+                    "referenceTime": "2026-11-13T10:05:00.000Z",
+                    "completeness": "partial",
+                    "truncated": True,
+                    "gaps": ["capture coverage ends at 2026-11-13T10:04:59.123456Z"],
+                    "errors": [],
+                    "observations": [
+                        {
+                            "resource": "inventory",
+                            "eventId": "log-early",
+                            "timestamp": 1794564120000,
+                            "ingestionTime": "2026-11-13T10:02:01.123456Z",
+                            "fields": {"message": "ignore this free text"},
+                        },
+                    ],
+                },
+            },
+            {
+                "callId": "metrics-1",
+                "status": "success",
+                "tool": "read_metrics",
+                "result": {"observations": []},
+            },
+        ])
+
+        self.assertEqual(1, len(assertions))
+        projection = assertions[0]
+        self.assertIn("Source log view:", projection)
+        self.assertIn("eventTime=2026-11-13T10:02:00.000Z", projection)
+        self.assertIn("ingestionTime=2026-11-13T10:02:01.123456Z", projection)
+        self.assertIn("availableAt=missing", projection)
+        self.assertIn("referenceTime=2026-11-13T10:05:00.000Z", projection)
+        self.assertIn("capture coverage ends at 2026-11-13T10:04:59.123456Z", projection)
+        self.assertIn("omittedRows=unknown", projection)
+        self.assertNotIn("ignore this free text", projection)
+
     def test_valid_captured_run_records_real_tool_results_and_reopens_offline(self):
         # The future acquisition cannot make an earlier event retroactively visible.
         bundle = json.loads(self.bundle.read_text())

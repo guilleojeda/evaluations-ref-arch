@@ -26,7 +26,12 @@ from agentcore_evaluation import (
     score_session,
 )
 from captured_execution import load_execution, run_captured_case
-from evaluation_telemetry import CloudWatchSession, score_execution
+from evaluation_telemetry import (
+    CloudWatchSession,
+    execution_content,
+    score_execution,
+    timing_evidence_assertions,
+)
 
 
 ACCOUNT = "027224425948"
@@ -258,6 +263,8 @@ def _validate_control(control: dict[str, Any]) -> None:
 def _calibrate(source: Path, pin_path: Path, output: Path) -> dict[str, Any]:
     fixture = _read(source)
     _validate_control(fixture)
+    observed = execution_content(fixture["sessionSpans"])
+    assertions = fixture["assertions"] + timing_evidence_assertions(observed["toolCalls"])
     pin = _read(pin_path)
     session = _aws()
     control = session.client("bedrock-agentcore-control", config=AWS_CONFIG)
@@ -270,12 +277,14 @@ def _calibrate(source: Path, pin_path: Path, output: Path) -> dict[str, Any]:
         "evaluatorConfiguration": before,
         "scoringSourceSha256": _scoring_source_digests(),
         "control": fixture,
+        "assertions": assertions,
+        "assertionsSha256": _digest(assertions),
     })
     started = time.monotonic()
     semantic = score_session(
         session.client("bedrock-agentcore", config=EVALUATE_CONFIG), evaluator_id=pin["evaluatorId"],
         session_id=fixture["sessionId"], trace_id=fixture["traceId"], session_spans=fixture["sessionSpans"],
-        assertions=fixture["assertions"],
+        assertions=assertions,
     )
     result = {"status": semantic["status"], "semantic": semantic}
     _check_after_scoring(control, pin, before, result)

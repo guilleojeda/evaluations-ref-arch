@@ -192,7 +192,7 @@ uv run --offline --project agent --locked python agent/evaluate_case.py show --r
 Score that execution's matching CloudWatch session using the short-lived
 evaluation role and the reviewed evaluator descriptor. Qualify the evaluator
 revision on reviewed holdout controls before using it to score the baseline.
-The v2 rubric's fresh holdout is awaiting presenter review.
+Keep the evaluator configuration and reviewed reference inputs with the score.
 
 ```sh
 uv run --project agent --locked python agent/evaluate_case.py score \

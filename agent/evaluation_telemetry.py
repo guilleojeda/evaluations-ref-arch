@@ -29,6 +29,14 @@ _SCORING_POLL_SECONDS = 1.0
 _MAX_QUERY_SECONDS = 6 * 60 * 60
 _MAX_QUERY_ROWS = 10_000
 
+# AgentCore's EvaluationContent allows 100,000 characters per assertion. Keep
+# the projection comfortably below that service limit even if a caller hands
+# us an unexpectedly large returned result. The normal evidence tools already
+# bound a successful response to 120 observations; this smaller byte budget is
+# an additional integrity boundary for persisted/native records.
+_MAX_TIMING_ASSERTION_BYTES = 80_000
+_MAX_TIMING_ROWS = 120
+
 
 def _json_bytes(value: Any) -> bytes:
     return json.dumps(
@@ -575,6 +583,183 @@ def execution_content(spans: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "report": report,
         "reportSource": report_source,
     }
+
+
+def _timing_token(value: Any, *, max_length: int = 160) -> str:
+    """Keep identifiers in timing assertions from becoming judge instructions."""
+
+    if value is None:
+        return "missing"
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        return "invalid"
+    text = str(value).strip()
+    if not text:
+        return "missing"
+    # Source/resource/call IDs in the persisted schema are ordinary bounded
+    # identifiers. Hash anything outside that vocabulary rather than copying
+    # arbitrary model- or source-controlled text into evaluator reference data.
+    if len(text) > max_length or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+=%-]*", text) is None:
+        return f"sha256:{hashlib.sha256(text.encode('utf-8', 'replace')).hexdigest()[:16]}"
+    return text
+
+
+def _timing_time(value: Any) -> str:
+    """Keep source ISO precision and render numeric CloudWatch times in UTC."""
+
+    if value is None:
+        return "missing"
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return "invalid"
+    try:
+        if isinstance(value, str):
+            value = value.strip()
+            if re.fullmatch(r"[+-]?[0-9]+(?:\.[0-9]+)?", value) is None:
+                _timestamp_seconds(value, "log timestamp")
+                return value
+        seconds = float(value)
+        if abs(seconds) >= 100_000_000_000:
+            seconds /= 1000
+        timestamp = datetime.fromtimestamp(seconds, timezone.utc)
+        return timestamp.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    except (ValueError, OverflowError, OSError):
+        return "invalid"
+
+
+def _timing_count(value: Any) -> str:
+    if value is None:
+        return "missing"
+    if not isinstance(value, list):
+        return "invalid"
+    return str(len(value))
+
+
+def _timing_scope(value: Any) -> str:
+    if not isinstance(value, list):
+        return "invalid"
+    if not value:
+        return "empty"
+    rendered: list[str] = []
+    for item in value[:8]:
+        rendered.append(_timing_token(item))
+    if len(value) > len(rendered):
+        rendered.append(f"omitted:{len(value) - len(rendered)}")
+    return ",".join(rendered)
+
+
+def _timing_gap_windows(value: Any) -> str:
+    """Retain only the canonical captured-source coverage-bound messages."""
+
+    if not isinstance(value, list):
+        return "invalid" if value is not None else "missing"
+    bounds: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        for prefix, label in (
+            ("capture coverage starts at ", "capture coverage starts at"),
+            ("capture coverage ends at ", "capture coverage ends at"),
+        ):
+            if item.startswith(prefix):
+                timestamp = _timing_time(item[len(prefix):].strip())
+                if timestamp not in {"missing", "invalid"}:
+                    bounds.append(f"{label} {timestamp}")
+                break
+    return "|".join(bounds) if bounds else "none"
+
+
+def _timing_coverage(result: Mapping[str, Any]) -> str:
+    window = result.get("window")
+    if isinstance(window, Mapping):
+        window_start = _timing_time(window.get("start"))
+        window_end = _timing_time(window.get("end"))
+    elif window is None:
+        window_start = window_end = "missing"
+    else:
+        window_start = window_end = "invalid"
+    completeness = _timing_token(result.get("completeness"))
+    truncated = result.get("truncated")
+    truncated_value = str(truncated).lower() if isinstance(truncated, bool) else "invalid"
+    return (
+        f"source={_timing_token(result.get('source'))} "
+        f"scope={_timing_scope(result.get('scope'))} "
+        f"windowStart={window_start} windowEnd={window_end} "
+        f"referenceTime={_timing_time(result.get('referenceTime'))} "
+        f"completeness={completeness} truncated={truncated_value} "
+        f"gaps={_timing_count(result.get('gaps'))} errors={_timing_count(result.get('errors'))} "
+        f"coverageGaps={_timing_gap_windows(result.get('gaps'))}"
+    )
+
+
+def _timing_row(index: int, row: Any) -> str:
+    if not isinstance(row, Mapping):
+        return f"row[{index}]=invalid"
+    return (
+        f"row[{index}] resource={_timing_token(row.get('resource'))} "
+        f"eventId={_timing_token(row.get('eventId'))} "
+        f"logStreamName={_timing_token(row.get('logStreamName'))} "
+        f"eventTime={_timing_time(row.get('timestamp'))} "
+        f"ingestionTime={_timing_time(row.get('ingestionTime'))} "
+        f"availableAt={_timing_time(row.get('availableAt'))}"
+    )
+
+
+def timing_evidence_assertions(tool_calls: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Project authenticated ``search_logs`` results into judge-only timing facts.
+
+    The native spans remain the submitted execution evidence. These assertions
+    contain only the sanitized result fields already returned by successful log
+    calls: source/coverage metadata and row identity/timing fields. Free-form
+    query text, log messages, and projected ``fields`` are intentionally not
+    copied into evaluator reference inputs.
+    """
+
+    if not isinstance(tool_calls, Sequence) or isinstance(tool_calls, (str, bytes)):
+        return []
+    assertions: list[str] = []
+    for call in tool_calls:
+        if not isinstance(call, Mapping) or call.get("tool") != "search_logs":
+            continue
+        if call.get("status") != "success":
+            continue
+        result = call.get("result")
+        if not isinstance(result, Mapping):
+            continue
+        observations = result.get("observations")
+        if observations is None:
+            # The canonical four tools omit observations for a successful
+            # zero-row result. Keep that distinction explicit without turning
+            # the omission into evidence of a source row.
+            observation_state = "empty"
+            rows: list[Any] = []
+        elif isinstance(observations, list):
+            observation_state = "present"
+            rows = observations
+        else:
+            observation_state = "invalid"
+            rows = []
+
+        base = (
+            "Source log view: verified search_logs timing projection "
+            f"callId={_timing_token(call.get('callId'))} "
+            f"{_timing_coverage(result)} "
+            f"observations={observation_state} returnedRows={len(rows)}"
+        )
+        omitted_source = result.get("truncated") is True
+        row_parts: list[str] = []
+        size = len(base.encode("utf-8"))
+        for index, row in enumerate(rows[:_MAX_TIMING_ROWS]):
+            candidate = f"; {_timing_row(index, row)}"
+            size += len(candidate.encode("utf-8"))
+            if size > _MAX_TIMING_ASSERTION_BYTES:
+                break
+            row_parts.append(candidate)
+        projection_omitted = len(rows) - len(row_parts)
+        if omitted_source:
+            base += " omittedRows=unknown"
+        if projection_omitted:
+            base += f" projectionOmittedRows={projection_omitted}"
+        assertions.append(base + "".join(row_parts))
+    return assertions
 
 
 def interrupted_execution_content(
@@ -1200,6 +1385,15 @@ def score_execution(
     collection_seconds = max(0.0, time.monotonic() - started)
     deterministic = check_captured_report(record["report"], loaded_case, record["ledger"])
 
+    # Only the authenticated CloudWatch projection may contribute timing
+    # reference facts. Keep these after the reviewed case criteria so the
+    # evaluator sees the source view as supplemental, not as a replacement or
+    # expected-label override.
+    assertions = [
+        *assertions,
+        *timing_evidence_assertions(validated["content"]["toolCalls"]),
+    ]
+
     scoring_started = time.monotonic()
     try:
         semantic = score_session(
@@ -1242,4 +1436,5 @@ __all__ = [
     "execution_content",
     "interrupted_execution_content",
     "score_execution",
+    "timing_evidence_assertions",
 ]
