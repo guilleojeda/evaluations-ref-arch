@@ -240,6 +240,8 @@ def _grade_as_of_report(report: Mapping[str, Any], reference_time: int) -> dict[
         # window while still being a valid citation.
         if start > end:
             return _finding("complete", "fail", "a report citation has inconsistent observation chronology")
+        if start == end and start > reference_time:
+            return _finding("complete", "fail", "a report citation names a point after the reviewed cutoff")
         if observed > reference_time:
             return _finding("complete", "fail", "a report citation was observed after the reviewed cutoff")
     return _finding("complete", "pass", "all report citations were observed by the reviewed cutoff")

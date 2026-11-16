@@ -717,6 +717,15 @@ class DeterministicChecksAcceptanceTests(unittest.TestCase):
                 self.assertEqual("pass", result["findings"]["target_value"]["verdict"])
                 if late:
                     self.assertEqual("fail", result["findings"]["as_of_time"]["verdict"])
+                else:
+                    self.assertEqual("pass", result["findings"]["as_of_time"]["verdict"])
+
+        for point, verdict in ((REFERENCE, "pass"), (AFTER_REFERENCE, "fail")):
+            with self.subTest(point=point):
+                report = report_for(restore)
+                report["evidence"][2].update(source="configuration", windowStart=point, windowEnd=point)
+                _completed, result = self.deterministic(frozen, report=report)
+                self.assertEqual(verdict, result["findings"]["as_of_time"]["verdict"])
 
     def test_report_only_cutoff_has_full_precision_and_null_is_invalid_structure(self):
         restore = recommendation("Restore inventory access", "inventory", "75", "version")
