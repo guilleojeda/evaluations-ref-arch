@@ -65,8 +65,10 @@ class StructuredOutputFallbackBedrock:
         if "outputConfig" in request:
             events = [
                 {"messageStart": {"role": "assistant"}},
-                {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": json.dumps(self.report)}}},
+                {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"reasoningContent": {"text": "Checked the evidence."}}}},
                 {"contentBlockStop": {"contentBlockIndex": 0}},
+                {"contentBlockDelta": {"contentBlockIndex": 1, "delta": {"text": json.dumps(self.report)}}},
+                {"contentBlockStop": {"contentBlockIndex": 1}},
                 {"messageStop": {"stopReason": "end_turn"}},
                 {"metadata": {"usage": {"inputTokens": 4, "outputTokens": 3, "totalTokens": 7}, "metrics": {"latencyMs": 1}}},
             ]

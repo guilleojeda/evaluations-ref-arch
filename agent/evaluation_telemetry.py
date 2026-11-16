@@ -377,7 +377,7 @@ def _model_call(span: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
-def _assistant_report(model_spans: Sequence[Mapping[str, Any]], model_calls: Sequence[Mapping[str, Any]]) -> tuple[str, dict[str, Any]]:
+def _assistant_report(model_spans: Sequence[Mapping[str, Any]]) -> tuple[str, dict[str, Any]]:
     """Read a schema-valid report from the final assistant chat response."""
 
     ended = [(_time_ns(span, "end"), span) for span in model_spans]
@@ -391,11 +391,19 @@ def _assistant_report(model_spans: Sequence[Mapping[str, Any]], model_calls: Seq
     final_id = final_span.get("spanId")
     if not isinstance(final_id, str) or not final_id:
         raise TelemetryIncomplete("final assistant report span ID is missing")
-    call = next((item for item in model_calls if item.get("spanId") == final_id), None)
-    if not isinstance(call, Mapping) or not isinstance(call.get("output"), str):
-        raise TelemetryIncomplete("final assistant response content is missing")
     try:
-        payload = _json_payload(call["output"], "final assistant report")
+        choice = _event_attrs(_one_event(final_span, "gen_ai.choice"))
+        payload = _native_value(choice.get("message"))
+        if isinstance(payload, str):
+            payload = _json_payload(payload, "final assistant response")
+        if isinstance(payload, list):
+            # Strands validates only the assistant's concatenated text blocks.
+            # Keep reasoning and other blocks in the full matched native events.
+            report_text = "".join(
+                block["text"] for block in payload
+                if isinstance(block, Mapping) and isinstance(block.get("text"), str)
+            )
+            payload = _json_payload(report_text, "final assistant report")
         if not isinstance(payload, Mapping):
             raise TelemetryIncomplete("final assistant output is not a report object")
         from investigation import InvestigationReport
@@ -521,7 +529,7 @@ def execution_content(spans: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         report_span_id, report = report_call["spanId"], report_call["arguments"]
         report_source = "report_tool"
     else:
-        report_span_id, report = _assistant_report(model_spans, calls)
+        report_span_id, report = _assistant_report(model_spans)
         report_source = "assistant_chat"
     return {
         "agentSpanId": root_id,

@@ -319,6 +319,17 @@ class CapturedBaselineAcceptance(unittest.TestCase):
                 finally:
                     execution_path.write_bytes(pristine_execution)
 
+        with patch.object(trace.get_tracer_provider(), "force_flush", return_value=False):
+            interrupted_dir = run_captured_case(
+                reviewed, self.bundle, self.output_root,
+                model_session=ScriptedBedrock(report, case["task"]),
+            )
+        interrupted, _, _ = load_execution(interrupted_dir)
+        self.assertEqual(interrupted["status"], "interrupted")
+        self.assertEqual(interrupted["report"], report)
+        self.assertEqual(interrupted["deterministic"]["inputKind"], "report_only")
+        self.assertEqual(interrupted["deterministic"]["findings"]["action"]["verdict"], "fail")
+
     def test_run_refuses_modified_frozen_input_before_any_cloud_work(self):
         envelope = json.loads(self.frozen.read_text())
         envelope["case"]["task"]["symptoms"][0] += " Modified after review."

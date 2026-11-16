@@ -550,7 +550,7 @@ def _run_snapshot(
     agent_source = staging / "source" / "agent"
     with _snapshot_imports(agent_source):
         from captured_evidence import CapturedEvidenceTools
-        from deterministic_checks import check_captured_report
+        from deterministic_checks import check_captured_report, check_report
         from evaluation_telemetry import execution_content
         from investigation import MODEL_ID as SHARED_MODEL_ID, RUN_SECONDS as SHARED_RUN_SECONDS, create_agent, invoke_agent
         from prompt import PROMPT_SHA256
@@ -701,11 +701,12 @@ def _run_snapshot(
             if timer is not None:
                 timer.cancel()
                 timer = None
+            record["report"] = report
+            identity["reportSha256"] = _sha256(_json_bytes(report))
+            record["deterministic"] = check_report(report, loaded_case)
             if not provider.force_flush(timeout_millis=30_000):
                 raise ValueError("native telemetry provider did not flush the captured session")
 
-            record["report"] = report
-            identity["reportSha256"] = _sha256(_json_bytes(report))
             record["modelRequestCount"] = bounded_model.requests
             record["modelRequestAttempts"] = bounded_model.attempts
             record["modelResponseCount"] = sum(
