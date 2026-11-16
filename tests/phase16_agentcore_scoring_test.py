@@ -164,6 +164,8 @@ class AgentCoreRubricConfigurationTests(unittest.TestCase):
             for item in rubric["ratingScale"]["multiDimensional"]
         }
         self.assertIn("ingestionTime and availableAt", dimensions["evidence_grounding"])
+        self.assertIn("referenceTime", dimensions["evidence_grounding"])
+        self.assertIn("repeat the request", dimensions["evidence_grounding"])
         self.assertIn("query requested a later end", dimensions["evidence_grounding"])
         self.assertNotEqual(
             "ebf0d8f1e01ddd6c3ddf4b4c80866674ff322317cbc5fc39965382ca9e6dd1e0",

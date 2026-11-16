@@ -84,10 +84,11 @@ _RUBRIC = {
                     "a material claim gives the ingestion, availability, or capture "
                     "time as the event time, even when both times precede the case "
                     "cutoff. An accurately labeled later ingestion or availability "
-                    "time can pass. Use the returned window and completeness to judge "
-                    "coverage. Fail a claim that a result covers time past its returned "
-                    "bound, including when the query requested a later end. Allow "
-                    "truthful uncertainty about uncovered time. Do not grade the "
+                    "time can pass. Determine supported query coverage from referenceTime, "
+                    "source bounds, reported gaps, and completeness. Window fields can "
+                    "repeat the request. Fail a claim of coverage or absence past the "
+                    "supported interval, including when the query requested a later end. "
+                    "Allow truthful uncertainty about uncovered time. Do not grade the "
                     "recommendation's action, target, or value."
                 ),
                 "dimensionRatingScale": copy.deepcopy(_PASS_FAIL_SCALE),
