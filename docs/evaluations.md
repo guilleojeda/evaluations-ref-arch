@@ -102,7 +102,7 @@ The report selects exactly one of **Increase reserved concurrency**, **Increase 
 
 Case expectations may accept more than one justified numeric target within the reviewed bounds; they must not enforce one arbitrary sentence, tool sequence, or exact value. If the agent cannot establish a supported target, it should explain that limitation through Other. Insufficient evidence is not an escape from a case that supplies adequate evidence the agent failed to collect.
 
-The selected initial defect is an inventory memory recommendation for the access-denied case. Keep the same defective candidate through S1–S2: S1 establishes acceptable and unacceptable behavior without scoring, and S2 introduces deterministic action/target checks, semantic diagnosis/grounding criteria, judge configuration, and AgentCore evaluation results. At S3, edit the prompt only and execute the fresh candidate against the same cases and criteria, comparing it with the original; pending results remain pending. At S4, execute the repaired candidate through the local Python Strands entrypoint that connects case, task, evaluator, report, and comparison, and evaluate the existing reviewed local release policy before the first deployment. Rerun both incident cases and relevant controls. Bind the result to the evaluated source and agent artifact, prompt, dependency, case, evidence, evaluator, and model versions, then deploy the candidate covered by that result. At S5, CI runs that same experiment and policy before deployment; failed or incomplete required results block it. Use one agent constructor with the same approved live or captured providers across runtime and evaluation. A trace from the previously deployed candidate cannot replace pending-candidate execution. Retain the old candidate to show that the completed suite still rejects it. An evaluation result identifies a problem; it does not change the agent's behavior.
+The selected initial defect is an inventory memory recommendation for the access-denied case. S1 reviews acceptable and unacceptable behavior using evidence from the opening incident. S2 evaluates the captured faulty candidate with explicit final recommendation precedence. At S3, edit the prompt only and compare its fresh execution with the identified S2 baseline on the same cases and criteria. Pending results remain pending. At S4, execute the repaired candidate through the local Python Strands entrypoint that connects case, task, evaluator, report, and comparison, and evaluate the existing reviewed local release policy before the first deployment. Rerun both incident cases and relevant controls. Bind the result to the evaluated source and agent artifact, prompt, dependency, case, evidence, evaluator, and model versions, then deploy the candidate covered by that result. At S5, CI runs that same experiment and policy before deployment; failed or incomplete required results block it. Use one agent constructor with the same approved live or captured providers across runtime and evaluation. A trace from the previously deployed candidate cannot replace pending-candidate execution. Retain the captured faulty candidate to show that the completed suite still rejects it. An evaluation result identifies a problem; it does not change the agent's behavior.
 
 A correct diagnosis with the wrong action fails recommendation correctness. A lucky correct action with an unsupported diagnosis still needs a grounding finding. These results should remain separately inspectable rather than disappear into one average score.
 
@@ -152,10 +152,11 @@ The useful feedback sequence is:
 ## S2: Run and score the captured baseline
 
 The [captured-run commands](../agent/README.md#run-and-score-the-captured-baseline-s2)
-save one execution and separately score its verified CloudWatch session. The
-baseline uses the prepared denial case, its exact evidence cutoff, and the
-faulty candidate's saved source and settings. The historical live denial
-report remains a separate incident artifact.
+open the identified saved execution and score its verified CloudWatch session.
+The baseline uses the prepared denial case, its exact evidence cutoff, and the
+faulty candidate's saved source and settings. A new input requires its own
+matching execution. The historical live denial report remains a separate
+incident artifact.
 
 The custom AgentCore SESSION evaluator returns two categorical findings in
 one call. Diagnosis support checks whether the causal explanation follows from
@@ -168,7 +169,13 @@ The first frozen-case run recommended restoring Inventory access. Its
 deterministic cutoff check failed on a citation beyond the reviewed time.
 Haiku 4.5 passed both semantic findings in two provisional scoring attempts.
 Both explanations treated an empty, clipped tool response as evidence through
-the full requested window. The fresh memory recommendation remains unverified.
+the full requested window. That run supplies a timing counterexample for judge
+calibration. The saved S2 execution on the same frozen case diagnosed the
+access denial and recommended increasing Inventory memory from 256 MB to
+512 MB. Its action, value, and cutoff checks failed. Its Inventory target
+check passed. The v2 grounding rubric distinguishes event, ingestion, and
+availability timestamps and checks actual query coverage. Semantic scoring of
+the saved S2 run awaits review and calibration on the fresh holdout.
 
 Judge calibration uses labeled, constructed controls grounded in retained
 evidence. Development and holdout controls come from separate incidents. The
@@ -187,7 +194,7 @@ The intended execution and scoring path is:
 2. Export that execution's actual model/tool/report telemetry to CloudWatch through the prepared outside-Runtime observability configuration, with session correlation. Wait for ingestion, then collect the matching complete session spans and conversation content. The case reference time governs evidence access; telemetry timestamps describe the new execution.
 3. Submit those spans to AgentCore on-demand `Evaluate`, using the same versioned semantic evaluators and reviewed reference expectations as the baseline. Supply expectations as evaluator reference inputs, outside the agent's prompt and tool evidence. Verify that reference-dependent criteria actually consumed the supplied fields.
 4. Run the deterministic action/target checks against the new report and keep their findings separate from the semantic judgments. Reuse the check logic when exposing a check through an AgentCore Lambda evaluator rather than writing a second copy.
-5. Compare the original and repaired candidates on the same cases, captured evidence, criteria, and scoring setup. Use an identified matching baseline result, or execute the original through this runner when one is unavailable. Missing spans, ignored required references, or failed required scoring leave the evaluation incomplete.
+5. Compare the captured S2 faulty candidate and the repaired candidate on the same cases, captured evidence, criteria, and scoring setup. Use the identified matching S2 baseline. For an alternate input with no matching baseline, execute the captured S2 prompt and retain the observed result. Missing spans, ignored required references, or failed required scoring leave the evaluation incomplete.
 
 AWS supports on-demand evaluation of supported-framework agents outside AgentCore Runtime. Its [on-demand prerequisites](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ondemand-evaluations-prereqs.html) and [outside-Runtime observability setup](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-configure.html#observability-configure-outside) establish this route. Prepare telemetry export, session propagation, source collection, and evaluation permissions before the session. Ground-truth reference inputs are described in [ground-truth evaluation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ground-truth-evaluations.html); shared code checks can use the [Lambda evaluator contract](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-based-evaluators.html).
 
