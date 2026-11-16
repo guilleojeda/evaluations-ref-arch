@@ -19,8 +19,6 @@ from pydantic.json_schema import WithJsonSchema
 from strands import Agent
 from strands.models import BedrockModel
 
-from prompt import SYSTEM_PROMPT
-
 
 MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 REPORT_SCHEMA_VERSION = 2
@@ -187,6 +185,8 @@ def create_agent(
     When absent, BedrockModel creates its normal production client in the given
     Region.  No test needs to create a boto3 Bedrock client.
     """
+
+    from prompt import SYSTEM_PROMPT
 
     client_config = Config(
         connect_timeout=10,

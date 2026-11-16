@@ -199,6 +199,42 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         trace.set_tracer_provider(TracerProvider())
         run_dir = Path(run_captured_case(reviewed, self.bundle, self.output_root, model_session=bedrock))
 
+        from captured_execution import load_execution
+        from evaluation_telemetry import score_execution
+
+        record, reopened_case, native_spans = load_execution(run_dir)
+        evaluate_calls = []
+
+        class RecordingEvaluate:
+            def evaluate(self, **request):
+                evaluate_calls.append(request)
+                session_id = request["evaluationReferenceInputs"][0]["context"]["spanContext"]["sessionId"]
+                return {
+                    "evaluationResults": [
+                        {
+                            "evaluatorId": EVALUATOR_ID,
+                            "evaluationDimensionName": dimension,
+                            "context": {"spanContext": {"sessionId": session_id}},
+                            "label": "pass",
+                            "explanation": "The captured native spans reached the evaluator.",
+                        }
+                        for dimension in ("diagnosis_support", "evidence_grounding")
+                    ]
+                }
+
+        scored = score_execution(
+            record,
+            reopened_case,
+            fetch_session=lambda _session_id, _trace_id: copy.deepcopy(native_spans),
+            evaluation_client=RecordingEvaluate(),
+            evaluator_id=EVALUATOR_ID,
+            wait_seconds=0,
+            verified_spans=native_spans,
+        )
+        self.assertEqual(scored["status"], "complete", scored)
+        self.assertEqual(len(evaluate_calls), 1)
+        self.assertEqual(evaluate_calls[0]["evaluationInput"]["sessionSpans"], native_spans)
+
         self.assertTrue(run_dir.is_dir())
         self.assertGreaterEqual(len(bedrock.requests), 3)
         self.assertTrue(all(item["modelId"] == MODEL_ID for item in bedrock.requests))
@@ -233,6 +269,27 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         self.assertEqual(findings["source_scope"]["verdict"], "pass")
         self.assertEqual(findings["operator_boundary"]["verdict"], "pass")
         self.assertEqual(saved, {path.relative_to(run_dir): path.read_bytes() for path in run_dir.rglob("*") if path.is_file()})
+
+        execution_path = run_dir / "execution.json"
+        pristine_execution = execution_path.read_bytes()
+        for tamper in ("report", "ledger"):
+            with self.subTest(tamper=tamper):
+                changed = json.loads(pristine_execution)
+                if tamper == "report":
+                    changed["report"]["summary"] = "Tampered after the run completed."
+                    report_bytes = json.dumps(
+                        changed["report"], ensure_ascii=False, sort_keys=True,
+                        separators=(",", ":"), allow_nan=False,
+                    ).encode("utf-8")
+                    changed["identity"]["reportSha256"] = hashlib.sha256(report_bytes).hexdigest()
+                else:
+                    changed["ledger"]["modelCalls"][0]["output"] += " tampered"
+                execution_path.write_text(json.dumps(changed), encoding="utf-8")
+                try:
+                    with self.assertRaises(ValueError):
+                        load_execution(run_dir)
+                finally:
+                    execution_path.write_bytes(pristine_execution)
 
     def test_run_refuses_modified_frozen_input_before_any_cloud_work(self):
         envelope = json.loads(self.frozen.read_text())
@@ -274,6 +331,18 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         rejected_result = {"error": "Requested resource is unsupported."}
         model_input = "Inspect Inventory."
         model_output = "I will check Inventory."
+        model_events = [
+            span_event("gen_ai.system.message", content="System instructions for the candidate."),
+            span_event("gen_ai.user.message", content=model_input),
+            span_event("gen_ai.assistant.message", content="I will inspect the evidence."),
+            span_event("gen_ai.tool.message", content="Prior tool result context.", role="tool", id="context-1"),
+            span_event("gen_ai.assistant.message", content="The tool result is relevant."),
+            span_event("gen_ai.choice", message=model_output),
+        ]
+        projected_model_events = [
+            {"name": event["name"], "attributes": event["attributes"]}
+            for event in model_events
+        ]
         execution = {
             "status": "complete",
             "identity": {
@@ -294,7 +363,10 @@ class CapturedBaselineAcceptance(unittest.TestCase):
             "report": report,
             "ledger": {
                 "agentSpanId": ROOT_SPAN,
-                "modelCalls": [{"spanId": MODEL_SPAN, "input": model_input, "output": model_output}],
+                "modelCalls": [{
+                    "spanId": MODEL_SPAN, "input": model_input, "output": model_output,
+                    "events": projected_model_events,
+                }],
                 "toolCalls": [
                     {
                         "spanId": TOOL_SPAN,
@@ -322,6 +394,7 @@ class CapturedBaselineAcceptance(unittest.TestCase):
                 span_event("gen_ai.choice", message="See the structured investigation report.", finish_reason="end_turn"),
             ], **{
                 "incident.execution_id": EXECUTION_ID,
+                "incident.originating_run_id": self.loaded["originatingRunId"],
                 "incident.case_sha256": self.loaded["caseSha256"],
                 "incident.bundle_sha256": self.loaded["bundleSha256"],
                 "incident.reference_time": self.loaded["referenceTime"],
@@ -330,10 +403,7 @@ class CapturedBaselineAcceptance(unittest.TestCase):
                 "incident.prompt_sha256": PROMPT_DIGEST,
                 "incident.dependency_sha256": LOCK_DIGEST,
             }),
-            session_span(MODEL_SPAN, "chat", operation="chat", events=[
-                span_event("gen_ai.user.message", content=model_input),
-                span_event("gen_ai.choice", message=model_output),
-            ], **{
+            session_span(MODEL_SPAN, "chat", operation="chat", events=model_events, **{
                 "gen_ai.request.model": MODEL_ID,
             }),
             session_span(TOOL_SPAN, "execute_tool read_configuration", operation="execute_tool",
@@ -364,7 +434,7 @@ class CapturedBaselineAcceptance(unittest.TestCase):
 
             return score_execution(
                 record, self.loaded, fetch_session=fetch, evaluation_client=service,
-                evaluator_id=EVALUATOR_ID, wait_seconds=0,
+                evaluator_id=EVALUATOR_ID, wait_seconds=0, verified_spans=ready,
             )
 
         wrong_tool = copy.deepcopy(ready)
@@ -383,9 +453,18 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         mismatched_tool_error = copy.deepcopy(ready)
         mismatched_tool_error[3]["events"].pop()
         mismatched_model = copy.deepcopy(ready)
-        mismatched_model[1]["events"][1]["attributes"]["message"] = "Unrelated model response."
+        mismatched_model[1]["events"][1]["attributes"]["content"] = "Unrelated model request."
+        extra_judge_event_field = copy.deepcopy(ready)
+        extra_judge_event_field[1]["events"][1]["attributes"]["message"] = "Unbound assistant context."
         wrong_task = copy.deepcopy(ready)
         wrong_task[0]["events"][0]["attributes"]["content"] = '[{"text":"A different task."}]'
+        missing_hidden_context = copy.deepcopy(ready)
+        missing_hidden_context[1]["events"] = [
+            event for event in missing_hidden_context[1]["events"]
+            if event["name"] not in {
+                "gen_ai.system.message", "gen_ai.assistant.message", "gen_ai.tool.message",
+            }
+        ]
 
         for case, mutation in (
             ("empty", []),
@@ -402,6 +481,8 @@ class CapturedBaselineAcceptance(unittest.TestCase):
             ("different candidate snapshot", other_snapshot),
             ("model payload missing", metadata_only_model),
             ("model payload substituted", mismatched_model),
+            ("extra judge-visible event field", extra_judge_event_field),
+            ("model system/assistant/tool context missing", missing_hidden_context),
             ("foreign tool session", foreign_tool),
             ("failed tool result missing", mismatched_tool_error),
             ("different public task", wrong_task),
@@ -427,6 +508,17 @@ class CapturedBaselineAcceptance(unittest.TestCase):
             self.assertIn(score(ready, record=record)["status"], {"incomplete", "error"})
             self.assertEqual(service.calls, [])
 
+        legacy_fetches = []
+        legacy = score_execution(
+            execution, self.loaded,
+            fetch_session=lambda session_id, trace_id: legacy_fetches.append((session_id, trace_id)),
+            evaluation_client=service, evaluator_id=EVALUATOR_ID, wait_seconds=0,
+        )
+        self.assertEqual(legacy["status"], "incomplete")
+        self.assertEqual(legacy["deterministic"]["inputKind"], "report_only")
+        self.assertEqual(legacy_fetches, [])
+        self.assertEqual(service.calls, [])
+
         incomplete_fetches = []
 
         def fetch_incomplete(session_id, trace_id):
@@ -438,10 +530,12 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         with patch("time.monotonic", side_effect=count()), patch("time.sleep"):
             expired = score_execution(
                 execution, self.loaded, fetch_session=fetch_incomplete, evaluation_client=service,
-                evaluator_id=EVALUATOR_ID, wait_seconds=5,
+                evaluator_id=EVALUATOR_ID, wait_seconds=5, verified_spans=ready,
             )
         self.assertEqual(expired["status"], "incomplete")
         self.assertTrue(incomplete_fetches)
+        self.assertEqual(expired["deterministic"]["inputKind"], "captured_execution")
+        self.assertEqual(expired["deterministic"]["findings"]["operator_boundary"]["status"], "complete")
         self.assertEqual(service.calls, [])
 
         published = iter((ready[:2], ready))
@@ -455,7 +549,7 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         with patch("time.sleep"):
             first = score_execution(
                 execution, self.loaded, fetch_session=fetch_delayed, evaluation_client=service,
-                evaluator_id=EVALUATOR_ID, wait_seconds=5,
+                evaluator_id=EVALUATOR_ID, wait_seconds=5, verified_spans=ready,
             )
         self.assertEqual(fetches, [(SESSION_ID, TRACE_ID), (SESSION_ID, TRACE_ID)])
         rejudged = score(ready)

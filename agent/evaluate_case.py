@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
 import hashlib
 import json
 import os
 from pathlib import Path
+import sys
 import tempfile
 import time
 from typing import Any
@@ -194,7 +196,7 @@ def _check_after_scoring(control: Any, pin: dict[str, Any], before: dict[str, An
 
 
 def _score(run: Path, pin_path: Path, wait: int) -> dict[str, Any]:
-    record, loaded = load_execution(run)
+    record, loaded, native_spans = load_execution(run)
     if record.get("status") != "complete":
         raise ValueError("captured execution is incomplete or interrupted")
     pin = _read(pin_path)
@@ -221,6 +223,7 @@ def _score(run: Path, pin_path: Path, wait: int) -> dict[str, Any]:
             evaluation_client=session.client("bedrock-agentcore", config=EVALUATE_CONFIG),
             evaluator_id=pin["evaluatorId"], wait_seconds=wait,
             scoring_attempt_id=pending["scoringAttemptId"],
+            verified_spans=native_spans,
         )
         _check_after_scoring(control, pin, before, result)
     except (ValueError, ClientError, BotoCoreError) as exc:
@@ -313,8 +316,9 @@ def main() -> int:
     code = 0
     try:
         if args.command == "run":
-            run = run_captured_case(args.case, args.bundle, args.output_root)
-            record, _ = load_execution(run)
+            with redirect_stdout(sys.stderr):
+                run = run_captured_case(args.case, args.bundle, args.output_root)
+            record, _, _ = load_execution(run)
             output = {"runDirectory": str(run), **_summary(record), "report": record.get("report")}
             code = 0 if record.get("status") == "complete" else 2
         elif args.command == "score":
@@ -326,7 +330,7 @@ def main() -> int:
         elif args.command == "provision":
             output = _provision(args.model)
         else:
-            record, _ = load_execution(args.run)
+            record, _, _ = load_execution(args.run)
             attempts = [
                 _summary(_read(path))
                 for path in sorted((args.run / "scores").glob("*/result.json"))

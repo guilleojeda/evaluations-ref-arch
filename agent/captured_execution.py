@@ -199,7 +199,6 @@ def _verify_exporter_setup() -> Any:
         missing.append("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
     if generic_endpoint is not None and generic_endpoint.rstrip("/") not in {
         "https://xray.us-east-1.amazonaws.com",
-        TRACE_ENDPOINT,
     }:
         missing.append("OTEL_EXPORTER_OTLP_ENDPOINT")
     if missing:
@@ -375,6 +374,12 @@ def _verify_native_identity(
         raise ValueError("native trace does not contain one root Strands agent span")
     root = roots[0]
     attributes = _span_attributes(root)
+    if isinstance(root, Mapping):
+        parent_id = root.get("parentSpanId", root.get("parent_id"))
+    else:
+        parent_id = getattr(root, "parent", None)
+    if parent_id not in (None, "", 0):
+        raise ValueError("native Strands invoke_agent span is not the trace root")
     expected_attributes = {
         "session.id": identity["sessionId"],
         "incident.execution_id": identity["executionId"],
@@ -457,7 +462,30 @@ def _span_documents(spans: Sequence[Any]) -> list[Any]:
         if not callable(to_json):
             raise ValueError("native span cannot be serialized")
         raw = to_json()
-        documents.append(json.loads(raw) if isinstance(raw, str) else raw)
+        document = json.loads(raw) if isinstance(raw, str) else dict(raw)
+        context = span.get_span_context()
+        if not context.is_valid or not isinstance(span.start_time, int) or not isinstance(span.end_time, int):
+            raise ValueError("native span is missing its exact trace identity or timestamps")
+        document.update(
+            {
+                "traceId": f"{context.trace_id:032x}",
+                "spanId": f"{context.span_id:016x}",
+                "startTimeUnixNano": span.start_time,
+                "endTimeUnixNano": span.end_time,
+                "durationNano": span.end_time - span.start_time,
+            }
+        )
+        if span.parent is not None and span.parent.is_valid:
+            document["parentSpanId"] = f"{span.parent.span_id:016x}"
+        else:
+            document.pop("parentSpanId", None)
+        scope = getattr(span, "instrumentation_scope", None)
+        if scope is not None:
+            document["scope"] = {
+                "name": scope.name,
+                **({"version": scope.version} if getattr(scope, "version", None) else {}),
+            }
+        documents.append(document)
     return documents
 
 
@@ -635,29 +663,27 @@ def _run_snapshot(
                 "gen_ai.request.model": MODEL_ID,
             }
             trace_attributes = {**span_attributes}
-            from opentelemetry import baggage, trace
+            from opentelemetry import baggage
             from opentelemetry.context import attach, detach
 
-            tracer = trace.get_tracer("incident-triage-captured-execution")
             baggage_token = attach(baggage.set_baggage("session.id", session_id))
             try:
-                with tracer.start_as_current_span("incident_triage.captured_execution", attributes=span_attributes):
-                    agent, bounded_model = create_agent(
-                        evidence,
-                        region_name="us-east-1",
-                        deadline_monotonic=deadline,
-                        cancel_signal=cancel_signal,
-                        trace_attributes=trace_attributes,
-                        model_session=model_session,
-                    )
-                    remaining = max(0.0, deadline - time.monotonic())
-                    if remaining <= 0:
-                        raise TimeoutError("captured investigation deadline elapsed before inference")
-                    timer = Timer(remaining, cancel_signal.set)
-                    timer.daemon = True
-                    timer.start()
-                    public_task = json.dumps(task, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-                    report = invoke_agent(agent, public_task, cancel_signal=cancel_signal)
+                agent, bounded_model = create_agent(
+                    evidence,
+                    region_name="us-east-1",
+                    deadline_monotonic=deadline,
+                    cancel_signal=cancel_signal,
+                    trace_attributes=trace_attributes,
+                    model_session=model_session,
+                )
+                remaining = max(0.0, deadline - time.monotonic())
+                if remaining <= 0:
+                    raise TimeoutError("captured investigation deadline elapsed before inference")
+                timer = Timer(remaining, cancel_signal.set)
+                timer.daemon = True
+                timer.start()
+                public_task = json.dumps(task, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+                report = invoke_agent(agent, public_task, cancel_signal=cancel_signal)
             finally:
                 detach(baggage_token)
             if timer is not None:
@@ -764,10 +790,11 @@ def _safe_relative(root: Path, relative: str) -> Path:
     return target
 
 
-def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any]]:
+def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any], list[Any]]:
     """Verify one saved run and reopen its frozen case without cloud access."""
 
-    from captured_evidence import _load_bundle
+    from deterministic_checks import check_captured_report
+    from evaluation_telemetry import execution_content
     from investigation import InvestigationReport
     from reviewed_cases import load_frozen_case
 
@@ -828,6 +855,11 @@ def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any]]
     ):
         raise ValueError("execution source, prompt, or dependency identity does not match its snapshot")
 
+    expected_sources = {f"agent/{name}" for name in SOURCE_FILES}
+    expected_dependencies = {f"agent/{name}" for name in DEPENDENCY_FILES}
+    if set(source_manifest) != expected_sources or set(dependency_manifest) != expected_dependencies:
+        raise ValueError("execution snapshot manifest does not contain the selected source and lock files")
+
     case_path = directory / "case.frozen.json"
     bundle_path = directory / "bundle.json"
     if _sha256(case_path.read_bytes()) != manifest.get("caseFileSha256"):
@@ -835,6 +867,7 @@ def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any]]
     bundle_raw = bundle_path.read_bytes()
     if _sha256(bundle_raw) != identity.get("bundleSha256") or manifest.get("bundleSha256") != identity.get("bundleSha256"):
         raise ValueError("source bundle digest does not match the execution identity")
+    native_spans: list[Any] = []
     loaded_case = load_frozen_case(case_path, bundle_path)
     if (
         loaded_case.get("caseSha256") != identity.get("caseSha256")
@@ -860,7 +893,38 @@ def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any]]
             raise ValueError("native Strands span file is malformed")
         if _sha256(_json_bytes(native)) != record.get("nativeSpansSha256"):
             raise ValueError("native Strands span digest does not match the execution record")
+        native_spans = native["spans"]
+        projection = execution_content(native["spans"])
+        if _json_bytes(projection.get("report")) != _json_bytes(report):
+            raise ValueError("saved report differs from the authenticated native report span")
+        expected_ledger = {
+            name: projection[name]
+            for name in ("agentSpanId", "modelCalls", "toolCalls", "reportSpanId")
+        }
+        if _json_bytes(record.get("ledger")) != _json_bytes(expected_ledger):
+            raise ValueError("saved execution ledger differs from authenticated native spans")
+        observed_trace = _verify_native_identity(
+            native["spans"], projection, task=loaded_case["task"], identity=identity
+        )
+        if identity.get("traceId") != observed_trace:
+            raise ValueError("saved trace ID differs from the authenticated native spans")
+        if record.get("modelRequestCount") != len(expected_ledger["modelCalls"]):
+            raise ValueError("saved model request count differs from native spans")
+        if record.get("evidenceToolCallCount") != len(expected_ledger["toolCalls"]):
+            raise ValueError("saved evidence-tool count differs from native spans")
+        findings = check_captured_report(report, loaded_case, expected_ledger)
+        if _json_bytes(record.get("deterministic")) != _json_bytes(findings):
+            raise ValueError("saved deterministic findings differ from the authenticated report and ledger")
     elif report is not None:
         if not isinstance(report, Mapping) or _sha256(_json_bytes(report)) != identity.get("reportSha256"):
             raise ValueError("interrupted report digest does not match the execution identity")
-    return record, loaded_case
+    if record["status"] == "interrupted":
+        native_path = directory / "strands.native-spans.json"
+        if native_path.is_file() and not native_path.is_symlink():
+            native = _load_record_json(native_path, "interrupted native Strands spans")
+            if not isinstance(native, Mapping) or not isinstance(native.get("spans"), list):
+                raise ValueError("interrupted native Strands span file is malformed")
+            if _sha256(_json_bytes(native)) != record.get("nativeSpansSha256"):
+                raise ValueError("interrupted native Strands span digest does not match the execution record")
+            native_spans = native["spans"]
+    return record, loaded_case, native_spans

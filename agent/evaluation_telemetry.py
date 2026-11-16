@@ -87,6 +87,141 @@ def _event_attrs(event: Mapping[str, Any]) -> Mapping[str, Any]:
     return _mapping(event.get("attributes"))
 
 
+_CONTENT_BLOCK_KEYS = frozenset({"text", "toolUse", "toolResult", "image", "document", "guardContent", "video"})
+_EVENT_TIME_KEYS = frozenset({"timestamp", "timeUnixNano", "timeUnixNanos", "time_unix_nano"})
+_CLOUDWATCH_ATTRIBUTE_PREFIXES = ("aws.",)
+_CLOUDWATCH_ATTRIBUTE_NAMES = frozenset({"PlatformType", "telemetry.extended", "gen_ai.provider.name"})
+
+
+def _normalize_payload_value(value: Any) -> Any:
+    value = _native_value(value)
+    if isinstance(value, Mapping):
+        return {key: _normalize_payload_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_normalize_payload_value(item) for item in value]
+    return value
+
+
+def _normalize_content_attribute(value: Any) -> Any:
+    value = _native_value(value)
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return value
+        if (
+            isinstance(decoded, list)
+            and decoded
+            and all(isinstance(item, Mapping) and bool(_CONTENT_BLOCK_KEYS.intersection(item)) for item in decoded)
+        ):
+            return _normalize_payload_value(decoded)
+        return value
+    return _normalize_payload_value(value)
+
+
+def _project_events(span: Mapping[str, Any]) -> list[dict[str, Any]]:
+    projected: list[dict[str, Any]] = []
+    for event in _events(span):
+        attrs: dict[str, Any] = {}
+        for name, value in _event_attrs(event).items():
+            if name in _EVENT_TIME_KEYS:
+                continue
+            if name in {"content", "message"}:
+                attrs[name] = _normalize_content_attribute(value)
+            else:
+                attrs[name] = _normalize_payload_value(value)
+        projected.append({"name": event["name"], "attributes": attrs})
+    return projected
+
+
+def _events_match(expected: Any, actual: Any) -> bool:
+    if not isinstance(expected, list) or not isinstance(actual, list) or len(expected) != len(actual):
+        return False
+    for original, observed in zip(expected, actual):
+        if not isinstance(original, Mapping) or not isinstance(observed, Mapping):
+            return False
+        if original.get("name") != observed.get("name"):
+            return False
+        original_attrs, observed_attrs = original.get("attributes"), observed.get("attributes")
+        if not isinstance(original_attrs, Mapping) or not isinstance(observed_attrs, Mapping):
+            return False
+        if not _json_equivalent(original_attrs, observed_attrs):
+            return False
+    return True
+
+
+def _span_attributes_match(expected: Mapping[str, Any], actual: Mapping[str, Any]) -> bool:
+    normalized_expected = {key: _normalize_payload_value(value) for key, value in expected.items()}
+    normalized_actual = {key: _normalize_payload_value(value) for key, value in actual.items()}
+    for key, value in normalized_expected.items():
+        if key not in normalized_actual or not _json_equivalent(value, normalized_actual[key]):
+            return False
+    for key in normalized_actual.keys() - normalized_expected.keys():
+        if key not in _CLOUDWATCH_ATTRIBUTE_NAMES and not key.startswith(_CLOUDWATCH_ATTRIBUTE_PREFIXES):
+            return False
+    return True
+
+
+def _time_ns(span: Mapping[str, Any], prefix: str) -> int | None:
+    value = _native_value(span.get(f"{prefix}TimeUnixNano"))
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, str) and re.fullmatch(r"[0-9]+", value):
+        return int(value)
+    return None
+
+
+def _span_roster_mismatch(
+    verified_spans: Sequence[Mapping[str, Any]],
+    cloud_spans: Sequence[Mapping[str, Any]],
+) -> str | None:
+    """Bind CloudWatch to the exact locally saved Strands spans by identity and content."""
+
+    try:
+        local_by_id: dict[str, Mapping[str, Any]] = {}
+        cloud_by_id: dict[str, Mapping[str, Any]] = {}
+        for target, source, label in (
+            (local_by_id, verified_spans, "saved"),
+            (cloud_by_id, cloud_spans, "CloudWatch"),
+        ):
+            for raw in source:
+                span = _normalize_span(raw)
+                span_id = span.get("spanId")
+                if not isinstance(span_id, str) or not span_id or span_id in target:
+                    return f"{label} span IDs are missing or duplicated"
+                target[span_id] = span
+        if set(local_by_id) != set(cloud_by_id):
+            return "CloudWatch span roster differs from the authenticated saved trace"
+        for span_id, local in local_by_id.items():
+            cloud = cloud_by_id[span_id]
+            if local.get("traceId") != cloud.get("traceId"):
+                return "CloudWatch trace IDs differ from the authenticated saved trace"
+            if local.get("name") != cloud.get("name"):
+                return "CloudWatch span names differ from the authenticated saved trace"
+            if local.get("parentSpanId") != cloud.get("parentSpanId"):
+                return "CloudWatch parent links differ from the authenticated saved trace"
+            local_start, cloud_start = _time_ns(local, "start"), _time_ns(cloud, "start")
+            local_end, cloud_end = _time_ns(local, "end"), _time_ns(cloud, "end")
+            if None in (local_start, cloud_start, local_end, cloud_end):
+                return "CloudWatch or saved span timestamps are incomplete"
+            if local_start != cloud_start or local_end != cloud_end:
+                return "CloudWatch span timestamps differ from the authenticated saved trace"
+            if not _span_attributes_match(_attributes(local), _attributes(cloud)):
+                return "CloudWatch span attributes differ from the authenticated saved trace"
+            local_events = _project_events(local)
+            cloud_events = _project_events(cloud)
+            if len(local_events) != len(cloud_events):
+                return "CloudWatch event roster differs from the authenticated saved trace"
+            for expected_event, actual_event in zip(local_events, cloud_events):
+                if expected_event["name"] != actual_event["name"] or not _json_equivalent(
+                    expected_event["attributes"], actual_event["attributes"]
+                ):
+                    return "CloudWatch event payloads differ from the authenticated saved trace"
+        return None
+    except (KeyError, TypeError, ValueError, TelemetryIncomplete):
+        return "saved or CloudWatch spans could not be normalized for comparison"
+
+
 def _event_matches(span: Mapping[str, Any], operation: str) -> bool:
     return _attr(span, "gen_ai.operation.name") == operation
 
@@ -189,6 +324,8 @@ def _normalize_span(raw_span: Any) -> Mapping[str, Any]:
     if not isinstance(raw_span, Mapping):
         raise TelemetryIncomplete("session contains a malformed span")
     span = dict(raw_span)
+    if "events" not in span:
+        span["events"] = []
     context = _mapping(span.get("context"))
 
     def _hex_id(value: Any, label: str) -> str | None:
@@ -223,6 +360,7 @@ def _model_call(span: Mapping[str, Any]) -> dict[str, Any]:
         # gives repeated native input events an unambiguous, lossless form.
         "input": inputs[0] if len(inputs) == 1 else _json_bytes(inputs).decode("utf-8"),
         "output": _event_text(span, "gen_ai.choice", "message"),
+        "events": _project_events(span),
     }
 
 
@@ -539,6 +677,8 @@ def _validate_session(
     spans: Sequence[Mapping[str, Any]],
     record: Mapping[str, Any],
     loaded_case: Mapping[str, Any],
+    *,
+    require_scope: bool = True,
 ) -> tuple[dict[str, Any], str | None]:
     """Return normalized evidence content and a safe reason when it is unready."""
 
@@ -561,9 +701,10 @@ def _validate_session(
                 raise TelemetryIncomplete("CloudWatch span belongs to another trace")
             if _attr(span, "session.id") != session_id:
                 raise TelemetryIncomplete("CloudWatch span belongs to another session")
-            scope = _mapping(span.get("scope"))
-            if scope.get("name") != "strands.telemetry.tracer":
-                raise TelemetryIncomplete("CloudWatch span is outside the native Strands scope")
+            if require_scope:
+                scope = _mapping(span.get("scope"))
+                if scope.get("name") != "strands.telemetry.tracer":
+                    raise TelemetryIncomplete("CloudWatch span is outside the native Strands scope")
 
         content = execution_content(spans)
         if content["agentSpanId"] != record["ledger"]["agentSpanId"]:
@@ -576,6 +717,7 @@ def _validate_session(
             raise TelemetryIncomplete("CloudWatch agent span is not a root span")
         expected_root_attrs = {
             "incident.execution_id": identity["executionId"],
+            "incident.originating_run_id": loaded_case["originatingRunId"],
             "incident.case_sha256": identity["caseSha256"],
             "incident.bundle_sha256": identity["bundleSha256"],
             "incident.reference_time": identity["referenceTime"],
@@ -613,6 +755,8 @@ def _validate_session(
             actual = actual_by_model_id[span_id]
             if actual.get("input") != expected.get("input") or actual.get("output") != expected.get("output"):
                 raise TelemetryIncomplete("CloudWatch model content differs from the execution ledger")
+            if not _events_match(expected.get("events"), actual.get("events")):
+                raise TelemetryIncomplete("CloudWatch model request context differs from the execution ledger")
 
         expected_tools = record["ledger"]["toolCalls"]
         if not isinstance(expected_tools, list):
@@ -738,9 +882,16 @@ def score_execution(
     evaluation_client: Any,
     evaluator_id: str,
     wait_seconds: float,
+    verified_spans: Sequence[Mapping[str, Any]] | None = None,
     scoring_attempt_id: str | None = None,
 ) -> dict[str, Any]:
-    """Wait for exact CloudWatch content and make one explicit score attempt."""
+    """Wait for CloudWatch content matching native spans verified by the loader.
+
+    Production callers pass the native span documents returned by
+    ``load_execution`` after its stored-file digest and ledger checks. Direct
+    synthetic callers without that source can receive report-only findings,
+    but cannot submit session context to Evaluate.
+    """
 
     attempt_id = scoring_attempt_id if isinstance(scoring_attempt_id, str) and scoring_attempt_id.strip() else str(uuid.uuid4())
     execution_id = None
@@ -798,6 +949,27 @@ def score_execution(
             assertions=assertions, diagnostic="saved report does not satisfy the canonical schema",
             requested_wait_seconds=wait_value,
         )
+    if verified_spans is None:
+        return _score_result(
+            status="incomplete", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
+            deterministic=deterministic,
+            assertions=assertions,
+            diagnostic="authenticated saved native spans are required for CloudWatch scoring",
+            requested_wait_seconds=wait_value,
+        )
+
+    _locally_validated, local_reason = _validate_session(
+        verified_spans, record, loaded_case, require_scope=False
+    )
+    if local_reason is not None:
+        return _score_result(
+            status="incomplete", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
+            deterministic=deterministic,
+            assertions=assertions,
+            diagnostic=f"saved native spans do not authenticate the execution: {local_reason}",
+            requested_wait_seconds=wait_value,
+        )
+    deterministic = check_captured_report(record["report"], loaded_case, record["ledger"])
 
     started = time.monotonic()
     deadline = started + wait_value
@@ -819,7 +991,10 @@ def score_execution(
         else:
             validated, reason = _validate_session(spans, record, loaded_case)
             if reason is None:
-                break
+                roster_reason = _span_roster_mismatch(verified_spans, spans)
+                if roster_reason is None:
+                    break
+                reason = roster_reason
             last_reason = reason
         now = time.monotonic()
         remaining = deadline - now
@@ -855,7 +1030,7 @@ def score_execution(
     status = semantic.get("status") if isinstance(semantic, Mapping) else "error"
     if status not in {"complete", "incomplete", "error"}:
         status = "error"
-    return _score_result(
+    result = _score_result(
         status=status, execution_id=execution_id, attempt_id=attempt_id, identity=identity,
         semantic=semantic, deterministic=deterministic,
         telemetry={
@@ -872,6 +1047,7 @@ def score_execution(
         evidence_sha256=telemetry_digest,
         assertions_sha256=_sha256(assertions),
     )
+    return result
 
 
 __all__ = ["CloudWatchSession", "TelemetryIncomplete", "execution_content", "score_execution"]
