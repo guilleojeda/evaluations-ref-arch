@@ -16,6 +16,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from botocore.exceptions import ClientError
 from botocore.session import get_session
 
 from phase14_reviewed_cases_test import make_case, write_bundle
@@ -169,6 +170,19 @@ class FailedArgumentsScriptedBedrock(ScriptedBedrock):
             {"metadata": {"usage": {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}, "metrics": {"latencyMs": 1}}},
         ]
         return {"stream": iter(events)}
+
+
+class FailedAfterInvalidArgumentsScriptedBedrock(FailedArgumentsScriptedBedrock):
+    """Fail the next ConverseStream after recording the invalid tool call."""
+
+    def converse_stream(self, **request):
+        if len(self.requests) == 1:
+            self.requests.append(copy.deepcopy(request))
+            raise ClientError(
+                {"Error": {"Code": "ValidationException", "Message": "locked scripted failure"}},
+                "ConverseStream",
+            )
+        return super().converse_stream(**request)
 
 
 def session_span(span_id, name, *, operation, events, **attributes):
@@ -366,6 +380,8 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         interrupted, _, _ = load_execution(interrupted_dir)
         self.assertEqual(interrupted["status"], "interrupted")
         self.assertEqual(interrupted["report"], report)
+        self.assertEqual(interrupted["reportSource"], "report_tool")
+        self.assertTrue(interrupted["ledger"]["reportSpanId"])
         self.assertEqual(interrupted["deterministic"]["inputKind"], "report_only")
         self.assertEqual(interrupted["deterministic"]["findings"]["action"]["verdict"], "fail")
 
@@ -466,6 +482,55 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         self.assertEqual(scored["deterministic"]["findings"]["operator_boundary"]["status"], "complete")
         self.assertEqual(scored["telemetry"]["status"], "complete")
         self.assertEqual(len(evaluate.calls), 1)
+
+    def test_interrupted_run_keeps_ended_failed_tool_when_next_model_call_fails(self):
+        from captured_execution import load_execution
+        from evaluate_case import run_captured_case
+        from evaluation_telemetry import TelemetryIncomplete, execution_content
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+
+        report = report_for(recommendation("Increase memory", "inventory", 512, "MB"))
+        report["evidence"] = [{
+            "source": "cloudwatch",
+            "resource": "inventory",
+            "windowStart": self.case["task"]["incidentWindow"]["start"],
+            "windowEnd": self.case["task"]["referenceTime"],
+            "observedAt": self.case["task"]["referenceTime"],
+            "finding": "The returned Inventory read was denied.",
+        }]
+        if not isinstance(trace.get_tracer_provider(), TracerProvider):
+            trace.set_tracer_provider(TracerProvider())
+        bedrock = FailedAfterInvalidArgumentsScriptedBedrock(report, self.case["task"])
+        run_dir = Path(run_captured_case(
+            self.frozen, self.bundle, self.output_root, model_session=bedrock,
+        ))
+        record, _loaded_case, native_spans = load_execution(run_dir)
+
+        self.assertEqual(record["status"], "interrupted")
+        self.assertEqual(len(bedrock.requests), 2)
+        self.assertEqual(
+            (record["modelRequestCount"], record["modelResponseCount"], record["modelSpanCount"]),
+            (2, 1, 2),
+        )
+        self.assertEqual((record["evidenceToolCallCount"], record["evidenceProviderCallCount"]), (1, 0))
+        self.assertEqual(record["identity"]["traceId"], native_spans[0]["traceId"])
+        self.assertTrue(record["ledger"]["agentSpanId"])
+        self.assertEqual(len(record["ledger"]["modelCalls"]), 1)
+        self.assertIsNone(record["ledger"]["reportSpanId"])
+        self.assertEqual(record["ledger"]["toolCalls"], [{
+            "arguments": [{"resource": "inventory"}],
+            "callId": "tool-1",
+            "result": {
+                "error": "Error: Validation failed for input parameters: "
+                "strands.tools.decorator.Search_logsTool() argument after ** must be a mapping, not list",
+            },
+            "spanId": record["ledger"]["toolCalls"][0]["spanId"],
+            "status": "error",
+            "tool": "search_logs",
+        }])
+        with self.assertRaises(TelemetryIncomplete):
+            execution_content(native_spans)
 
     def test_run_refuses_modified_frozen_input_before_any_cloud_work(self):
         envelope = json.loads(self.frozen.read_text())

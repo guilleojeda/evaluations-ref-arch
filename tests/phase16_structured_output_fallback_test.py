@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -181,6 +182,26 @@ class StructuredOutputFallbackAcceptance(unittest.TestCase):
                     len([span for span in native_spans if span["attributes"].get("gen_ai.operation.name") == "chat"]),
                     3,
                 )
+                native_model_calls = record["ledger"]["modelCalls"]
+                native_fingerprints = [
+                    fingerprint
+                    for call in native_model_calls
+                    for fingerprint in call["requestFingerprints"]
+                ]
+                self.assertEqual(
+                    [fingerprint["ordinal"] for fingerprint in native_fingerprints],
+                    [1, 2, 3, 4],
+                )
+                self.assertEqual(
+                    {
+                        fingerprint["ordinal"]: fingerprint["sha256"]
+                        for fingerprint in native_fingerprints
+                    },
+                    {
+                        attempt["ordinal"]: attempt["requestSha256"]
+                        for attempt in record["modelRequestAttempts"]
+                    },
+                )
                 self.assertFalse(any(
                     span.get("attributes", {}).get("gen_ai.tool.name") == "InvestigationReport"
                     for span in native_spans
@@ -199,9 +220,31 @@ class StructuredOutputFallbackAcceptance(unittest.TestCase):
                 self.assertEqual(scored["status"], "complete", scored)
                 self.assertEqual(len(evaluate.calls), 1)
 
+                execution_path = Path(run_dir) / "execution.json"
+                pristine_execution = execution_path.read_bytes()
+                tampered = copy.deepcopy(record)
+                tampered_request = tampered["modelRequestAttempts"][0]["request"]
+                tampered_request["messages"][0]["content"][0]["text"] += " tampered"
+                tampered_request["inferenceConfig"]["maxTokens"] += 1
+                tampered["modelRequestAttempts"][0]["requestSha256"] = hashlib.sha256(
+                    json.dumps(
+                        tampered_request,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        allow_nan=False,
+                    ).encode("utf-8")
+                ).hexdigest()
+                execution_path.write_text(json.dumps(tampered), encoding="utf-8")
+                try:
+                    with self.assertRaisesRegex(ValueError, "fingerprint differs"):
+                        load_execution(run_dir)
+                finally:
+                    execution_path.write_bytes(pristine_execution)
+
                 del record["modelRequestAttempts"]
                 record["modelRequestCount"] = record["modelSpanCount"]
-                (Path(run_dir) / "execution.json").write_text(json.dumps(record), encoding="utf-8")
+                execution_path.write_text(json.dumps(record), encoding="utf-8")
                 with self.assertRaisesRegex(ValueError, "physical model request attempts are missing"):
                     load_execution(run_dir)
 

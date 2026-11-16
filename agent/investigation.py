@@ -183,10 +183,23 @@ class BoundedBedrockClient:
                 separators=(",", ":"),
                 allow_nan=False,
             ).encode("utf-8")
+            request_sha256 = hashlib.sha256(request_bytes).hexdigest()
+            from opentelemetry import trace
+
+            active_span = trace.get_current_span()
+            if (
+                getattr(active_span, "name", None) != "chat"
+                or not active_span.is_recording()
+            ):
+                raise RuntimeError("captured model request was not made inside a recording Strands chat span")
+            active_span.set_attribute(
+                f"incident.model_request.{self.requests}.sha256",
+                request_sha256,
+            )
             attempt = {
                 "ordinal": self.requests,
                 "modelId": request.get("modelId"),
-                "requestSha256": hashlib.sha256(request_bytes).hexdigest(),
+                "requestSha256": request_sha256,
                 "request": request_snapshot,
                 "status": "in_flight",
             }

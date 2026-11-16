@@ -562,7 +562,7 @@ def _run_snapshot(
     with _snapshot_imports(agent_source):
         from captured_evidence import CapturedEvidenceTools
         from deterministic_checks import check_captured_report, check_report
-        from evaluation_telemetry import execution_content
+        from evaluation_telemetry import execution_content, interrupted_execution_content
         from investigation import MODEL_ID as SHARED_MODEL_ID, RUN_SECONDS as SHARED_RUN_SECONDS, create_agent, invoke_agent
         from prompt import PROMPT_SHA256
         from reviewed_cases import load_frozen_case
@@ -772,23 +772,40 @@ def _run_snapshot(
                         )
                     record["evidenceProviderCallCount"] = locals().get("tool_budget").calls if "tool_budget" in locals() else 0
                     record["usage"] = _usage(observer.spans)
-                    projection = execution_content(raw_spans)
+                    partial = False
+                    try:
+                        projection = execution_content(raw_spans)
+                    except Exception:
+                        partial = True
+                        projection = interrupted_execution_content(
+                            raw_spans,
+                            expected_session_id=record["identity"]["sessionId"],
+                        )
                     record["ledger"] = {
                         name: projection[name]
                         for name in ("agentSpanId", "modelCalls", "toolCalls", "reportSpanId")
                     }
-                    record["modelSpanCount"] = len(projection["modelCalls"])
+                    record["modelSpanCount"] = (
+                        projection["modelSpanCount"]
+                        if partial else len(projection["modelCalls"])
+                    )
                     record["reportSource"] = projection.get("reportSource")
-                    record["evidenceToolCallCount"] = len(projection["toolCalls"])
-                    if record.get("report") is not None and _json_bytes(projection.get("report")) != _json_bytes(record["report"]):
+                    record["evidenceToolCallCount"] = (
+                        projection["evidenceToolCallCount"]
+                        if partial else len(projection["toolCalls"])
+                    )
+                    if partial:
+                        record["identity"]["traceId"] = projection["traceId"]
+                    else:
+                        root_span = next((span for span in observer.spans if _span_operation(span) == "invoke_agent"), None)
+                        if root_span is not None and getattr(root_span, "get_span_context", None):
+                            context = root_span.get_span_context()
+                            if context.is_valid:
+                                record["identity"]["traceId"] = f"{context.trace_id:032x}"
+                    if not partial and record.get("report") is not None and _json_bytes(projection.get("report")) != _json_bytes(record["report"]):
                         record["telemetryError"] = "structured report differs from the actual report span"
                     else:
                         record["telemetryError"] = str(exc)[:500]
-                    root_span = next((span for span in observer.spans if _span_operation(span) == "invoke_agent"), None)
-                    if root_span is not None and getattr(root_span, "get_span_context", None):
-                        context = root_span.get_span_context()
-                        if context.is_valid:
-                            record["identity"]["traceId"] = f"{context.trace_id:032x}"
                 except Exception as telemetry_exc:
                     record["telemetryError"] = str(telemetry_exc)[:500]
             _persist_interrupted(
@@ -835,15 +852,38 @@ def _verify_model_request_attempts(
     *,
     model_id: str,
     model_span_count: int,
+    model_calls: Sequence[Mapping[str, Any]],
     max_requests: int,
 ) -> None:
     """Bind physical client attempts to their retained requests and native chat roster."""
 
     from strands.models import _native_output
 
+    fingerprints: dict[int, str] = {}
+    for model in model_calls:
+        if not isinstance(model, Mapping):
+            raise ValueError("execution model-call ledger is malformed")
+        model_fingerprints = model.get("requestFingerprints")
+        if model_fingerprints is None:
+            continue
+        if not isinstance(model_fingerprints, list):
+            raise ValueError("native model request fingerprint is malformed")
+        for fingerprint in model_fingerprints:
+            if not isinstance(fingerprint, Mapping):
+                raise ValueError("native model request fingerprint is malformed")
+            ordinal = fingerprint.get("ordinal")
+            digest = fingerprint.get("sha256")
+            if type(ordinal) is not int or ordinal <= 0 or not isinstance(digest, str):
+                raise ValueError("native model request fingerprint is malformed")
+            if re.fullmatch(r"[0-9a-f]{64}", digest) is None or ordinal in fingerprints:
+                raise ValueError("native model request fingerprint is malformed")
+            fingerprints[ordinal] = digest
+
     if "modelRequestAttempts" not in record:
         # Earlier Phase 16 runs retained only Strands chat spans. Keep those
         # complete archives readable when every physical call had a span.
+        if fingerprints:
+            raise ValueError("physical model request attempts are missing from the saved execution")
         if "modelResponseCount" in record or "modelSpanCount" in record:
             raise ValueError("physical model request attempts are missing from the saved execution")
         if record.get("modelRequestCount") != model_span_count:
@@ -852,9 +892,12 @@ def _verify_model_request_attempts(
     attempts = record["modelRequestAttempts"]
     if not isinstance(attempts, list) or not attempts or len(attempts) > max_requests:
         raise ValueError("physical model request attempts are missing or exceed the shared limit")
+    if len(fingerprints) != len(attempts):
+        raise ValueError("native model request fingerprints are missing from the execution ledger")
     if record.get("modelRequestCount") != len(attempts):
         raise ValueError("saved physical model request count differs from retained attempts")
     returned = 0
+    returned_ordinals: set[int] = set()
     for ordinal, attempt in enumerate(attempts, 1):
         if (
             not isinstance(attempt, Mapping)
@@ -872,6 +915,10 @@ def _verify_model_request_attempts(
         status = attempt.get("status")
         if status == "stream_returned":
             returned += 1
+            request_ordinal = attempt["ordinal"]
+            if request_ordinal in returned_ordinals:
+                raise ValueError("physical model request fingerprint differs from native chat telemetry")
+            returned_ordinals.add(request_ordinal)
             continue
         if status != "error":
             raise ValueError("physical model request has an unsupported outcome")
@@ -893,6 +940,9 @@ def _verify_model_request_attempts(
             recognized = False
         if not recognized:
             raise ValueError("completed run contains an unrecognized structured-output validation failure")
+    for attempt in attempts:
+        if fingerprints.get(attempt["ordinal"]) != attempt.get("requestSha256"):
+            raise ValueError("physical model request fingerprint differs from native chat telemetry")
     if record.get("modelResponseCount") != returned or record.get("modelSpanCount") != model_span_count:
         raise ValueError("successful physical responses do not match the native model span roster")
     if returned != model_span_count:
@@ -1021,6 +1071,7 @@ def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any],
             record,
             model_id=identity["modelId"],
             model_span_count=len(expected_ledger["modelCalls"]),
+            model_calls=expected_ledger["modelCalls"],
             max_requests=MAX_MODEL_REQUESTS,
         )
         if record.get("reportSource") is not None and record.get("reportSource") != projection.get("reportSource"):

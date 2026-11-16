@@ -362,12 +362,47 @@ def _normalize_span(raw_span: Any) -> Mapping[str, Any]:
     return span
 
 
+def _normalized_session_spans(
+    spans: Sequence[Mapping[str, Any]],
+    *,
+    expected_session_id: str | None = None,
+) -> tuple[list[Mapping[str, Any]], str, str]:
+    if not isinstance(spans, Sequence) or isinstance(spans, (str, bytes)) or not spans:
+        raise TelemetryIncomplete("session spans are empty")
+    normalized: list[Mapping[str, Any]] = []
+    ids: set[str] = set()
+    trace_ids: set[str] = set()
+    session_ids: set[str] = set()
+    for raw_span in spans:
+        span = _normalize_span(raw_span)
+        span_id = span.get("spanId")
+        trace_id = span.get("traceId")
+        session_id = _attr(span, "session.id")
+        if not isinstance(span_id, str) or not span_id:
+            raise TelemetryIncomplete("session span ID is missing")
+        if not isinstance(trace_id, str) or not trace_id:
+            raise TelemetryIncomplete("session span trace ID is missing")
+        if not isinstance(session_id, str) or not session_id:
+            raise TelemetryIncomplete("session span session ID is missing")
+        if expected_session_id is not None and session_id != expected_session_id:
+            raise TelemetryIncomplete("interrupted span belongs to another session")
+        if span_id in ids:
+            raise TelemetryIncomplete("session span IDs are not unique")
+        ids.add(span_id)
+        trace_ids.add(trace_id)
+        session_ids.add(session_id)
+        normalized.append(span)
+    if len(trace_ids) != 1 or len(session_ids) != 1:
+        raise TelemetryIncomplete("session spans do not share one trace and session")
+    return normalized, next(iter(trace_ids)), next(iter(session_ids))
+
+
 def _model_call(span: Mapping[str, Any]) -> dict[str, Any]:
     span_id = span.get("spanId")
     if not isinstance(span_id, str) or not span_id:
         raise TelemetryIncomplete("model span ID is missing")
     inputs = _event_texts(span, "gen_ai.user.message", "content")
-    return {
+    model_call = {
         "spanId": span_id,
         # Keep the existing concise string for normal requests, while an array
         # gives repeated native input events an unambiguous, lossless form.
@@ -375,6 +410,25 @@ def _model_call(span: Mapping[str, Any]) -> dict[str, Any]:
         "output": _event_text(span, "gen_ai.choice", "message"),
         "events": _project_events(span),
     }
+    fingerprints: dict[int, str] = {}
+    for name, value in _attributes(span).items():
+        match = re.fullmatch(r"incident\.model_request\.([0-9]+)\.sha256", str(name))
+        if match is None:
+            continue
+        request_ordinal = int(match.group(1))
+        request_sha256 = _native_value(value)
+        if request_ordinal <= 0 or not isinstance(request_sha256, str):
+            raise TelemetryIncomplete("native model request fingerprint is missing or malformed")
+        if re.fullmatch(r"[0-9a-f]{64}", request_sha256) is None or request_ordinal in fingerprints:
+            raise TelemetryIncomplete("native model request fingerprint is missing or malformed")
+        fingerprints[request_ordinal] = request_sha256
+    if not fingerprints:
+        return model_call
+    model_call["requestFingerprints"] = [
+        {"ordinal": ordinal, "sha256": fingerprints[ordinal]}
+        for ordinal in sorted(fingerprints)
+    ]
+    return model_call
 
 
 def _assistant_report(model_spans: Sequence[Mapping[str, Any]]) -> tuple[str, dict[str, Any]]:
@@ -485,31 +539,7 @@ def execution_content(spans: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     checks against the CloudWatch result and the saved ledger.
     """
 
-    if not isinstance(spans, Sequence) or isinstance(spans, (str, bytes)) or not spans:
-        raise TelemetryIncomplete("session spans are empty")
-    normalized: list[Mapping[str, Any]] = []
-    ids: set[str] = set()
-    trace_ids: set[str] = set()
-    session_ids: set[str] = set()
-    for raw_span in spans:
-        span = _normalize_span(raw_span)
-        span_id = span.get("spanId")
-        if not isinstance(span_id, str) or not span_id:
-            raise TelemetryIncomplete("session span ID is missing")
-        trace_id = span.get("traceId")
-        session_id = _attr(span, "session.id")
-        if not isinstance(trace_id, str) or not trace_id:
-            raise TelemetryIncomplete("session span trace ID is missing")
-        if not isinstance(session_id, str) or not session_id:
-            raise TelemetryIncomplete("session span session ID is missing")
-        if span_id in ids:
-            raise TelemetryIncomplete("session span IDs are not unique")
-        ids.add(span_id)
-        trace_ids.add(trace_id)
-        session_ids.add(session_id)
-        normalized.append(span)
-    if len(trace_ids) != 1 or len(session_ids) != 1:
-        raise TelemetryIncomplete("session spans do not share one trace and session")
+    normalized, _trace_id, _session_id = _normalized_session_spans(spans)
 
     roots = [span for span in normalized if _event_matches(span, "invoke_agent")]
     if len(roots) != 1:
@@ -542,6 +572,69 @@ def execution_content(spans: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "reportSpanId": report_span_id,
         "report": report,
         "reportSource": report_source,
+    }
+
+
+def interrupted_execution_content(
+    spans: Sequence[Mapping[str, Any]],
+    *,
+    expected_session_id: str | None = None,
+) -> dict[str, Any]:
+    """Project independently ended native calls for an interrupted run.
+
+    Unlike :func:`execution_content`, this deliberately omits an incomplete
+    model call rather than fabricating its output or rejecting otherwise
+    complete tool spans.  The raw span archive remains the authoritative
+    record; this projection is only the truthful local ledger available before
+    a completed report exists.
+    """
+
+    normalized, trace_id, _session_id = _normalized_session_spans(
+        spans,
+        expected_session_id=expected_session_id,
+    )
+
+    roots = [span for span in normalized if _event_matches(span, "invoke_agent")]
+    if len(roots) != 1:
+        raise TelemetryIncomplete("interrupted session must contain one root agent span")
+    root_id = roots[0]["spanId"]
+    model_spans = [span for span in normalized if _event_matches(span, "chat")]
+    tool_spans = [span for span in normalized if _event_matches(span, "execute_tool")]
+    model_calls: list[dict[str, Any]] = []
+    for span in model_spans:
+        try:
+            model_calls.append(_model_call(span))
+        except TelemetryIncomplete:
+            # A request that failed before a choice was emitted has no output
+            # to record, but must not hide other independently ended calls.
+            continue
+    tool_calls: list[dict[str, Any]] = []
+    report_span_id: str | None = None
+    report_source: str | None = None
+    for span in tool_spans:
+        try:
+            tool = _tool_payload(span)
+        except TelemetryIncomplete:
+            continue
+        if tool["tool"] == _REPORT_TOOL:
+            if tool["status"] == "success" and report_span_id is None:
+                report_span_id = tool["spanId"]
+                report_source = "report_tool"
+            continue
+        tool_calls.append(tool)
+    evidence_tool_count = sum(
+        _attr(span, "gen_ai.tool.name") != _REPORT_TOOL
+        for span in tool_spans
+    )
+    return {
+        "agentSpanId": root_id,
+        "modelCalls": model_calls,
+        "toolCalls": tool_calls,
+        "reportSpanId": report_span_id,
+        "reportSource": report_source,
+        "modelSpanCount": len(model_spans),
+        "evidenceToolCallCount": evidence_tool_count,
+        "traceId": trace_id,
     }
 
 
@@ -818,6 +911,8 @@ def _validate_session(
             actual = actual_by_model_id[span_id]
             if actual.get("input") != expected.get("input") or actual.get("output") != expected.get("output"):
                 raise TelemetryIncomplete("CloudWatch model content differs from the execution ledger")
+            if actual.get("requestFingerprints") != expected.get("requestFingerprints"):
+                raise TelemetryIncomplete("CloudWatch model request fingerprint differs from the execution ledger")
             if not _events_match(expected.get("events"), actual.get("events")):
                 raise TelemetryIncomplete("CloudWatch model request context differs from the execution ledger")
 
@@ -1139,4 +1234,10 @@ def score_execution(
     return result
 
 
-__all__ = ["CloudWatchSession", "TelemetryIncomplete", "execution_content", "score_execution"]
+__all__ = [
+    "CloudWatchSession",
+    "TelemetryIncomplete",
+    "execution_content",
+    "interrupted_execution_content",
+    "score_execution",
+]
