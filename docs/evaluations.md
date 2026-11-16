@@ -152,10 +152,11 @@ The useful feedback sequence is:
 ## S2: Run and score the captured baseline
 
 The [captured-run commands](../agent/README.md#run-and-score-the-captured-baseline-s2)
-save one execution and separately score its verified CloudWatch session. The
-baseline uses the prepared denial case, its exact evidence cutoff, and the
-faulty candidate's saved source and settings. The historical live denial
-report remains a separate incident artifact.
+open the identified saved execution and score its verified CloudWatch session.
+The baseline uses the prepared denial case, its exact evidence cutoff, and the
+faulty candidate's saved source and settings. A new input requires its own
+matching execution. The historical live denial report remains a separate
+incident artifact.
 
 The custom AgentCore SESSION evaluator returns two categorical findings in
 one call. Diagnosis support checks whether the causal explanation follows from
@@ -169,7 +170,12 @@ deterministic cutoff check failed on a citation beyond the reviewed time.
 Haiku 4.5 passed both semantic findings in two provisional scoring attempts.
 Both explanations treated an empty, clipped tool response as evidence through
 the full requested window. That run supplies a timing counterexample for judge
-calibration.
+calibration. The saved S2 execution on the same frozen case diagnosed the
+access denial and recommended increasing Inventory memory from 256 MB to
+512 MB. Its action, value, and cutoff checks failed. Its Inventory target
+check passed. The v2 grounding rubric distinguishes event, ingestion, and
+availability timestamps and checks actual query coverage. Semantic scoring of
+the saved S2 run awaits review and calibration on the fresh holdout.
 
 Judge calibration uses labeled, constructed controls grounded in retained
 evidence. Development and holdout controls come from separate incidents. The

@@ -181,12 +181,28 @@ identities. Semantic evaluation and release policy use separate steps.
 
 ## Run and score the captured baseline (S2)
 
-Use the prepared denial case and source bundle from the verified private S1
-archive. Work in the browser IDE terminal from the repository root. Use the
-short-lived evaluation role in the demo account and the reviewed evaluator
-descriptor. The role can invoke the required models, send evaluation traces,
-read the dedicated evaluation log group, and archive private evidence.
+For the prepared talk case, open the identified S2 execution from the private
+evidence archive. Set `run_dir` to its extracted run directory and inspect the
+retained report and deterministic findings from the repository root.
 
+```sh
+uv run --offline --project agent --locked python agent/evaluate_case.py show --run "$run_dir"
+```
+
+Score that execution's matching CloudWatch session using the short-lived
+evaluation role and the reviewed evaluator descriptor. Qualify the evaluator
+revision on reviewed holdout controls before using it to score the baseline.
+The v2 rubric's fresh holdout is awaiting presenter review.
+
+```sh
+uv run --project agent --locked python agent/evaluate_case.py score \
+  --run "$run_dir" --evaluator "$reviewed_evaluator" --wait-seconds 300
+```
+
+For a reviewed input without a matching saved execution, use its frozen case
+and source bundle. Run the captured S2 prompt from the browser IDE terminal.
+The short-lived role can invoke the required models, send evaluation traces,
+read the dedicated evaluation log group, and archive private evidence.
 Configure the locked AWS OpenTelemetry distribution for the dedicated
 outside-Runtime trace destination:
 
@@ -200,16 +216,13 @@ export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf OTEL_TRACES_EXPORTER=otlp
 export OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=none OTEL_TRACES_SAMPLER=always_on
 ```
 
-Set `frozen_case`, `source_bundle`, `private_runs` (outside the editable
-checkout), and `reviewed_evaluator` to their verified paths. Execute the
-captured case, then use the reported `runDirectory` as `run_dir`:
+Set `frozen_case`, `source_bundle`, and `private_runs` (outside the editable
+checkout) to their verified paths. Use the returned `runDirectory` as
+`run_dir` in the inspection and scoring commands above.
 
 ```sh
 uv run --project agent --locked opentelemetry-instrument python agent/evaluate_case.py run \
   --case "$frozen_case" --bundle "$source_bundle" --output-root "$private_runs"
-uv run --project agent --locked python agent/evaluate_case.py score \
-  --run "$run_dir" --evaluator "$reviewed_evaluator" --wait-seconds 300
-uv run --offline --project agent --locked python agent/evaluate_case.py show --run "$run_dir"
 ```
 
 The run saves the actual model and evidence-tool activity, report, and
