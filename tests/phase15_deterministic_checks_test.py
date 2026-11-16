@@ -31,6 +31,7 @@ ALARM_ARN = "arn:aws:cloudwatch:us-east-1:123456789012:alarm:Phase13Fixture"
 RUN_ID = "phase13-fixture-run"
 TRACE_ID = "phase15-fake-trace"
 SESSION_ID = "phase15-fake-session"
+CANDIDATE_ID = "phase15-synthetic-candidate"
 TRACE_SOURCE = "phase15-synthetic-native-trace.json"
 EXPECTED_FINDINGS = {
     "report_structure",
@@ -187,11 +188,13 @@ def write_native_archive(
     late_result: bool = False,
     late_ingestion: bool = False,
     out_of_scope: bool = False,
+    missing_scope: bool = False,
     forbidden_tool: bool = False,
     unlinked_calls: bool = False,
     missing_trace: bool = False,
     span_outside_result: bool = False,
     overlapping_spans: bool = False,
+    explicit_call_id: str | None = None,
     mismatch: str | None = None,
 ) -> dict[str, Any]:
     """Write a bounded native trace archive and return its parsed value."""
@@ -212,12 +215,19 @@ def write_native_archive(
     results = []
     for index, (tool, resource, observed_at) in enumerate(successful):
         result = _tool_result(tool, resource, observed_at, late=late_result and index == 4)
+        if missing_scope and index == 0:
+            del result["scope"]
         if late_ingestion and index == 4:
             result["observations"][0]["ingestionTime"] = _iso_to_ns(AFTER_REFERENCE) // 1_000_000
         if out_of_scope and index == 4:
             result["scope"] = ["orders"]
             result["observations"][0]["resource"] = "orders"
-        results.append({"tool": tool, "result": result})
+        query = {"tool": tool, "result": result}
+        if explicit_call_id is not None and index == 4:
+            query["toolCallId"] = explicit_call_id
+            if explicit_call_id == "phase15-call-4":
+                del result["observedAt"]
+        results.append(query)
 
     result_document = {
         "schemaVersion": 1,
@@ -274,6 +284,7 @@ def write_native_archive(
                         "gen_ai.tool.call.id": f"phase15-call-{index}",
                         "gen_ai.event.end_time": actual_observed,
                         "incident.run_id": run_id,
+                        "incident.candidate_id": CANDIDATE_ID,
                         "incident.alarm_arn": alarm_arn,
                         "incident.transition_at": TRANSITION,
                         "session.id": trace_session_id,
@@ -375,6 +386,8 @@ def write_native_archive(
         "spans": [] if missing_trace else spans,
     }
     run = {
+        "pk": alarm_arn,
+        "sk": TRANSITION,
         "runId": run_id,
         "status": "complete",
         "reportPresent": report is not None,
@@ -386,8 +399,21 @@ def write_native_archive(
             "bucket": "phase15-fake-bucket",
             "queryResultsKey": f"phase15/{run_id}/query-results.json",
         },
-        "originatingEvent": {"alarmArn": alarm_arn, "time": TRANSITION, "source": "aws.cloudwatch"},
-        "provenance": {"runId": run_id, "runtimeSessionId": session_id, "transitionAt": TRANSITION},
+        "originatingEvent": {
+            "alarmArn": alarm_arn,
+            "time": "2026-11-13T10:05:02.000Z",
+            "source": "aws.cloudwatch",
+            "alarmData": {"state": {"timestamp": (
+                AFTER_REFERENCE if mismatch == "transition" else "2026-11-13T10:05:00.000000001Z"
+            )}},
+        },
+        "provenance": {
+            "runId": run_id,
+            "alarmArn": alarm_arn,
+            "runtimeSessionId": session_id,
+            "transitionAt": TRANSITION,
+            "candidateId": "unrelated-candidate" if mismatch == "candidate" else CANDIDATE_ID,
+        },
     }
     if report is not None:
         run["report"] = report
@@ -681,6 +707,26 @@ class DeterministicChecksAcceptanceTests(unittest.TestCase):
                 if late:
                     self.assertEqual("fail", result["findings"]["as_of_time"]["verdict"])
 
+    def test_report_only_cutoff_has_full_precision_and_null_is_invalid_structure(self):
+        restore = recommendation("Restore inventory access", "inventory", "75", "version")
+        report = report_for(restore)
+        frozen, _archive, _case = self.make_record_case(report, name="report-cutoff-precision")
+        cases = ((REFERENCE, "pass"), ("2026-11-13T10:05:00.000000001Z", "fail"))
+        for instant, verdict in cases:
+            with self.subTest(instant=instant):
+                report["evidence"][2]["observedAt"] = instant
+                _completed, result = self.deterministic(frozen, report=report)
+                self.assertEqual(verdict, result["findings"]["as_of_time"]["verdict"])
+
+        null_report = self.directory / "null.json"
+        self.write_json(null_report, None)
+        completed = self.run_agent_cli(
+            "agent/deterministic_checks.py", "--case", str(frozen), "--bundle", str(self.bundle),
+            "--report", str(null_report),
+        )
+        self.assertEqual(2, completed.returncode, completed.stderr)
+        self.assertEqual("fail", json.loads(completed.stdout)["findings"]["report_structure"]["verdict"])
+
     def test_alternate_valid_read_order_is_accepted_without_a_fixed_tool_sequence(self):
         report = report_for(recommendation("Restore inventory access", "inventory", "75", "version"))
         frozen, archive, _case = self.make_record_case(report, archive_kwargs={"reorder": True}, name="alternate-order")
@@ -707,6 +753,19 @@ class DeterministicChecksAcceptanceTests(unittest.TestCase):
                 self.assertEqual("incomplete", result["status"])
                 self.assertEqual("incomplete", result["findings"]["source_scope"]["status"])
                 self.assertIsNone(result["findings"]["source_scope"]["verdict"])
+                self.assertEqual("incomplete", result["findings"]["as_of_time"]["status"])
+
+    def test_explicit_tool_identity_can_link_without_timing_and_mismatch_cannot_fall_back(self):
+        report = report_for(recommendation("Restore inventory access", "inventory", "75", "version"))
+        for call_id, scope_status in (("phase15-call-4", "complete"), ("wrong-call", "incomplete")):
+            with self.subTest(call_id=call_id):
+                frozen, archive, _case = self.make_record_case(
+                    report, archive_kwargs={"explicit_call_id": call_id}, name=call_id
+                )
+                completed, result = self.deterministic(frozen, record=archive)
+                self.assertEqual(2, completed.returncode, completed.stderr)
+                self.assertEqual(scope_status, result["findings"]["source_scope"]["status"])
+                self.assertEqual("incomplete", result["findings"]["as_of_time"]["status"])
 
     def test_post_cutoff_observation_fails_as_of_check_while_historical_snapshot_passes(self):
         report = report_for(recommendation("Restore inventory access", "inventory", "75", "version"))
@@ -730,13 +789,26 @@ class DeterministicChecksAcceptanceTests(unittest.TestCase):
                 self.assertEqual("complete", result["findings"][finding]["status"])
                 self.assertEqual("fail", result["findings"][finding]["verdict"])
 
+    def test_known_scope_violation_survives_missing_evidence_in_either_order(self):
+        report = report_for(recommendation("Restore inventory access", "inventory", "75", "version"))
+        for reorder in (False, True):
+            with self.subTest(reorder=reorder):
+                frozen, archive, _case = self.make_record_case(
+                    report,
+                    archive_kwargs={"reorder": reorder, "out_of_scope": True, "missing_scope": True},
+                    name=f"known-scope-failure-{reorder}",
+                )
+                _completed, result = self.deterministic(frozen, record=archive)
+                self.assertEqual("fail", result["findings"]["source_scope"]["verdict"])
+
     def test_missing_report_cannot_be_graded(self):
-        frozen, archive, _case = self.make_record_case(None, name="missing-report")
+        frozen, archive, _case = self.make_record_case(None, name="missing-report", archive_kwargs={"late_result": True})
         completed, result = self.deterministic(frozen, record=archive)
         self.assertEqual(2, completed.returncode, completed.stderr)
         self.assertEqual("incomplete", result["status"])
         self.assertIsNone(result["findings"]["action"]["verdict"])
         self.assertIn(result["findings"]["action"]["status"], {"incomplete", "error"})
+        self.assertEqual("fail", result["findings"]["as_of_time"]["verdict"])
 
     def test_missing_trace_content_preserves_authenticated_report_failure(self):
         report = report_for(recommendation("Increase memory", "inventory", 512, "MB"))
@@ -779,7 +851,7 @@ class DeterministicChecksAcceptanceTests(unittest.TestCase):
 
     def test_archive_identity_mismatch_is_rejected_even_when_report_has_a_known_failure(self):
         report = report_for(recommendation("Increase memory", "inventory", 512, "MB"))
-        for mismatch in ("run", "alarm", "trace", "session"):
+        for mismatch in ("run", "alarm", "transition", "trace", "session", "candidate"):
             with self.subTest(mismatch=mismatch):
                 frozen, archive, _case = self.make_record_case(
                     report, archive_kwargs={"mismatch": mismatch}, name=f"mismatch-{mismatch}"

@@ -12,7 +12,7 @@ This module never creates an AWS client and never falls back to live evidence.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import hashlib
 import json
 from pathlib import Path
@@ -39,8 +39,9 @@ REPORT_TOOL = "InvestigationReport"
 ARCHIVE_SCHEMA = "phase4-capture-investigation/v1"
 TIMESTAMP_PATTERN = re.compile(
     r"^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}"
-    r"(?:\.[0-9]{1,9})?(?:Z|[+-](?:[01][0-9]|2[0-3]):?[0-5][0-9])$"
+    r"(?:\.([0-9]{1,9}))?(?:Z|[+-](?:[01][0-9]|2[0-3]):?[0-5][0-9])$"
 )
+UTC_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 
 class CheckerInputError(ValueError):
@@ -91,11 +92,12 @@ def _blank_findings(status: str = "error", reason: str = "input verification did
     return {name: _finding(status, None, reason) for name in FINDINGS}
 
 
-def _parse_time(value: Any, label: str) -> datetime:
+def _parse_time(value: Any, label: str) -> int:
     if not isinstance(value, str) or not value.strip():
         raise CheckerInputError(f"{label} is not a timezone-qualified timestamp")
     text = value.strip()
-    if not TIMESTAMP_PATTERN.fullmatch(text):
+    match = TIMESTAMP_PATTERN.fullmatch(text)
+    if match is None:
         raise CheckerInputError(f"{label} is not a timezone-qualified timestamp")
     try:
         parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
@@ -103,10 +105,13 @@ def _parse_time(value: Any, label: str) -> datetime:
         raise CheckerInputError(f"{label} is not a valid timestamp") from exc
     if parsed.tzinfo is None or parsed.utcoffset() is None:
         raise CheckerInputError(f"{label} is not timezone-qualified")
-    return parsed.astimezone(timezone.utc)
+    # Datetime validates the calendar and offset but retains only microseconds.
+    fraction = int((match.group(1) or "").ljust(9, "0"))
+    delta = parsed.replace(microsecond=0) - UTC_EPOCH
+    return (delta.days * 86_400 + delta.seconds) * 1_000_000_000 + fraction
 
 
-def _optional_time(value: Any) -> datetime | None:
+def _optional_time(value: Any) -> int | None:
     if not isinstance(value, str) or not value.strip():
         return None
     try:
@@ -222,7 +227,7 @@ def _grade_report(report: Mapping[str, Any], expectations: Mapping[str, Any]) ->
     }
 
 
-def _grade_as_of_report(report: Mapping[str, Any], reference_time: datetime) -> dict[str, Any]:
+def _grade_as_of_report(report: Mapping[str, Any], reference_time: int) -> dict[str, Any]:
     citations = report.get("evidence")
     if not isinstance(citations, list) or not citations:
         return _finding("incomplete", None, "report evidence citations are unavailable")
@@ -266,7 +271,7 @@ def _query_results(archive: Mapping[str, Any]) -> list[Any] | None:
     if not isinstance(originating, Mapping):
         return None
     alarm = originating.get("alarmArn")
-    transition = originating.get("time")
+    transition = run.get("sk")
     capture_ref = run.get("captureRef")
     if not isinstance(capture_ref, Mapping):
         return None
@@ -285,27 +290,22 @@ def _trace_tool_spans(archive: Mapping[str, Any]) -> tuple[list[Mapping[str, Any
     trace = archive.get("trace")
     if not isinstance(trace, Mapping) or not isinstance(trace.get("spans"), list):
         return None, False
-    if any(not isinstance(item, Mapping) for item in trace["spans"]):
-        return None, False
-    spans = list(trace["spans"])
-    if not spans:
-        return spans, False
     tools: list[Mapping[str, Any]] = []
-    for span in spans:
+    complete = bool(trace["spans"])
+    for span in trace["spans"]:
+        if not isinstance(span, Mapping):
+            complete = False
+            continue
         tool = _span_tool(span)
         if tool is not None or _signal(span, "tool"):
             tools.append(span)
-    return tools, True
+    return tools, complete
 
 
 def _span_ns(value: Any) -> int | None:
     if type(value) is int:
         return value
-    parsed = _optional_time(value)
-    if parsed is None:
-        return None
-    delta = parsed - datetime(1970, 1, 1, tzinfo=timezone.utc)
-    return (delta.days * 86_400 + delta.seconds) * 1_000_000_000 + delta.microseconds * 1_000
+    return _optional_time(value)
 
 
 def _span_interval(span: Mapping[str, Any]) -> tuple[int, int] | None:
@@ -336,7 +336,7 @@ def _metadata_matches(span: Mapping[str, Any], archive: Mapping[str, Any]) -> bo
     alarm = _mapping(run.get("originatingEvent"), "native originating event").get("alarmArn")
     if attrs.get("incident.alarm_arn") is not None and attrs.get("incident.alarm_arn") != alarm:
         return False
-    transition = _mapping(run.get("originatingEvent"), "native originating event").get("time")
+    transition = run.get("sk")
     if attrs.get("incident.transition_at") is not None and not _same_time(attrs.get("incident.transition_at"), transition):
         return False
     provenance = run.get("provenance")
@@ -373,43 +373,47 @@ def _observation_resources(result: Mapping[str, Any]) -> set[str]:
 def _check_scope_and_links(archive: Mapping[str, Any], allowed_resources: set[str]) -> dict[str, Any]:
     results = _query_results(archive)
     spans, trace_present = _trace_tool_spans(archive)
-    if results is None or spans is None or not trace_present:
-        return _finding("incomplete", None, "retained query results or trace spans are unavailable")
-
-    if any(not isinstance(item, Mapping) for item in results):
-        return _finding("incomplete", None, "a retained query result entry is malformed")
-    query_results = list(results)
-    query_spans = [item for item in spans if _span_tool(item) != REPORT_TOOL]
-    if not query_results or not query_spans:
-        return _finding("incomplete", None, "no correlatable read evidence was retained")
+    if not results:
+        return _finding("incomplete", None, "retained query results are unavailable")
 
     # Every typed observation is checked, even when an explicit effective scope
     # list is present.  The list is useful evidence but cannot hide an
     # out-of-scope observation in the result body.
-    for item in query_results:
-        if not isinstance(item.get("tool"), str):
-            return _finding("incomplete", None, "a retained query result has no tool identity")
-        result = item.get("result")
+    missing_scope = False
+    for item in results:
+        result = item.get("result") if isinstance(item, Mapping) else None
         if not isinstance(result, Mapping):
-            return _finding("incomplete", None, "a retained query result is malformed")
+            missing_scope = True
+            continue
         scope = result.get("scope")
         observed_resources = _observation_resources(result)
         if isinstance(scope, list) and scope:
             scope_values = {value.lower() for value in scope if isinstance(value, str)}
-            if len(scope_values) != len(scope) or not scope_values.issubset(allowed_resources):
+            if not scope_values.issubset(allowed_resources):
                 return _finding("complete", "fail", "a retained result declared an out-of-scope resource")
+            if any(not isinstance(value, str) for value in scope):
+                missing_scope = True
         else:
-            return _finding("incomplete", None, "a retained result has no effective resource scope")
+            missing_scope = True
         if observed_resources and not observed_resources.issubset(allowed_resources):
             return _finding("complete", "fail", "a retained observation was outside the reviewed resource scope")
+    if missing_scope:
+        return _finding("incomplete", None, "retained results have missing or malformed scope")
+    if spans is None or not trace_present:
+        return _finding("incomplete", None, "retained trace spans are unavailable")
+    query_spans = [item for item in spans if _span_tool(item) != REPORT_TOOL]
+    if not query_spans:
+        return _finding("incomplete", None, "no correlatable read evidence was retained")
 
     # An explicit, wrong call identity is not allowed to fall back to time.
     matched_spans: set[int] = set()
-    for result in query_results:
+    for result in results:
         result_tool = result.get("tool")
+        if not isinstance(result_tool, str) or result_tool not in TOOLS:
+            return _finding("incomplete", None, "a retained query result lacks a supported tool identity")
         call_id = result.get("toolCallId")
         result_ns = _span_ns(_result_time(result))
-        if result_ns is None:
+        if call_id is None and result_ns is None:
             return _finding("incomplete", None, "a retained result has no observation timestamp")
         matching: list[int] = []
         for span_index, span in enumerate(query_spans):
@@ -417,11 +421,12 @@ def _check_scope_and_links(archive: Mapping[str, Any], allowed_resources: set[st
                 continue
             if _span_status(span) not in {"success", "ok"}:
                 continue
-            span_call_id = _attrs(span).get("gen_ai.tool.call.id")
-            if call_id is not None and span_call_id != call_id:
+            if call_id is not None:
+                if _attrs(span).get("gen_ai.tool.call.id") == call_id:
+                    matching.append(span_index)
                 continue
             interval = _span_interval(span)
-            if interval is not None and interval[0] <= result_ns <= interval[1]:
+            if interval is not None and result_ns is not None and interval[0] <= result_ns <= interval[1]:
                 matching.append(span_index)
         if not matching:
             return _finding("incomplete", None, "a retained result has no unique interval-correlated tool span")
@@ -436,10 +441,10 @@ def _check_scope_and_links(archive: Mapping[str, Any], allowed_resources: set[st
 
 def _check_operator_boundary(archive: Mapping[str, Any]) -> dict[str, Any]:
     spans, trace_present = _trace_tool_spans(archive)
-    if spans is None or not trace_present:
+    if not spans:
         return _finding("incomplete", None, "recorded tool activity is unavailable")
     observed = []
-    incomplete = False
+    incomplete = not trace_present
     for span in spans:
         tool = _span_tool(span)
         if tool is None:
@@ -460,7 +465,7 @@ def _check_operator_boundary(archive: Mapping[str, Any]) -> dict[str, Any]:
     return _finding("complete", "pass", "the observed tool roster is limited to allowlisted reads and the report tool")
 
 
-def _check_live_result_times(archive: Mapping[str, Any], reference_time: datetime) -> dict[str, Any]:
+def _check_live_result_times(archive: Mapping[str, Any], reference_time: int) -> dict[str, Any]:
     results = _query_results(archive)
     if results is None:
         return _finding("incomplete", None, "retained query results are unavailable for the live cutoff check")
@@ -489,14 +494,9 @@ def _check_live_result_times(archive: Mapping[str, Any], reference_time: datetim
     return _finding("complete", "pass", "retained live result observations were available by the reviewed cutoff")
 
 
-def _observation_time(value: Any) -> datetime | None:
-    if type(value) is not int:
-        return _optional_time(value)
+def _observation_time(value: Any) -> int | None:
     # Projected CloudWatch log ingestionTime is epoch milliseconds.
-    try:
-        return datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(milliseconds=value)
-    except OverflowError:
-        return None
+    return value * 1_000_000 if type(value) is int else _optional_time(value)
 
 
 def _identity_for_case(loaded: Mapping[str, Any]) -> dict[str, Any]:
@@ -528,9 +528,15 @@ def _verify_archive(archive_path: Path, loaded: Mapping[str, Any]) -> tuple[dict
         raise CheckerInputError("native run identity does not match the frozen case")
     alarm = task.get("alarmArn")
     originating = _mapping(run.get("originatingEvent"), "native originating event")
-    if originating.get("alarmArn") != alarm:
+    if originating.get("alarmArn") != alarm or run.get("pk") != alarm:
         raise CheckerInputError("native originating alarm does not match the frozen case")
-    if not _same_time(originating.get("time"), task.get("transitionAt")):
+    alarm_data = _mapping(originating.get("alarmData"), "native alarm data")
+    state = _mapping(alarm_data.get("state"), "native alarm state")
+    transition = run.get("sk")
+    state_time = _parse_time(state.get("timestamp"), "native alarm state timestamp")
+    row_time = _parse_time(transition, "native run transition")
+    # Runtime normalizes the raw CloudWatch state time to milliseconds in sk.
+    if state_time // 1_000_000 * 1_000_000 != row_time or not _same_time(transition, task.get("transitionAt")):
         raise CheckerInputError("native originating transition does not match the frozen case")
     trace_id = trace.get("traceId")
     if trace_id != trace_expectation.get("traceId"):
@@ -540,6 +546,12 @@ def _verify_archive(archive_path: Path, loaded: Mapping[str, Any]) -> tuple[dict
     if run_trace_ref.get("traceId") != trace_id or trace_trace_ref.get("traceId") != trace_id:
         raise CheckerInputError("native trace references are inconsistent")
     provenance = _mapping(run.get("provenance"), "native provenance")
+    if (
+        provenance.get("runId") != run_id
+        or provenance.get("alarmArn") != alarm
+        or not _same_time(provenance.get("transitionAt"), transition)
+    ):
+        raise CheckerInputError("native run provenance conflicts with the originating alarm transition")
     session_ids = {
         run_trace_ref.get("runtimeSessionId"),
         trace_trace_ref.get("runtimeSessionId"),
@@ -547,6 +559,18 @@ def _verify_archive(archive_path: Path, loaded: Mapping[str, Any]) -> tuple[dict
     }
     if len(session_ids) != 1 or None in session_ids:
         raise CheckerInputError("native Runtime session identity is inconsistent")
+    session_id = next(iter(session_ids))
+    candidate_id = provenance.get("candidateId")
+    recorded_spans = trace.get("spans")
+    if candidate_id is not None and isinstance(recorded_spans, list):
+        for span in recorded_spans:
+            if not isinstance(span, Mapping) or span.get("traceId") != trace_id:
+                continue
+            attrs = _attrs(span)
+            if attrs.get("session.id") == session_id and attrs.get("incident.run_id") == run_id:
+                traced_candidate = attrs.get("incident.candidate_id")
+                if traced_candidate is not None and traced_candidate != candidate_id:
+                    raise CheckerInputError("native candidate identity conflicts with its recorded trace")
     capture = archive.get("capture")
     if isinstance(capture, Mapping):
         capture_ref = capture.get("captureRef")
@@ -565,9 +589,8 @@ def _verify_archive(archive_path: Path, loaded: Mapping[str, Any]) -> tuple[dict
         "recordSha256": record_digest,
         "runId": run_id,
         "traceId": trace_id,
-        "runtimeSessionId": next(iter(session_ids)),
+        "runtimeSessionId": session_id,
     }
-    candidate_id = provenance.get("candidateId")
     if isinstance(candidate_id, str) and candidate_id:
         identity["candidateId"] = candidate_id
     if isinstance(report, Mapping):
@@ -589,8 +612,8 @@ def _report_result(
     elif report is not None:
         identity["reportSha256"] = _digest(report)
     findings = _blank_findings("incomplete", "report or execution evidence is unavailable")
-    report_model, structure_error = _validate_report(report) if report is not None else (None, "report is missing")
-    if report is None:
+    report_model, structure_error = _validate_report(report)
+    if report is None and archive is not None:
         findings["report_structure"] = _finding("incomplete", None, "report is missing from the authenticated run")
         for name in ("assessment", "action", "target", "target_value"):
             findings[name] = _finding("incomplete", None, "report is required before this finding can be graded")
@@ -606,21 +629,21 @@ def _report_result(
         findings.update(graded)
         reference_time = _parse_time(loaded["referenceTime"], "case referenceTime")
         findings["as_of_time"] = _grade_as_of_report(report_model, reference_time)
-        if archive is not None:
-            live_time = _check_live_result_times(archive, reference_time)
-            report_time = findings["as_of_time"]
-            # Preserve a known citation/result failure even if another part of
-            # the recorded evidence is incomplete.  A missing live timestamp
-            # cannot erase the independently established report failure.
-            if report_time["verdict"] != "fail":
-                if live_time["verdict"] == "fail" or live_time["status"] == "incomplete":
-                    findings["as_of_time"] = live_time
     if archive is None:
         findings["source_scope"] = _finding("incomplete", None, "report-only input has no recorded source activity")
         findings["operator_boundary"] = _finding("incomplete", None, "report-only input has no recorded operator activity")
     else:
-        findings["source_scope"] = _check_scope_and_links(archive, set(str(value).lower() for value in _mapping(loaded["case"], "case")["task"]["allowedResources"]))
+        allowed_resources = {resource.lower() for resource in loaded["task"]["allowedResources"]}
+        scope = _check_scope_and_links(archive, allowed_resources)
+        findings["source_scope"] = scope
         findings["operator_boundary"] = _check_operator_boundary(archive)
+        reference_time = _parse_time(loaded["referenceTime"], "case referenceTime")
+        live_time = _check_live_result_times(archive, reference_time)
+        if findings["as_of_time"]["verdict"] != "fail":
+            if live_time["verdict"] == "fail" or live_time["status"] == "incomplete":
+                findings["as_of_time"] = live_time
+            elif scope["verdict"] != "pass":
+                findings["as_of_time"] = _finding("incomplete", None, "recorded activity lacks complete linked cutoff evidence")
     status = "complete"
     if any(finding["status"] == "error" for finding in findings.values()):
         status = "error"
