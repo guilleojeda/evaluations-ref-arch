@@ -619,6 +619,9 @@ def _run_snapshot(
             "ledger": ledger,
             "deterministic": None,
             "modelRequestCount": 0,
+            "modelResponseCount": 0,
+            "modelSpanCount": 0,
+            "modelRequestAttempts": [],
             "evidenceToolCallCount": 0,
             "evidenceProviderCallCount": 0,
             "usage": {},
@@ -676,6 +679,7 @@ def _run_snapshot(
                     cancel_signal=cancel_signal,
                     trace_attributes=trace_attributes,
                     model_session=model_session,
+                    capture_model_requests=True,
                 )
                 remaining = max(0.0, deadline - time.monotonic())
                 if remaining <= 0:
@@ -703,17 +707,22 @@ def _run_snapshot(
             record["report"] = report
             identity["reportSha256"] = _sha256(_json_bytes(report))
             record["modelRequestCount"] = bounded_model.requests
+            record["modelRequestAttempts"] = bounded_model.attempts
+            record["modelResponseCount"] = sum(
+                item.get("status") == "stream_returned" for item in bounded_model.attempts
+            )
             record["evidenceProviderCallCount"] = tool_budget.calls
             record["usage"] = _usage(observer.spans)
             raw_spans = _span_documents(observer.spans)
             _write_json_atomic(run_dir / "strands.native-spans.json", {"spans": raw_spans})
             record["nativeSpansSha256"] = _sha256(_json_bytes({"spans": raw_spans}))
 
-            projection = execution_content(observer.spans)
+            projection = execution_content(raw_spans)
             if _json_bytes(projection.get("report")) != _json_bytes(report):
                 raise ValueError("structured report differs from the actual InvestigationReport span")
-            if bounded_model.requests != len(projection.get("modelCalls", [])):
-                raise ValueError("actual Bedrock request count differs from native model spans")
+            record["modelSpanCount"] = len(projection.get("modelCalls", []))
+            if record["modelResponseCount"] != record["modelSpanCount"]:
+                raise ValueError("successful physical model responses differ from native model spans")
             tool_attempts = projection.get("toolCalls", [])
             if tool_budget.calls > len(tool_attempts) or tool_budget.calls > MAX_TOOL_CALLS:
                 raise ValueError("captured provider tool count exceeds observed attempts or its shared cap")
@@ -729,6 +738,7 @@ def _run_snapshot(
                 name: projection[name]
                 for name in ("agentSpanId", "modelCalls", "toolCalls", "reportSpanId")
             }
+            record["reportSource"] = projection["reportSource"]
             record["deterministic"] = check_captured_report(report, loaded_case, record["ledger"])
             record["status"] = "complete"
             record["finishedAt"] = _utc_now()
@@ -743,13 +753,20 @@ def _run_snapshot(
                     _write_json_atomic(run_dir / "strands.native-spans.json", {"spans": raw_spans})
                     record["nativeSpansSha256"] = _sha256(_json_bytes({"spans": raw_spans}))
                     record["modelRequestCount"] = locals().get("bounded_model").requests if "bounded_model" in locals() else 0
+                    if "bounded_model" in locals():
+                        record["modelRequestAttempts"] = bounded_model.attempts
+                        record["modelResponseCount"] = sum(
+                            item.get("status") == "stream_returned" for item in bounded_model.attempts
+                        )
                     record["evidenceProviderCallCount"] = locals().get("tool_budget").calls if "tool_budget" in locals() else 0
                     record["usage"] = _usage(observer.spans)
-                    projection = execution_content(observer.spans)
+                    projection = execution_content(raw_spans)
                     record["ledger"] = {
                         name: projection[name]
                         for name in ("agentSpanId", "modelCalls", "toolCalls", "reportSpanId")
                     }
+                    record["modelSpanCount"] = len(projection["modelCalls"])
+                    record["reportSource"] = projection.get("reportSource")
                     record["evidenceToolCallCount"] = len(projection["toolCalls"])
                     if record.get("report") is not None and _json_bytes(projection.get("report")) != _json_bytes(record["report"]):
                         record["telemetryError"] = "structured report differs from the actual report span"
@@ -801,12 +818,79 @@ def _safe_relative(root: Path, relative: str) -> Path:
     return target
 
 
+def _verify_model_request_attempts(
+    record: Mapping[str, Any],
+    *,
+    model_id: str,
+    model_span_count: int,
+    max_requests: int,
+) -> None:
+    """Bind physical client attempts to their retained requests and native chat roster."""
+
+    from strands.models import _native_output
+
+    attempts = record.get("modelRequestAttempts")
+    if attempts is None:
+        # Earlier Phase 16 runs retained only Strands chat spans. Keep those
+        # complete archives readable when every physical call had a span.
+        if record.get("modelRequestCount") != model_span_count:
+            raise ValueError("legacy model request count differs from native model spans")
+        return
+    if not isinstance(attempts, list) or not attempts or len(attempts) > max_requests:
+        raise ValueError("physical model request attempts are missing or exceed the shared limit")
+    if record.get("modelRequestCount") != len(attempts):
+        raise ValueError("saved physical model request count differs from retained attempts")
+    returned = 0
+    for ordinal, attempt in enumerate(attempts, 1):
+        if (
+            not isinstance(attempt, Mapping)
+            or type(attempt.get("ordinal")) is not int
+            or attempt.get("ordinal") != ordinal
+        ):
+            raise ValueError("physical model request attempt order is malformed")
+        if attempt.get("modelId") != model_id:
+            raise ValueError("physical model request used an unexpected model")
+        request = attempt.get("request")
+        if not isinstance(request, Mapping) or request.get("modelId") != model_id:
+            raise ValueError("physical model request is missing its model identity")
+        if attempt.get("requestSha256") != _sha256(_json_bytes(request)):
+            raise ValueError("physical model request digest does not match its retained request")
+        status = attempt.get("status")
+        if status == "stream_returned":
+            returned += 1
+            continue
+        if status != "error":
+            raise ValueError("physical model request has an unsupported outcome")
+        error = attempt.get("error")
+        if not isinstance(error, Mapping) or error.get("Code") != "ValidationException":
+            raise ValueError("completed run contains an unclassified failed model request")
+        message = error.get("Message")
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("failed model request is missing its validation reason")
+        tool_config = request.get("toolConfig")
+        choice = tool_config.get("toolChoice") if isinstance(tool_config, Mapping) else None
+        if isinstance(choice, Mapping) and choice.get("tool") == {"name": "InvestigationReport"}:
+            recognized = _native_output._is_unsupported_mechanism_message(message, "forced")
+        elif isinstance(request.get("outputConfig"), Mapping):
+            recognized = _native_output._is_unsupported_mechanism_message(message, "native") or any(
+                signal in message for signal in _native_output._NATIVE_OUTPUT_REJECTED_MESSAGES
+            )
+        else:
+            recognized = False
+        if not recognized:
+            raise ValueError("completed run contains an unrecognized structured-output validation failure")
+    if record.get("modelResponseCount") != returned or record.get("modelSpanCount") != model_span_count:
+        raise ValueError("successful physical responses do not match the native model span roster")
+    if returned != model_span_count:
+        raise ValueError("successful physical response count differs from native model spans")
+
+
 def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any], list[Any]]:
     """Verify one saved run and reopen its frozen case without cloud access."""
 
     from deterministic_checks import check_captured_report
     from evaluation_telemetry import execution_content
-    from investigation import InvestigationReport
+    from investigation import InvestigationReport, MAX_MODEL_REQUESTS
     from reviewed_cases import load_frozen_case
 
     directory = Path(run_dir)
@@ -919,8 +1003,14 @@ def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any],
         )
         if identity.get("traceId") != observed_trace:
             raise ValueError("saved trace ID differs from the authenticated native spans")
-        if record.get("modelRequestCount") != len(expected_ledger["modelCalls"]):
-            raise ValueError("saved model request count differs from native spans")
+        _verify_model_request_attempts(
+            record,
+            model_id=identity["modelId"],
+            model_span_count=len(expected_ledger["modelCalls"]),
+            max_requests=MAX_MODEL_REQUESTS,
+        )
+        if record.get("reportSource") is not None and record.get("reportSource") != projection.get("reportSource"):
+            raise ValueError("saved report source differs from native spans")
         if record.get("evidenceToolCallCount") != len(expected_ledger["toolCalls"]):
             raise ValueError("saved evidence-tool count differs from native spans")
         provider_call_count = record.get("evidenceProviderCallCount")

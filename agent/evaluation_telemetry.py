@@ -313,8 +313,10 @@ def _session_task(root: Mapping[str, Any]) -> Mapping[str, Any]:
 def _normalize_span(raw_span: Any) -> Mapping[str, Any]:
     """Accept CloudWatch spans or OpenTelemetry SDK ``to_json`` documents."""
 
+    sdk_span = None
     if not isinstance(raw_span, Mapping):
         if hasattr(raw_span, "to_json") and callable(raw_span.to_json):
+            sdk_span = raw_span
             raw_span = raw_span.to_json()
         if isinstance(raw_span, str):
             try:
@@ -324,6 +326,17 @@ def _normalize_span(raw_span: Any) -> Mapping[str, Any]:
     if not isinstance(raw_span, Mapping):
         raise TelemetryIncomplete("session contains a malformed span")
     span = dict(raw_span)
+    # ReadableSpan.to_json() omits the exact timestamps exposed by the SDK
+    # object. Preserve those native nanoseconds so the local projection can
+    # identify the final assistant span without guessing from list order.
+    if sdk_span is not None:
+        for sdk_name, native_name in (
+            ("start_time", "startTimeUnixNano"),
+            ("end_time", "endTimeUnixNano"),
+        ):
+            timestamp = getattr(sdk_span, sdk_name, None)
+            if native_name not in span and isinstance(timestamp, int) and not isinstance(timestamp, bool):
+                span[native_name] = timestamp
     if "events" not in span:
         span["events"] = []
     context = _mapping(span.get("context"))
@@ -362,6 +375,39 @@ def _model_call(span: Mapping[str, Any]) -> dict[str, Any]:
         "output": _event_text(span, "gen_ai.choice", "message"),
         "events": _project_events(span),
     }
+
+
+def _assistant_report(model_spans: Sequence[Mapping[str, Any]], model_calls: Sequence[Mapping[str, Any]]) -> tuple[str, dict[str, Any]]:
+    """Read a schema-valid report from the final assistant chat response."""
+
+    ended = [(_time_ns(span, "end"), span) for span in model_spans]
+    if any(timestamp is None for timestamp, _span in ended):
+        raise TelemetryIncomplete("assistant report span has no exact end timestamp")
+    latest = max(timestamp for timestamp, _span in ended if timestamp is not None)
+    final_spans = [span for timestamp, span in ended if timestamp == latest]
+    if len(final_spans) != 1:
+        raise TelemetryIncomplete("final assistant report span is ambiguous")
+    final_span = final_spans[0]
+    final_id = final_span.get("spanId")
+    if not isinstance(final_id, str) or not final_id:
+        raise TelemetryIncomplete("final assistant report span ID is missing")
+    call = next((item for item in model_calls if item.get("spanId") == final_id), None)
+    if not isinstance(call, Mapping) or not isinstance(call.get("output"), str):
+        raise TelemetryIncomplete("final assistant response content is missing")
+    try:
+        payload = _json_payload(call["output"], "final assistant report")
+        if not isinstance(payload, Mapping):
+            raise TelemetryIncomplete("final assistant output is not a report object")
+        from investigation import InvestigationReport
+
+        report = InvestigationReport.model_validate(payload).model_dump(mode="json")
+    except TelemetryIncomplete:
+        raise
+    except Exception as exc:
+        raise TelemetryIncomplete("final assistant output does not satisfy report schema 2") from exc
+    if not _json_equivalent(report, payload):
+        raise TelemetryIncomplete("final assistant output is not a canonical report")
+    return final_id, dict(report)
 
 
 def _tool_payload(span: Mapping[str, Any]) -> dict[str, Any]:
@@ -462,23 +508,28 @@ def execution_content(spans: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     tool_spans = [span for span in normalized if _event_matches(span, "execute_tool")]
     if not model_spans:
         raise TelemetryIncomplete("session has no model spans")
-    if not tool_spans:
-        raise TelemetryIncomplete("session has no tool spans")
 
     calls = [_model_call(span) for span in model_spans]
     tools = [_tool_payload(span) for span in tool_spans]
     report_tools = [item for item in tools if item["tool"] == _REPORT_TOOL]
-    if len(report_tools) != 1:
-        raise TelemetryIncomplete("session must contain one investigation report tool")
-    report = report_tools[0]
-    if report["status"] != "success":
-        raise TelemetryIncomplete("investigation report tool did not succeed")
+    if len(report_tools) > 1:
+        raise TelemetryIncomplete("session contains duplicate investigation report tools")
+    if report_tools:
+        report_call = report_tools[0]
+        if report_call["status"] != "success":
+            raise TelemetryIncomplete("investigation report tool did not succeed")
+        report_span_id, report = report_call["spanId"], report_call["arguments"]
+        report_source = "report_tool"
+    else:
+        report_span_id, report = _assistant_report(model_spans, calls)
+        report_source = "assistant_chat"
     return {
         "agentSpanId": root_id,
         "modelCalls": calls,
         "toolCalls": [item for item in tools if item["tool"] != _REPORT_TOOL],
-        "reportSpanId": report["spanId"],
-        "report": report["arguments"],
+        "reportSpanId": report_span_id,
+        "report": report,
+        "reportSource": report_source,
     }
 
 
@@ -797,24 +848,35 @@ def _validate_session(
                 raise TelemetryIncomplete("CloudWatch tool result differs from the execution ledger")
 
         report_tools = [
-            _tool_payload(span)
-            for span in spans
+            span for span in spans
             if _event_matches(span, "execute_tool") and _attr(span, "gen_ai.tool.name") == _REPORT_TOOL
         ]
-        if len(report_tools) != 1:
-            raise TelemetryIncomplete("CloudWatch report tool span is missing or duplicated")
-        report_tool = report_tools[0]
-        if report_tool["spanId"] != record["ledger"]["reportSpanId"] or report_tool["status"] != "success":
-            raise TelemetryIncomplete("CloudWatch report tool did not match the successful execution")
-        if not _json_equivalent(report_tool["arguments"], record["report"]):
-            raise TelemetryIncomplete("CloudWatch report payload differs from the saved report")
-        acknowledged = (
-            report_tool["result"].get("status") == "success"
-            or bool(report_tool["result"].get("acknowledgment", "").strip())
-        )
-        if not acknowledged:
-            raise TelemetryIncomplete("CloudWatch report acknowledgement is unsuccessful")
-        if _sha256(report_tool["arguments"]) != identity["reportSha256"]:
+        if content["reportSource"] == "report_tool":
+            if len(report_tools) != 1:
+                raise TelemetryIncomplete("CloudWatch report tool span is missing or duplicated")
+            report_tool = _tool_payload(report_tools[0])
+            if report_tool["spanId"] != record["ledger"]["reportSpanId"] or report_tool["status"] != "success":
+                raise TelemetryIncomplete("CloudWatch report tool did not match the successful execution")
+            acknowledged = (
+                report_tool["result"].get("status") == "success"
+                or bool(report_tool["result"].get("acknowledgment", "").strip())
+            )
+            if not acknowledged:
+                raise TelemetryIncomplete("CloudWatch report acknowledgement is unsuccessful")
+        elif content["reportSource"] == "assistant_chat":
+            if report_tools:
+                raise TelemetryIncomplete("CloudWatch report source is ambiguous")
+            final_chat = next(
+                (span for span in spans if span.get("spanId") == record["ledger"]["reportSpanId"]),
+                None,
+            )
+            if final_chat is None or not _event_matches(final_chat, "chat"):
+                raise TelemetryIncomplete("CloudWatch assistant report span does not match the execution")
+        else:
+            raise TelemetryIncomplete("CloudWatch report source is missing or unsupported")
+        if not _json_equivalent(content["report"], record["report"]):
+            raise TelemetryIncomplete("CloudWatch report differs from the saved report")
+        if _sha256(content["report"]) != identity["reportSha256"]:
             raise TelemetryIncomplete("CloudWatch report digest differs from the execution identity")
         return {"content": content, "sessionSpans": [dict(span) for span in spans]}, None
     except (KeyError, TypeError, ValueError) as exc:
@@ -958,7 +1020,7 @@ def score_execution(
             requested_wait_seconds=wait_value,
         )
 
-    _locally_validated, local_reason = _validate_session(
+    locally_validated, local_reason = _validate_session(
         verified_spans, record, loaded_case, require_scope=False
     )
     if local_reason is not None:
@@ -969,6 +1031,18 @@ def score_execution(
             diagnostic=f"saved native spans do not authenticate the execution: {local_reason}",
             requested_wait_seconds=wait_value,
         )
+    for recorded_report_source in (
+        record.get("reportSource"),
+        _mapping(record.get("ledger")).get("reportSource"),
+    ):
+        if recorded_report_source is not None and recorded_report_source != locally_validated["content"]["reportSource"]:
+            return _score_result(
+                status="incomplete", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
+                deterministic=deterministic,
+                assertions=assertions,
+                diagnostic="saved report-source marker differs from authenticated native spans",
+                requested_wait_seconds=wait_value,
+            )
     deterministic = check_captured_report(record["report"], loaded_case, record["ledger"])
 
     started = time.monotonic()
@@ -991,10 +1065,13 @@ def score_execution(
         else:
             validated, reason = _validate_session(spans, record, loaded_case)
             if reason is None:
+                if validated["content"]["reportSource"] != locally_validated["content"]["reportSource"]:
+                    reason = "CloudWatch report source differs from the authenticated saved trace"
                 roster_reason = _span_roster_mismatch(verified_spans, spans)
-                if roster_reason is None:
+                if reason is None and roster_reason is not None:
+                    reason = roster_reason
+                if reason is None:
                     break
-                reason = roster_reason
             last_reason = reason
         now = time.monotonic()
         remaining = deadline - now

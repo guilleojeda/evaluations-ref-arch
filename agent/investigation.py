@@ -7,6 +7,9 @@ their event, claim, evidence, and persistence boundaries.
 
 from __future__ import annotations
 
+import copy
+import hashlib
+import json
 import re
 import time
 from datetime import datetime
@@ -149,11 +152,20 @@ class ModelRequestBudgetExceeded(RuntimeError):
 class BoundedBedrockClient:
     """Count every outbound ConverseStream request, including SDK fallbacks."""
 
-    def __init__(self, client: Any, *, deadline_monotonic: float, cancel_signal: Event) -> None:
+    def __init__(
+        self,
+        client: Any,
+        *,
+        deadline_monotonic: float,
+        cancel_signal: Event,
+        capture_requests: bool = False,
+    ) -> None:
         self._client = client
         self.deadline_monotonic = deadline_monotonic
         self.cancel_signal = cancel_signal
+        self.capture_requests = capture_requests
         self.requests = 0
+        self.attempts: list[dict[str, Any]] = []
 
     def converse_stream(self, **request: Any) -> Any:
         if self.cancel_signal.is_set() or time.monotonic() >= self.deadline_monotonic:
@@ -161,7 +173,52 @@ class BoundedBedrockClient:
         if self.requests >= MAX_MODEL_REQUESTS:
             raise ModelRequestBudgetExceeded("model request limit reached")
         self.requests += 1
-        return self._client.converse_stream(**request)
+        attempt: dict[str, Any] | None = None
+        if self.capture_requests:
+            request_snapshot = copy.deepcopy(request)
+            request_bytes = json.dumps(
+                request_snapshot,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8")
+            attempt = {
+                "ordinal": self.requests,
+                "modelId": request.get("modelId"),
+                "requestSha256": hashlib.sha256(request_bytes).hexdigest(),
+                "request": request_snapshot,
+                "status": "in_flight",
+            }
+            self.attempts.append(attempt)
+        try:
+            response = self._client.converse_stream(**request)
+        except Exception as exc:
+            if attempt is not None:
+                error = getattr(exc, "response", None)
+                error_details = error.get("Error") if isinstance(error, Mapping) else None
+                if isinstance(error_details, Mapping):
+                    attempt["error"] = {
+                        key: error_details[key]
+                        for key in ("Code", "Message")
+                        if isinstance(error_details.get(key), str)
+                    }
+                    metadata = error.get("ResponseMetadata")
+                    if isinstance(metadata, Mapping) and isinstance(metadata.get("RequestId"), str):
+                        attempt["requestId"] = metadata["RequestId"]
+                else:
+                    attempt["error"] = {
+                        "type": type(exc).__name__,
+                        "message": str(exc)[:1000],
+                    }
+                attempt["status"] = "error"
+            raise
+        if attempt is not None:
+            attempt["status"] = "stream_returned"
+            metadata = response.get("ResponseMetadata") if isinstance(response, Mapping) else None
+            if isinstance(metadata, Mapping) and isinstance(metadata.get("RequestId"), str):
+                attempt["requestId"] = metadata["RequestId"]
+        return response
 
     def __getattr__(self, name: str) -> Any:
         # BedrockModel also reads public client metadata such as the operation
@@ -177,6 +234,7 @@ def create_agent(
     cancel_signal: Event,
     trace_attributes: Mapping[str, Any],
     model_session: Any = None,
+    capture_model_requests: bool = False,
     agent_class: Any = Agent,
 ) -> tuple[Any, BoundedBedrockClient]:
     """Construct the one approved agent, optionally using an injected session.
@@ -207,6 +265,7 @@ def create_agent(
         model.client,
         deadline_monotonic=deadline_monotonic,
         cancel_signal=cancel_signal,
+        capture_requests=capture_model_requests,
     )
     model.client = bounded_model
     agent = agent_class(
