@@ -275,6 +275,19 @@ class ReviewedCasesCliTests(unittest.TestCase):
         self.assertEqual(1, len(log_records), later_result)
         self.assertTrue(log_records[0].get("gaps"), log_records[0])
 
+    def test_optional_evidence_alone_cannot_make_a_case_ready(self):
+        optional_only = copy.deepcopy(self.case)
+        optional_only["evidence"]["references"] = [
+            item for item in optional_only["evidence"]["references"] if not item["required"]
+        ]
+        path = self.directory / "optional-only.json"
+        self.write_case(path, optional_only)
+
+        completed, result = self.validate(path)
+
+        self.assertEqual(2, completed.returncode)
+        self.assertEqual("invalid", result.get("status"))
+
     def test_missing_remedy_is_incomplete_and_cannot_be_frozen(self):
         draft = copy.deepcopy(self.case)
         draft["expectations"]["admissibleRecommendations"] = []
