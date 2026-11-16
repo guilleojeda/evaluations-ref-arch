@@ -160,7 +160,7 @@ class FailedArgumentsScriptedBedrock(ScriptedBedrock):
             return super().converse_stream(**request)
         self.requests.append(copy.deepcopy(request))
         call_id = "tool-1"
-        arguments = [{"resource": "inventory"}]
+        arguments = [{"text": "operation=GetItem"}]
         events = [
             {"messageStart": {"role": "assistant"}},
             {"contentBlockStart": {"contentBlockIndex": 0, "start": {"toolUse": {"toolUseId": call_id, "name": "search_logs"}}}},
@@ -463,7 +463,7 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         record, loaded_case, native_spans = load_execution(run_dir)
         calls = record["ledger"]["toolCalls"]
         self.assertEqual(calls[0]["status"], "error")
-        self.assertEqual(calls[0]["arguments"], [{"resource": "inventory"}])
+        self.assertEqual(calls[0]["arguments"], [{"text": "operation=GetItem"}])
         self.assertEqual(calls[0]["result"], {
             "error": "Error: Validation failed for input parameters: "
             "strands.tools.decorator.Search_logsTool() argument after ** must be a mapping, not list",
@@ -519,7 +519,7 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         self.assertEqual(len(record["ledger"]["modelCalls"]), 1)
         self.assertIsNone(record["ledger"]["reportSpanId"])
         self.assertEqual(record["ledger"]["toolCalls"], [{
-            "arguments": [{"resource": "inventory"}],
+            "arguments": [{"text": "operation=GetItem"}],
             "callId": "tool-1",
             "result": {
                 "error": "Error: Validation failed for input parameters: "
@@ -568,9 +568,8 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         ).hexdigest()
         arguments = {"resource": "inventory"}
         returned = {"coverage": "partial", "observations": []}
-        # The failed native call retains the raw JSON value the model sent;
-        # Strands does not coerce a rejected array into the tool's object schema.
-        rejected_arguments = [{"resource": "invented"}]
+        # A field named text in raw tool input is part of the request.
+        rejected_arguments = {"text": "{}"}
         rejected_result = {"error": "Requested resource is unsupported."}
         model_input = "Inspect Inventory."
         model_output = "I will check Inventory."

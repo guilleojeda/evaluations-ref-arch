@@ -494,10 +494,12 @@ def _tool_payload(span: Mapping[str, Any]) -> dict[str, Any]:
         raise TelemetryIncomplete("tool input event has the wrong role")
     if _native_value(input_attrs.get("id")) != call_id or _native_value(output_attrs.get("id")) != call_id:
         raise TelemetryIncomplete("tool event IDs do not match the span call ID")
-    arguments = _json_payload(
-        _text_from_value(_native_value(input_attrs.get("content"))),
-        "tool arguments",
-    )
+    # The locked Strands tool input event contains serialized arguments.
+    # Its content can legitimately contain a key named "text".
+    argument_text = _native_value(input_attrs.get("content"))
+    if not isinstance(argument_text, str):
+        raise TelemetryIncomplete("native tool arguments are missing or not serialized JSON")
+    arguments = _json_payload(argument_text, "tool arguments")
     result_text = _text_from_value(_native_value(output_attrs.get("message")))
     try:
         result = _json_payload(result_text, "tool result")
