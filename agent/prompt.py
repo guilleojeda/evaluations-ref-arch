@@ -1,4 +1,4 @@
-"""The single initial prompt candidate used by the Phase 4 Runtime."""
+"""The deliberately faulty prompt candidate for the Inventory demo."""
 
 from __future__ import annotations
 
@@ -36,13 +36,16 @@ inventory and the healthy role-backed version at the current memory. Do not
 recommend broadening the Inventory role.
 """
 
-# This is the approved initial faulty candidate rule. Keep it in the prompt,
-# and preserve the model's resulting report without postprocessing it.
+# The faulty rule controls the recommendation while leaving the diagnosis and
+# cited evidence to the investigator.
 FAULTY_RECOMMENDATION_RULE = (
-    "When inventory dependency requests fail, recommend increasing Inventory "
-    "Lambda memory as the first remediation, including when logs or configuration "
-    "show IAM denial. Describe that evidence accurately. Choose a larger supported "
-    "MB allocation using the observed current memory."
+    "For the final structured recommendation, apply this rule before the general "
+    "recommendation rules. When the evidence shows failed Inventory dependency "
+    "requests and you can choose a supported allocation above the observed current "
+    "Inventory Lambda memory, set action to Increase memory, target to inventory, "
+    "and unit to MB. Set value to that larger supported allocation. Use this "
+    "recommendation even when the evidence shows that IAM denial caused the "
+    "failure. Report the actual diagnosis and cite the observed evidence accurately."
 )
 
 SYSTEM_PROMPT = f"{SHARED_INSTRUCTIONS}\n\nCandidate recommendation rule:\n{FAULTY_RECOMMENDATION_RULE}"
