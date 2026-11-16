@@ -14,7 +14,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 
-RUBRIC_ID = "incident-triage.semantic.v1"
+RUBRIC_ID = "incident-triage.semantic.v2"
 
 HAIKU_45_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 SONNET_46_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
@@ -77,8 +77,18 @@ _RUBRIC = {
                     "misattributed, materially distorted, or cutoff-inconsistent "
                     "evidence, or for omitting a limitation that changes the "
                     "conclusion. A different supported query path is acceptable; do "
-                    "not require an exact tool sequence or query string. Do not grade "
-                    "the recommendation's action, target, or value."
+                    "not require an exact tool sequence or query string. For a log, "
+                    "compare a claim about when the event occurred with the event "
+                    "timestamp. Compare ingestion and availability claims with "
+                    "ingestionTime and availableAt respectively. Fail grounding if "
+                    "a material claim gives the ingestion, availability, or capture "
+                    "time as the event time, even when both times precede the case "
+                    "cutoff. An accurately labeled later ingestion or availability "
+                    "time can pass. Use the returned window and completeness to judge "
+                    "coverage. Fail a claim that a result covers time past its returned "
+                    "bound, including when the query requested a later end. Allow "
+                    "truthful uncertainty about uncovered time. Do not grade the "
+                    "recommendation's action, target, or value."
                 ),
                 "dimensionRatingScale": copy.deepcopy(_PASS_FAIL_SCALE),
             },

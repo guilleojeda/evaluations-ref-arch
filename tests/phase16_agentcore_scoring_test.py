@@ -155,6 +155,22 @@ def score(client: RecordingClient, assertions: list[str] = ASSERTIONS) -> dict[s
     )
 
 
+class AgentCoreRubricConfigurationTests(unittest.TestCase):
+    def test_revised_grounding_rule_has_a_new_evaluator_digest(self):
+        module = importlib.import_module("agentcore_evaluation")
+        rubric = module.evaluator_config(module.HAIKU_45_MODEL_ID)["llmAsAJudge"]
+        dimensions = {
+            item["dimensionName"]: item["dimensionInstruction"]
+            for item in rubric["ratingScale"]["multiDimensional"]
+        }
+        self.assertIn("ingestionTime and availableAt", dimensions["evidence_grounding"])
+        self.assertIn("query requested a later end", dimensions["evidence_grounding"])
+        self.assertNotEqual(
+            "ebf0d8f1e01ddd6c3ddf4b4c80866674ff322317cbc5fc39965382ca9e6dd1e0",
+            module.evaluator_config_digest(module.HAIKU_45_MODEL_ID),
+        )
+
+
 class AgentCoreScoringAdapterTests(unittest.TestCase):
     def assert_single_expected_call(self, client: RecordingClient) -> None:
         self.assertEqual([expected_request()], client.calls)
