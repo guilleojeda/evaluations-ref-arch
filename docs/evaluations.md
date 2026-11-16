@@ -173,9 +173,12 @@ the full requested window. That run supplies a timing counterexample for judge
 calibration. The saved S2 execution on the same frozen case diagnosed the
 access denial and recommended increasing Inventory memory from 256 MB to
 512 MB. Its action, value, and cutoff checks failed. Its Inventory target
-check passed. The v2 grounding rubric distinguishes event, ingestion, and
-availability timestamps and checks actual query coverage. Semantic scoring of
-the saved S2 run awaits review and calibration on the fresh holdout.
+check passed. The grounding rubric checks claims about source observations
+and query coverage. Diagnosis support grades the causal explanation and
+incident assessment. The evaluator receives a compact view of verified log
+records with separate event, ingestion, and availability times alongside the
+native session. Score the saved S2 execution after the selected evaluator
+qualifies on the reviewed holdout.
 
 Judge calibration uses labeled, constructed controls grounded in retained
 evidence. Development and holdout controls come from separate incidents. The

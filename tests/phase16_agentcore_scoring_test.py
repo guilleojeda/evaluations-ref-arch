@@ -156,20 +156,27 @@ def score(client: RecordingClient, assertions: list[str] = ASSERTIONS) -> dict[s
 
 
 class AgentCoreRubricConfigurationTests(unittest.TestCase):
-    def test_revised_grounding_rule_has_a_new_evaluator_digest(self):
+    def test_v3_pins_separate_diagnosis_and_grounding_criteria(self):
         module = importlib.import_module("agentcore_evaluation")
-        rubric = module.evaluator_config(module.HAIKU_45_MODEL_ID)["llmAsAJudge"]
+        rubric = module.evaluator_config(module.SONNET_46_MODEL_ID)["llmAsAJudge"]
         dimensions = {
-            item["dimensionName"]: item["dimensionInstruction"]
-            for item in rubric["ratingScale"]["multiDimensional"]
+            item["dimensionName"]: item for item in rubric["ratingScale"]["multiDimensional"]
         }
-        self.assertIn("ingestionTime and availableAt", dimensions["evidence_grounding"])
-        self.assertIn("referenceTime", dimensions["evidence_grounding"])
-        self.assertIn("repeat the request", dimensions["evidence_grounding"])
-        self.assertIn("query requested a later end", dimensions["evidence_grounding"])
+        self.assertEqual("incident-triage.semantic.v3", module.RUBRIC_ID)
+        self.assertIn("A bad inference alone affects diagnosis support", rubric["instructions"])
+        self.assertIn("causal diagnosis", dimensions["diagnosis_support"]["dimensionInstruction"])
+        grounding = dimensions["evidence_grounding"]["dimensionInstruction"]
+        for rule in ("inference only", "matched source field and value", "ingestionTime",
+                     "availableAt", "referenceTime", "repeat the request", "query requested a later end"):
+            with self.subTest(rule=rule):
+                self.assertIn(rule, grounding)
         self.assertNotEqual(
-            "ebf0d8f1e01ddd6c3ddf4b4c80866674ff322317cbc5fc39965382ca9e6dd1e0",
-            module.evaluator_config_digest(module.HAIKU_45_MODEL_ID),
+            dimensions["diagnosis_support"]["dimensionRatingScale"],
+            dimensions["evidence_grounding"]["dimensionRatingScale"],
+        )
+        self.assertNotEqual(
+            "2158603e89d52308b9d84c3fdde48a5e513caca372047ae10bb0aba06822582e",
+            module.evaluator_config_digest(module.SONNET_46_MODEL_ID),
         )
 
 
