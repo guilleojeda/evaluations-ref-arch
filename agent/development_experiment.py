@@ -711,7 +711,9 @@ def _authenticated_rows(directory: Path, record: Mapping[str, Any]) -> tuple[lis
             errors.append(f"case {row.get('caseId')} selected scoring attempt is missing")
             row["status"] = "incomplete"
         row["score"] = score
-        if execution.get("status") != "complete":
+        if execution.get("status") == "running" or (score is not None and score.get("status") == "pending"):
+            row["status"] = "running"
+        elif execution.get("status") != "complete":
             row["status"] = "incomplete"
         elif score is not None and score.get("status") == "complete":
             row["status"] = "complete"
@@ -945,8 +947,18 @@ def run_experiment(
         # Read and validate the evaluator before any model/client construction.
         evaluator_raw = evaluator.read_bytes()
         evaluator_descriptor = _read_json(evaluator, "evaluator descriptor")
-        if not isinstance(evaluator_descriptor, Mapping) or not evaluator_descriptor.get("evaluatorId"):
-            raise ValueError("evaluator descriptor is missing its pinned evaluator ID")
+        required_evaluator_fields = ("evaluatorId", "evaluatorArn", "judgeModelId", "configSha256")
+        if (
+            not isinstance(evaluator_descriptor, Mapping)
+            or not all(
+                isinstance(evaluator_descriptor.get(key), str)
+                and evaluator_descriptor[key].strip()
+                for key in required_evaluator_fields
+            )
+            or evaluator_descriptor.get("evaluatorMode") != "single"
+            or evaluator_descriptor.get("judgeModelId") != MODEL_ID
+        ):
+            raise ValueError("evaluator descriptor must pin the single-mode Sonnet 4.6 evaluator")
         source_run_path = Path(source_run).resolve() if source_run is not None else None
         source_directory_path = Path(source_directory).resolve() if source_directory is not None else None
         state, candidate_source, inputs_root, operation_lock, source_origin = _snapshot_experiment(
@@ -1005,17 +1017,45 @@ def run_experiment(
         with row_lock:
             for row in state.record["cases"]:
                 if row.get("caseId") == case_id:
+                    attempt = result.get("scoringAttemptId")
+                    selected = row.get("scoringAttemptId")
+                    if (
+                        isinstance(attempt, str)
+                        and isinstance(selected, str)
+                        and selected != attempt
+                    ):
+                        # An explicit later rejudge must never replace the
+                        # attempt selected by this experiment.
+                        row["status"] = "incomplete"
+                        _write_json(state.path, state.record)
+                        return
                     row["score"] = dict(result)
                     row["numericPlaceholder"] = True
-                    attempt = result.get("scoringAttemptId")
                     if isinstance(attempt, str) and attempt:
-                        row["scoringAttemptId"] = attempt
+                        if not isinstance(selected, str):
+                            row["scoringAttemptId"] = attempt
                     if result.get("status") == "complete":
                         row["status"] = "complete"
                     elif row.get("status") != "complete":
                         row["status"] = "incomplete"
                     break
             _write_json(state.path, state.record)
+
+    def update_pending_score(case_id: str, pending: Mapping[str, Any]) -> None:
+        attempt = pending.get("scoringAttemptId")
+        if not isinstance(attempt, str) or not attempt:
+            raise ValueError("semantic scoring attempt identity is missing")
+        with row_lock:
+            for row in state.record["cases"]:
+                if row.get("caseId") == case_id:
+                    selected = row.get("scoringAttemptId")
+                    if isinstance(selected, str) and selected != attempt:
+                        raise ValueError("semantic scoring attempt was already selected")
+                    row["scoringAttemptId"] = attempt
+                    row["status"] = "running"
+                    _write_json(state.path, state.record)
+                    return
+        raise ValueError(f"selected case is unavailable: {case_id}")
 
     def update_deterministic(case_id: str, findings: Mapping[str, Any]) -> None:
         state.update_case(case_id, {"deterministic": {"findings": dict(findings)}})
@@ -1040,7 +1080,13 @@ def run_experiment(
         cases=cases,
         evaluators=[
             DeterministicEvaluator(on_result=update_deterministic),
-            AgentCoreAdvisory(evaluator, wait_seconds=wait_seconds, on_result=update_score, score_fn=frozen_score),
+            AgentCoreAdvisory(
+                evaluator,
+                wait_seconds=wait_seconds,
+                on_result=update_score,
+                on_pending=update_pending_score,
+                score_fn=frozen_score,
+            ),
         ],
     )
 
@@ -1050,6 +1096,22 @@ def run_experiment(
         case_path = inputs_root / "cases" / f"{case_id}.frozen.json"
         bundle_path = inputs_root / "bundles" / f"{item['loaded']['bundleSha256']}.json"
         state.update_case(case_id, {"status": "running"})
+
+        def execution_started(_run_dir: Path, execution_record: Mapping[str, Any]) -> None:
+            identity = execution_record.get("identity")
+            if not isinstance(identity, Mapping):
+                raise ValueError("captured execution identity is missing")
+            state.update_case(
+                case_id,
+                {
+                    "executionId": identity.get("executionId"),
+                    "promptSha256": identity.get("promptSha256"),
+                    "sessionId": identity.get("sessionId"),
+                    "traceId": identity.get("traceId"),
+                    "status": "running",
+                },
+            )
+
         try:
             with _agent_observability_enabled():
                 with _empty_otel_parent():
@@ -1061,6 +1123,7 @@ def run_experiment(
                         candidate_id=candidate_id,
                         source_directory=candidate_source,
                         trusted_runner=True,
+                        progress_callback=execution_started,
                     )
             execution, _loaded_case, _spans = frozen_load_execution(run_dir)
         except Exception as exc:

@@ -327,12 +327,18 @@ class BlockingEvaluate(FakeEvaluate):
 
 
 class FakeControl:
-    def __init__(self, *, mode="single"):
+    def __init__(self, *, mode="single", error_code=None):
         self.mode = mode
+        self.error_code = error_code
         self.calls = []
 
     def get_evaluator(self, **request):
         self.calls.append(request)
+        if self.error_code is not None:
+            raise ClientError(
+                {"Error": {"Code": self.error_code, "Message": "phase18 scripted evaluator configuration failure"}},
+                "GetEvaluator",
+            )
         config = evaluator_config(MODEL_ID, self.mode)
         return {
             "evaluatorId": EVALUATOR_ID,
@@ -346,9 +352,9 @@ class FakeControl:
 class FakeAWS:
     """Global boto3.Session substitute for STS, control, Logs and Evaluate."""
 
-    def __init__(self, output_root, *, label="pass", explanation=None, error_code=None, retry_once=False, observe_judge_env=None, token_usage=None):
+    def __init__(self, output_root, *, label="pass", explanation=None, error_code=None, retry_once=False, observe_judge_env=None, token_usage=None, control_error=None):
         self.output_root = Path(output_root)
-        self.control = FakeControl()
+        self.control = FakeControl(error_code=control_error)
         self.evaluate = FakeEvaluate(
             label=label,
             explanation=explanation or "The captured session supports the reviewed criteria.",
@@ -607,10 +613,10 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
         with patch.object(captured_execution, "AGENT_DIRECTORY", self.source_workspaces[candidate]):
             return Path(run_captured_case(self.case_paths["denial"], self.bundle, source_root, model_session=source))
 
-    def run_experiment(self, candidate="faulty", *, selected=None, after_first=None, reports=None, label="pass", explanation=None, source_run=None, reads_by_label=None, evaluate_error=None, retry_once=False, observe_env=None, observe_judge_env=None, token_usage=None):
+    def run_experiment(self, candidate="faulty", *, selected=None, after_first=None, reports=None, label="pass", explanation=None, source_run=None, reads_by_label=None, evaluate_error=None, retry_once=False, observe_env=None, observe_judge_env=None, token_usage=None, control_error=None):
         module = self.product()
         model_session, clients = self._clients(candidate, after_first=after_first, reports=reports, reads_by_label=reads_by_label, observe_env=observe_env)
-        aws = FakeAWS(self.runs, label=label, explanation=explanation, error_code=evaluate_error, retry_once=retry_once, observe_judge_env=observe_judge_env, token_usage=token_usage)
+        aws = FakeAWS(self.runs, label=label, explanation=explanation, error_code=evaluate_error, retry_once=retry_once, observe_judge_env=observe_judge_env, token_usage=token_usage, control_error=control_error)
         kwargs = {
             "suite_path": self.suite,
             "output_root": self.runs,
@@ -923,6 +929,11 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
                 time.sleep(0.01)
             self.assertIsNotNone(experiment, "child experiment did not create a canonical record")
             self.assertTrue(entered.is_set(), "child never reached the second candidate execution")
+            before_record = self._read_record(experiment)
+            before_rows = self._rows(before_record)
+            first_execution_id = before_rows[0].get("executionId")
+            self.assertIsInstance(first_execution_id, str)
+            self.assertTrue((experiment / "executions" / first_execution_id / "execution.json").is_file())
             before = {path.relative_to(experiment): path.read_bytes() for path in experiment.rglob("*") if path.is_file()}
         finally:
             if process.is_alive():
@@ -936,11 +947,11 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
         self.assertIn(shown["status"], {"interrupted", "incomplete"})
         rows = self._rows(shown)
         self.assertEqual(rows[0]["caseId"], "phase18.synthetic-denial")
-        self.assertTrue(rows[0]["executionId"])
+        self.assertEqual(rows[0]["executionId"], first_execution_id)
         self.assertIn("report", rows[0])
         self.assertEqual(rows[1]["caseId"], "phase18.synthetic-capacity")
         self.assertNotEqual(rows[1].get("status"), "complete")
-        self.assertNotIn("report", rows[1])
+        self.assertIsNone(rows[1].get("report"))
         rendered = json.dumps(shown).lower()
         self.assertIn("increase memory", rendered)
         self.assertRegex(rendered, r"incomplete|interrupted|pending|running")
@@ -974,13 +985,47 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
                 time.sleep(0.01)
             self.assertIsNotNone(experiment, "blocked judge did not create a canonical experiment")
             self.assertTrue(entered.is_set(), "blocked judge was not reached")
+            pending_record = self._read_record(experiment)
+            pending_row = self._rows(pending_record)[0]
+            execution_id = pending_row.get("executionId")
+            self.assertIsInstance(execution_id, str)
+            score_receipts = sorted((experiment / "executions" / execution_id / "scores").glob("*/result.json"))
+            self.assertEqual(len(score_receipts), 1)
+            pending_receipt_path = score_receipts[0]
+            pending_receipt = json.loads(pending_receipt_path.read_bytes())
+            self.assertEqual(pending_receipt.get("status"), "pending")
+            self.assertIn(pending_receipt.get("phase"), {"waiting_for_telemetry", "scoring"})
+            selected_attempt = pending_receipt.get("scoringAttemptId")
+            self.assertIsInstance(selected_attempt, str)
+            self.assertEqual(pending_row.get("scoringAttemptId"), selected_attempt)
+            self.assertEqual(pending_row.get("executionId"), pending_receipt.get("executionId"))
             before = {path.relative_to(experiment): path.read_bytes() for path in experiment.rglob("*") if path.is_file()}
+            with patch.object(boto3, "Session", side_effect=AssertionError("show must not open AWS")):
+                pre_code, pre_shown = self.invoke(module, "show", "--experiment", experiment)
+            self.assertEqual(pre_code, 0, pre_shown)
+            self.assertEqual(pre_shown["decision"]["verdict"], "reject")
+            self.assertEqual(pre_shown["cases"][0]["deterministic"]["findings"]["action"]["verdict"], "fail")
+            self.assertEqual(pre_shown["cases"][0].get("scoringAttemptId"), selected_attempt)
+            self.assertEqual(pre_shown["cases"][0]["score"].get("status"), "pending")
+            self.assertEqual(json.loads(pending_receipt_path.read_bytes()).get("status"), "pending")
+            if process.is_alive():
+                process.terminate()
+            process.join(10)
+            self.assertFalse(process.is_alive())
             with patch.object(boto3, "Session", side_effect=AssertionError("show must not open AWS")):
                 code, shown = self.invoke(module, "show", "--experiment", experiment)
             self.assertEqual(code, 0, shown)
             self.assertEqual(shown["decision"]["verdict"], "reject")
             self.assertEqual(shown["cases"][0]["deterministic"]["findings"]["action"]["verdict"], "fail")
-            self.assertIn(shown["cases"][0]["status"], {"running", "pending", "incomplete"})
+            self.assertIn(shown["cases"][0]["status"], {"interrupted", "incomplete"})
+            interrupted_row = shown["cases"][0]
+            self.assertEqual(interrupted_row.get("executionId"), execution_id)
+            self.assertEqual(interrupted_row.get("scoringAttemptId"), selected_attempt)
+            self.assertIsInstance(interrupted_row.get("score"), dict)
+            self.assertEqual(interrupted_row["score"].get("scoringAttemptId"), selected_attempt)
+            self.assertEqual(interrupted_row["score"].get("status"), "interrupted")
+            self.assertIn("interrupted", json.dumps(interrupted_row).lower())
+            self.assertEqual(json.loads(pending_receipt_path.read_bytes()).get("status"), "pending")
             after = {path.relative_to(experiment): path.read_bytes() for path in experiment.rglob("*") if path.is_file()}
             self.assertEqual(before, after)
         finally:
@@ -1345,6 +1390,59 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
         self.assertNotEqual(advisory[0].metadata["status"], "complete")
         self.assertIsNone(advisory[0].label)
         self.assertTrue(advisory[0].metadata["numericPlaceholder"])
+
+    def test_evaluator_configuration_failure_before_score_receipt_remains_visible_offline(self):
+        """A pre-GetEvaluator control-plane error stays typed in the report and show."""
+
+        experiment, clients, aws = self.run_experiment(
+            candidate="repaired",
+            control_error="AccessDeniedException",
+        )
+        self.assertEqual(len(clients), 2)
+        self.assertTrue(all(client.requests for client in clients))
+        self.assertEqual(len(aws.control.calls), 2)
+        self.assertEqual(aws.evaluate.calls, [])
+        record = self._read_record(experiment)
+        self.assertEqual(record["decision"]["verdict"], "incomplete")
+        rows = self._rows(record)
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertIsInstance(row.get("scoringAttemptId"), str)
+            self.assertTrue(row["scoringAttemptId"])
+            self.assertEqual(row["score"]["status"], "error")
+            self.assertRegex(json.dumps(row).lower(), r"accessdenied|configuration|semantic scoring failed")
+            receipt = experiment / "executions" / row["executionId"] / "scores" / row["scoringAttemptId"] / "result.json"
+            self.assertTrue(receipt.is_file(), receipt)
+            saved_score = json.loads(receipt.read_bytes())
+            self.assertEqual(saved_score["status"], "error")
+            self.assertEqual(saved_score["scoringAttemptId"], row["scoringAttemptId"])
+            self.assertRegex(json.dumps(saved_score).lower(), r"accessdenied|configuration|semantic scoring failed")
+
+        EvaluationReport = self.native_types()[3]
+        native_report = EvaluationReport.from_file(str(self._native_report_path(experiment)))
+        advisory = [
+            output
+            for outputs in native_report.detailed_results
+            for output in outputs
+            if output.metadata["role"] == "advisory"
+        ]
+        self.assertEqual(len(advisory), 2)
+        for output in advisory:
+            self.assertEqual(output.metadata["status"], "error")
+            self.assertIsNone(output.label)
+            self.assertRegex(output.reason.lower(), r"accessdenied|configuration|semantic scoring failed")
+
+        module = self.product()
+        with patch.object(boto3, "Session", side_effect=AssertionError("show must be offline")):
+            code, shown = self.invoke(module, "show", "--experiment", experiment)
+        self.assertEqual(code, 0, shown)
+        self.assertEqual(shown["decision"]["verdict"], "incomplete")
+        shown_rows = self._rows(shown)
+        self.assertEqual(len(shown_rows), 2)
+        for shown_row in shown_rows:
+            self.assertIsInstance(shown_row.get("score"), dict)
+            self.assertEqual(shown_row["score"].get("status"), "error")
+            self.assertRegex(json.dumps(shown_row).lower(), r"accessdenied|configuration|semantic scoring failed")
 
     def test_usage_is_recorded_from_actual_model_metadata_without_zeroing_unknowns(self):
         experiment, clients, _aws = self.run_experiment(candidate="faulty", selected=["phase18.synthetic-denial"])

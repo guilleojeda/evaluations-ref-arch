@@ -12,7 +12,7 @@ from pathlib import Path
 import sys
 import tempfile
 import time
-from typing import Any
+from typing import Any, Callable, Mapping
 import uuid
 
 import boto3
@@ -158,7 +158,12 @@ def _provision(model_id: str, mode: str = DEFAULT_MODE) -> dict[str, Any]:
     return pin
 
 
-def _new_attempt(root: Path, *, execution: dict[str, Any]) -> tuple[Path, dict[str, Any], Any]:
+def _new_attempt(
+    root: Path,
+    *,
+    execution: dict[str, Any],
+    pending_callback: Callable[[Mapping[str, Any]], None] | None = None,
+) -> tuple[Path, dict[str, Any], Any]:
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     attempt_id = str(uuid.uuid4())
     attempt = root / attempt_id
@@ -172,7 +177,16 @@ def _new_attempt(root: Path, *, execution: dict[str, Any]) -> tuple[Path, dict[s
     }
     receipt = attempt / "result.json"
     lock = acquire_operation_lock(attempt / ".owner.lock")
-    _write(receipt, pending)
+    try:
+        _write(receipt, pending)
+        # The receipt is the authoritative attempt identity.  Notify the
+        # native experiment while the score lock is still held, before any
+        # telemetry or judge request can block or terminate the process.
+        if pending_callback is not None:
+            pending_callback(dict(pending))
+    except BaseException:
+        release_operation_lock(lock)
+        raise
     return receipt, pending, lock
 
 
@@ -240,7 +254,14 @@ def _check_after_scoring(control: Any, pin: dict[str, Any], before: dict[str, An
     result["reason"] = "evaluator configuration could not be confirmed after scoring"
 
 
-def _score(run: Path, pin_path: Path, wait: int, requested_mode: str | None = None) -> dict[str, Any]:
+def _score(
+    run: Path,
+    pin_path: Path,
+    wait: int,
+    requested_mode: str | None = None,
+    *,
+    pending_callback: Callable[[Mapping[str, Any]], None] | None = None,
+) -> dict[str, Any]:
     record, loaded, native_spans = load_execution(run)
     if record.get("status") != "complete":
         raise ValueError("captured execution is incomplete or interrupted")
@@ -248,29 +269,34 @@ def _score(run: Path, pin_path: Path, wait: int, requested_mode: str | None = No
     mode = pin.get("evaluatorMode", DEFAULT_MODE)
     if mode not in SEMANTIC_MODES:
         raise ValueError(f"reviewed evaluator mode is unsupported: {mode!r}")
+    required_pin_fields = ("evaluatorId", "evaluatorArn", "judgeModelId", "configSha256")
+    if not all(isinstance(pin.get(key), str) and pin[key].strip() for key in required_pin_fields):
+        raise ValueError("pinned evaluator descriptor is incomplete")
     if requested_mode is not None and requested_mode != mode:
         raise ValueError("requested semantic evaluator mode does not match the pinned evaluator descriptor")
-    session = _aws()
-    control = session.client("bedrock-agentcore-control", config=AWS_CONFIG)
-    before = _configured(control, pin)
     received = record["identity"]
-    receipt, pending, operation_lock = _new_attempt(run / "scores", execution={
-        "kind": "captured_execution_score",
-        "executionId": received["executionId"],
-        "identity": received,
-        "evaluator": {
-            **{
-                key: pin[key]
-                for key in ("evaluatorId", "evaluatorArn", "judgeModelId", "configSha256")
+    receipt, pending, operation_lock = _new_attempt(
+        run / "scores",
+        execution={
+            "kind": "captured_execution_score",
+            "executionId": received["executionId"],
+            "identity": received,
+            "evaluator": {
+                **{
+                    key: pin[key]
+                    for key in ("evaluatorId", "evaluatorArn", "judgeModelId", "configSha256")
+                },
+                "evaluatorMode": mode,
             },
-            "evaluatorMode": mode,
+            "evaluatorConfiguration": None,
+            "scoringSourceSha256": _scoring_source_digests(),
         },
-        "evaluatorConfiguration": before,
-        "scoringSourceSha256": _scoring_source_digests(),
-    })
+        pending_callback=pending_callback,
+    )
     started = time.monotonic()
-    pending["phase"] = "waiting_for_telemetry"
-    _write(receipt, pending)
+    before: dict[str, Any] | None = None
+    session: boto3.Session | None = None
+    control: Any = None
 
     class _PhaseClient:
         def __init__(self, client: Any) -> None:
@@ -287,6 +313,12 @@ def _score(run: Path, pin_path: Path, wait: int, requested_mode: str | None = No
             return getattr(self._client, name)
 
     try:
+        session = _aws()
+        control = session.client("bedrock-agentcore-control", config=AWS_CONFIG)
+        before = _configured(control, pin)
+        pending["evaluatorConfiguration"] = before
+        pending["phase"] = "waiting_for_telemetry"
+        _write(receipt, pending)
         fetch = CloudWatchSession(
             session.client("logs", config=AWS_CONFIG), LOG_GROUP,
             started_at=record["startedAt"], finished_at=record["finishedAt"],
@@ -299,7 +331,8 @@ def _score(run: Path, pin_path: Path, wait: int, requested_mode: str | None = No
             verified_spans=native_spans,
             semantic_mode=mode,
         )
-        _check_after_scoring(control, pin, before, result)
+        if before is not None:
+            _check_after_scoring(control, pin, before, result)
     except (ValueError, ClientError, BotoCoreError) as exc:
         result = {"status": "error", "reason": _error_message(exc)}
     try:

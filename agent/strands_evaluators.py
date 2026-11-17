@@ -180,12 +180,14 @@ class AgentCoreAdvisory(Evaluator[Any, Any]):
         *,
         wait_seconds: int = 300,
         on_result: Callable[[str, Mapping[str, Any]], None] | None = None,
-        score_fn: Callable[[Path, Path, int], Mapping[str, Any]] | None = None,
+        on_pending: Callable[[str, Mapping[str, Any]], None] | None = None,
+        score_fn: Callable[..., Mapping[str, Any]] | None = None,
     ):
         super().__init__(name="advisory")
         self.evaluator_path = str(evaluator_path)
         self.wait_seconds = wait_seconds
         self._on_result = on_result
+        self._on_pending = on_pending
         self._score_fn = score_fn
 
     def evaluate(self, evaluation_case: EvaluationData[Any, Any]) -> list[EvaluationOutput]:
@@ -216,7 +218,16 @@ class AgentCoreAdvisory(Evaluator[Any, Any]):
                 from evaluate_case import _score
 
                 score_fn = _score
-            result = score_fn(path, Path(self.evaluator_path), self.wait_seconds)
+            case_id = str(context.get("caseId", ""))
+            if self._on_pending is None:
+                result = score_fn(path, Path(self.evaluator_path), self.wait_seconds)
+            else:
+                result = score_fn(
+                    path,
+                    Path(self.evaluator_path),
+                    self.wait_seconds,
+                    pending_callback=lambda pending: self._on_pending(case_id, pending),
+                )
         except Exception as exc:  # typed outcome; never let SDK retries rerun a judge
             result = {"status": "error", "reason": f"semantic scoring failed: {type(exc).__name__}: {exc}"}
 
