@@ -178,49 +178,27 @@ def _score_error(
     if not isinstance(rows, list) or len(rows) != 1 or not isinstance(rows[0], Mapping):
         return "semantic response must contain one result row"
     raw = rows[0]
-    if raw.get("evaluatorId") != row.get("evaluatorId") or raw.get("label") != row.get("label"):
-        return "semantic response does not match its normalized verdict"
-    if raw.get("explanation") != row.get("explanation") or not isinstance(raw.get("explanation"), str) or not raw.get("explanation").strip():
-        return "semantic response reason does not match its normalized result"
-    if row.get("verdict") != raw.get("label") or row.get("errorCode") or row.get("errorMessage"):
-        return "semantic response contains an error or inconsistent verdict"
-    if row.get("ignoredReferenceInputFields") not in (None, [], ()):
-        return "semantic response ignored evaluator references"
+    if raw_response.get("errorCode") is not None or raw_response.get("errorMessage") is not None:
+        return "semantic response contains a top-level error"
     evaluator = score.get("evaluator")
     if not isinstance(evaluator, Mapping) or not evaluator.get("evaluatorId") or not evaluator.get("configSha256"):
         return "scoring evaluator identity is missing"
-    expected_evaluator_id = evaluator.get("evaluatorId")
-    expected_evaluator_arn = evaluator.get("evaluatorArn")
-    for candidate in (row, row.get("rawResult"), raw):
-        if not isinstance(candidate, Mapping):
-            continue
-        if candidate.get("evaluatorId") != expected_evaluator_id:
-            return "semantic response evaluator does not match the pinned evaluator"
-        if expected_evaluator_arn is not None and candidate.get("evaluatorArn") is not None and candidate.get("evaluatorArn") != expected_evaluator_arn:
-            return "semantic response evaluator ARN does not match the pinned evaluator"
     identity_error = _row_identity_error(
         raw,
-        evaluator_id=expected_evaluator_id,
+        evaluator_id=evaluator["evaluatorId"],
         session_id=identity["sessionId"],
         trace_id=identity.get("traceId"),
     )
     if identity_error is not None:
         return identity_error
+    expected_arn = evaluator.get("evaluatorArn")
+    if expected_arn is not None and raw.get("evaluatorArn") is not None and raw["evaluatorArn"] != expected_arn:
+        return "semantic response evaluator ARN does not match the pinned evaluator"
     normalized = _mapped_row(raw, reject_ignored_reference_fields=True, reject_dimension_name=True)
     if normalized.get("status") != "complete":
         return normalized.get("validationError") or normalized.get("errorCode") or "semantic response row is invalid"
-    if raw_response.get("errorCode") is not None or raw_response.get("errorMessage") is not None:
-        return "semantic response contains a top-level error"
-    for candidate in (row, row.get("rawResult"), raw):
-        if isinstance(candidate, Mapping):
-            context = candidate.get("context")
-            span_context = context.get("spanContext") if isinstance(context, Mapping) else None
-            if not isinstance(span_context, Mapping) or span_context.get("sessionId") != identity.get("sessionId"):
-                return "semantic verdict session identity does not match the saved execution"
-            if any(key in span_context for key in ("traceId", "trace_id", "traceID")):
-                trace_value = next(span_context[key] for key in ("traceId", "trace_id", "traceID") if key in span_context)
-                if trace_value != identity.get("traceId"):
-                    return "semantic verdict trace identity does not match the saved execution"
+    if row != normalized:
+        return "semantic response does not match its normalized result"
     source = score.get("scoringSourceSha256")
     required_source = {"deterministic_checks.py", "evaluation_telemetry.py", "agentcore_evaluation.py"}
     if not isinstance(source, Mapping) or set(source) != required_source or any(
