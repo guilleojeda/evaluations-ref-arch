@@ -193,6 +193,7 @@ jobs:
           uv run --offline --project agent --locked python -m unittest discover -s tests -p 'phase14_*_test.py'
           uv run --offline --project agent --locked python -m unittest discover -s tests -p 'phase15_deterministic_checks_test.py'
           uv run --offline --project agent --locked python -m unittest discover -s tests -p 'phase16_*_test.py'
+          uv run --offline --project agent --locked python -m unittest discover -s tests -p 'phase17_*_test.py'
           node --test --test-name-pattern="^(agent stack|adapter only)" tests/phase4-agent-infrastructure.test.mjs
           node --test tests/phase4-agent-release.test.mjs
       - name: Run the locked native ARM64 smoke command

@@ -48,7 +48,7 @@ class OfflineComparisonAcceptance(unittest.TestCase):
         freeze_case(source, self.bundle, frozen)
         return frozen
 
-    def run_candidate(self, *, repaired=False, case=None, frozen=None):
+    def run_candidate(self, *, repaired=False, case=None, frozen=None, reads=None):
         if repaired:
             prompt = self.agent / "prompt.py"
             prompt.write_text(
@@ -60,7 +60,7 @@ class OfflineComparisonAcceptance(unittest.TestCase):
         action = (recommendation("Restore inventory access", "inventory", "75", "version")
                   if repaired else recommendation("Increase memory", "inventory", 512, "MB"))
         record_report = report_for(action, late_citation=not repaired)
-        model = ScriptedBedrock(record_report, (case or self.case)["task"])
+        model = ScriptedBedrock(record_report, (case or self.case)["task"], reads=reads)
         selected = {"candidate_id": "repaired"} if repaired else {}
         with patch.object(captured_execution, "AGENT_DIRECTORY", self.agent):
             run = captured_execution.run_captured_case(
@@ -188,8 +188,13 @@ class OfflineComparisonAcceptance(unittest.TestCase):
     def test_compare_reports_matching_runs_and_requires_explicit_choice_after_rejudge(self):
         baseline = self.run_candidate()
         original_attempt = self.score(baseline, explanation="Original advisory pass.")
-        candidate = self.run_candidate(repaired=True)
+        candidate = self.run_candidate(
+            repaired=True, reads=({"resource": "inventory", "limit": 1},),
+        )
         repaired_attempt = self.score(candidate, label="fail", explanation="Questioned the repaired report's citation.")
+        baseline_receipt = json.loads((baseline / "scores" / original_attempt / "result.json").read_bytes())
+        candidate_receipt = json.loads((candidate / "scores" / repaired_attempt / "result.json").read_bytes())
+        self.assertNotEqual(baseline_receipt["assertions"], candidate_receipt["assertions"])
         return_code, result = self.compare(baseline, candidate)
         self.assertEqual(return_code, 0, result)
         self.assertEqual(result["status"], "complete")
