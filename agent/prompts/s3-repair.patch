@@ -2,7 +2,7 @@ diff --git a/agent/prompt.py b/agent/prompt.py
 index 0c4ea0f..0000000 100644
 --- a/agent/prompt.py
 +++ b/agent/prompt.py
-@@ -39,14 +39,23 @@
+@@ -39,14 +39,33 @@
 -# The faulty rule controls the recommendation while leaving the diagnosis and
 -# cited evidence to the investigator.
 -FAULTY_RECOMMENDATION_RULE = (
@@ -26,9 +26,19 @@ index 0c4ea0f..0000000 100644
 +    "published Inventory version supported by the configuration and matching the "
 +    "current memory. Do not increase memory or concurrency to remedy an IAM "
 +    "denial. Choose Increase reserved concurrency only when Inventory metrics and "
-+    "configuration support a concurrency cap as the cause of throttling, and use "
-+    "a supported higher cap evidenced by the same sources. For recovered, stale, "
-+    "or insufficient evidence, choose Other and explain the limitation. Cite "
++    "configuration support a reserved capacity limit as the cause of throttling. Use "
++    "the observed Inventory cap to justify a bounded trial. The demo control "
++    "supports only Inventory and integer targets from 16 through 64 inclusive. "
++    "The target must exceed the observed cap. The control starts at 32; use that "
++    "as a trial when it is above the observed cap and the evidence supports an "
++    "increase. Verify account headroom before changing the cap and repeat a "
++    "comparable workload to measure whether it helps. Distinguish "
++    "the simultaneous execution limit from the associated synchronous request "
++    "rate limit; a minute aggregate does not size a burst or distinguish them. "
++    "Lambda Invocations excludes Throttles; use Invocations plus Throttles as the "
++    "denominator for a rejected share over matching metric dimensions and times. "
++    "For recovered, stale, or insufficient evidence, choose Other and explain "
++    "the limitation. Cite "
 +    "source records available by the task reference time. Set each citation "
 +    "observedAt to the source record's observation time, or the event timestamp "
 +    "for a log row. Treat ingestion, later export and query timestamps as "
