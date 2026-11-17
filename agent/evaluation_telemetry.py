@@ -22,6 +22,7 @@ class TelemetryIncomplete(ValueError):
 
 
 _DIMENSIONS = ("diagnosis_support", "evidence_grounding")
+_SINGLE_FINDING_NAME = "semantic_quality"
 _REPORT_TOOL = "InvestigationReport"
 _CLOUDWATCH_QUERY_TIMEOUT_SECONDS = 60.0
 _CLOUDWATCH_POLL_SECONDS = 0.5
@@ -1179,16 +1180,20 @@ def _validate_session(
         return {}, str(exc) if isinstance(exc, TelemetryIncomplete) else "CloudWatch content could not be validated"
 
 
-def _blank_semantic(status: str, message: str) -> dict[str, Any]:
-    return {
+def _blank_semantic(status: str, message: str, mode: str = "multi") -> dict[str, Any]:
+    finding_names = (_SINGLE_FINDING_NAME,) if mode == "single" else _DIMENSIONS
+    result = {
         "status": status,
         "findings": {
             name: {"status": status, "verdict": None, "explanation": None, "errorMessage": message}
-            for name in _DIMENSIONS
+            for name in finding_names
         },
         "rawResponse": None,
         "tokenUsage": None,
     }
+    if mode == "single":
+        result["mode"] = mode
+    return result
 
 
 def _score_result(
@@ -1207,13 +1212,14 @@ def _score_result(
     scoring_seconds: float = 0,
     evidence_sha256: str | None = None,
     assertions_sha256: str | None = None,
+    semantic_mode: str = "multi",
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "status": status,
         "executionId": execution_id,
         "scoringAttemptId": attempt_id,
         "identity": dict(identity or {}),
-        "semantic": dict(semantic or _blank_semantic("incomplete", "scoring did not run")),
+        "semantic": dict(semantic or _blank_semantic("incomplete", "scoring did not run", semantic_mode)),
         "deterministic": dict(deterministic or {}),
         "telemetry": dict(telemetry or {"status": "incomplete"}),
         "assertions": list(assertions) if assertions is not None else None,
@@ -1242,6 +1248,7 @@ def score_execution(
     wait_seconds: float,
     verified_spans: Sequence[Mapping[str, Any]] | None = None,
     scoring_attempt_id: str | None = None,
+    semantic_mode: str = "multi",
 ) -> dict[str, Any]:
     """Wait for CloudWatch content matching native spans verified by the loader.
 
@@ -1251,11 +1258,21 @@ def score_execution(
     but cannot submit session context to Evaluate.
     """
 
+    if semantic_mode not in {"multi", "single"}:
+        semantic_mode = "multi"
+        invalid_mode = True
+    else:
+        invalid_mode = False
     attempt_id = scoring_attempt_id if isinstance(scoring_attempt_id, str) and scoring_attempt_id.strip() else str(uuid.uuid4())
     execution_id = None
     identity = _mapping(record.get("identity")) if isinstance(record, Mapping) else {}
     if isinstance(identity.get("executionId"), str):
         execution_id = identity["executionId"]
+    if invalid_mode:
+        return _score_result(
+            status="error", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
+            diagnostic="unsupported semantic evaluator mode", semantic_mode=semantic_mode,
+        )
     try:
         wait_value = float(wait_seconds)
         if not math.isfinite(wait_value) or wait_value < 0 or wait_value > _MAX_QUERY_SECONDS:
@@ -1264,22 +1281,24 @@ def score_execution(
         return _score_result(
             status="error", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
             diagnostic="invalid bounded telemetry wait", requested_wait_seconds=0,
+            semantic_mode=semantic_mode,
         )
     mismatch = _identity_mismatch(record, loaded_case)
     if mismatch is not None:
         return _score_result(
             status="incomplete", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
-            diagnostic=mismatch, requested_wait_seconds=wait_value,
+            diagnostic=mismatch, requested_wait_seconds=wait_value, semantic_mode=semantic_mode,
         )
     if not isinstance(evaluator_id, str) or not evaluator_id.strip():
         return _score_result(
             status="error", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
-            diagnostic="evaluator ID is missing", requested_wait_seconds=wait_value,
+            diagnostic="evaluator ID is missing", requested_wait_seconds=wait_value, semantic_mode=semantic_mode,
         )
     if not callable(fetch_session):
         return _score_result(
             status="error", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
             diagnostic="CloudWatch session fetcher is not callable", requested_wait_seconds=wait_value,
+            semantic_mode=semantic_mode,
         )
 
     try:
@@ -1296,7 +1315,7 @@ def score_execution(
         return _score_result(
             status="error", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
             diagnostic=f"reviewed scoring contract is unavailable: {detail}",
-            requested_wait_seconds=wait_value,
+            requested_wait_seconds=wait_value, semantic_mode=semantic_mode,
         )
 
     deterministic = check_report(record["report"], loaded_case)
@@ -1305,7 +1324,7 @@ def score_execution(
             status="incomplete", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
             deterministic=deterministic,
             assertions=assertions, diagnostic="saved report does not satisfy the canonical schema",
-            requested_wait_seconds=wait_value,
+            requested_wait_seconds=wait_value, semantic_mode=semantic_mode,
         )
     if verified_spans is None:
         return _score_result(
@@ -1313,7 +1332,7 @@ def score_execution(
             deterministic=deterministic,
             assertions=assertions,
             diagnostic="authenticated saved native spans are required for CloudWatch scoring",
-            requested_wait_seconds=wait_value,
+            requested_wait_seconds=wait_value, semantic_mode=semantic_mode,
         )
 
     locally_validated, local_reason = _validate_session(
@@ -1325,7 +1344,7 @@ def score_execution(
             deterministic=deterministic,
             assertions=assertions,
             diagnostic=f"saved native spans do not authenticate the execution: {local_reason}",
-            requested_wait_seconds=wait_value,
+            requested_wait_seconds=wait_value, semantic_mode=semantic_mode,
         )
     for recorded_report_source in (
         record.get("reportSource"),
@@ -1337,7 +1356,7 @@ def score_execution(
                 deterministic=deterministic,
                 assertions=assertions,
                 diagnostic="saved report-source marker differs from authenticated native spans",
-                requested_wait_seconds=wait_value,
+                requested_wait_seconds=wait_value, semantic_mode=semantic_mode,
             )
     deterministic = check_captured_report(record["report"], loaded_case, record["ledger"])
 
@@ -1375,10 +1394,11 @@ def score_execution(
             return _score_result(
                 status="incomplete", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
                 deterministic=deterministic,
-                semantic=_blank_semantic("incomplete", last_reason),
+                semantic=_blank_semantic("incomplete", last_reason, semantic_mode),
                 telemetry={"status": "incomplete", "reason": last_reason},
                 assertions=assertions, diagnostic=last_reason, requested_wait_seconds=wait_value,
                 collection_seconds=now - started,
+                semantic_mode=semantic_mode,
             )
         time.sleep(min(_SCORING_POLL_SECONDS, remaining))
 
@@ -1405,9 +1425,10 @@ def score_execution(
             trace_id=identity["traceId"],
             session_spans=session_spans,
             assertions=assertions,
+            mode=semantic_mode,
         )
     except Exception as exc:
-        semantic = _blank_semantic("error", f"AgentCore Evaluate failed ({type(exc).__name__})")
+        semantic = _blank_semantic("error", f"AgentCore Evaluate failed ({type(exc).__name__})", semantic_mode)
     scoring_seconds = max(0.0, time.monotonic() - scoring_started)
     status = semantic.get("status") if isinstance(semantic, Mapping) else "error"
     if status not in {"complete", "incomplete", "error"}:
@@ -1428,6 +1449,7 @@ def score_execution(
         scoring_seconds=scoring_seconds,
         evidence_sha256=telemetry_digest,
         assertions_sha256=_sha256(assertions),
+        semantic_mode=semantic_mode,
     )
     return result
 
