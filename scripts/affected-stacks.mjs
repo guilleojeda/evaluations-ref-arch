@@ -50,8 +50,9 @@ const componentScripts = new Map([
   ['scripts/check-controller-change-set.mjs', 'controller'],
   ['scripts/deploy-agent.sh', 'agent'],
   ['scripts/check-agent-change-set.mjs', 'agent'],
-  ['scripts/finalize-agent.py', 'agent'],
   ['scripts/phase0-agent-asset.mjs', 'agent'],
+  ['scripts/retire-agent-endpoint.py', 'agent'],
+  ['scripts/setup-faulty-reference.py', 'agent'],
 ]);
 
 for (const path of changed) {

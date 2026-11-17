@@ -42,7 +42,9 @@ test('the CI selector identifies component, shared, and documentation changes ac
   const agent = commit('agent/example.py');
   const agentStack = commit('infrastructure/agent/example.ts');
   const shared = commit('package-lock.json');
-  const agentRelease = commit('scripts/finalize-agent.py');
+  const agentRelease = commit('scripts/deploy-agent.sh');
+  const agentCutover = commit('scripts/retire-agent-endpoint.py');
+  const referenceSetup = commit('scripts/setup-faulty-reference.py');
   const appRelease = commit('scripts/deploy-app.sh');
   const controllerRelease = commit('scripts/deploy-controller.sh');
   const oidcProbe = commit('.github/workflows/oidc-negative.yml');
@@ -56,7 +58,9 @@ test('the CI selector identifies component, shared, and documentation changes ac
   assert.deepEqual(affected(agent, agentStack), ['agent']);
   assert.deepEqual(affected(agentStack, shared), ['agent', 'app', 'controller']);
   assert.deepEqual(affected(shared, agentRelease), ['agent']);
-  assert.deepEqual(affected(agentRelease, appRelease), ['app']);
+  assert.deepEqual(affected(agentRelease, agentCutover), ['agent']);
+  assert.deepEqual(affected(agentCutover, referenceSetup), ['agent']);
+  assert.deepEqual(affected(referenceSetup, appRelease), ['app']);
   assert.deepEqual(affected(appRelease, controllerRelease), ['controller']);
   assert.deepEqual(affected(controllerRelease, oidcProbe), [],
     'a temporary STS-only proof workflow must not start a product release');

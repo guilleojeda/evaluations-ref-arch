@@ -170,6 +170,8 @@ test('normal agent publication is structurally separate from the one-time refere
   requireMatch(setup, /if: .*reference[-_]setup/, 'reference setup must have an explicit dispatch-mode guard');
   requireMatch(setup, /scripts\/[A-Za-z0-9_-]*reference[A-Za-z0-9_-]*\.(?:py|mjs|sh)/i,
     'reference setup must use a dedicated fixed-reference helper');
+  requireMatch(setup, /status\s*==\s*["']ready["'][\s\S]*status\s*==\s*["']partial["']|status\s*==\s*["']partial["'][\s\S]*status\s*==\s*["']ready["']/,
+    'reference setup must accept a verified recoverable partial preflight for retirement to classify');
   requireAbsent(setup, /github\.sha|inputs\.(?:component|rotation_from_generation|rotation_to_generation)|rotation_(?:from|to)|--(?:candidate|endpoint|runtime|sha|uri)/i,
     'reference setup must use fixed reviewed inputs without candidate or rotation arguments');
 
@@ -236,6 +238,19 @@ test('synthesized agent CFN relinquishes endpoint ownership while preserving sta
   const endpointOutputValues = JSON.stringify(Object.values(Outputs ?? {}));
   requireAbsent(endpointResourceValues, /FaultyEndpoint/, 'no CFN resource may reference the removed endpoint');
   requireAbsent(endpointOutputValues, /FaultyEndpoint/, 'no CFN output value may reference the removed endpoint');
+
+  for (const parameter of [
+    'PublishedRuntimeAssetBucket', 'PublishedRuntimeAssetKey',
+    'PublishedRuntimeCodeRevision', 'PublishedRuntimeArtifactDigest',
+    'PublishedRuntimeBootstrapEnabled',
+  ]) {
+    assert.ok(agent.Parameters?.[parameter], `${parameter} must preserve the deployed Runtime bootstrap tuple`);
+  }
+  const runtimeText = JSON.stringify(runtime.Properties);
+  assert.match(runtimeText, /PublishedRuntimeAssetKey/,
+    'ordinary releases must source Runtime code from the preserved bootstrap tuple when configured');
+  assert.match(runtimeText, /PublishedRuntimeCodeRevision/,
+    'ordinary releases must preserve Runtime source identity separately from stack SourceRevision');
 });
 
 test('normal template releases preserve native alarm routing to the stable adapter ARN', () => {

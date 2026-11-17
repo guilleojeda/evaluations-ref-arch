@@ -1,4 +1,4 @@
-import { CfnOutput, CfnParameter, Duration, RemovalPolicy, type StackProps } from "aws-cdk-lib";
+import { CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, type StackProps } from "aws-cdk-lib";
 import * as agentcore from "aws-cdk-lib/aws-bedrockagentcore";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
@@ -22,6 +22,50 @@ export class AgentStack extends DemoStack {
     super(scope, "agent", props);
     const revision = new CfnParameter(this, "SourceRevisionInput", { type: "String", allowedPattern: "^[a-f0-9]{40}$" });
     revision.overrideLogicalId("SourceRevision");
+    // The publisher, rather than an ordinary Runtime release, owns the
+    // attested endpoint tuple.  Keep those values in explicit parameters so
+    // a later stack update can carry the publisher's read-back unchanged.
+    // Empty defaults are the deliberate pre-publication state; the adapter
+    // fails closed until reference setup supplies a verified tuple.
+    const publishedVersion = new CfnParameter(this, "PublishedVersionInput", {
+      type: "String", default: "", allowedPattern: "^(?:[1-9][0-9]*)?$",
+    });
+    publishedVersion.overrideLogicalId("PublishedVersion");
+    const publishedCodeRevision = new CfnParameter(this, "PublishedCodeRevisionInput", {
+      type: "String", default: "", allowedPattern: "^(?:[a-f0-9]{40})?$",
+    });
+    publishedCodeRevision.overrideLogicalId("PublishedCodeRevision");
+    const publishedArtifactDigest = new CfnParameter(this, "PublishedArtifactDigestInput", {
+      type: "String", default: "", allowedPattern: "^(?:[a-f0-9]{64})?$",
+    });
+    publishedArtifactDigest.overrideLogicalId("PublishedArtifactDigest");
+    const publishedRuntimeAssetBucket = new CfnParameter(this, "PublishedRuntimeAssetBucketInput", {
+      // Valid placeholders keep CDK's CloudFormation validator quiet while
+      // the explicit boolean below keeps them out of the initial Runtime.
+      type: "String", default: "bootstrap-not-configured", allowedPattern: "^[a-z0-9][a-z0-9.-]{1,61}[a-z0-9]$",
+    });
+    publishedRuntimeAssetBucket.overrideLogicalId("PublishedRuntimeAssetBucket");
+    const publishedRuntimeAssetKey = new CfnParameter(this, "PublishedRuntimeAssetKeyInput", {
+      type: "String", default: "bootstrap-not-configured.zip", allowedPattern: "^[^\\s]+$",
+    });
+    publishedRuntimeAssetKey.overrideLogicalId("PublishedRuntimeAssetKey");
+    const publishedRuntimeCodeRevision = new CfnParameter(this, "PublishedRuntimeCodeRevisionInput", {
+      type: "String", default: "0000000000000000000000000000000000000000", allowedPattern: "^[a-f0-9]{40}$",
+    });
+    publishedRuntimeCodeRevision.overrideLogicalId("PublishedRuntimeCodeRevision");
+    const publishedRuntimeArtifactDigest = new CfnParameter(this, "PublishedRuntimeArtifactDigestInput", {
+      type: "String", default: "0000000000000000000000000000000000000000000000000000000000000000", allowedPattern: "^[a-f0-9]{64}$",
+    });
+    publishedRuntimeArtifactDigest.overrideLogicalId("PublishedRuntimeArtifactDigest");
+    const publishedRuntimeBootstrapEnabled = new CfnParameter(this, "PublishedRuntimeBootstrapEnabledInput", {
+      type: "String", default: "false", allowedPattern: "^(?:true|false)$",
+    });
+    publishedRuntimeBootstrapEnabled.overrideLogicalId("PublishedRuntimeBootstrapEnabled");
+    const bootstrapRuntimeConfigured = new CfnCondition(this, "BootstrapRuntimeConfigured", {
+      expression: Fn.conditionEquals(publishedRuntimeBootstrapEnabled.valueAsString, "true"),
+    });
+    const bootstrapValue = (configured: string, initial: string) =>
+      Fn.conditionIf(bootstrapRuntimeConfigured.logicalId, configured, initial) as unknown as string;
     const apiId = new CfnParameter(this, "AppHttpApiId", { type: "String", allowedPattern: "^[a-z0-9]+$" });
     const runtimeZip = resolve(process.cwd(), ".artifacts/agent/runtime.zip");
     const adapterZip = resolve(process.cwd(), ".artifacts/agent/alarm-adapter.zip");
@@ -29,6 +73,7 @@ export class AgentStack extends DemoStack {
       if (!existsSync(artifact)) throw new Error(`Agent bundle is missing: ${artifact}`);
     }
     const artifactSha256 = createHash("sha256").update(readFileSync(runtimeZip)).digest("hex");
+    const adapterArtifactSha256 = createHash("sha256").update(readFileSync(adapterZip)).digest("hex");
     const runtimeAsset = new Asset(this, "RuntimeZip", { path: runtimeZip });
     const runs = new dynamodb.Table(this, "RunTable", {
       tableName: "IncidentTriageDemoAgentRun", billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -66,13 +111,18 @@ export class AgentStack extends DemoStack {
     grant("RuntimeMetrics", ["cloudwatch:PutMetricData"], ["*"], { StringEquals: { "cloudwatch:namespace": "bedrock-agentcore" } });
     const runtime = new agentcore.CfnRuntime(this, "Runtime", {
       agentRuntimeName: RUNTIME_NAME, roleArn: runtimeRole.roleArn, tags: { Project: "IncidentTriageDemo", Component: "agent" },
-      agentRuntimeArtifact: { codeConfiguration: { runtime: "PYTHON_3_13", entryPoint: ["opentelemetry-instrument", "main.py"], code: { s3: { bucket: runtimeAsset.s3BucketName, prefix: runtimeAsset.s3ObjectKey } } } },
+      agentRuntimeArtifact: { codeConfiguration: { runtime: "PYTHON_3_13", entryPoint: ["opentelemetry-instrument", "main.py"], code: { s3: {
+        bucket: bootstrapValue(publishedRuntimeAssetBucket.valueAsString, runtimeAsset.s3BucketName),
+        prefix: bootstrapValue(publishedRuntimeAssetKey.valueAsString, runtimeAsset.s3ObjectKey),
+      } } } },
       networkConfiguration: { networkMode: "PUBLIC" }, protocolConfiguration: "HTTP",
       lifecycleConfiguration: { idleRuntimeSessionTimeout: 300, maxLifetime: 600 },
       environmentVariables: {
         AGENT_RUN_TABLE: runs.tableName, AGENT_SOURCE_BUCKET: EVIDENCE_BUCKET, AGENT_SOURCE_PREFIX: "agent-source/",
         AGENT_ALARM_ARN: ALARM_ARN, AGENT_MODEL_ID: MODEL_ID, AGENT_ACCOUNT_ID: ACCOUNT, AGENT_REGION: REGION,
-        AGENT_CANDIDATE_ID: "faulty", AGENT_SOURCE_REVISION: revision.valueAsString, AGENT_ARTIFACT_SHA256: artifactSha256,
+        AGENT_CANDIDATE_ID: "faulty",
+        AGENT_SOURCE_REVISION: bootstrapValue(publishedRuntimeCodeRevision.valueAsString, revision.valueAsString),
+        AGENT_ARTIFACT_SHA256: bootstrapValue(publishedRuntimeArtifactDigest.valueAsString, artifactSha256),
         AGENT_ENDPOINT_NAME: "faulty", AGENT_APP_HTTP_API_ID: apiId.valueAsString,
         OTEL_TRACES_SAMPLER: "always_on", OTEL_SERVICE_NAME: RUNTIME_NAME,
         OTEL_PYTHON_DISTRO: "aws_distro", OTEL_PYTHON_CONFIGURATOR: "aws_configurator", OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf",
@@ -82,30 +132,49 @@ export class AgentStack extends DemoStack {
       },
     });
     runtime.node.addDependency(runtimeRole);
-    const endpoint = new agentcore.CfnRuntimeEndpoint(this, "FaultyEndpoint", { agentRuntimeId: runtime.attrAgentRuntimeId, agentRuntimeVersion: runtime.attrAgentRuntimeVersion, name: "faulty" });
+    // The named endpoint is publisher-owned after the one-time Phase19
+    // cutover.  Keep its stable ARN derivation for adapter/controller
+    // bindings, but do not let ordinary CloudFormation releases create,
+    // repin, or delete the native endpoint.
+    const endpointArn = `${runtime.attrAgentRuntimeArn}/runtime-endpoint/faulty`;
     const logGroup = new logs.LogGroup(this, "AdapterLogGroup", { logGroupName: `/aws/lambda/${ADAPTER_NAME}`, retention: logs.RetentionDays.TWO_WEEKS, removalPolicy: RemovalPolicy.RETAIN });
     const adapterRole = new iam.Role(this, "AdapterRole", { roleName: "IncidentTriageDemoAlarmAdapterRole", assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"), permissionsBoundary: iam.ManagedPolicy.fromManagedPolicyArn(this, "AdapterBoundary", `arn:aws:iam::${ACCOUNT}:policy/IncidentTriageDemoAlarmAdapterBoundary`) });
     logGroup.grantWrite(adapterRole);
-    adapterRole.addToPolicy(new iam.PolicyStatement({ actions: ["bedrock-agentcore:InvokeAgentRuntime"], resources: [runtime.attrAgentRuntimeArn, endpoint.attrAgentRuntimeEndpointArn] }));
+    adapterRole.addToPolicy(new iam.PolicyStatement({ actions: ["bedrock-agentcore:InvokeAgentRuntime"], resources: [runtime.attrAgentRuntimeArn, endpointArn] }));
     const adapter = new lambda.Function(this, "AlarmAdapter", {
       functionName: ADAPTER_NAME, runtime: lambda.Runtime.PYTHON_3_13, architecture: lambda.Architecture.ARM_64,
       code: lambda.Code.fromAsset(adapterZip), handler: "alarm_adapter.handler", role: adapterRole,
       timeout: Duration.seconds(290), memorySize: 256, tracing: lambda.Tracing.ACTIVE, logGroup,
-      // Native finalization supplies the version only after MMDSv2 pin/readback.
-      environment: { AGENT_RUNTIME_ARN: runtime.attrAgentRuntimeArn, AGENT_ENDPOINT_NAME: "faulty", AGENT_RUNTIME_VERSION: "unverified", AGENT_ALARM_ARN: ALARM_ARN, AGENT_SOURCE_REVISION: revision.valueAsString, AGENT_ARTIFACT_SHA256: artifactSha256 },
+      // The publisher updates these parameters only after native endpoint and
+      // adapter readback.  Ordinary Runtime releases carry them forward.
+      environment: {
+        AGENT_RUNTIME_ARN: runtime.attrAgentRuntimeArn, AGENT_ENDPOINT_NAME: "faulty",
+        AGENT_RUNTIME_VERSION: publishedVersion.valueAsString, AGENT_ALARM_ARN: ALARM_ARN,
+        AGENT_SOURCE_REVISION: publishedCodeRevision.valueAsString,
+        AGENT_ARTIFACT_SHA256: publishedArtifactDigest.valueAsString,
+      },
     });
     new lambda.EventInvokeConfig(this, "AlarmAdapterRetries", { function: adapter, maxEventAge: Duration.minutes(10), retryAttempts: 2 });
     new lambda.CfnPermission(this, "NativeAlarmPermission", { action: "lambda:InvokeFunction", functionName: adapter.functionArn, principal: "lambda.alarms.cloudwatch.amazonaws.com", sourceAccount: ACCOUNT, sourceArn: ALARM_ARN });
     new CfnOutput(this, "SourceRevision", { value: revision.valueAsString });
     new CfnOutput(this, "RuntimeId", { value: runtime.attrAgentRuntimeId });
     new CfnOutput(this, "RuntimeArn", { value: runtime.attrAgentRuntimeArn });
-    new CfnOutput(this, "CloudFormationRuntimeVersion", { value: runtime.attrAgentRuntimeVersion, description: "Initial CFN version; deploy-agent verifies final MMDSv2 endpoint version." });
-    new CfnOutput(this, "FaultyEndpointArn", { value: endpoint.attrAgentRuntimeEndpointArn });
+    new CfnOutput(this, "CloudFormationRuntimeVersion", { value: runtime.attrAgentRuntimeVersion, description: "Initial CloudFormation Runtime version; publisher-owned endpoint version is read back separately." });
+    new CfnOutput(this, "FaultyEndpointArn", { value: endpointArn });
     new CfnOutput(this, "EndpointName", { value: "faulty" });
     new CfnOutput(this, "AlarmAdapterArn", { value: adapter.functionArn });
+    new CfnOutput(this, "AlarmAdapterCodeSha256", { value: adapterArtifactSha256, description: "SHA-256 of the checked alarm adapter ZIP currently deployed by this stack." });
     new CfnOutput(this, "RunTableName", { value: runs.tableName });
-    new CfnOutput(this, "RuntimeAssetObjectKey", { value: runtimeAsset.s3ObjectKey });
-    new CfnOutput(this, "RuntimeArtifactSha256", { value: artifactSha256 });
+    new CfnOutput(this, "RuntimeAssetObjectKey", { value: bootstrapValue(publishedRuntimeAssetKey.valueAsString, runtimeAsset.s3ObjectKey) });
+    new CfnOutput(this, "RuntimeArtifactSha256", { value: bootstrapValue(publishedRuntimeArtifactDigest.valueAsString, artifactSha256) });
+    new CfnOutput(this, "PublishedRuntimeVersion", { value: publishedVersion.valueAsString });
+    new CfnOutput(this, "PublishedCodeRevision", { value: publishedCodeRevision.valueAsString });
+    new CfnOutput(this, "PublishedArtifactSha256", { value: publishedArtifactDigest.valueAsString });
+    new CfnOutput(this, "PublishedRuntimeAssetBucket", { value: publishedRuntimeAssetBucket.valueAsString });
+    new CfnOutput(this, "PublishedRuntimeAssetKey", { value: publishedRuntimeAssetKey.valueAsString });
+    new CfnOutput(this, "PublishedRuntimeCodeRevision", { value: publishedRuntimeCodeRevision.valueAsString });
+    new CfnOutput(this, "PublishedRuntimeArtifactSha256", { value: publishedRuntimeArtifactDigest.valueAsString });
+    new CfnOutput(this, "PublishedRuntimeBootstrapEnabled", { value: publishedRuntimeBootstrapEnabled.valueAsString });
     new CfnOutput(this, "SourceCapturePrefix", { value: `s3://${EVIDENCE_BUCKET}/agent-source/` });
   }
 }
