@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from agentcore_evaluation import case_assertions
+from agentcore_evaluation import _mapped_row, _row_identity_error, case_assertions
 from captured_execution import load_execution
 from evaluation_telemetry import _span_roster_mismatch, _validate_session, timing_evidence_assertions
 
@@ -198,6 +198,19 @@ def _score_error(
             return "semantic response evaluator does not match the pinned evaluator"
         if expected_evaluator_arn is not None and candidate.get("evaluatorArn") is not None and candidate.get("evaluatorArn") != expected_evaluator_arn:
             return "semantic response evaluator ARN does not match the pinned evaluator"
+    identity_error = _row_identity_error(
+        raw,
+        evaluator_id=expected_evaluator_id,
+        session_id=identity["sessionId"],
+        trace_id=identity.get("traceId"),
+    )
+    if identity_error is not None:
+        return identity_error
+    normalized = _mapped_row(raw, reject_ignored_reference_fields=True, reject_dimension_name=True)
+    if normalized.get("status") != "complete":
+        return normalized.get("validationError") or normalized.get("errorCode") or "semantic response row is invalid"
+    if raw_response.get("errorCode") is not None or raw_response.get("errorMessage") is not None:
+        return "semantic response contains a top-level error"
     for candidate in (row, row.get("rawResult"), raw):
         if isinstance(candidate, Mapping):
             context = candidate.get("context")
@@ -224,7 +237,7 @@ def _score_error(
     if not isinstance(assertions, list) or score.get("assertionsSha256") != _digest(assertions):
         return "scoring assertions digest is invalid"
     evidence_digest = score.get("evidenceSha256")
-    if score.get("telemetry", {}).get("sha256") != evidence_digest:
+    if telemetry.get("sha256") != _digest(score_spans) or telemetry.get("sha256") != evidence_digest:
         return "scoring evidence digest is invalid"
     configuration = score.get("evaluatorConfiguration")
     expected_config = configuration.get("evaluatorConfig") if isinstance(configuration, Mapping) else None

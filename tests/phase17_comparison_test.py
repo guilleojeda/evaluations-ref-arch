@@ -339,6 +339,49 @@ class OfflineComparisonAcceptance(unittest.TestCase):
         self.assertNotEqual(code, 0, result)
         self.assertIn("evaluator", result["reason"].lower())
 
+    def test_comparison_rejects_native_row_errors_and_tampered_evidence_digest(self):
+        baseline = self.run_candidate()
+        self.score(baseline)
+        candidate = self.run_candidate(repaired=True)
+        attempt = self.score(candidate)
+        receipt = candidate / "scores" / attempt / "result.json"
+
+        saved = json.loads(receipt.read_bytes())
+        raw = saved["semantic"]["rawResponse"]["evaluationResults"][0]
+        raw["ignoredReferenceInputFields"] = ["assertions"]
+        receipt.write_text(json.dumps(saved), encoding="utf-8")
+        code, result = self.compare(baseline, candidate)
+        self.assertNotEqual(code, 0, result)
+        self.assertIn("ignored", result["reason"].lower())
+
+        saved = json.loads(receipt.read_bytes())
+        raw = saved["semantic"]["rawResponse"]["evaluationResults"][0]
+        raw.pop("ignoredReferenceInputFields", None)
+        raw["errorCode"] = "NativeEvaluatorError"
+        receipt.write_text(json.dumps(saved), encoding="utf-8")
+        code, result = self.compare(baseline, candidate)
+        self.assertNotEqual(code, 0, result)
+        self.assertIn("error", result["reason"].lower())
+
+        saved = json.loads(receipt.read_bytes())
+        raw = saved["semantic"]["rawResponse"]["evaluationResults"][0]
+        raw.pop("errorCode", None)
+        raw["evaluationDimensionName"] = "foreign-dimension"
+        receipt.write_text(json.dumps(saved), encoding="utf-8")
+        code, result = self.compare(baseline, candidate)
+        self.assertNotEqual(code, 0, result)
+        self.assertIn("dimension", result["reason"].lower())
+
+        saved = json.loads(receipt.read_bytes())
+        raw = saved["semantic"]["rawResponse"]["evaluationResults"][0]
+        raw.pop("evaluationDimensionName", None)
+        saved["telemetry"]["sha256"] = "0" * 64
+        saved["evidenceSha256"] = "0" * 64
+        receipt.write_text(json.dumps(saved), encoding="utf-8")
+        code, result = self.compare(baseline, candidate)
+        self.assertNotEqual(code, 0, result)
+        self.assertIn("digest", result["reason"].lower())
+
     def test_comparison_rejects_different_scoring_source_with_same_evaluator(self):
         baseline = self.run_candidate()
         self.score(baseline)
