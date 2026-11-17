@@ -382,6 +382,27 @@ class OfflineComparisonAcceptance(unittest.TestCase):
         self.assertNotEqual(code, 0, result)
         self.assertIn("digest", result["reason"].lower())
 
+    def test_comparison_rejects_response_errors_and_inconsistent_normalized_rows(self):
+        baseline = self.run_candidate()
+        self.score(baseline)
+        candidate = self.run_candidate(repaired=True)
+        attempt = self.score(candidate)
+        receipt = candidate / "scores" / attempt / "result.json"
+        original = receipt.read_bytes()
+        saved = json.loads(original)
+        saved["semantic"]["rawResponse"]["errorCode"] = "NativeEvaluatorError"
+        receipt.write_text(json.dumps(saved), encoding="utf-8")
+        code, result = self.compare(baseline, candidate)
+        self.assertNotEqual(code, 0, result)
+        self.assertIn("error", result["reason"].lower())
+
+        saved = json.loads(original)
+        saved["semantic"]["findings"]["semantic_quality"]["rawResult"]["errorCode"] = "ForeignError"
+        receipt.write_text(json.dumps(saved), encoding="utf-8")
+        code, result = self.compare(baseline, candidate)
+        self.assertNotEqual(code, 0, result)
+        self.assertIn("normalized", result["reason"].lower())
+
     def test_comparison_rejects_different_scoring_source_with_same_evaluator(self):
         baseline = self.run_candidate()
         self.score(baseline)
