@@ -36,7 +36,7 @@ from investigation import (
 from prompt import PROMPT_SHA256
 
 
-FAULTY_ENDPOINT = "faulty"
+PREPARED_CANDIDATES = frozenset({"faulty", "repaired"})
 RUNTIME_ARN_PREFIX = "arn:aws:bedrock-agentcore:"
 MANIFEST_PATH = Path(__file__).with_name("agent-manifest.json")
 
@@ -112,10 +112,9 @@ def _config() -> dict[str, str]:
     if model_id != MODEL_ID:
         raise InvalidInvocation("runtime model does not match the approved initial profile")
     values["AGENT_MODEL_ID"] = model_id
-    if values["AGENT_CANDIDATE_ID"] != "faulty":
-        raise InvalidInvocation("runtime candidate does not match the pinned initial candidate")
-    if values["AGENT_ENDPOINT_NAME"] != FAULTY_ENDPOINT:
-        raise InvalidInvocation("runtime endpoint does not match the pinned initial endpoint")
+    candidate = values["AGENT_CANDIDATE_ID"]
+    if candidate not in PREPARED_CANDIDATES or values["AGENT_ENDPOINT_NAME"] != candidate:
+        raise InvalidInvocation("runtime candidate and named endpoint must match a prepared pair")
     return values
 
 
