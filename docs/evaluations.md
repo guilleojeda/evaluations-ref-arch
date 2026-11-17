@@ -177,8 +177,11 @@ check passed. The grounding rubric checks claims about source observations
 and query coverage. Diagnosis support grades the causal explanation and
 incident assessment. The evaluator receives a compact view of verified log
 records with separate event, ingestion, and availability times alongside the
-native session. Score the saved S2 execution after the selected evaluator
-qualifies on the reviewed holdout.
+native session. The pinned Sonnet 4.6 single-verdict score is advisory and can
+be shown with its reason after the evaluator descriptor and session identity
+are verified. It does not qualify a release by itself. The deterministic
+action, target, value and cutoff checks, together with identity-bound human
+review of the exact report, trace and pending artifact, control publication.
 
 Judge calibration uses labeled, constructed controls grounded in retained
 evidence. Development and holdout controls come from separate incidents. The
@@ -201,7 +204,7 @@ The intended execution and scoring path is:
 
 AWS supports on-demand evaluation of supported-framework agents outside AgentCore Runtime. Its [on-demand prerequisites](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ondemand-evaluations-prereqs.html) and [outside-Runtime observability setup](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-configure.html#observability-configure-outside) establish this route. Prepare telemetry export, session propagation, source collection, and evaluation permissions before the session. Ground-truth reference inputs are described in [ground-truth evaluation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ground-truth-evaluations.html); shared code checks can use the [Lambda evaluator contract](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-based-evaluators.html).
 
-At S4, the Strands experiment reuses the candidate execution function as its task and adds case iteration, evaluators, reports, and candidate comparison. It can reuse AgentCore scoring through a [custom evaluator](https://strandsagents.com/docs/user-guide/evals-sdk/evaluators/custom_evaluator/), or use a Strands semantic evaluator under the same reviewed criterion. The semantic backend for the S4/S5 experiment remains an explicit open choice; this document does not require AgentCore service calls in CI. Preserve case meaning, supply the right reference inputs, and compare candidates within the selected scoring setup rather than treating scores from different evaluators as interchangeable. The mapping is application integration to implement and verify. Once selected, the S5 CI command invokes the same experiment and policy used locally.
+At S4, the Strands experiment reuses the candidate execution function as its task and adds case iteration, evaluators, reports, and candidate comparison. It reuses the reviewed AgentCore semantic evaluator through a Strands adapter, while deterministic checks remain separate and inspectable. The AgentCore verdict and reason are advisory feedback. Preserve case meaning, supply the right reference inputs, and compare candidates within the selected scoring setup rather than treating scores from different evaluators as interchangeable. Once selected, the S5 CI command invokes the same experiment and policy used locally.
 
 This route is supported by documentation but has not been exercised here. Verify the selected telemetry format, collector completeness, session correlation, reference mapping, and result reporting during implementation. The schedule's S3 estimate includes ingestion; its duration remains unmeasured.
 

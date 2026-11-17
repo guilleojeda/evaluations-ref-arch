@@ -190,13 +190,16 @@ uv run --offline --project agent --locked python agent/evaluate_case.py show --r
 ```
 
 Score that execution's matching CloudWatch session using the short-lived
-evaluation role and the reviewed evaluator descriptor. Qualify the evaluator
-revision on reviewed holdout controls before using it to score the baseline.
-Keep the evaluator configuration and reviewed reference inputs with the score.
+evaluation role and the reviewed evaluator descriptor. For the talk's pinned
+Sonnet 4.6 single-verdict evaluator, the semantic result is advisory. Keep the
+evaluator configuration and reviewed reference inputs with the score. Release
+decisions still require the deterministic findings and an identity-bound human
+review of the exact report, trace and pending artifact.
 
 ```sh
 uv run --project agent --locked python agent/evaluate_case.py score \
-  --run "$run_dir" --evaluator "$reviewed_evaluator" --wait-seconds 300
+  --run "$run_dir" --evaluator "$reviewed_evaluator" --rubric single \
+  --wait-seconds 300
 ```
 
 For a reviewed input without a matching saved execution, use its frozen case
@@ -234,12 +237,14 @@ completed. Read the individual verdicts for quality results. Keep the case,
 bundle, full run, and judge attempts private.
 
 The administrator supplies the descriptor from `evaluate_case.py provision
---model` using the reviewed judge profile. The setup uses the existing
+--model --rubric single` using the reviewed judge profile. The setup uses the existing
 Transaction Search configuration, a dedicated evaluation log group with a
 pre-created `spans` stream, and the scoped presenter role. Scoring verifies the active SESSION evaluator
 definition against the descriptor. The reviewed calibration controls run
 separately through `evaluate_case.py calibrate`. Rejudge a retained control
-explicitly to check repeated scores without rerunning a candidate.
+explicitly to check repeated scores without rerunning a candidate. Calibration
+records judge behavior and does not turn an advisory score into an automatic
+release decision.
 
 ## Local health and invalid-event smoke
 
