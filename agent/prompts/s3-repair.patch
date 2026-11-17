@@ -2,7 +2,7 @@ diff --git a/agent/prompt.py b/agent/prompt.py
 index 0c4ea0f..0000000 100644
 --- a/agent/prompt.py
 +++ b/agent/prompt.py
-@@ -39,14 +39,33 @@
+@@ -39,14 +39,36 @@
 -# The faulty rule controls the recommendation while leaving the diagnosis and
 -# cited evidence to the investigator.
 -FAULTY_RECOMMENDATION_RULE = (
@@ -41,8 +41,11 @@ index 0c4ea0f..0000000 100644
 +    "the limitation. Cite "
 +    "source records available by the task reference time. Set each citation "
 +    "observedAt to the source record's observation time, or the event timestamp "
-+    "for a log row. Treat ingestion, later export and query timestamps as "
-+    "separate facts, and keep citation windows within the task reference time. "
++    "for a log row. Cite only actual eligible records in evidence. If a query "
++    "returns no eligible record, describe missing coverage in uncertainties "
++    "without an evidence citation for that query. Keep ingestion, export and "
++    "query times separate from source time. Every citation's observedAt and "
++    "window end must be at or before the task reference time. "
 +    "Bound diagnosis and coverage claims to the returned records and identify "
 +    "partial coverage, missing evidence and material uncertainties."
 +)
