@@ -102,7 +102,7 @@ The report selects exactly one of **Increase reserved concurrency**, **Increase 
 
 Case expectations may accept more than one justified numeric target within the reviewed bounds; they must not enforce one arbitrary sentence, tool sequence, or exact value. If the agent cannot establish a supported target, it should explain that limitation through Other. Insufficient evidence is not an escape from a case that supplies adequate evidence the agent failed to collect.
 
-The selected initial defect is an inventory memory recommendation for the access-denied case. S1 reviews acceptable and unacceptable behavior using evidence from the opening incident. S2 evaluates the captured faulty candidate with explicit final recommendation precedence. At S3, edit the prompt only and compare its fresh execution with the identified S2 baseline on the same cases and criteria. Pending results remain pending. At S4, execute the repaired candidate through the local Python Strands entrypoint that connects case, task, evaluator, report, and comparison, and evaluate the existing reviewed local release policy before the first deployment. Rerun both incident cases and relevant controls. Bind the result to the evaluated source and agent artifact, prompt, dependency, case, evidence, evaluator, and model versions, then deploy the candidate covered by that result. At S5, CI runs that same experiment and policy before deployment; failed or incomplete required results block it. Use one agent constructor with the same approved live or captured providers across runtime and evaluation. A trace from the previously deployed candidate cannot replace pending-candidate execution. Retain the captured faulty candidate to show that the completed suite still rejects it. An evaluation result identifies a problem; it does not change the agent's behavior.
+The selected initial defect is an inventory memory recommendation for the access-denied case. S1 reviews acceptable and unacceptable behavior using evidence from the opening incident. S2 evaluates the captured faulty candidate with explicit final recommendation precedence. At S3, edit the prompt only and compare its fresh execution with the identified S2 baseline on the same cases and criteria. Pending results remain pending. At S4, execute the repaired candidate through the local Python Strands entrypoint that connects case, task, evaluator, report, and comparison. S4 is development feedback only: it does not publish or authorize deployment. Bind the result to the evaluated source and agent artifact, prompt, dependency, case, evidence, evaluator, and model versions. At S5, CI runs the same experiment and policy before deployment; failed or incomplete required results block it, and the exact pending Runtime ZIP remains subject to the later human-approved gate. Use one agent constructor with the same approved live or captured providers across runtime and evaluation. A trace from the previously deployed candidate cannot replace pending-candidate execution. Retain the captured faulty candidate to show that the completed suite still rejects it. An evaluation result identifies a problem; it does not change the agent's behavior.
 
 A correct diagnosis with the wrong action fails recommendation correctness. A lucky correct action with an unsupported diagnosis still needs a grounding finding. These results should remain separately inspectable rather than disappear into one average score.
 
@@ -215,7 +215,45 @@ The intended execution and scoring path is:
 
 AWS supports on-demand evaluation of supported-framework agents outside AgentCore Runtime. Its [on-demand prerequisites](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ondemand-evaluations-prereqs.html) and [outside-Runtime observability setup](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-configure.html#observability-configure-outside) establish this route. Prepare telemetry export, session propagation, source collection, and evaluation permissions before the session. Ground-truth reference inputs are described in [ground-truth evaluation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ground-truth-evaluations.html); shared code checks can use the [Lambda evaluator contract](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-based-evaluators.html).
 
-At S4, the Strands experiment reuses the candidate execution function as its task and adds case iteration, evaluators, reports, and candidate comparison. It reuses the reviewed AgentCore semantic evaluator through a Strands adapter, while deterministic checks remain separate and inspectable. The AgentCore verdict and reason are advisory feedback. Preserve case meaning, supply the right reference inputs, and compare candidates within the selected scoring setup rather than treating scores from different evaluators as interchangeable. Once selected, the S5 CI command invokes the same experiment and policy used locally. S3 remains a direct IDE runner and does not deploy the repaired candidate or invoke the live alarm adapter.
+At S4, the Strands experiment reuses the candidate execution function as its native task and calls the SDK's `Experiment.run_evaluations`, rather than implementing a separate case loop. It creates native `Case` objects and two custom `Evaluator` objects: one projects the eight named deterministic findings, and one reuses the pinned AgentCore Sonnet 4.6 scoring operation for its categorical advisory verdict and reason. The returned native report has one `(case, evaluator)` row per pair—four rows for two cases and two evaluators. The semantic row carries a native numeric `0.0` only as `numericPlaceholder: true`; policy reads the actual categorical result and canonical status instead. Cases execute sequentially, and the two evaluator calls for a completed case may overlap. The AgentCore verdict and reason are advisory feedback. Preserve case meaning, supply the right reference inputs, and compare candidates within the selected scoring setup rather than treating scores from different evaluators as interchangeable. The direct prepared S4 entry has no S3-run prerequisite; an optional `--source-run` selects an authenticated immutable S3 source exactly, including an accepted active execution. A focused `--case` selection is a development subset. Native experiment snapshots freeze selected cases/bundles, candidate/tooling/dependency inputs, and the evaluator before the first case; later edits cannot change the run, and `show`/`compare` are read-only. A known deterministic failure rejects immediately, missing or error results are incomplete, and all deterministic checks passing with a complete advisory pass or fail yields `review_required`. Once selected, the S5 CI command invokes the same experiment and policy used locally. S3 remains a direct IDE runner and does not deploy the repaired candidate or invoke the live alarm adapter.
+
+## S4: Native Strands development experiment
+
+Run the native experiment from a prepared browser-IDE workspace using the
+commands in the [agent README](../agent/README.md#run-the-native-strands-development-experiment-s4).
+Direct S4 starts from the saved suite, candidate, evaluator descriptor, and
+reviewed case/bundle assets; it does not require a prior S3 run. An optional
+`--source-run` selects the authenticated immutable candidate source from an
+accepted S3 execution, including an active execution, and rejects missing,
+altered, or incompatible sources before inference. `--case CASE_ID` narrows a
+development run without changing the complete reviewed suite used later.
+
+The task passes only the public candidate input to the existing captured
+runner. Reviewed expectations stay in evaluator-only metadata. The experiment
+freezes the selected candidate sources, dependency lock, native experiment and
+evaluator code, suite, case/bundle bytes, and evaluator descriptor before its
+first case. Repeating the same selection creates a new experiment and new
+execution/session/trace identities; a later prompt, case, tooling, or lock edit
+cannot alter an accepted run. SDK retries cannot launch a second investigation
+or judge call after a typed task/evaluator failure, and later selected cases may
+continue after an incomplete case. `show` reopens the native report without
+credentials or side effects. `compare` joins exact case, tooling, runtime,
+input, evaluator, scorer, report, and selected-attempt identities and retains
+available rows when another pair is unavailable or mismatched.
+
+Each native report contains one row per `(case, evaluator)`. For two cases and
+the two custom evaluators, that is four rows; each deterministic row exposes
+the eight named findings, while each advisory row retains the actual pinned
+AgentCore Sonnet 4.6 categorical verdict, reason, status, scoring attempt, and
+full run/session/trace references. The SDK's required numeric field is `0.0`
+with `numericPlaceholder: true`; this placeholder is not a quality score and
+does not affect policy. A known required deterministic failure yields
+`reject` immediately, even if advisory scoring is pending. Missing, invalid,
+or error execution/scoring yields `incomplete`. All required deterministic
+findings passing plus a complete advisory result—whether pass or fail—yields
+`review_required`. These are S4 development outcomes, not publication
+authority; exact Runtime ZIP qualification and human approval belong to the
+later S5 gate.
 
 The browser IDE workflow has been verified with the frozen denial case, an uncommitted prompt edit, matching CloudWatch content and the pinned Sonnet 4.6 evaluator. Rehearsal preparation checks session correlation, complete telemetry, reference mapping and exact result identities. Feedback time includes execution, telemetry collection and scoring.
 
@@ -232,6 +270,7 @@ The repository's policy interprets evaluation results; the presence of a score d
 | Outcome | Intended meaning |
 | --- | --- |
 | Pass | The candidate satisfies the defined release criteria for the selected cases and scope |
+| Review required | The S4 deterministic checks are complete and the advisory result is available; inspect the exact package and identity-bound evidence before any later gate decision |
 | Warn | A finding needs review or is acceptable only under the defined lower-risk policy |
 | Fail | A required behavior or hard boundary is violated |
 | Incomplete evaluation | Required results are missing, pending, invalid, or failed to execute; the run cannot be claimed as passing |
@@ -240,7 +279,7 @@ A known incorrect recommendation for either demonstrated incident must fail its 
 
 The local gate command and CI workflow must use the same policy and captured evidence contract. Keep evaluation execution failures distinguishable from agent-quality failures, and block an automatic pass when required evidence is incomplete.
 
-[GitHub Actions](deployment.md) publishes development changes automatically from `demo-deploy` without an agent evaluation gate at the current stage. At S4, the repaired candidate must complete the captured-evidence Strands experiment and pass the existing reviewed local release policy before the first deployment. At S5, CI runs that same experiment and policy before deployment; failed or incomplete required results block it. Ordinary build/code checks in the earlier stages are separate from agent evaluations.
+[GitHub Actions](deployment.md) publishes development changes automatically from `demo-deploy` without an agent evaluation gate at the current stage. S4 runs the native Strands experiment for inspectable development feedback only; it does not publish or authorize deployment. At S5, CI runs that same experiment and policy against the exact pending Runtime ZIP before publication; failed or incomplete required results block it, and the artifact remains subject to identity-bound human approval. Ordinary build/code checks in the earlier stages are separate from agent evaluations.
 
 ## Measurements
 

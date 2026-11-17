@@ -179,6 +179,86 @@ Keep cases, bundles, reports, and native spans in private evidence storage or a
 private operator workspace. The checker runs offline and emits only the findings and their input
 identities. Semantic evaluation and release policy use separate steps.
 
+## Run the native Strands development experiment (S4)
+
+S4 uses the actual `strands_evals` SDK. The experiment creates native
+`Case` objects, gives each case a task that calls the existing captured
+execution function, dispatches two custom `Evaluator` objects through the
+native `Experiment.run_evaluations` method, and saves the returned native
+`EvaluationReport`. It is not an independent Python loop around the cases.
+Cases run sequentially; the deterministic and advisory evaluator calls for a
+completed case may overlap.
+
+The direct prepared entry point does not require an S3 run prerequisite.
+The suite file contains the selected frozen case/bundle paths and evaluator
+metadata outside the public task input. Use `--case` to run one named case.
+Use `--source-run` only when continuing from an authenticated immutable S3
+execution; it selects that saved source exactly, including an accepted active
+execution, and never repairs or substitutes the candidate.
+
+Set these private paths outside the editable checkout:
+
+```sh
+reviewed_suite="${PHASE18_SUITE:?set the private suite JSON path}"
+reviewed_evaluator="${PHASE18_EVALUATOR:?set the pinned Sonnet 4.6 evaluator descriptor}"
+private_experiments="${PHASE18_EXPERIMENTS:?set a private experiment directory}"
+```
+
+Run all selected reviewed cases with the repaired candidate:
+
+```sh
+uv sync --project agent --locked
+uv run --project agent --locked opentelemetry-instrument \
+  python agent/development_experiment.py run \
+  --suite "$reviewed_suite" --candidate repaired \
+  --evaluator "$reviewed_evaluator" --output-root "$private_experiments"
+```
+
+Run one focused case, optionally selecting the exact authenticated S3 source:
+
+```sh
+uv run --project agent --locked opentelemetry-instrument \
+  python agent/development_experiment.py run \
+  --suite "$reviewed_suite" --case "$reviewed_case_id" \
+  --candidate repaired --source-run "$s3_run" \
+  --evaluator "$reviewed_evaluator" --output-root "$private_experiments"
+```
+
+The command freezes the candidate sources, experiment/evaluator code, lock,
+suite, selected cases/bundles, and evaluator descriptor before the first case.
+Later edits cannot change an accepted experiment; repeating the same selection
+creates a fresh experiment and fresh execution/session/trace identities. SDK
+retry behavior is bounded at the task/evaluator boundary, so an execution or
+score error is recorded once and later selected cases can continue. The native
+report has one row per `(case, evaluator)`—four rows for two cases and the two
+custom evaluators. Each case's deterministic row contains the eight named
+findings. The advisory row retains the actual pinned AgentCore Sonnet 4.6
+categorical verdict and reason, plus its selected scoring attempt and full
+identity references. Its required native numeric field is `0.0` with
+`numericPlaceholder: true`; that placeholder is not used by the policy.
+
+Inspect or compare saved experiments without credentials or new work:
+
+```sh
+uv run --offline --project agent --locked \
+  python agent/development_experiment.py show --experiment "$experiment_dir"
+uv run --offline --project agent --locked \
+  python agent/development_experiment.py compare \
+  --baseline "$faulty_experiment" --candidate "$repaired_experiment"
+```
+
+`show` reopens the saved native report and canonical records read-only.
+`compare` joins the exact selected cases and tooling/runtime/input/evaluator/
+scorer identities and retains each experiment's original selected scoring
+attempt; it does not rejudge or rerun work. A known required deterministic
+failure yields `reject` immediately (exit 1), even if advisory scoring is still
+pending. Missing, invalid, or error execution/scoring yields `incomplete`
+(exit 2). All required deterministic findings passing plus a complete advisory
+result—whether advisory pass or advisory fail—yields `review_required` (exit
+0). S4 is development feedback only: it does not publish or authorize a
+Runtime ZIP. Exact-package qualification and human approval are the later S5
+release-gate responsibility.
+
 ## Run and score the captured baseline (S2)
 
 For the prepared talk case, open the identified S2 execution from the private
