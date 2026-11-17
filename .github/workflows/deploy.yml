@@ -195,6 +195,7 @@ jobs:
           uv run --offline --project agent --locked python -m unittest discover -s tests -p 'phase16_*_test.py'
           uv run --offline --project agent --locked python -m unittest discover -s tests -p 'phase17_*_test.py'
           uv run --offline --project agent --locked python -m unittest discover -s tests -p 'phase18_*_test.py'
+          uv run --offline --project agent --locked python -m unittest discover -s tests -p 'phase19_runtime_pairs_test.py'
           node --test --test-name-pattern="^(agent stack|adapter only)" tests/phase4-agent-infrastructure.test.mjs
           node --test tests/phase4-agent-release.test.mjs
       - name: Run the locked native ARM64 smoke command
@@ -209,6 +210,16 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 1
+          compression-level: 0
+      - name: Save the checked agent ZIP for credential-free archive review
+        if: matrix.component == 'agent' && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-runtime-${{ github.sha }}
+          path: .artifacts/agent/runtime.zip
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
           compression-level: 0
 
   deploy:
