@@ -146,6 +146,8 @@ def _score_error(
         return "scoring result is incomplete"
     if score.get("executionId") != identity.get("executionId"):
         return "scoring result execution identity does not match the saved execution"
+    if score.get("deterministic") != record.get("deterministic"):
+        return "scoring deterministic findings do not match the saved execution"
     score_identity = score.get("identity")
     if not isinstance(score_identity, Mapping):
         return "scoring result identity is missing"
@@ -285,13 +287,19 @@ def compare_runs(
     """Return a read-only comparison, preserving known findings on incompleteness."""
 
     baseline_path, candidate_path = Path(baseline), Path(candidate)
-    try:
-        baseline_record, baseline_case, baseline_spans = load_execution(baseline_path)
-        candidate_record, candidate_case, candidate_spans = load_execution(candidate_path)
-    except Exception as exc:
-        return {"status": "error", "reason": f"saved execution is unavailable: {type(exc).__name__}"}
-    baseline_view = _execution_view(baseline_path, baseline_record, baseline_case)
-    candidate_view = _execution_view(candidate_path, candidate_record, candidate_case)
+    def load_one(path: Path) -> tuple[dict[str, Any] | None, dict[str, Any] | None, list[Any], dict[str, Any], str | None]:
+        try:
+            record, case, spans = load_execution(path)
+        except Exception as exc:
+            return None, None, [], {"runDirectory": str(path), "status": "unavailable"}, f"saved execution is unavailable: {type(exc).__name__}"
+        return record, case, spans, _execution_view(path, record, case), None
+
+    baseline_record, baseline_case, baseline_spans, baseline_view, baseline_load_error = load_one(baseline_path)
+    candidate_record, candidate_case, candidate_spans, candidate_view, candidate_load_error = load_one(candidate_path)
+    if baseline_load_error or candidate_load_error:
+        errors = [error for error in (baseline_load_error, candidate_load_error) if error]
+        status = "incomplete" if len(errors) == 1 else "error"
+        return {"status": status, "reason": "; ".join(errors), "baseline": baseline_view, "candidate": candidate_view}
     if baseline_record.get("status") != "complete" or candidate_record.get("status") != "complete":
         return {"status": "incomplete", "reason": "both executions must be complete", "baseline": baseline_view, "candidate": candidate_view}
     baseline_score, reason = _select_attempt(baseline_path, baseline_attempt, load_score)

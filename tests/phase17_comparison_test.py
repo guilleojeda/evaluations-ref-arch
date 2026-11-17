@@ -186,6 +186,25 @@ class OfflineComparisonAcceptance(unittest.TestCase):
         self.assertNotEqual(code, 0, result)
         self.assertIn("unavailable", result["reason"].lower())
 
+    def test_compare_preserves_the_available_side_when_the_other_run_is_missing(self):
+        baseline = self.run_candidate()
+        missing = self.root / "missing"
+        code, result = self.compare(baseline, missing)
+        self.assertNotEqual(code, 0, result)
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["baseline"]["status"], "complete")
+        self.assertEqual(result["baseline"]["report"], json.loads((baseline / "execution.json").read_bytes())["report"])
+        self.assertIn("findings", result["baseline"]["deterministic"])
+        self.assertEqual(result["candidate"]["status"], "unavailable")
+
+        code, result = self.compare(missing, baseline)
+        self.assertNotEqual(code, 0, result)
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["candidate"]["status"], "complete")
+        self.assertEqual(result["candidate"]["report"], json.loads((baseline / "execution.json").read_bytes())["report"])
+        self.assertIn("findings", result["candidate"]["deterministic"])
+        self.assertEqual(result["baseline"]["status"], "unavailable")
+
     def test_compare_reports_matching_runs_and_requires_explicit_choice_after_rejudge(self):
         baseline = self.run_candidate()
         original_attempt = self.score(baseline, explanation="Original advisory pass.")
@@ -414,3 +433,16 @@ class OfflineComparisonAcceptance(unittest.TestCase):
         return_code, result = self.compare(baseline, candidate)
         self.assertNotEqual(return_code, 0, result)
         self.assertRegex(result["reason"].lower(), r"scor")
+
+    def test_comparison_rejects_score_findings_that_disagree_with_saved_execution(self):
+        baseline = self.run_candidate()
+        self.score(baseline)
+        candidate = self.run_candidate(repaired=True)
+        attempt = self.score(candidate)
+        receipt = candidate / "scores" / attempt / "result.json"
+        saved = json.loads(receipt.read_bytes())
+        saved["deterministic"]["findings"]["action"]["verdict"] = "fail"
+        receipt.write_text(json.dumps(saved), encoding="utf-8")
+        code, result = self.compare(baseline, candidate)
+        self.assertNotEqual(code, 0, result)
+        self.assertIn("deterministic", result["reason"].lower())
