@@ -73,6 +73,7 @@ export class AgentStack extends DemoStack {
       if (!existsSync(artifact)) throw new Error(`Agent bundle is missing: ${artifact}`);
     }
     const artifactSha256 = createHash("sha256").update(readFileSync(runtimeZip)).digest("hex");
+    const adapterArtifactSha256 = createHash("sha256").update(readFileSync(adapterZip)).digest("hex");
     const runtimeAsset = new Asset(this, "RuntimeZip", { path: runtimeZip });
     const runs = new dynamodb.Table(this, "RunTable", {
       tableName: "IncidentTriageDemoAgentRun", billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
@@ -162,6 +163,7 @@ export class AgentStack extends DemoStack {
     new CfnOutput(this, "FaultyEndpointArn", { value: endpointArn });
     new CfnOutput(this, "EndpointName", { value: "faulty" });
     new CfnOutput(this, "AlarmAdapterArn", { value: adapter.functionArn });
+    new CfnOutput(this, "AlarmAdapterCodeSha256", { value: adapterArtifactSha256, description: "SHA-256 of the checked alarm adapter ZIP currently deployed by this stack." });
     new CfnOutput(this, "RunTableName", { value: runs.tableName });
     new CfnOutput(this, "RuntimeAssetObjectKey", { value: bootstrapValue(publishedRuntimeAssetKey.valueAsString, runtimeAsset.s3ObjectKey) });
     new CfnOutput(this, "RuntimeArtifactSha256", { value: bootstrapValue(publishedRuntimeArtifactDigest.valueAsString, artifactSha256) });

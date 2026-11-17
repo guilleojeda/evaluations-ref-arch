@@ -4,7 +4,11 @@ from datetime import datetime, timezone
 import importlib.util
 import json
 from fnmatch import fnmatchcase
+import os
 from pathlib import Path
+import subprocess
+import tempfile
+import textwrap
 import unittest
 from unittest.mock import patch
 import yaml
@@ -41,6 +45,202 @@ class ReleaseTests(unittest.TestCase):
             self.assertIn(token, deploy)
         self.assertIn("No fixed AGENT_PUBLICATION#faulty record exists", deploy)
         self.assertIn("Adapter RevisionId changed during ordinary reconciliation", deploy)
+
+    def test_ordinary_shell_reconciles_fresh_and_stale_same_revision_states(self):
+        """Exercise the release shell with executable fake AWS/CDK transports."""
+        root = Path(__file__).parents[1]
+        deploy_source = (root / "scripts/deploy-agent.sh").read_text()
+        sha = "a" * 40
+        runtime_id = "IncidentTriageDemoAgent-Test123456"
+        runtime_arn = f"arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/{runtime_id}"
+        endpoint_arn = f"{runtime_arn}/runtime-endpoint/faulty"
+        current_source = "b" * 40
+        current_digest = "c" * 64
+        adapter_code = "d" * 64
+        bootstrap_revision = "e" * 40
+        bootstrap_digest = "f" * 64
+
+        fake_aws = textwrap.dedent(r'''
+            #!/usr/bin/env python3
+            import json, os, sys
+            from pathlib import Path
+            state_path = Path(os.environ["FIXTURE_STATE"])
+            state = json.loads(state_path.read_text())
+            args = sys.argv[1:]
+            service, operation = args[0], args[1]
+            def arg(name):
+                try:
+                    return args[args.index(name) + 1]
+                except (ValueError, IndexError):
+                    return None
+            def save():
+                state_path.write_text(json.dumps(state))
+            def out(value):
+                print(json.dumps(value))
+            if service == "sts" and operation == "assume-role":
+                out({"AccessKeyId": "access", "SecretAccessKey": "secret", "SessionToken": "token"})
+            elif service == "sts" and operation == "get-caller-identity":
+                print("arn:aws:sts::027224425948:assumed-role/cdk-evaltalk-deploy-role-027224425948-us-east-1/test" if arg("--output") == "text" else json.dumps({"Arn": "arn:aws:sts::027224425948:assumed-role/cdk-evaltalk-deploy-role-027224425948-us-east-1/test"}))
+            elif service == "cloudformation" and operation == "describe-stacks":
+                if arg("--stack-name") == "IncidentTriageDemoApp":
+                    out({"Stacks": [{"Outputs": [{"OutputKey": "ApiUrl", "OutputValue": "https://api123.execute-api.us-east-1.amazonaws.com"}]}]})
+                elif state.get("stack") is None:
+                    print("Stack does not exist", file=sys.stderr)
+                    raise SystemExit(255)
+                else:
+                    out({"Stacks": [state["stack"]]})
+            elif service == "cloudformation" and operation == "list-stack-resources":
+                out({"StackResourceSummaries": []})
+            elif service == "cloudformation" and operation == "describe-change-set":
+                if state.get("change_set") is None:
+                    print("ChangeSet does not exist", file=sys.stderr)
+                    raise SystemExit(255)
+                out(state["change_set"])
+            elif service == "cloudformation" and operation == "delete-change-set":
+                state["delete_calls"] = state.get("delete_calls", 0) + 1
+                state["change_set"] = None
+                save()
+            elif service == "cloudformation" and operation == "get-template":
+                out({"TemplateBody": "{}"})
+            elif service == "cloudformation" and operation == "execute-change-set":
+                state["execute_calls"] = state.get("execute_calls", 0) + 1
+                parameters = state["change_set"]["Parameters"]
+                outputs = state["outputs"]
+                state["stack"] = {"StackStatus": "UPDATE_COMPLETE", "StackId": "stack-id", "Parameters": parameters, "Outputs": outputs}
+                save()
+            elif service == "dynamodb" and operation == "get-item":
+                state["ddb_calls"] = state.get("ddb_calls", 0) + 1
+                save()
+                out({"Item": state["publication"]} if state.get("publication") else {})
+            elif service == "lambda" and operation == "get-function-configuration":
+                out(state["adapter"])
+            elif service == "bedrock-agentcore-control" and operation == "get-agent-runtime-endpoint":
+                out(state["endpoint"])
+            else:
+                print(f"unexpected fake aws call: {args}", file=sys.stderr)
+                raise SystemExit(2)
+        ''').lstrip()
+        fake_cdk = textwrap.dedent(r'''
+            #!/usr/bin/env python3
+            import json, os, sys
+            from pathlib import Path
+            state_path = Path(os.environ["FIXTURE_STATE"])
+            state = json.loads(state_path.read_text())
+            args = sys.argv[1:]
+            parameters = []
+            for index, value in enumerate(args):
+                if value == "--parameters":
+                    _stack_name, parameter = args[index + 1].split(":", 1)
+                    key, value = parameter.split("=", 1)
+                    parameters.append({"ParameterKey": key, "ParameterValue": value})
+            state["cdk_calls"] = state.get("cdk_calls", 0) + 1
+            state["change_set"] = {"ChangeSetId": "arn:aws:cloudformation:us-east-1:027224425948:changeSet/fake/11111111-1111-4111-8111-111111111111", "StackId": "stack-id", "StackName": "IncidentTriageDemoAgent", "Status": "CREATE_COMPLETE", "ExecutionStatus": "AVAILABLE", "Parameters": parameters}
+            state_path.write_text(json.dumps(state))
+        ''').lstrip()
+        fake_node = "#!/bin/sh\nexit 0\n"
+        fake_git = "#!/bin/sh\nexit 0\n"
+
+        def run_fixture(kind: str, *, stale_change_set: bool = False, adapter_mismatch: bool = False):
+            with tempfile.TemporaryDirectory(prefix="agent-release-fixture-") as temporary:
+                fixture = Path(temporary)
+                (fixture / "scripts").mkdir()
+                (fixture / ".artifacts/agent/cdk").mkdir(parents=True)
+                (fixture / "node_modules/.bin").mkdir(parents=True)
+                (fixture / "bin").mkdir()
+                (fixture / "scripts/deploy-agent.sh").write_text(deploy_source)
+                (fixture / "scripts/deploy-agent.sh").chmod(0o755)
+                (fixture / ".artifacts/agent/cdk/manifest.json").write_text(json.dumps({"artifacts": {"IncidentTriageDemoAgent": {"properties": {"templateFile": "template.json"}}}}))
+                (fixture / ".artifacts/agent/cdk/template.json").write_text("{}")
+                (fixture / "bin/aws").write_text(fake_aws)
+                (fixture / "bin/aws").chmod(0o755)
+                (fixture / "bin/node").write_text(fake_node)
+                (fixture / "bin/node").chmod(0o755)
+                (fixture / "bin/git").write_text(fake_git)
+                (fixture / "bin/git").chmod(0o755)
+                (fixture / "node_modules/.bin/cdk").write_text(fake_cdk)
+                (fixture / "node_modules/.bin/cdk").chmod(0o755)
+                outputs = [
+                    {"OutputKey": "SourceRevision", "OutputValue": sha},
+                    {"OutputKey": "RuntimeId", "OutputValue": runtime_id},
+                    {"OutputKey": "RuntimeArn", "OutputValue": runtime_arn},
+                    {"OutputKey": "FaultyEndpointArn", "OutputValue": endpoint_arn},
+                    {"OutputKey": "EndpointName", "OutputValue": "faulty"},
+                    {"OutputKey": "RunTableName", "OutputValue": "IncidentTriageDemoAgentRun"},
+                    {"OutputKey": "RuntimeAssetObjectKey", "OutputValue": "bootstrap.zip"},
+                    {"OutputKey": "RuntimeArtifactSha256", "OutputValue": bootstrap_digest},
+                    {"OutputKey": "AlarmAdapterCodeSha256", "OutputValue": adapter_code},
+                ]
+                publication = {
+                    "pk": {"S": "AGENT_PUBLICATION#faulty"},
+                    "candidateId": {"S": "faulty"}, "status": {"S": "reference"},
+                    "runtimeArn": {"S": runtime_arn}, "runtimeVersion": {"S": "19"},
+                    "endpointName": {"S": "faulty"}, "endpointArn": {"S": endpoint_arn},
+                    "sourceRevision": {"S": current_source}, "artifactSha256": {"S": current_digest},
+                    "adapterArn": {"S": "arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter"},
+                    "adapterRevisionId": {"S": "publisher-revision"}, "adapterCodeSha256": {"S": "0" * 64},
+                }
+                adapter_digest = "0" * 64 if adapter_mismatch else adapter_code
+                import base64
+                adapter = {
+                    "FunctionArn": publication["adapterArn"]["S"], "RevisionId": "ordinary-refresh-revision",
+                    "CodeSha256": base64.b64encode(bytes.fromhex(adapter_digest)).decode(),
+                    "Environment": {"Variables": {
+                        "AGENT_RUNTIME_ARN": runtime_arn, "AGENT_ENDPOINT_NAME": "faulty",
+                        "AGENT_RUNTIME_VERSION": "19", "AGENT_SOURCE_REVISION": current_source,
+                        "AGENT_ARTIFACT_SHA256": current_digest,
+                    }},
+                }
+                stack = None
+                if kind != "fresh":
+                    stale = stale_change_set or kind == "same_revision_stale"
+                    parameters = [
+                        {"ParameterKey": "SourceRevision", "ParameterValue": sha},
+                        {"ParameterKey": "AppHttpApiId", "ParameterValue": "api123"},
+                        {"ParameterKey": "PublishedVersion", "ParameterValue": "18" if stale else "19"},
+                        {"ParameterKey": "PublishedCodeRevision", "ParameterValue": "1" * 40 if stale else current_source},
+                        {"ParameterKey": "PublishedArtifactDigest", "ParameterValue": "2" * 64 if stale else current_digest},
+                        {"ParameterKey": "PublishedRuntimeAssetBucket", "ParameterValue": "assets"},
+                        {"ParameterKey": "PublishedRuntimeAssetKey", "ParameterValue": "bootstrap.zip"},
+                        {"ParameterKey": "PublishedRuntimeCodeRevision", "ParameterValue": bootstrap_revision},
+                        {"ParameterKey": "PublishedRuntimeArtifactDigest", "ParameterValue": bootstrap_digest},
+                        {"ParameterKey": "PublishedRuntimeBootstrapEnabled", "ParameterValue": "true"},
+                    ]
+                    stack = {"StackStatus": "UPDATE_COMPLETE", "StackId": "stack-id", "Parameters": parameters, "Outputs": outputs}
+                state = {"stack": stack, "outputs": outputs, "publication": None if kind == "fresh" else publication, "adapter": adapter,
+                         "endpoint": {"agentRuntimeArn": runtime_arn, "agentRuntimeEndpointArn": endpoint_arn, "status": "READY", "liveVersion": "19", "targetVersion": "19"},
+                         "change_set": None, "cdk_calls": 0, "delete_calls": 0, "execute_calls": 0, "ddb_calls": 0}
+                if stale_change_set:
+                    state["change_set"] = {"ChangeSetId": "arn:aws:cloudformation:us-east-1:027224425948:changeSet/stale/11111111-1111-4111-8111-111111111111", "StackId": "stack-id", "StackName": "IncidentTriageDemoAgent", "Status": "CREATE_COMPLETE", "ExecutionStatus": "AVAILABLE", "Parameters": [{"ParameterKey": "PublishedVersion", "ParameterValue": "18"}]}
+                state_path = fixture / "state.json"
+                state_path.write_text(json.dumps(state))
+                environment = {
+                    **os.environ, "PATH": f"{fixture / 'bin'}:{os.environ['PATH']}", "FIXTURE_STATE": str(state_path),
+                    "PHASE0_AGENT_STACK": "IncidentTriageDemoAgent", "PHASE0_APP_STACK": "IncidentTriageDemoApp",
+                    "CDK_DEPLOY_ROLE_ARN": "arn:aws:iam::027224425948:role/deploy", "GITHUB_RUN_ID": "fixture",
+                    "GITHUB_SHA": sha, "PHASE0_ASSET_BUCKET": "assets", "RUNNER_TEMP": str(fixture),
+                    "GITHUB_STEP_SUMMARY": str(fixture / "summary.md"),
+                }
+                result = subprocess.run(["bash", "scripts/deploy-agent.sh"], cwd=fixture, env=environment, text=True, capture_output=True, timeout=30)
+                return result, json.loads(state_path.read_text())
+
+        fresh_result, fresh_state = run_fixture("fresh")
+        self.assertEqual(0, fresh_result.returncode, fresh_result.stdout + fresh_result.stderr)
+        self.assertEqual(1, fresh_state["cdk_calls"])
+        self.assertEqual(1, fresh_state["execute_calls"])
+        self.assertEqual(0, fresh_state["ddb_calls"])
+
+        stale_result, stale_state = run_fixture("same_revision_stale", stale_change_set=True)
+        self.assertEqual(0, stale_result.returncode, stale_result.stdout + stale_result.stderr)
+        self.assertEqual(1, stale_state["cdk_calls"], stale_result.stdout + stale_result.stderr)
+        self.assertEqual(1, stale_state["delete_calls"])
+        self.assertEqual(1, stale_state["execute_calls"])
+        self.assertIn("stale", stale_result.stderr)
+
+        mismatch_result, mismatch_state = run_fixture("existing", adapter_mismatch=True)
+        self.assertNotEqual(0, mismatch_result.returncode)
+        self.assertEqual(0, mismatch_state["cdk_calls"])
+        self.assertEqual(0, mismatch_state["execute_calls"])
+        self.assertIn("checked adapter-code authority", mismatch_result.stderr)
 
     def test_cutover_helper_has_only_prepare_and_execute_plan_operations(self):
         helper = (Path(__file__).parents[1] / "scripts/retire-agent-endpoint.py").read_text()

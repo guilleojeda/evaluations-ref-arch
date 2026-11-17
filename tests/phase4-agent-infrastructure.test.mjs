@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
@@ -115,6 +116,10 @@ test('agent stack contains one Runtime, a derived faulty endpoint binding, and i
     'the stack must expose the stable derived faulty endpoint identity');
   assert.ok(references(Outputs.FaultyEndpointArn?.Value, runtimeId),
     'the derived endpoint identity must target the stack Runtime');
+  const adapterZip = new URL('../.artifacts/agent/alarm-adapter.zip', import.meta.url);
+  assert.equal(Outputs.AlarmAdapterCodeSha256?.Value,
+    createHash('sha256').update(readFileSync(adapterZip)).digest('hex'),
+    'the stack must expose the hash of the checked adapter ZIP as ordinary-release code authority');
 
   const tables = resourcesOf(Resources, 'AWS::DynamoDB::Table');
   assert.equal(tables.length, 1, 'the agent stack must own one separate durable run table');

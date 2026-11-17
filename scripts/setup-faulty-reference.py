@@ -404,15 +404,46 @@ def _wait_read(read: Callable[[], Mapping[str, Any]], *, success: str = "READY",
 
 
 def _stack_runtime_id(cloudformation: Any, stack_name: str) -> str:
+    return _stack_outputs(cloudformation, stack_name)["RuntimeId"]
+
+
+def _stack_outputs(cloudformation: Any, stack_name: str) -> dict[str, str]:
     response = cloudformation.describe_stacks(StackName=stack_name)
     stacks = response.get("Stacks")
     if not isinstance(stacks, list) or len(stacks) != 1:
         raise RuntimeError("agent stack read did not identify exactly one stack")
     outputs = stacks[0].get("Outputs", [])
-    runtime_ids = [item.get("OutputValue") for item in outputs if item.get("OutputKey") == "RuntimeId"]
-    if len(runtime_ids) != 1 or not isinstance(runtime_ids[0], str) or not runtime_ids[0]:
+    if not isinstance(outputs, list):
+        raise RuntimeError("agent stack outputs are malformed")
+    values: dict[str, str] = {}
+    for item in outputs:
+        if not isinstance(item, Mapping):
+            raise RuntimeError("agent stack output is malformed")
+        key, value = item.get("OutputKey"), item.get("OutputValue")
+        if not isinstance(key, str) or not isinstance(value, str) or not value:
+            raise RuntimeError("agent stack output has an invalid identity")
+        if key in values:
+            raise RuntimeError(f"agent stack exposes duplicate {key} outputs")
+        values[key] = value
+    if not values.get("RuntimeId"):
         raise RuntimeError("agent stack does not expose one RuntimeId output")
-    return runtime_ids[0]
+    return values
+
+
+def _expected_adapter_code_sha(outputs: Mapping[str, str], descriptor: Mapping[str, Any]) -> tuple[str | None, str]:
+    """Prefer the deployed stack's checked adapter asset over archive metadata."""
+    if "AlarmAdapterCodeSha256" in outputs:
+        value = outputs["AlarmAdapterCodeSha256"]
+        if not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError("agent stack AlarmAdapterCodeSha256 output is invalid")
+        return value, "stack"
+    adapter = descriptor.get("adapter")
+    if isinstance(adapter, Mapping) and adapter.get("codeSha256"):
+        value = adapter["codeSha256"]
+        if not isinstance(value, str) or not re.fullmatch(r"[0-9a-f]{64}", value):
+            raise ValueError("descriptor adapter.codeSha256 is invalid")
+        return value, "descriptor"
+    return None, "native"
 
 
 def _list_versions(control: Any, runtime_id: str) -> list[str]:
@@ -600,7 +631,13 @@ def _adapter_code_hash(config: Mapping[str, Any]) -> str | None:
     return raw.hex()
 
 
-def _ensure_adapter(adapter_client: Any, descriptor: Mapping[str, Any], runtime_arn: str, version: str) -> dict[str, Any]:
+def _ensure_adapter(
+    adapter_client: Any,
+    descriptor: Mapping[str, Any],
+    runtime_arn: str,
+    version: str,
+    expected_code_sha256: str | None = None,
+) -> dict[str, Any]:
     function_name = _adapter_function_name(descriptor)
     config = _wait_read(
         lambda: adapter_client.get_function_configuration(FunctionName=function_name),
@@ -612,9 +649,6 @@ def _ensure_adapter(adapter_client: Any, descriptor: Mapping[str, Any], runtime_
     if isinstance(expected_adapter, dict):
         if expected_adapter.get("functionArn") and config.get("FunctionArn") != expected_adapter["functionArn"]:
             raise RuntimeError("alarm adapter ARN differs from the fixed descriptor")
-        expected_code = expected_adapter.get("codeSha256")
-        if expected_code and _adapter_code_hash(config) != expected_code:
-            raise RuntimeError("alarm adapter code differs from the fixed descriptor")
         if expected_adapter.get("tracingMode") and config.get("TracingConfig", {}).get("Mode") != expected_adapter["tracingMode"]:
             raise RuntimeError("alarm adapter tracing differs from the fixed descriptor")
 
@@ -645,8 +679,11 @@ def _ensure_adapter(adapter_client: Any, descriptor: Mapping[str, Any], runtime_
         expected_function_arn = f"arn:aws:lambda:{REGION}:{ACCOUNT}:function:{function_name}"
     if config.get("FunctionArn") != expected_function_arn:
         raise RuntimeError("alarm adapter function identity differs from the fixed binding")
-    if _adapter_code_hash(config) is None:
+    observed_code_sha = _adapter_code_hash(config)
+    if observed_code_sha is None:
         raise RuntimeError("alarm adapter code hash is unavailable")
+    if expected_code_sha256 and observed_code_sha != expected_code_sha256:
+        raise RuntimeError("alarm adapter code differs from the deployed stack/reference binding")
     if config.get("Environment", {}).get("Variables") != environment:
         raise RuntimeError("alarm adapter environment readback does not match the verified publication")
     if config.get("TracingConfig", {}).get("Mode") != "Active":
@@ -820,8 +857,10 @@ def preflight_faulty_reference(session: Any, *, require_rollback: bool = False) 
         })
 
     cloudformation = session.client("cloudformation")
-    runtime_id = _stack_runtime_id(cloudformation, descriptor["runtimeName"])
+    stack_outputs = _stack_outputs(cloudformation, descriptor["runtimeName"])
+    runtime_id = stack_outputs["RuntimeId"]
     runtime_arn = _runtime_arn(runtime_id)
+    expected_adapter_code_sha, adapter_code_source = _expected_adapter_code_sha(stack_outputs, descriptor)
     stack = _preflight_stack(cloudformation, runtime_id, runtime_arn)
     control = session.client("bedrock-agentcore-control")
     current = _wait_read(
@@ -871,8 +910,8 @@ def preflight_faulty_reference(session: Any, *, require_rollback: bool = False) 
     adapter_code_sha = _adapter_code_hash(adapter)
     if adapter_code_sha is None:
         raise RuntimeError("alarm adapter preflight code hash is unavailable")
-    if isinstance(expected_adapter, Mapping) and expected_adapter.get("codeSha256") and adapter_code_sha != expected_adapter["codeSha256"]:
-        raise RuntimeError("alarm adapter preflight code differs from the fixed descriptor")
+    if expected_adapter_code_sha and adapter_code_sha != expected_adapter_code_sha:
+        raise RuntimeError("alarm adapter preflight code differs from the deployed stack/reference binding")
     environment = adapter.get("Environment", {}).get("Variables", {})
     if environment.get("AGENT_RUNTIME_ARN") != runtime_arn or environment.get("AGENT_ENDPOINT_NAME") != "faulty":
         raise RuntimeError("alarm adapter preflight is bound outside the fixed Runtime endpoint")
@@ -952,6 +991,8 @@ def preflight_faulty_reference(session: Any, *, require_rollback: bool = False) 
             "arn": adapter.get("FunctionArn"),
             "revisionId": adapter.get("RevisionId"),
             "codeSha256": adapter_code_sha,
+            "expectedCodeSha256": expected_adapter_code_sha,
+            "expectedCodeSource": adapter_code_source,
             "tracing": adapter.get("TracingConfig", {}).get("Mode"),
         },
         "archive": archive,
@@ -969,8 +1010,10 @@ def setup_faulty_reference(session: Any) -> dict[str, Any]:
     verified = _verified_inputs(session, descriptor)
 
     cloudformation = session.client("cloudformation")
-    runtime_id = _stack_runtime_id(cloudformation, descriptor["runtimeName"])
+    stack_outputs = _stack_outputs(cloudformation, descriptor["runtimeName"])
+    runtime_id = stack_outputs["RuntimeId"]
     runtime_arn = _runtime_arn(runtime_id)
+    expected_adapter_code_sha, _adapter_code_source = _expected_adapter_code_sha(stack_outputs, descriptor)
     control = session.client("bedrock-agentcore-control")
     existing_endpoint = _read_existing_endpoint(control, runtime_id, descriptor["endpointName"])
     if existing_endpoint is not None:
@@ -981,7 +1024,7 @@ def setup_faulty_reference(session: Any) -> dict[str, Any]:
     endpoint = _ensure_endpoint(control, runtime_id, runtime_arn, descriptor["endpointName"], version, descriptor)
 
     adapter_client = session.client("lambda")
-    adapter = _ensure_adapter(adapter_client, descriptor, runtime_arn, version)
+    adapter = _ensure_adapter(adapter_client, descriptor, runtime_arn, version, expected_adapter_code_sha)
     item = _record_item(
         descriptor,
         runtime_arn=runtime_arn,

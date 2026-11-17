@@ -281,21 +281,31 @@ class NativeController:
 
 
 class NativeCloudFormation:
-    def __init__(self):
+    def __init__(self, adapter_code_sha: str | None = None):
         self.calls: list[tuple[str, dict[str, object]]] = []
+        self.adapter_code_sha = adapter_code_sha
 
     def describe_stacks(self, **request: object) -> dict[str, object]:
         self.calls.append(("describe_stacks", copy.deepcopy(request)))
-        return {"Stacks": [{"Outputs": [{"OutputKey": "RuntimeId", "OutputValue": RUNTIME_ID}]}]}
+        outputs: list[dict[str, str]] = [{"OutputKey": "RuntimeId", "OutputValue": RUNTIME_ID}]
+        if self.adapter_code_sha is not None:
+            outputs.append({"OutputKey": "AlarmAdapterCodeSha256", "OutputValue": self.adapter_code_sha})
+        return {"Stacks": [{"Outputs": outputs}]}
 
 
 class NativePreflightCloudFormation(NativeCloudFormation):
+    def __init__(self, adapter_code_sha: str | None = None):
+        super().__init__(adapter_code_sha)
+
     def describe_stacks(self, **request: object) -> dict[str, object]:
         self.calls.append(("describe_stacks", copy.deepcopy(request)))
+        outputs: list[dict[str, str]] = [{"OutputKey": "RuntimeId", "OutputValue": RUNTIME_ID}]
+        if self.adapter_code_sha is not None:
+            outputs.append({"OutputKey": "AlarmAdapterCodeSha256", "OutputValue": self.adapter_code_sha})
         return {"Stacks": [{
             "StackId": f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:stack/IncidentTriageDemoAgent/id",
             "StackStatus": "UPDATE_COMPLETE",
-            "Outputs": [{"OutputKey": "RuntimeId", "OutputValue": RUNTIME_ID}],
+            "Outputs": outputs,
         }]}
 
     def list_stack_resources(self, **request: object) -> dict[str, object]:
@@ -383,6 +393,7 @@ class FaultyReferenceAcceptance(unittest.TestCase):
             "controller": {"tableName": TABLE_NAME, "pk": PUBLICATION_PK},
             "runtimeEnvironment": self.runtime_environment,
             "runtimeConfiguration": self.runtime_configuration,
+            "adapter": {"functionArn": ADAPTER_ARN, "functionName": "IncidentTriageDemoAlarmAdapter", "codeSha256": "b" * 64, "tracingMode": "Active"},
         }
         descriptor_path = self.scripts / "faulty-reference.json"
         descriptor_path.write_text(json.dumps(self.descriptor, sort_keys=True) + "\n")
@@ -577,10 +588,63 @@ class FaultyReferenceAcceptance(unittest.TestCase):
         self.assertEqual("ready", result["status"])
         self.assertTrue(result["trustedRollback"]["eligible"])
         self.assertEqual("7", result["trustedRollback"]["runtimeVersion"])
+        self.assertEqual("b" * 64, result["adapter"]["codeSha256"])
+        self.assertEqual("descriptor", result["adapter"]["expectedCodeSource"])
         self.assertFalse(control.runtime_updates)
         self.assertFalse(control.endpoint_creates)
         self.assertFalse(adapter.updates)
         self.assertFalse(controller.items)
+
+    def test_stack_adapter_output_overrides_archive_sha_for_legitimate_adapter_release(self):
+        module = self._load()
+        control, adapter, controller = self._native(historical=True, endpoint_present=True)
+        deployed_adapter_sha = "c" * 64
+        adapter.config["CodeSha256"] = base64.b64encode(bytes.fromhex(deployed_adapter_sha)).decode()
+        adapter.environment = {
+            "AGENT_RUNTIME_ARN": RUNTIME_ARN,
+            "AGENT_ENDPOINT_NAME": "faulty",
+            "AGENT_RUNTIME_VERSION": "7",
+            "AGENT_ALARM_ARN": ALARM_ARN,
+            "AGENT_SOURCE_REVISION": SOURCE_REVISION,
+            "AGENT_ARTIFACT_SHA256": sha256(self.archive_bytes),
+        }
+        adapter.config["Environment"] = {"Variables": copy.deepcopy(adapter.environment)}
+        preflight_session = NativeSession(self.s3, control, adapter, controller, NativePreflightCloudFormation(deployed_adapter_sha))
+        preflight_session.clients["sts"] = NativeSTS()
+        result = module.preflight_faulty_reference(preflight_session)
+        self.assertEqual("ready", result["status"])
+        self.assertEqual(deployed_adapter_sha, result["adapter"]["codeSha256"])
+        self.assertEqual(deployed_adapter_sha, result["adapter"]["expectedCodeSha256"])
+        self.assertEqual("stack", result["adapter"]["expectedCodeSource"])
+
+    def test_stack_adapter_output_rejects_unknown_native_code_drift(self):
+        module = self._load()
+        control, adapter, controller = self._native(historical=True, endpoint_present=True)
+        adapter.environment = {
+            "AGENT_RUNTIME_ARN": RUNTIME_ARN,
+            "AGENT_ENDPOINT_NAME": "faulty",
+            "AGENT_RUNTIME_VERSION": "7",
+            "AGENT_ALARM_ARN": ALARM_ARN,
+            "AGENT_SOURCE_REVISION": SOURCE_REVISION,
+            "AGENT_ARTIFACT_SHA256": sha256(self.archive_bytes),
+        }
+        adapter.config["Environment"] = {"Variables": copy.deepcopy(adapter.environment)}
+        preflight_session = NativeSession(self.s3, control, adapter, controller, NativePreflightCloudFormation("c" * 64))
+        preflight_session.clients["sts"] = NativeSTS()
+        with self.assertRaisesRegex(RuntimeError, "code"):
+            module.preflight_faulty_reference(preflight_session)
+        self.assertFalse(adapter.updates)
+        self.assertFalse(controller.items)
+
+    def test_setup_uses_deployed_stack_adapter_output_for_publication_record(self):
+        deployed_adapter_sha = "c" * 64
+        control, adapter, controller = self._native(historical=True)
+        adapter.config["CodeSha256"] = base64.b64encode(bytes.fromhex(deployed_adapter_sha)).decode()
+        self.cloudformation = NativeCloudFormation(deployed_adapter_sha)
+        module = self._load()
+        self._call_operation(module, control, adapter, controller)
+        self.assertEqual(attr(deployed_adapter_sha), controller.items[PUBLICATION_PK]["adapterCodeSha256"])
+        self.assertEqual("reference", controller.items[PUBLICATION_PK]["status"]["S"])
 
     def test_preflight_reports_reconcilable_endpoint_adapter_version_gap(self):
         module = self._load()

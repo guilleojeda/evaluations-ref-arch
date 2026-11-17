@@ -70,6 +70,18 @@ read_published_binding() {
   runtime_arn="$(stack_output RuntimeArn <<<"$stack_state")"
   runtime_id="$(stack_output RuntimeId <<<"$stack_state")"
   expected_endpoint="$runtime_arn/runtime-endpoint/faulty"
+  local adapter_code_authority
+  adapter_code_authority="$(stack_output AlarmAdapterCodeSha256 <<<"$stack_state")"
+  if [[ -z "$adapter_code_authority" ]]; then
+    if ! adapter_code_authority="$(jq -er '.adapter.codeSha256 // empty' scripts/faulty-reference.json)"; then
+      echo "Agent stack has no adapter-code authority and the fixed initial descriptor is unavailable" >&2
+      return 1
+    fi
+  fi
+  [[ "$adapter_code_authority" =~ ^[a-f0-9]{64}$ ]] || {
+    echo "Agent stack adapter-code authority is malformed" >&2
+    return 1
+  }
   [[ "$publication_candidate" == faulty && "$publication_status" == reference &&
      "$publication_runtime" == "$runtime_arn" && "$publication_version" =~ ^[1-9][0-9]*$ &&
      "$publication_endpoint_name" == faulty && "$publication_endpoint" == "$expected_endpoint" &&
@@ -97,10 +109,14 @@ read_published_binding() {
   adapter_version="$(jq -r '.AGENT_RUNTIME_VERSION // empty' <<<"$adapter_env")"
   adapter_source="$(jq -r '.AGENT_SOURCE_REVISION // empty' <<<"$adapter_env")"
   adapter_digest="$(jq -r '.AGENT_ARTIFACT_SHA256 // empty' <<<"$adapter_env")"
+  if [[ "$adapter_code_digest" != "$adapter_code_authority" ]]; then
+    echo "Deployed alarm adapter code does not match the checked adapter-code authority" >&2
+    return 1
+  fi
   [[ "$adapter_function" == "$publication_adapter" &&
      "$adapter_runtime" == "$publication_runtime" && "$adapter_endpoint" == "$publication_endpoint_name" &&
      "$adapter_version" == "$publication_version" && "$adapter_source" == "$publication_revision" &&
-     "$adapter_digest" == "$publication_digest" && "$adapter_code_digest" == "$publication_adapter_code" ]] || {
+     "$adapter_digest" == "$publication_digest" ]] || {
     echo "Agent adapter does not match the strongly read AGENT_PUBLICATION#faulty tuple; run the explicit publisher maintenance operation" >&2
     return 1
   }
@@ -118,10 +134,11 @@ read_published_binding() {
     echo "Native faulty endpoint does not match the strongly read AGENT_PUBLICATION#faulty tuple" >&2
     return 1
   }
-  # The Lambda RevisionId is mutable metadata: an ordinary CloudFormation
-  # reconciliation can refresh it while preserving the exact published code
-  # and environment tuple.  CodeSha256 and all serving identity fields above
-  # remain mandatory; a refreshed RevisionId is safe to observe and retry.
+  # The publisher row retains the historical adapter code/revision metadata.
+  # Independent ordinary adapter releases may change both; the current stack
+  # output is the authoritative checked code hash, while the Runtime endpoint
+  # and publication environment tuple above remain publisher-owned identity.
+  # Lambda RevisionId drift is therefore safe to observe and retry.
   if [[ -n "$adapter_revision" && "$adapter_revision" != "$publication_adapter_revision" ]]; then
     echo "Adapter RevisionId changed during ordinary reconciliation; retaining the verified publisher tuple" >&2
   fi
@@ -185,6 +202,31 @@ verify_publisher_parameters() {
      "$(stack_parameter PublishedRuntimeArtifactDigest <<<"$stack_state")" == "$bootstrap_runtime_artifact_digest" &&
      "$(stack_parameter PublishedRuntimeBootstrapEnabled <<<"$stack_state")" == true ]] || {
     echo "Agent stack parameters do not preserve the freshly verified publisher/bootstrap tuples" >&2
+    return 1
+  }
+}
+
+verify_adapter_code_output() {
+  local expected adapter_state adapter_code_sha adapter_code_digest
+  expected="$(stack_output AlarmAdapterCodeSha256 <<<"$stack_state")"
+  if [[ -z "$expected" ]]; then
+    expected="$(jq -er '.adapter.codeSha256 // empty' scripts/faulty-reference.json)" || {
+      echo "Agent stack has no adapter-code authority and the fixed initial descriptor is unavailable" >&2
+      return 1
+    }
+  fi
+  [[ "$expected" =~ ^[a-f0-9]{64}$ ]] || {
+    echo "Agent stack adapter-code authority is malformed" >&2
+    return 1
+  }
+  adapter_state="$(deploy_aws lambda get-function-configuration --function-name IncidentTriageDemoAlarmAdapter --output json)"
+  adapter_code_sha="$(jq -r '.CodeSha256 // empty' <<<"$adapter_state")"
+  if ! adapter_code_digest="$(printf '%s' "$adapter_code_sha" | base64 --decode 2>/dev/null | xxd -p -c 256)"; then
+    echo "Agent adapter code hash is unreadable; run the explicit publisher maintenance operation" >&2
+    return 1
+  fi
+  [[ "$adapter_code_digest" == "$expected" ]] || {
+    echo "Deployed alarm adapter code does not match the checked adapter-code authority" >&2
     return 1
   }
 }
@@ -260,9 +302,11 @@ fi
 deployed_revision="$(stack_output SourceRevision <<<"$stack_state")"
 if [[ "$deployed_revision" == "$GITHUB_SHA" ]]; then
   if stack_has_parameter PublishedVersion && stack_has_parameter PublishedRuntimeBootstrapEnabled; then
-    verify_publisher_parameters
-    verify_outputs
-    exit 0
+    if verify_publisher_parameters; then
+      verify_outputs
+      exit 0
+    fi
+    echo "Same-revision agent stack parameters are stale; continuing with ordinary reconciliation" >&2
   fi
 fi
 
@@ -277,7 +321,7 @@ if [[ "$status" != ABSENT && "$status" != REVIEW_IN_PROGRESS ]]; then
     --parameters "$stack:PublishedRuntimeArtifactDigest=$bootstrap_runtime_artifact_digest"
     --parameters "$stack:PublishedRuntimeBootstrapEnabled=true")
   [[ "$deployed_revision" =~ ^[a-f0-9]{40}$ ]] && git cat-file -e "$deployed_revision^{commit}" || { echo "Invalid deployed agent revision" >&2; exit 1; }
-  if git merge-base --is-ancestor "$GITHUB_SHA" "$deployed_revision"; then
+  if [[ "$deployed_revision" != "$GITHUB_SHA" ]] && git merge-base --is-ancestor "$GITHUB_SHA" "$deployed_revision"; then
     echo "Agent release superseded by $deployed_revision"
     exit 0
   fi
@@ -350,6 +394,7 @@ while :; do
 done
 if [[ "$fresh_stack" == true ]]; then
   echo "Verified fresh agent stack; no fixed publisher record is required until reference setup"
+  verify_adapter_code_output
 else
   read_published_binding
   read_bootstrap_binding
