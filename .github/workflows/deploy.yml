@@ -12,6 +12,7 @@ on:
           - app
           - controller
           - agent
+          - reference-setup
       rotation_from_generation:
         description: Current app credential generation (app only; leave blank for an ordinary release)
         required: false
@@ -55,6 +56,8 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       components: ${{ steps.select.outputs.components }}
+      operation: ${{ steps.select.outputs.operation }}
+      reference_setup: ${{ steps.select.outputs.reference_setup }}
       rotation_from_generation: ${{ steps.select.outputs.rotation_from_generation }}
       rotation_to_generation: ${{ steps.select.outputs.rotation_to_generation }}
     steps:
@@ -75,6 +78,22 @@ jobs:
             component="$DISPATCH_COMPONENT"
             rotation_from="${DISPATCH_ROTATION_FROM:-}"
             rotation_to="${DISPATCH_ROTATION_TO:-}"
+            if [[ "$component" == reference-setup ]]; then
+              [[ "${{ github.ref }}" == "refs/heads/demo-deploy" ]] || {
+                echo "reference-setup is only allowed on refs/heads/demo-deploy" >&2
+                exit 1
+              }
+              [[ -z "$rotation_from" && -z "$rotation_to" ]] || {
+                echo "reference-setup cannot combine with credential rotation" >&2
+                exit 1
+              }
+              echo 'components=["agent"]' >> "$GITHUB_OUTPUT"
+              echo 'operation=reference-setup' >> "$GITHUB_OUTPUT"
+              echo 'reference_setup=true' >> "$GITHUB_OUTPUT"
+              echo 'rotation_from_generation=' >> "$GITHUB_OUTPUT"
+              echo 'rotation_to_generation=' >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
             case "$component" in app|controller|agent) ;; *) echo "Invalid component" >&2; exit 1 ;; esac
             case "$rotation_from$rotation_to" in
               '') ;;
@@ -95,6 +114,8 @@ jobs:
                 ;;
             esac
             echo "components=$(node -p 'JSON.stringify([process.argv[1]])' "$component")" >> "$GITHUB_OUTPUT"
+            echo 'operation=normal' >> "$GITHUB_OUTPUT"
+            echo 'reference_setup=false' >> "$GITHUB_OUTPUT"
             case "$rotation_from$rotation_to" in
               '') ;;
               *)
@@ -104,6 +125,8 @@ jobs:
             esac
             exit 0
           fi
+          echo 'operation=normal' >> "$GITHUB_OUTPUT"
+          echo 'reference_setup=false' >> "$GITHUB_OUTPUT"
           echo 'rotation_from_generation=' >> "$GITHUB_OUTPUT"
           echo 'rotation_to_generation=' >> "$GITHUB_OUTPUT"
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
@@ -163,6 +186,12 @@ jobs:
         run: npm run check -- ${{ matrix.component }}
       - name: Verify component routing
         run: node --test tests/phase0-routing.test.mjs tests/phase12-demo-deploy-routing.test.mjs
+      - name: Run Phase 19 reference routing checks
+        if: matrix.component == 'agent'
+        run: |
+          # The alarm route spans the app alarm and the agent's adapter permission.
+          npm run check -- app
+          node --test tests/phase19-reference-routing.test.mjs
       - name: Run app release acceptance checks
         if: matrix.component == 'app'
         run: |
@@ -190,8 +219,16 @@ jobs:
           uv run --project agent --locked python -m unittest discover -s tests -p 'phase4_*_test.py'
           uv run --project agent --locked python -m unittest discover -s tests -p 'phase10_agent_capacity_evidence_test.py'
           uv run --project agent --locked python -m unittest discover -s tests -p 'phase13_*_test.py'
+          uv run --offline --project agent --locked python -m unittest discover -s tests -p 'phase14_*_test.py'
+          uv run --offline --project agent --locked python -m unittest discover -s tests -p 'phase15_deterministic_checks_test.py'
+          uv run --offline --project agent --locked python -m unittest discover -s tests -p 'phase16_*_test.py'
+          uv run --offline --project agent --locked python -m unittest discover -s tests -p 'phase17_*_test.py'
+          uv run --offline --project agent --locked python -m unittest discover -s tests -p 'phase18_*_test.py'
+          uv run --offline --project agent --locked python -m unittest discover -s tests -p 'phase19_runtime_pairs_test.py'
+          uv run --offline --project agent --locked python -m unittest discover -s tests -p 'phase19_faulty_reference_test.py'
           node --test --test-name-pattern="^(agent stack|adapter only)" tests/phase4-agent-infrastructure.test.mjs
           node --test tests/phase4-agent-release.test.mjs
+          node --test tests/phase19-agent-migration.test.mjs
       - name: Run the locked native ARM64 smoke command
         if: matrix.component == 'agent'
         run: uv run --project agent --locked python agent/native_smoke.py .artifacts/agent/runtime.zip
@@ -204,6 +241,16 @@ jobs:
           if-no-files-found: error
           include-hidden-files: true
           retention-days: 1
+          compression-level: 0
+      - name: Save the checked agent ZIP for credential-free archive review
+        if: matrix.component == 'agent' && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: agent-runtime-${{ github.sha }}
+          path: .artifacts/agent/runtime.zip
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 14
           compression-level: 0
 
   deploy:
@@ -236,6 +283,9 @@ jobs:
           path: .artifacts/${{ matrix.component }}
       - name: Confirm checked assembly
         run: test -s .artifacts/${{ matrix.component }}/cdk/manifest.json
+      - name: Confirm checked agent ZIP
+        if: matrix.component == 'agent'
+        run: test -s .artifacts/agent/runtime.zip
       - name: Set up Node.js for the component deploy CLI
         uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
         with:
@@ -244,7 +294,7 @@ jobs:
       - name: Install the pinned deploy CLI
         run: npm ci --ignore-scripts
       - name: Resolve the checked agent file asset
-        if: matrix.component == 'agent'
+        if: matrix.component == 'agent' && needs.route.outputs.operation != 'reference-setup'
         id: asset
         shell: bash
         env:
@@ -305,8 +355,53 @@ jobs:
             [[ "$version" =~ ^[0-9]+$ && "$version" -gt 0 ]]
             echo "Verified bootstrap identity: $caller; stack=$PHASE0_CDK_BOOTSTRAP_STACK status=$status version=$version"
           )
+      - name: Check agent publisher ownership before candidate asset publication
+        if: matrix.component == 'agent' && needs.route.outputs.operation != 'reference-setup'
+        id: agent_ownership
+        shell: bash
+        env:
+          AGENT_DEPLOY_ROLE_ARN: ${{ env.CDK_DEPLOY_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          (
+            stack_arn="arn:aws:cloudformation:${AWS_REGION}:${AWS_ACCOUNT_ID}:stack/${PHASE0_AGENT_STACK}/*"
+            ownership_policy="$(jq -cn --arg stack "$stack_arn" '{Version:"2012-10-17",Statement:[
+              {Effect:"Allow",Action:["cloudformation:DescribeStacks","cloudformation:ListStackResources"],Resource:$stack},
+              {Effect:"Allow",Action:"sts:GetCallerIdentity",Resource:"*"}
+            ]}')"
+            credentials="$(aws sts assume-role --role-arn "$AGENT_DEPLOY_ROLE_ARN" \
+              --role-session-name "phase19-agent-ownership-${GITHUB_RUN_ID}" --duration-seconds 900 \
+              --policy "$ownership_policy" --query Credentials --output json)"
+            export AWS_ACCESS_KEY_ID="$(jq -er .AccessKeyId <<<"$credentials")"
+            export AWS_SECRET_ACCESS_KEY="$(jq -er .SecretAccessKey <<<"$credentials")"
+            export AWS_SESSION_TOKEN="$(jq -er .SessionToken <<<"$credentials")"
+            unset credentials ownership_policy
+            caller="$(aws sts get-caller-identity --query Arn --output text)"
+            case "$caller" in
+              arn:aws:sts::027224425948:assumed-role/cdk-evaltalk-deploy-role-027224425948-us-east-1/*) ;;
+              *) echo "Unexpected agent ownership caller: $caller" >&2; exit 1 ;;
+            esac
+            error_file="$RUNNER_TEMP/agent-ownership.error"
+            if ! stack_state="$(aws cloudformation describe-stacks --stack-name "$PHASE0_AGENT_STACK" --output json 2>"$error_file")"; then
+              if grep -Eqi 'does not exist|not exist|ValidationError' "$error_file"; then
+                echo 'deferred=false' >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              cat "$error_file" >&2
+              exit 1
+            fi
+            resources="$(aws cloudformation list-stack-resources --stack-name "$PHASE0_AGENT_STACK" --output json)"
+            legacy_count="$(jq '[.StackResourceSummaries[]? | select(.LogicalResourceId == "FaultyEndpoint" and .ResourceType == "AWS::BedrockAgentCore::RuntimeEndpoint")] | length' <<<"$resources")"
+            if [[ "$legacy_count" -gt 0 ]]; then
+              legacy="$(jq -r '.StackResourceSummaries[]? | select(.LogicalResourceId == "FaultyEndpoint" and .ResourceType == "AWS::BedrockAgentCore::RuntimeEndpoint") | .PhysicalResourceId // "unknown"' <<<"$resources")"
+              echo "Agent publisher still owns legacy endpoint; deferring candidate asset publication: $legacy"
+              echo 'deferred=true' >> "$GITHUB_OUTPUT"
+            else
+              echo 'deferred=false' >> "$GITHUB_OUTPUT"
+            fi
+          )
       - name: Publish and verify the checked agent file asset
-        if: matrix.component == 'agent'
+        if: matrix.component == 'agent' && needs.route.outputs.operation != 'reference-setup' && steps.agent_ownership.outputs.deferred != 'true'
         shell: bash
         env:
           ASSET_BUCKET: ${{ steps.asset.outputs.bucket }}
@@ -395,6 +490,85 @@ jobs:
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           version: '0.13.6'
+      - name: Install locked Python for fixed reference maintenance
+        if: matrix.component == 'agent' && needs.route.outputs.operation == 'reference-setup'
+        run: uv sync --project agent --locked
       - name: Deploy and finalize the checked agent assembly
-        if: matrix.component == 'agent'
+        if: matrix.component == 'agent' && needs.route.outputs.operation != 'reference-setup'
         run: bash scripts/deploy-agent.sh
+      - name: Set up the fixed faulty reference
+        if: matrix.component == 'agent' && needs.route.outputs.operation == 'reference-setup' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/demo-deploy'
+        shell: bash
+        env:
+          REFERENCE_DEPLOY_ROLE_ARN: ${{ env.CDK_DEPLOY_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          (
+            stack_arn="arn:aws:cloudformation:${AWS_REGION}:${AWS_ACCOUNT_ID}:stack/${PHASE0_AGENT_STACK}/*"
+            change_set_arn="arn:aws:cloudformation:${AWS_REGION}:${AWS_ACCOUNT_ID}:changeSet/*/*"
+            runtime_arn="arn:aws:bedrock-agentcore:${AWS_REGION}:${AWS_ACCOUNT_ID}:runtime/IncidentTriageDemoAgent-??????????"
+            endpoint_arn="${runtime_arn}/runtime-endpoint/faulty"
+            adapter_arn="arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:IncidentTriageDemoAlarmAdapter"
+            table_arn="arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/IncidentTriageDemoControllerRun"
+            bucket_arn="arn:aws:s3:::${PHASE0_ASSET_BUCKET}"
+            reference_objects="${bucket_arn}/agent-reference/*"
+            runtime_role_arn="arn:aws:iam::${AWS_ACCOUNT_ID}:role/IncidentTriageDemoAgentRuntimeRole"
+            lambda_key_arn="arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT_ID}:key/9d894f12-dc33-4332-bb3e-df489928914b"
+            bootstrap_key_arn="arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT_ID}:key/b292b95c-709f-42c6-aa42-b934ba2c6f07"
+            reference_policy="$(jq -cn \
+              --arg stack "$stack_arn" \
+              --arg changeset "$change_set_arn" \
+              --arg runtime "$runtime_arn" \
+              --arg endpoint "$endpoint_arn" \
+              --arg adapter "$adapter_arn" \
+              --arg table "$table_arn" \
+              --arg objects "$reference_objects" \
+              --arg runtime_role "$runtime_role_arn" \
+              --arg lambda_key "$lambda_key_arn" \
+              --arg bootstrap_key "$bootstrap_key_arn" \
+              '{Version:"2012-10-17",Statement:[
+                {Effect:"Allow",Action:["cloudformation:DescribeStacks","cloudformation:ListStackResources","cloudformation:GetTemplate","cloudformation:DescribeChangeSet","cloudformation:CreateChangeSet","cloudformation:ExecuteChangeSet"],Resource:[$stack,$changeset]},
+                {Effect:"Allow",Action:["s3:GetObject","s3:GetObjectVersion"],Resource:$objects},
+                {Effect:"Allow",Action:["bedrock-agentcore:GetAgentRuntime","bedrock-agentcore:UpdateAgentRuntime","bedrock-agentcore:CreateAgentRuntimeEndpoint","bedrock-agentcore:GetAgentRuntimeEndpoint","bedrock-agentcore:UpdateAgentRuntimeEndpoint"],Resource:[$runtime,$endpoint]},
+                {Effect:"Allow",Action:"bedrock-agentcore:ListAgentRuntimeVersions",Resource:"*"},
+                {Effect:"Allow",Action:["lambda:GetFunctionConfiguration","lambda:UpdateFunctionConfiguration"],Resource:$adapter},
+                {Effect:"Allow",Action:["dynamodb:GetItem","dynamodb:PutItem"],Resource:$table},
+                {Effect:"Allow",Action:"iam:PassRole",Resource:$runtime_role},
+                {Effect:"Allow",Action:["kms:Encrypt","kms:Decrypt"],Resource:[$lambda_key,$bootstrap_key]}
+              ]}')"
+            credentials="$(aws sts assume-role --role-arn "$REFERENCE_DEPLOY_ROLE_ARN" \
+              --role-session-name "phase19-reference-${GITHUB_RUN_ID}" --duration-seconds 3600 \
+              --policy "$reference_policy" --query Credentials --output json)"
+            export AWS_ACCESS_KEY_ID="$(jq -er .AccessKeyId <<<"$credentials")"
+            export AWS_SECRET_ACCESS_KEY="$(jq -er .SecretAccessKey <<<"$credentials")"
+            export AWS_SESSION_TOKEN="$(jq -er .SessionToken <<<"$credentials")"
+            unset credentials reference_policy
+            caller="$(aws sts get-caller-identity --query Arn --output text)"
+            case "$caller" in
+              arn:aws:sts::027224425948:assumed-role/cdk-evaltalk-deploy-role-027224425948-us-east-1/*) ;;
+              *) echo "Unexpected reference-maintenance caller: $caller" >&2; exit 1 ;;
+            esac
+
+            reference_preflight="$RUNNER_TEMP/agent-reference-preflight.json"
+            uv run --offline --project agent --locked python scripts/setup-faulty-reference.py preflight > "$reference_preflight"
+            cat "$reference_preflight"
+            jq -e '.status == "ready" or .status == "partial" or .status == "already_detached"' "$reference_preflight" >/dev/null
+
+            plan="$RUNNER_TEMP/agent-reference-cutover.json"
+            preflight="$RUNNER_TEMP/agent-reference-cutover-preflight.json"
+            uv run --offline --project agent --locked python scripts/retire-agent-endpoint.py prepare --plan "$plan" > "$preflight"
+            cat "$preflight"
+            case "$(jq -er .status "$preflight")" in
+              prepared)
+                uv run --offline --project agent --locked python scripts/retire-agent-endpoint.py execute --plan "$plan"
+                ;;
+              already_detached)
+                echo "Agent endpoint ownership was already detached; no migration change set was executed."
+                ;;
+              *)
+                echo "Unexpected agent endpoint cutover status" >&2
+                exit 1
+                ;;
+            esac
+            uv run --offline --project agent --locked python scripts/setup-faulty-reference.py
+          )

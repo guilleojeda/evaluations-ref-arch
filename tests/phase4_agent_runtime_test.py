@@ -177,6 +177,8 @@ class RuntimeAcceptanceTests(unittest.TestCase):
         self.assertNotIn("finishedAt", row)
         self.assertNotIn("report", row)
         self.assertLessEqual(len(boundary.model_requests), 1)
+        self.assertEqual(1, len(boundary.s3_writes))
+        self.assertTrue(boundary.s3_writes[0][1].endswith("/baseline.json"))
 
     def test_model_constructor_disables_retries_and_budgets_structured_output(self):
         script, boundary = AgentScript(report=report()), FakeAWSBoundary()

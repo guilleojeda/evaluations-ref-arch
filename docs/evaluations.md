@@ -16,7 +16,7 @@ Turning a failed run into a case requires reviewing the expected answer and beha
 
 ## Worked case: Inventory access denied
 
-This is a planned semantic example, not run data: no trace, measurement, or evaluation result exists yet. It shows what one reviewed access-denied case must connect before the example can be presented as evidence.
+This table describes the evidence needed to demonstrate a memory recommendation on a reviewed access-denied case. The recorded S2 evidence is summarized below.
 
 | Part of the example | What it must establish |
 | --- | --- |
@@ -37,7 +37,57 @@ Retain the raw source evidence from S0, including configuration before recovery 
 
 The regression tools query only their referenced captures. They do not fall back to current AWS state or include evidence from after the case reference time. Logs and metrics preserve the candidate's requested windows; configuration reflects values at the reference time; bounded history includes only changes effective by then. Relative query windows, freshness, and current-state assessment use the case reference time, with real execution timestamps recorded separately. Partial results and unavailable coverage stay visible in the tool output. Each candidate chooses its own queries, windows, and order. Do not replay a saved tool-call sequence, inject scenario labels or expected answers, or replace candidate outputs. A fixed captured trace can be judged again, but that is not execution of a changed candidate.
 
-Every regression execution has its own identity, separate from the originating live alarm's deduplication identity. Retain the original alarm and case provenance alongside the regression identity so repeated candidates do not appear as new live events or overwrite a live run. The capture file/schema and provider implementation remain open; prepare the captured-provider/backend plumbing before the talk. Preserve the same case meaning and criteria across evaluation paths without claiming an automatic format interchange.
+Every regression execution has its own identity, separate from the originating live alarm's deduplication identity. Retain the original alarm and case provenance alongside the regression identity so repeated candidates do not appear as new live events or overwrite a live run. The delivered Phase 13 capture schema and provider are the S1 input boundary; any later capture/provider change is a new identified input that requires its own digest and review. Preserve the same case meaning and criteria across evaluation paths without claiming an automatic format interchange.
+
+## S1: Author, validate, freeze, and hand off
+
+The S1 entry starts with the named private Phase 14 receipt and flat import
+archive. The receipt records each exact private source-object SHA-256; compare
+the archive digest with the import log/operator notes and verify imported
+members with the archive's `SHA256SUMS` file. The archive/manifest is staging
+only: extract it to a private work directory outside the editable checkout,
+keep the frozen envelope in a separate private directory, and keep any matching
+original trace private. The presenter opens the draft and trace in the browser
+IDE, inspects the cutoff evidence, fills and saves the reviewed remedy, and
+then runs the same offline commands for the saved case. There is no separate
+`author` CLI command; authoring is the browser file-editor save that precedes
+validation. A prepared denial, capacity, or recovery set is an independent
+entry: select its named private case/bundle pair rather than inheriting the
+just-reviewed case or silently substituting another asset.
+
+Follow the executable [S1 command walkthrough in the agent README](../agent/README.md#review-and-freeze-a-case-s1). It creates a new private import
+directory, verifies the receipt/archive handoff and `SHA256SUMS`, copies the
+manifest-named draft into a separate work directory, opens it with `code -r`,
+and runs `validate`, `freeze`, then `candidate-input` with `--offline`.
+
+`validate` is the review boundary: it checks structure, provenance, source
+availability at the case's reference time, and required/optional coverage. A
+blank remedy, missing required observation, malformed record, bundle digest
+mismatch, or late observation is not ready. `freeze` refuses an existing output
+path and writes the immutable `{caseSha256, case}` envelope only after the
+same checks pass. The envelope binds the normalized reviewed meaning to the
+verified bundle bytes; changes to meaning, cutoff, or evidence require a new
+identified review and identity.
+
+The case's private evidence records the originating alarm and transition,
+genuine originating run ID, bundle SHA-256, and named tool/resource/argument
+references with required or optional reasons. A genuine `originatingRunId`
+stays distinct from any acquisition; when a bundle was acquired separately,
+its `acquisitionId` matches the bundle's `origin.runId`.
+Keep the exact source bytes, original trace, reviewer coverage justification,
+and evaluator-only expectations in private evidence storage or the private
+browser workspace. Do not put raw incident data or evaluator-only case assets
+in tracked code, the Runtime ZIP, or CI artifacts; retain their exact object
+keys and SHA-256 values in the private incident record.
+
+`candidate-input` verifies the frozen envelope and bundle again, then emits
+only the public task fields: alarm context, effective time/window, affected
+service, observed symptoms, and allowed resources. It must not expose
+expectations, admissible actions, diagnosis, reviewer notes, coverage
+references, tool observations, trace content, the case identity, or a score to
+the candidate. The output is a task handoff, not a case review result or an
+evaluation score. All three commands run with AWS credentials and metadata
+access disabled once the private assets are staged.
 
 ## Recommendation correctness
 
@@ -52,7 +102,7 @@ The report selects exactly one of **Increase reserved concurrency**, **Increase 
 
 Case expectations may accept more than one justified numeric target within the reviewed bounds; they must not enforce one arbitrary sentence, tool sequence, or exact value. If the agent cannot establish a supported target, it should explain that limitation through Other. Insufficient evidence is not an escape from a case that supplies adequate evidence the agent failed to collect.
 
-The selected initial defect is an inventory memory recommendation for the access-denied case. Keep the same defective candidate through S1–S2: S1 establishes acceptable and unacceptable behavior without scoring, and S2 introduces deterministic action/target checks, semantic diagnosis/grounding criteria, judge configuration, and AgentCore evaluation results. At S3, edit the prompt only and execute the fresh candidate against the same cases and criteria, comparing it with the original; pending results remain pending. At S4, execute the repaired candidate through the local Python Strands entrypoint that connects case, task, evaluator, report, and comparison, and evaluate the existing reviewed local release policy before the first deployment. Rerun both incident cases and relevant controls. Bind the result to the evaluated source and agent artifact, prompt, dependency, case, evidence, evaluator, and model versions, then deploy the candidate covered by that result. At S5, CI runs that same experiment and policy before deployment; failed or incomplete required results block it. Use one agent constructor with the same approved live or captured providers across runtime and evaluation. A trace from the previously deployed candidate cannot replace pending-candidate execution. Retain the old candidate to show that the completed suite still rejects it. An evaluation result identifies a problem; it does not change the agent's behavior.
+The selected initial defect is an inventory memory recommendation for the access-denied case. S1 reviews acceptable and unacceptable behavior using evidence from the opening incident. S2 evaluates the captured faulty candidate with explicit final recommendation precedence. At S3, edit the prompt only and compare its fresh execution with the identified S2 baseline on the same cases and criteria. Pending results remain pending. At S4, execute the repaired candidate through the local Python Strands entrypoint that connects case, task, evaluator, report, and comparison. S4 is development feedback only: it does not publish or authorize deployment. Bind the result to the evaluated source and agent artifact, prompt, dependency, case, evidence, evaluator, and model versions. At S5, CI runs the same experiment and policy before deployment; failed or incomplete required results block it, and the exact pending Runtime ZIP remains subject to the later human-approved gate. Use one agent constructor with the same approved live or captured providers across runtime and evaluation. A trace from the previously deployed candidate cannot replace pending-candidate execution. Retain the captured faulty candidate to show that the completed suite still rejects it. An evaluation result identifies a problem; it does not change the agent's behavior.
 
 A correct diagnosis with the wrong action fails recommendation correctness. A lucky correct action with an unsupported diagnosis still needs a grounding finding. These results should remain separately inspectable rather than disappear into one average score.
 
@@ -69,6 +119,11 @@ The controller can successfully select a larger qualified version while the deni
 | Recommendation | Check the selected action, resource, target/value, supporting evidence, and reviewed acceptable outcomes | An available action can be wrong for this incident; a valid enum or successful AWS change does not prove correctness |
 | Operator boundary | Check that the report proposes rather than claims to execute a change | The agent's read-only permissions enforce its authority; an evaluator does not grant or enforce runtime permissions |
 | Recovered incident | Assess whether the agent distinguishes prior symptoms from current state | A stale alert should not automatically cause a new remediation |
+
+Run the [offline checker](../agent/README.md#check-an-investigation-deterministically)
+with a frozen case and its source bundle. Use the verified native archive for
+recorded execution checks. A standalone report supports checks of its structured
+fields and citation times, with execution findings marked incomplete.
 
 Use model judges for semantic questions with a specific rubric, supplied evidence, and an explanation of the result. Use code for facts and boundaries that can be checked directly. Human review defines expectations, examines disagreements, and handles decisions the available evidence cannot support.
 
@@ -94,23 +149,113 @@ The useful feedback sequence is:
 4. Compare faulty and corrected candidates.
 5. Feed the selected evaluation evidence into the release policy.
 
+## S2: Run and score the captured baseline
+
+The [captured-run commands](../agent/README.md#run-and-score-the-captured-baseline-s2)
+open the identified saved execution and score its verified CloudWatch session.
+The baseline uses the prepared denial case, its exact evidence cutoff, and the
+faulty candidate's saved source and settings. A new input requires its own
+matching execution. The historical live denial report remains a separate
+incident artifact.
+
+The custom AgentCore SESSION evaluator returns two categorical findings in
+one call. Diagnosis support checks whether the causal explanation follows from
+the available evidence. Evidence grounding checks whether material claims and
+citations match the observations the agent received. The deterministic
+recommendation checks still evaluate the action, target, and value
+independently. The saved result keeps each verdict and its reason.
+
+The first frozen-case run recommended restoring Inventory access. Its
+deterministic cutoff check failed on a citation beyond the reviewed time.
+Haiku 4.5 passed both semantic findings in two provisional scoring attempts.
+Both explanations treated an empty, clipped tool response as evidence through
+the full requested window. That run supplies a timing counterexample for judge
+calibration. The saved S2 execution on the same frozen case diagnosed the
+access denial and recommended increasing Inventory memory from 256 MB to
+512 MB. Its action, value, and cutoff checks failed. Its Inventory target
+check passed. The grounding rubric checks claims about source observations
+and query coverage. Diagnosis support grades the causal explanation and
+incident assessment. The evaluator receives a compact view of verified log
+records with separate event, ingestion, and availability times alongside the
+native session. The pinned Sonnet 4.6 single-verdict score is advisory and can
+be shown with its reason after the evaluator descriptor and session identity
+are verified. It does not qualify a release by itself. The deterministic
+action, target, value and cutoff checks, together with identity-bound human
+review of the exact report, trace and pending artifact, control publication.
+
+Judge calibration uses labeled, constructed controls grounded in retained
+evidence. Development and holdout controls come from separate incidents. The
+reference contrast changes a reviewed assertion while keeping the session
+fixed. This small sample covers the reviewed examples
+and their counterexamples. Record the evaluated configurations, disagreements,
+and explicit repeat alongside the baseline evidence.
+
 ## S3: Fresh candidate before deployment
 
-Prepare a small local runner before the talk. It executes the shared agent constructor with the selected prompt, the reviewed case's captured providers, and its effective investigation reference time. It does not need the complete Strands experiment introduced at S4, and it does not deploy the repaired candidate or invoke the live alarm adapter.
+The S3 runner accepts an explicitly selected editable candidate and snapshots
+its prompt, source, lockfile, frozen case and captured bundle before importing
+the candidate. The prepared `agent/prompts/s3-repair.patch` changes only the
+prompt. The default `faulty` path keeps the checked-in manifest validation used
+by S2. The explicit `repaired` path records the actual saved prompt digest and
+candidate label while preserving the same model, report schema, four captured
+read-only tools, permissions and request bounds. A later editor save cannot
+change an in-flight run. Each invocation gets a fresh execution, session and
+trace identity, including repeated runs with identical inputs. The run emits a
+durable directory as soon as its running record is ready, so a second IDE
+terminal can inspect progress with `show`; process loss remains interrupted and
+never relaunches work.
 
 The intended execution and scoring path is:
 
-1. Execute the changed candidate with a new regression/session identity, retaining its prompt, source, model, case, and evidence versions. The candidate chooses its own queries against the captured sources.
+1. Execute the changed candidate with a new regression/session identity, retaining its prompt, source, model, case, and evidence versions. The candidate chooses its own queries against the captured sources. For the denial case, the repaired guidance chooses the healthy role-backed Inventory version at the current memory when the captured IAM evidence supports that action, and keeps the recommendation bounded to the source rows, coverage and effective reference time.
 2. Export that execution's actual model/tool/report telemetry to CloudWatch through the prepared outside-Runtime observability configuration, with session correlation. Wait for ingestion, then collect the matching complete session spans and conversation content. The case reference time governs evidence access; telemetry timestamps describe the new execution.
 3. Submit those spans to AgentCore on-demand `Evaluate`, using the same versioned semantic evaluators and reviewed reference expectations as the baseline. Supply expectations as evaluator reference inputs, outside the agent's prompt and tool evidence. Verify that reference-dependent criteria actually consumed the supplied fields.
 4. Run the deterministic action/target checks against the new report and keep their findings separate from the semantic judgments. Reuse the check logic when exposing a check through an AgentCore Lambda evaluator rather than writing a second copy.
-5. Compare the original and repaired candidates on the same cases, captured evidence, criteria, and scoring setup. Use an identified matching baseline result, or execute the original through this runner when one is unavailable. Missing spans, ignored required references, or failed required scoring leave the evaluation incomplete.
+5. Compare the captured S2 faulty candidate and the repaired candidate on the same cases, captured evidence, criteria, and scoring setup. Use the identified matching S2 baseline. The offline comparison verifies common runtime/tool source hashes, case and evidence identities, evaluator and scoring source pins, the selected score attempt, and the native session/trace binding. For an alternate input with no matching baseline, execute the captured S2 prompt and retain the observed result. Missing spans, ignored required references, foreign results, or failed required scoring leave the evaluation incomplete while preserving available reports and deterministic findings.
 
 AWS supports on-demand evaluation of supported-framework agents outside AgentCore Runtime. Its [on-demand prerequisites](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ondemand-evaluations-prereqs.html) and [outside-Runtime observability setup](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-configure.html#observability-configure-outside) establish this route. Prepare telemetry export, session propagation, source collection, and evaluation permissions before the session. Ground-truth reference inputs are described in [ground-truth evaluation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ground-truth-evaluations.html); shared code checks can use the [Lambda evaluator contract](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-based-evaluators.html).
 
-At S4, the Strands experiment reuses the candidate execution function as its task and adds case iteration, evaluators, reports, and candidate comparison. It can reuse AgentCore scoring through a [custom evaluator](https://strandsagents.com/docs/user-guide/evals-sdk/evaluators/custom_evaluator/), or use a Strands semantic evaluator under the same reviewed criterion. The semantic backend for the S4/S5 experiment remains an explicit open choice; this document does not require AgentCore service calls in CI. Preserve case meaning, supply the right reference inputs, and compare candidates within the selected scoring setup rather than treating scores from different evaluators as interchangeable. The mapping is application integration to implement and verify. Once selected, the S5 CI command invokes the same experiment and policy used locally.
+At S4, the Strands experiment reuses the candidate execution function as its native task and calls the SDK's `Experiment.run_evaluations`, rather than implementing a separate case loop. It creates native `Case` objects and two custom `Evaluator` objects: one projects the eight named deterministic findings, and one reuses the pinned AgentCore Sonnet 4.6 scoring operation for its categorical advisory verdict and reason. The returned native report has one `(case, evaluator)` row per pair—four rows for two cases and two evaluators. The semantic row carries a native numeric `0.0` only as `numericPlaceholder: true`; policy reads the actual categorical result and canonical status instead. Cases execute sequentially, and the two evaluator calls for a completed case may overlap. The AgentCore verdict and reason are advisory feedback. Preserve case meaning, supply the right reference inputs, and compare candidates within the selected scoring setup rather than treating scores from different evaluators as interchangeable. The direct prepared S4 entry has no S3-run prerequisite; an optional `--source-run` selects an authenticated immutable S3 source exactly, including an accepted active execution. A focused `--case` selection is a development subset. Native experiment snapshots freeze selected cases/bundles, candidate/tooling/dependency inputs, and the evaluator before the first case; later edits cannot change the run, and `show`/`compare` are read-only. A known deterministic failure rejects immediately, missing or error results are incomplete, and all deterministic checks passing with a complete advisory pass or fail yields `review_required`. Once selected, the S5 CI command invokes the same experiment and policy used locally. S3 remains a direct IDE runner and does not deploy the repaired candidate or invoke the live alarm adapter.
 
-This route is supported by documentation but has not been exercised here. Verify the selected telemetry format, collector completeness, session correlation, reference mapping, and result reporting during implementation. The schedule's S3 estimate includes ingestion; its duration remains unmeasured.
+## S4: Native Strands development experiment
+
+Run the native experiment from a prepared browser-IDE workspace using the
+commands in the [agent README](../agent/README.md#run-the-native-strands-development-experiment-s4).
+Direct S4 starts from the saved suite, candidate, evaluator descriptor, and
+reviewed case/bundle assets; it does not require a prior S3 run. An optional
+`--source-run` selects the authenticated immutable candidate source from an
+accepted S3 execution, including an active execution, and rejects missing,
+altered, or incompatible sources before inference. `--case CASE_ID` narrows a
+development run without changing the complete reviewed suite used later.
+
+The task passes only the public candidate input to the existing captured
+runner. Reviewed expectations stay in evaluator-only metadata. The experiment
+freezes the selected candidate sources, dependency lock, native experiment and
+evaluator code, suite, case/bundle bytes, and evaluator descriptor before its
+first case. Repeating the same selection creates a new experiment and new
+execution/session/trace identities; a later prompt, case, tooling, or lock edit
+cannot alter an accepted run. SDK retries cannot launch a second investigation
+or judge call after a typed task/evaluator failure, and later selected cases may
+continue after an incomplete case. `show` reopens the native report without
+credentials or side effects. `compare` joins exact case, tooling, runtime,
+input, evaluator, scorer, report, and selected-attempt identities and retains
+available rows when another pair is unavailable or mismatched.
+
+Each native report contains one row per `(case, evaluator)`. For two cases and
+the two custom evaluators, that is four rows; each deterministic row exposes
+the eight named findings, while each advisory row retains the actual pinned
+AgentCore Sonnet 4.6 categorical verdict, reason, status, scoring attempt, and
+full run/session/trace references. The SDK's required numeric field is `0.0`
+with `numericPlaceholder: true`; this placeholder is not a quality score and
+does not affect policy. A known required deterministic failure yields
+`reject` immediately, even if advisory scoring is pending. Missing, invalid,
+or error execution/scoring yields `incomplete`. All required deterministic
+findings passing plus a complete advisory result—whether pass or fail—yields
+`review_required`. These are S4 development outcomes, not publication
+authority; exact Runtime ZIP qualification and human approval belong to the
+later S5 gate.
+
+The browser IDE workflow has been verified with the frozen denial case, an uncommitted prompt edit, matching CloudWatch content and the pinned Sonnet 4.6 evaluator. Rehearsal preparation checks session correlation, complete telemetry, reference mapping and exact result identities. Feedback time includes execution, telemetry collection and scoring.
 
 ## Offline cases and observed traffic
 
@@ -125,6 +270,7 @@ The repository's policy interprets evaluation results; the presence of a score d
 | Outcome | Intended meaning |
 | --- | --- |
 | Pass | The candidate satisfies the defined release criteria for the selected cases and scope |
+| Review required | The S4 deterministic checks are complete and the advisory result is available; inspect the exact package and identity-bound evidence before any later gate decision |
 | Warn | A finding needs review or is acceptable only under the defined lower-risk policy |
 | Fail | A required behavior or hard boundary is violated |
 | Incomplete evaluation | Required results are missing, pending, invalid, or failed to execute; the run cannot be claimed as passing |
@@ -133,7 +279,7 @@ A known incorrect recommendation for either demonstrated incident must fail its 
 
 The local gate command and CI workflow must use the same policy and captured evidence contract. Keep evaluation execution failures distinguishable from agent-quality failures, and block an automatic pass when required evidence is incomplete.
 
-[GitHub Actions](deployment.md) publishes development changes automatically from `demo-deploy` without an agent evaluation gate at the current stage. At S4, the repaired candidate must complete the captured-evidence Strands experiment and pass the existing reviewed local release policy before the first deployment. At S5, CI runs that same experiment and policy before deployment; failed or incomplete required results block it. Ordinary build/code checks in the earlier stages are separate from agent evaluations.
+[GitHub Actions](deployment.md) publishes development changes automatically from `demo-deploy` without an agent evaluation gate at the current stage. S4 runs the native Strands experiment for inspectable development feedback only; it does not publish or authorize deployment. At S5, CI runs that same experiment and policy against the exact pending Runtime ZIP before publication; failed or incomplete required results block it, and the artifact remains subject to identity-bound human approval. Ordinary build/code checks in the earlier stages are separate from agent evaluations.
 
 ## Measurements
 
@@ -194,4 +340,4 @@ Check that the judge can handle the supplied evidence and context, then validate
 
 ## Open decisions
 
-The [scenario contracts](demo-scenarios.md) define the two incident families and the recovered/stale-alert condition. The [instruction versions](components/operations-agent.md#instruction-versions) specify the planned faulty, repaired, and regressed rules; the denied-read action check is the required regression's failure witness. The S3 section specifies local execution and AgentCore scoring before deployment; S4 reuses the execution function through Strands. Exact live-event/run wire formats and discovery indexes, concrete capture contents and their file/schema/provider, telemetry and evaluator adapters, the S4/S5 semantic evaluator backend, final rehearsed prompt wording, optional additional candidate variants, judge rubrics/models, numerical release thresholds, holdout selection, and measurement repetitions remain open. The [demo script](demo-script.md) records how these cases enter the S0–S5 teaching sequence.
+The [scenario contracts](demo-scenarios.md) define the two incident families and the recovered/stale-alert condition. The [instruction versions](components/operations-agent.md#instruction-versions) specify the planned faulty, repaired, and regressed rules; the denied-read action check is the required regression's failure witness. The S3 section specifies local execution and AgentCore scoring before deployment; S4 reuses the execution function through Strands. Exact live-event/run wire formats and discovery indexes, concrete capture contents and their file/schema/provider, final rehearsed prompt wording, optional additional candidate variants, and release evaluation holdouts and repetitions remain open. The AgentCore evaluation definition and calibration results are versioned with the scored inputs. The [demo script](demo-script.md) records how these cases enter the S0–S5 teaching sequence.

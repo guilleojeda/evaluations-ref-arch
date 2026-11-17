@@ -33,7 +33,7 @@ Use [`.github/workflows/deploy.yml`](../.github/workflows/deploy.yml) for pull r
 | Failure controller | `IncidentTriageDemoController` |
 | Agent | `IncidentTriageDemoAgent` |
 
-Deploy jobs serialize within each stack. The app job compares the candidate with the successful app stack revision, skips superseded or irrelevant candidates, and uses the checked CDK assembly. It inspects the prepared CloudFormation change set for table removal or possible replacement before executing that exact change set. It publishes immutable hashed assets before the revalidatable HTML. The controller job serves the checked web build in the HTTP Lambda artifact and deploys the separate worker. It inspects the change set for removal or possible replacement of the controller run table. The agent job publishes and checks the runtime and adapter ZIPs, inspects the agent-stack change set, and deploys its independent Runtime, endpoint, adapter, and retained run table. Its finalization step verifies the checked Runtime configuration, applies MMDSv2 while preserving the remaining configuration when needed, uses the returned Runtime version, pins and reads back the `faulty` endpoint, checks the trace destination, and writes the verified runtime version into the adapter configuration with a revision guard. It does not invoke the agent or send application traffic.
+Deploy jobs serialize within each stack. The app job compares the candidate with the successful app stack revision, skips superseded or irrelevant candidates, and uses the checked CDK assembly. It inspects the prepared CloudFormation change set for table removal or possible replacement before executing that exact change set. It publishes immutable hashed assets before the revalidatable HTML. The controller job serves the checked web build in the HTTP Lambda artifact and deploys the separate worker. It inspects the change set for removal or possible replacement of the controller run table. The agent job publishes and checks the runtime and adapter ZIPs, inspects the agent-stack change set, and deploys its independent Runtime and retained run table. After the one-time ownership transfer, the named `faulty` endpoint and its published tuple are maintained only by the fixed reference operation; ordinary agent releases carry that tuple forward and cannot create, repin, or delete the endpoint. The ordinary release checks the Runtime configuration and adapter readback without invoking the agent or sending application traffic.
 
 Relevant pushes to `demo-deploy` deploy affected stacks automatically. Pushes to `main` remain check-only. The app, controller, and agent stacks remain independent. The presenter sequences dependent releases outside a live run. For an operator retry or a binding-only update at the same source revision, `workflow_dispatch` requires one component selection and deploys only that stack from `demo-deploy`. Run separate dispatches in dependency order:
 
@@ -43,7 +43,34 @@ gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref demo-de
 gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref demo-deploy -f component=controller
 ```
 
-For the first alarm-path release, keep the app alarm adapter and controller agent variables empty until the checked agent stack has finalized and its outputs have been read back. Then set `APP_ALARM_ADAPTER_ARN` to the agent stack's `AlarmAdapterArn` and dispatch `app`; only after that succeeds set `CONTROLLER_AGENT_RUNTIME_ARN`, `CONTROLLER_AGENT_ENDPOINT_ARN`, and `CONTROLLER_AGENT_ALARM_ADAPTER_ARN` to the verified agent outputs and dispatch `controller`. Empty or unset variables preserve an existing binding on updates; fresh stacks start unconfigured. Verify each run and its stack outputs before dispatching the dependent component. Record the checked source revision and final Runtime version/artifact identity with each release. Finish deployments before a demo run. If a deployment overlaps a run, abandon that run and verify the current release and settings before starting another.
+For the first alarm-path release, keep the app alarm adapter and controller agent variables empty until the checked reference setup has verified the endpoint and the agent stack outputs have been read back. Then set `APP_ALARM_ADAPTER_ARN` to the agent stack's `AlarmAdapterArn` and dispatch `app`; only after that succeeds set `CONTROLLER_AGENT_RUNTIME_ARN`, `CONTROLLER_AGENT_ENDPOINT_ARN`, and `CONTROLLER_AGENT_ALARM_ADAPTER_ARN` to the verified agent outputs and dispatch `controller`. Empty or unset variables preserve an existing binding on updates; fresh stacks start unconfigured. Verify each run and its stack outputs before dispatching the dependent component. Record the checked source revision and final Runtime version/artifact identity with each release. Finish deployments before a demo run. If a deployment overlaps a run, abandon that run and verify the current release and settings before starting another.
+
+### Restore the reviewed faulty reference
+
+Use the **reference-setup** operation on `demo-deploy` to restore or verify the opening agent. Its only publication target is the named `faulty` endpoint. The [fixed descriptor](../scripts/faulty-reference.json) identifies the reviewed source, prompt, model, configuration and versioned S3 ZIP that passed the native ARM64 smoke test.
+
+Before first use, stop controller traffic, confirm no active action or investigation, and verify the checkout alarm is OK. Inspect the legacy binding, rollback ZIP and native change set for the one-time CloudFormation ownership transfer. The change set must preserve the Runtime and target the recorded physical endpoint. Once the workflow observes the old endpoint's removal, it restores from the archive.
+
+```sh
+gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch \
+  --ref demo-deploy -f component=reference-setup
+gh run list --repo guilleojeda/evaluations-ref-arch --workflow deploy.yml \
+  --branch demo-deploy --event workflow_dispatch --limit 1 \
+  --json databaseId,headSha,status,conclusion
+gh run watch <run-id> --repo guilleojeda/evaluations-ref-arch --exit-status
+```
+
+The workflow checks the archive bytes and full configuration, reuses a matching numbered Runtime version or creates one, then checks the endpoint's live version, the alarm adapter's binding and the strongly read `AGENT_PUBLICATION#faulty` record. A healthy repeat reports the same tuple. Ordinary agent deployments preserve the binding. Restoration records a reference identity and requires no model invocation.
+
+If a dispatch stops partway, inspect its log, the native endpoint, adapter and publication record. Repeat the fixed dispatch to reconcile an incomplete reference. Use the stack's `RuntimeId` to inspect `GetAgentRuntimeEndpoint` for `faulty`. Compare its numbered version with `AGENT_RUNTIME_VERSION` on `IncidentTriageDemoAlarmAdapter` and the controller record:
+
+```sh
+aws dynamodb get-item --table-name IncidentTriageDemoControllerRun \
+  --key '{"pk":{"S":"AGENT_PUBLICATION#faulty"}}' --consistent-read \
+  --profile reinvent-2026-talk --region us-east-1
+```
+
+To verify the complete alarm path, run Readiness in the hosted controller, induce Inventory denial, and open the investigation for the new 5xx alarm transition. Capture its report, trace and source evidence before Recover. Confirm the restored healthy Inventory version, 256 MB, reserved concurrency 16, a fresh successful checkout and native alarm OK.
 
 ## AWS access and initial setup
 
@@ -109,9 +136,9 @@ The controller has no cumulative checkout, catalog, or status-read quotas and no
 
 ## Release and bind the initial agent path
 
-The first Phase 4 release uses the currently deployed app API ID as an input to the agent stack. The app alarm remains unbound while the agent is finalized, and the controller remains unconfigured for agent readiness. Use the stack outputs and checked GitHub assembly; do not invoke the Runtime as a smoke test.
+The first Phase 4 release uses the currently deployed app API ID as an input to the agent stack. The app alarm remains unbound while the agent stack is released, and the controller remains unconfigured for agent readiness. Use the stack outputs and checked GitHub assembly; do not invoke the Runtime as a smoke test. In the Phase 19 layout, this ordinary release creates or updates the Runtime and adapter but does not own the named `faulty` endpoint or publish an agent candidate.
 
-After the `IncidentTriageDemoAgent` release succeeds, verify its `SourceRevision`, `RuntimeArn`, `FaultyEndpointArn`, `AlarmAdapterArn`, and `RuntimeArtifactSha256` outputs against the checked release. The `CloudFormationRuntimeVersion` output is the initial CloudFormation version; use the finalizer's `agent-final-release.json` log record for the accepted `runtimeVersion`. The finalization step checks native `requireMMDSV2`, reads back the endpoint's live and target version, verifies CloudWatch Transaction Search is enabled, then sets the adapter's runtime version using its current `RevisionId`. A final adapter readback checks the version, checked adapter ZIP, tracing mode, and release identity. This is release evidence only; no alarm or investigation is generated.
+After the `IncidentTriageDemoAgent` release succeeds, verify its `SourceRevision`, `RuntimeArn`, `FaultyEndpointArn`, `AlarmAdapterArn`, and `RuntimeArtifactSha256` outputs against the checked release. The `CloudFormationRuntimeVersion` output is the initial CloudFormation Runtime version; the publisher-owned `faulty` version is read back separately by the Phase 19 maintenance operation. The ordinary release checks native `requireMMDSV2`, Runtime configuration and adapter code/readback; it must carry a publisher-owned endpoint tuple forward rather than selecting `DEFAULT` or a latest version. This is release evidence only; no alarm or investigation is generated. To establish or recover the `faulty` reference, use the fixed [Phase 19 maintenance operation](#restore-the-reviewed-faulty-reference), not this ordinary route.
 
 Read the finalized agent stack outputs into local shell variables, then bind the app alarm by setting the repository variable and deploying the app component:
 
@@ -221,7 +248,7 @@ For **Reset**, close old checkout pages and confirm quiet traffic, destructive o
 
 ## Evaluation stages
 
-S0 has automatic deployment and ordinary software checks, with no agent evaluation suite or evaluation release gate. S1 introduces reviewed cases. S2 introduces deterministic action/target checks, semantic diagnosis/grounding criteria, judge configuration, and AgentCore evaluation results. S3 changes only the prompt and compares a fresh candidate with the original on the same cases and criteria. S4 connects the local Strands experiment and evaluates the existing reviewed local release policy before the first deployment. S5 runs that same experiment and policy in CI before deployment; failed or incomplete required evaluation evidence cannot pass. Deployment is the resulting action, not another stage. See [evaluation approach](evaluations.md#release-decisions).
+S0 has automatic deployment and ordinary software checks, with no agent evaluation suite or evaluation release gate. S1 introduces reviewed cases. S2 introduces deterministic action and target checks, semantic diagnosis and grounding criteria, judge configuration, and AgentCore evaluation results for the captured faulty candidate. S3 changes only the prompt and compares a fresh execution with the matching S2 baseline on the same cases and criteria. S4 connects the local Strands experiment and evaluates the existing reviewed local release policy before the first deployment. S5 runs that same experiment and policy in CI before deployment; failed or incomplete required evaluation evidence cannot pass. Deployment is the resulting action, not another stage. See [evaluation approach](evaluations.md#release-decisions).
 
 The S4 workflow executes the repaired candidate through the local Python/Strands experiment against versioned captured evidence before the first deployment. It uses one agent construction with the candidate prompt, tool contracts, permissions, and report behavior, with captured evidence providers in place of live AWS reads. At S5, CI runs the same experiment and policy before deployment. Retain the evaluated source commit, agent artifact/prompt/dependency identity, case/evidence versions, evaluator/model settings, and policy result. Deploy only the candidate covered by the result; a substituted candidate or relevant artifact change requires new evaluation. An old deployed-agent trace cannot substitute for execution of the pending candidate. Genuine AgentCore trace evaluations retain their own provenance and selected role. This does not require a second environment, automatic evaluator-format interchange, or running every evaluator twice.
 
