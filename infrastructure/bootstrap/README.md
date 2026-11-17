@@ -265,6 +265,13 @@ other controller-table keys. It cannot provide an archive URI, digest, Runtime,
 endpoint name, or candidate through the workflow; those values come from the
 reviewed fixed descriptor.
 
+The additive Phase 19 grants and the existing Runtime-finalization grants are
+attached through the customer-managed `IncidentTriageDemoPhase19Publisher`
+policy. The original inline guard retains all explicit denies and remains
+responsible for the non-app boundary. This keeps the role's two inline policy
+documents below IAM's 10,240-character aggregate quota while keeping the
+publisher policy below the 6,144-character customer-managed policy quota.
+
 `bedrock-agentcore:ListAgentRuntimeVersions` currently has no resource type in
 the AWS service-authorization model, so its unavoidable `Resource: "*"` grant
 is limited to `us-east-1`. The fixed helper obtains the Runtime ID only from

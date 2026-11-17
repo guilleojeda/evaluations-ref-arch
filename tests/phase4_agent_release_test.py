@@ -27,6 +27,21 @@ class ReleaseTests(unittest.TestCase):
         self.assertIn("legacy_endpoint_managed", deploy)
         self.assertIn("list-stack-resources", deploy)
 
+    def test_ordinary_release_requires_strong_publication_and_native_tuple_readback(self):
+        deploy = (Path(__file__).parents[1] / "scripts/deploy-agent.sh").read_text()
+        for token in (
+            "dynamodb get-item",
+            "--consistent-read",
+            "AGENT_PUBLICATION#faulty",
+            "bedrock-agentcore-control get-agent-runtime-endpoint",
+            "adapterCodeSha256",
+            "verify_prepared_publisher_parameters",
+            "delete-change-set",
+        ):
+            self.assertIn(token, deploy)
+        self.assertIn("No fixed AGENT_PUBLICATION#faulty record exists", deploy)
+        self.assertIn("Adapter RevisionId changed during ordinary reconciliation", deploy)
+
     def test_cutover_helper_has_only_prepare_and_execute_plan_operations(self):
         helper = (Path(__file__).parents[1] / "scripts/retire-agent-endpoint.py").read_text()
         self.assertIn('choices=("prepare", "execute")', helper)
@@ -67,6 +82,26 @@ class ReleaseTests(unittest.TestCase):
         safe = module._json_safe(described)
         self.assertEqual("2026-11-17T12:30:00Z", safe["CreationTime"])
         json.dumps(safe)
+
+        class CloudFormation:
+            def describe_change_set(self, **_request):
+                return {
+                    "Status": "CREATE_COMPLETE",
+                    "ExecutionStatus": "AVAILABLE",
+                    "CreationTime": datetime(2026, 11, 17, 12, 31, tzinfo=timezone.utc),
+                    "Parameters": [dict(item) for item in previous],
+                }
+
+            def list_stack_resources(self, **_request):
+                return {"StackResourceSummaries": [{
+                    "LogicalResourceId": "FaultyEndpoint",
+                    "LastUpdatedTimestamp": datetime(2026, 11, 17, 12, 32, tzinfo=timezone.utc),
+                }]}
+
+        native_description = module._describe_change_set(CloudFormation(), "change-set-id")
+        self.assertEqual("2026-11-17T12:31:00Z", native_description["CreationTime"])
+        native_resources = module._resources(CloudFormation())
+        self.assertEqual("2026-11-17T12:32:00Z", native_resources[0]["LastUpdatedTimestamp"])
         described["Parameters"][1]["ParameterValue"] = "8"
         with self.assertRaisesRegex(RuntimeError, "changed legacy parameter"):
             module._assert_source_revision_preserved(described, source, previous)
@@ -132,10 +167,115 @@ class ReleaseTemplateTests(unittest.TestCase):
             "arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*.zip",
             "arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/agent-reference/*",
         ], statements["DenyBootstrapKeyOutsideBootstrapTemplates"]["Condition"]["StringNotLike"]["kms:EncryptionContext:aws:s3:arn"])
-        for sid in ["FinalizeCheckedAgentRuntime", "AttestVerifiedRuntimeInAdapter", "PassCheckedAgentRole"]:
-            self.assertEqual("Allow", statements[sid]["Effect"])
+        # The explicit-deny boundary remains in the inline guard.  The
+        # release-finalization and Phase 19 additive grants live in the
+        # dedicated managed policy below so the two inline policies on the
+        # pre-existing deploy role remain under IAM's 10,240-character limit.
+        for sid in [
+            "DenyNonAppDeploymentActions",
+            "DenyProductActionsOutsideNamedStacks",
+            "DenyAppReadsOutsideApprovedStacks",
+            "DenyPassRoleOutsideCdkExecutionRole",
+            "DenyDecryptOutsideBootstrapS3Key",
+            "DenyBootstrapKeyOutsideBootstrapTemplates",
+            "DenyLambdaKeyOutsideApprovedEnvironments",
+            "DenyEncryptOutsideAdapterEnvironment",
+            "DenyEncryptOrDescribeOtherKeys",
+            "DenyEncryptOrDescribeOutsideLambda",
+            "DenyPublishingOutsideAppWebObjects",
+            "DenyOtherControllerRecords",
+        ]:
+            self.assertEqual("Deny", statements[sid]["Effect"], sid)
+        self.assertIn("bedrock-agentcore:ListAgentRuntimeVersions", statements["DenyNonAppDeploymentActions"]["NotAction"])
+        self.assertIn("bedrock-agentcore:CreateAgentRuntimeEndpoint", statements["DenyNonAppDeploymentActions"]["NotAction"])
+        self.assertEqual(
+            {"AGENT_PUBLICATION#faulty"},
+            set(statements["DenyOtherControllerRecords"]["Condition"]["ForAnyValue:StringNotEquals"]["dynamodb:LeadingKeys"]),
+        )
+        for sid in [
+            "FinalizeCheckedAgentRuntime",
+            "ListRuntimeVersions",
+            "AttestVerifiedRuntimeInAdapter",
+            "PassCheckedAgentRole",
+            "ReadInventoryReleaseManifestBucket",
+            "PublishInventoryReleaseManifest",
+            "ReadAgentReference",
+            "PublishFaultyRecord",
+        ]:
+            self.assertNotIn(sid, statements)
         oidc = template["Resources"]["GitHubDeployRole"]["Properties"]["Policies"]
         self.assertEqual({"sts:AssumeRole"}, {statement["Action"] for policy in oidc for statement in policy["PolicyDocument"]["Statement"]})
+
+    def test_phase19_publisher_managed_policy_preserves_scope_and_fits_iam_quotas(self):
+        template = yaml.safe_load((Path(__file__).parents[1] / "infrastructure/bootstrap/github-iam.yaml").read_text())
+        resources = template["Resources"]
+        guard = resources["DedicatedCdkDeployRolePhase0Guard"]
+        managed = resources["Phase19PublisherPermissions"]
+        self.assertEqual("AWS::IAM::ManagedPolicy", managed["Type"])
+        self.assertEqual("DedicatedCdkDeployRolePhase0Guard", managed["DependsOn"])
+        properties = managed["Properties"]
+        self.assertEqual("IncidentTriageDemoPhase19Publisher", properties["ManagedPolicyName"])
+        self.assertEqual(
+            [{"Fn::Sub": "cdk-evaltalk-deploy-role-${AWS::AccountId}-${AWS::Region}"}],
+            properties["Roles"],
+        )
+
+        inline_statements = {statement["Sid"]: statement for statement in guard["Properties"]["PolicyDocument"]["Statement"]}
+        managed_statements = {statement["Sid"]: statement for statement in properties["PolicyDocument"]["Statement"]}
+        moved_sids = {
+            "FinalizeCheckedAgentRuntime",
+            "AttestVerifiedRuntimeInAdapter",
+            "PassCheckedAgentRole",
+            "ReadInventoryReleaseManifestBucket",
+            "PublishInventoryReleaseManifest",
+            "ListRuntimeVersions",
+            "ReadAgentReference",
+            "PublishFaultyRecord",
+        }
+        self.assertTrue(moved_sids.issubset(managed_statements))
+        self.assertTrue(moved_sids.isdisjoint(inline_statements))
+
+        runtime = managed_statements["FinalizeCheckedAgentRuntime"]
+        self.assertEqual("Allow", runtime["Effect"])
+        self.assertEqual(
+            {
+                "bedrock-agentcore:GetAgentRuntime",
+                "bedrock-agentcore:UpdateAgentRuntime",
+                "bedrock-agentcore:CreateAgentRuntimeEndpoint",
+                "bedrock-agentcore:GetAgentRuntimeEndpoint",
+                "bedrock-agentcore:UpdateAgentRuntimeEndpoint",
+            },
+            set(runtime["Action"]),
+        )
+        self.assertEqual(
+            {
+                "arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????",
+                "arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????/runtime-endpoint/faulty",
+            },
+            set(runtime["Resource"]),
+        )
+        self.assertEqual(
+            {"aws:RequestedRegion": "us-east-1"},
+            managed_statements["ListRuntimeVersions"]["Condition"]["StringEquals"],
+        )
+        self.assertEqual("*", managed_statements["ListRuntimeVersions"]["Resource"])
+        self.assertEqual(
+            ["arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/agent-reference/*"],
+            [managed_statements["ReadAgentReference"]["Resource"]]
+            if isinstance(managed_statements["ReadAgentReference"]["Resource"], str)
+            else managed_statements["ReadAgentReference"]["Resource"],
+        )
+        self.assertEqual(
+            {"AGENT_PUBLICATION#faulty"},
+            set(managed_statements["PublishFaultyRecord"]["Condition"]["ForAllValues:StringEquals"]["dynamodb:LeadingKeys"]),
+        )
+
+        guard_size = len(json.dumps(guard["Properties"]["PolicyDocument"], separators=(",", ":")))
+        managed_size = len(json.dumps(properties["PolicyDocument"], separators=(",", ":")))
+        # The live, pre-existing `default` inline policy is 1,685 characters;
+        # this baseline is recorded with the Phase 19 before-state evidence.
+        self.assertLessEqual(guard_size + 1685, 10240, f"inline aggregate uses {guard_size + 1685}/10240 characters")
+        self.assertLessEqual(managed_size, 6144, f"Phase 19 managed policy uses {managed_size}/6144 characters")
 
     def test_adapter_encrypt_requires_exact_lambda_key_function_context_and_service(self):
         template = yaml.safe_load((Path(__file__).parents[1] / "infrastructure/bootstrap/github-iam.yaml").read_text())

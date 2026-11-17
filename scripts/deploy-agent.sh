@@ -41,38 +41,93 @@ stack_parameter() { jq -r --arg key "$1" '.Stacks[0].Parameters[]? | select(.Par
 stack_has_parameter() { jq -e --arg key "$1" '[.Stacks[0].Parameters[]? | select(.ParameterKey == $key)] | length == 1' <<<"$stack_state" >/dev/null; }
 
 read_published_binding() {
-  local adapter_state adapter_env parameter_version parameter_revision parameter_digest
-  parameter_version="$(stack_parameter PublishedVersion <<<"$stack_state")"
-  parameter_revision="$(stack_parameter PublishedCodeRevision <<<"$stack_state")"
-  parameter_digest="$(stack_parameter PublishedArtifactDigest <<<"$stack_state")"
+  local publication_state publication_item
+  publication_state="$(deploy_aws dynamodb get-item \
+    --table-name IncidentTriageDemoControllerRun \
+    --key '{"pk":{"S":"AGENT_PUBLICATION#faulty"}}' \
+    --consistent-read --output json)"
+  publication_item="$(jq -c '.Item // {}' <<<"$publication_state")"
+  if [[ "$publication_item" == "{}" ]]; then
+    echo "No fixed AGENT_PUBLICATION#faulty record exists; run the explicit reference setup before an ordinary agent release" >&2
+    return 1
+  fi
+
+  local publication_candidate publication_status publication_runtime publication_version
+  local publication_endpoint_name publication_endpoint publication_revision publication_digest
+  local publication_adapter publication_adapter_revision publication_adapter_code
+  publication_candidate="$(jq -r '.Item.candidateId.S // empty' <<<"$publication_state")"
+  publication_status="$(jq -r '.Item.status.S // empty' <<<"$publication_state")"
+  publication_runtime="$(jq -r '.Item.runtimeArn.S // empty' <<<"$publication_state")"
+  publication_version="$(jq -r '.Item.runtimeVersion.S // empty' <<<"$publication_state")"
+  publication_endpoint_name="$(jq -r '.Item.endpointName.S // empty' <<<"$publication_state")"
+  publication_endpoint="$(jq -r '.Item.endpointArn.S // empty' <<<"$publication_state")"
+  publication_revision="$(jq -r '.Item.sourceRevision.S // empty' <<<"$publication_state")"
+  publication_digest="$(jq -r '.Item.artifactSha256.S // empty' <<<"$publication_state")"
+  publication_adapter="$(jq -r '.Item.adapterArn.S // empty' <<<"$publication_state")"
+  publication_adapter_revision="$(jq -r '.Item.adapterRevisionId.S // empty' <<<"$publication_state")"
+  publication_adapter_code="$(jq -r '.Item.adapterCodeSha256.S // empty' <<<"$publication_state")"
+  local runtime_arn runtime_id expected_endpoint
+  runtime_arn="$(stack_output RuntimeArn <<<"$stack_state")"
+  runtime_id="$(stack_output RuntimeId <<<"$stack_state")"
+  expected_endpoint="$runtime_arn/runtime-endpoint/faulty"
+  [[ "$publication_candidate" == faulty && "$publication_status" == reference &&
+     "$publication_runtime" == "$runtime_arn" && "$publication_version" =~ ^[1-9][0-9]*$ &&
+     "$publication_endpoint_name" == faulty && "$publication_endpoint" == "$expected_endpoint" &&
+     "$publication_revision" =~ ^[a-f0-9]{40}$ && "$publication_digest" =~ ^[a-f0-9]{64}$ &&
+     "$publication_adapter" == arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter &&
+     "$publication_adapter_revision" != "" && "$publication_adapter_code" =~ ^[a-f0-9]{64}$ ]] || {
+    echo "Fixed AGENT_PUBLICATION#faulty record is absent, partial, or bound to an unexpected Runtime/adapter" >&2
+    return 1
+  }
+
+  local adapter_state adapter_env adapter_function adapter_revision adapter_code_sha adapter_code_digest
   adapter_state="$(deploy_aws lambda get-function-configuration --function-name IncidentTriageDemoAlarmAdapter --output json)"
   adapter_env="$(jq -er '.Environment.Variables // empty' <<<"$adapter_state")"
   [[ -n "$adapter_env" ]] || { echo "Agent adapter has no readable environment" >&2; return 1; }
-  local adapter_runtime adapter_endpoint adapter_version adapter_revision adapter_digest
+  adapter_function="$(jq -r '.FunctionArn // empty' <<<"$adapter_state")"
+  adapter_revision="$(jq -r '.RevisionId // empty' <<<"$adapter_state")"
+  adapter_code_sha="$(jq -r '.CodeSha256 // empty' <<<"$adapter_state")"
+  if ! adapter_code_digest="$(printf '%s' "$adapter_code_sha" | base64 --decode 2>/dev/null | xxd -p -c 256)"; then
+    echo "Agent adapter code hash is unreadable; run the explicit publisher maintenance operation" >&2
+    return 1
+  fi
+  local adapter_runtime adapter_endpoint adapter_version adapter_source adapter_digest
   adapter_runtime="$(jq -r '.AGENT_RUNTIME_ARN // empty' <<<"$adapter_env")"
   adapter_endpoint="$(jq -r '.AGENT_ENDPOINT_NAME // empty' <<<"$adapter_env")"
   adapter_version="$(jq -r '.AGENT_RUNTIME_VERSION // empty' <<<"$adapter_env")"
-  adapter_revision="$(jq -r '.AGENT_SOURCE_REVISION // empty' <<<"$adapter_env")"
+  adapter_source="$(jq -r '.AGENT_SOURCE_REVISION // empty' <<<"$adapter_env")"
   adapter_digest="$(jq -r '.AGENT_ARTIFACT_SHA256 // empty' <<<"$adapter_env")"
-  if [[ -z "$parameter_version$parameter_revision$parameter_digest" &&
-        -z "$adapter_version$adapter_revision$adapter_digest" ]]; then
-    published_version=""
-    published_code_revision=""
-    published_artifact_digest=""
-    return 0
-  fi
-  [[ "$adapter_runtime" == "$(stack_output RuntimeArn <<<"$stack_state")" &&
-     "$adapter_endpoint" == faulty && "$adapter_version" =~ ^[1-9][0-9]*$ &&
-     "$adapter_revision" =~ ^[a-f0-9]{40}$ && "$adapter_digest" =~ ^[a-f0-9]{64}$ ]] || {
-    echo "Agent adapter does not expose a verified publisher tuple; run the explicit publisher maintenance operation" >&2
+  [[ "$adapter_function" == "$publication_adapter" &&
+     "$adapter_runtime" == "$publication_runtime" && "$adapter_endpoint" == "$publication_endpoint_name" &&
+     "$adapter_version" == "$publication_version" && "$adapter_source" == "$publication_revision" &&
+     "$adapter_digest" == "$publication_digest" && "$adapter_code_digest" == "$publication_adapter_code" ]] || {
+    echo "Agent adapter does not match the strongly read AGENT_PUBLICATION#faulty tuple; run the explicit publisher maintenance operation" >&2
     return 1
   }
-  # Lambda readback is the publisher's current attestation. If an older stack
-  # update left retained parameters behind, the next ordinary change carries
-  # this verified tuple forward and reconciles those parameters.
-  published_version="$adapter_version"
-  published_code_revision="$adapter_revision"
-  published_artifact_digest="$adapter_digest"
+  local endpoint_state endpoint_runtime endpoint_arn endpoint_status endpoint_live endpoint_target
+  endpoint_state="$(deploy_aws bedrock-agentcore-control get-agent-runtime-endpoint \
+    --agent-runtime-id "$runtime_id" --endpoint-name faulty --output json)"
+  endpoint_runtime="$(jq -r '.agentRuntimeArn // empty' <<<"$endpoint_state")"
+  endpoint_arn="$(jq -r '.agentRuntimeEndpointArn // empty' <<<"$endpoint_state")"
+  endpoint_status="$(jq -r '.status // empty' <<<"$endpoint_state")"
+  endpoint_live="$(jq -r '.liveVersion // empty' <<<"$endpoint_state")"
+  endpoint_target="$(jq -r '.targetVersion // .liveVersion // empty' <<<"$endpoint_state")"
+  [[ "$endpoint_runtime" == "$publication_runtime" && "$endpoint_arn" == "$publication_endpoint" &&
+     "$endpoint_status" == READY && "$endpoint_live" == "$publication_version" &&
+     "$endpoint_target" == "$publication_version" ]] || {
+    echo "Native faulty endpoint does not match the strongly read AGENT_PUBLICATION#faulty tuple" >&2
+    return 1
+  }
+  # The Lambda RevisionId is mutable metadata: an ordinary CloudFormation
+  # reconciliation can refresh it while preserving the exact published code
+  # and environment tuple.  CodeSha256 and all serving identity fields above
+  # remain mandatory; a refreshed RevisionId is safe to observe and retry.
+  if [[ -n "$adapter_revision" && "$adapter_revision" != "$publication_adapter_revision" ]]; then
+    echo "Adapter RevisionId changed during ordinary reconciliation; retaining the verified publisher tuple" >&2
+  fi
+  published_version="$publication_version"
+  published_code_revision="$publication_revision"
+  published_artifact_digest="$publication_digest"
 }
 
 read_bootstrap_binding() {
@@ -120,6 +175,43 @@ verify_outputs() {
   echo "Verified ordinary agent release $GITHUB_SHA; publisher tuple unchanged at version $published_version"
 }
 
+verify_publisher_parameters() {
+  [[ "$(stack_parameter PublishedVersion <<<"$stack_state")" == "$published_version" &&
+     "$(stack_parameter PublishedCodeRevision <<<"$stack_state")" == "$published_code_revision" &&
+     "$(stack_parameter PublishedArtifactDigest <<<"$stack_state")" == "$published_artifact_digest" &&
+     "$(stack_parameter PublishedRuntimeAssetBucket <<<"$stack_state")" == "$bootstrap_runtime_asset_bucket" &&
+     "$(stack_parameter PublishedRuntimeAssetKey <<<"$stack_state")" == "$bootstrap_runtime_asset_key" &&
+     "$(stack_parameter PublishedRuntimeCodeRevision <<<"$stack_state")" == "$bootstrap_runtime_code_revision" &&
+     "$(stack_parameter PublishedRuntimeArtifactDigest <<<"$stack_state")" == "$bootstrap_runtime_artifact_digest" &&
+     "$(stack_parameter PublishedRuntimeBootstrapEnabled <<<"$stack_state")" == true ]] || {
+    echo "Agent stack parameters do not preserve the freshly verified publisher/bootstrap tuples" >&2
+    return 1
+  }
+}
+
+verify_prepared_publisher_parameters() {
+  local prepared_description="$1"
+  jq -e \
+    --arg version "$published_version" \
+    --arg revision "$published_code_revision" \
+    --arg digest "$published_artifact_digest" \
+    --arg bucket "$bootstrap_runtime_asset_bucket" \
+    --arg key "$bootstrap_runtime_asset_key" \
+    --arg runtime_revision "$bootstrap_runtime_code_revision" \
+    --arg runtime_digest "$bootstrap_runtime_artifact_digest" \
+    'def value($name): [.Parameters[]? | select(.ParameterKey == $name) | .ParameterValue];
+     value("PublishedVersion") == [$version] and
+     value("PublishedCodeRevision") == [$revision] and
+     value("PublishedArtifactDigest") == [$digest] and
+     value("PublishedRuntimeAssetBucket") == [$bucket] and
+     value("PublishedRuntimeAssetKey") == [$key] and
+     value("PublishedRuntimeCodeRevision") == [$runtime_revision] and
+     value("PublishedRuntimeArtifactDigest") == [$runtime_digest] and
+     value("PublishedRuntimeBootstrapEnabled") == ["true"]' \
+    "$prepared_description" >/dev/null
+}
+
+fresh_stack=false
 reconcile_until=$((SECONDS + 720))
 while :; do
   stack_state="$(read_stack)"
@@ -132,6 +224,9 @@ while :; do
     *) echo "Reconcile terminal agent status $status before release" >&2; exit 1 ;;
   esac
 done
+if [[ "$status" == ABSENT || "$status" == REVIEW_IN_PROGRESS ]]; then
+  fresh_stack=true
+fi
 
 # The first ordinary post-cutover source push must not execute the endpoint
 # removal. It leaves the serving publication untouched and succeeds as a
@@ -165,6 +260,7 @@ fi
 deployed_revision="$(stack_output SourceRevision <<<"$stack_state")"
 if [[ "$deployed_revision" == "$GITHUB_SHA" ]]; then
   if stack_has_parameter PublishedVersion && stack_has_parameter PublishedRuntimeBootstrapEnabled; then
+    verify_publisher_parameters
     verify_outputs
     exit 0
   fi
@@ -203,6 +299,12 @@ elif ! grep -Eqi 'does not exist|not found|ChangeSetNotFound' "$aws_error"; then
   exit 1
 fi
 
+if [[ "$fresh_stack" == false && "$prepared" == true ]] && ! verify_prepared_publisher_parameters "$description"; then
+  echo "Prepared agent change set carries a stale or incomplete publisher/bootstrap tuple; discarding it for re-preparation" >&2
+  deploy_aws cloudformation delete-change-set --stack-name "$stack" --change-set-name "$change_set_name"
+  prepared=false
+fi
+
 if [[ "$prepared" == false ]]; then
   # A failed first create can leave these two retained resources unmanaged.
   # Native auto-import preserves them; the checked-template guard below rejects
@@ -214,6 +316,12 @@ if [[ "$prepared" == false ]]; then
     --output json >"$description"
 fi
 node scripts/check-agent-change-set.mjs "$assembly/$candidate_template" <"$description"
+if [[ "$fresh_stack" == false ]]; then
+  verify_prepared_publisher_parameters "$description" || {
+    echo "Agent change set does not carry the freshly verified publisher/bootstrap tuple" >&2
+    exit 1
+  }
+fi
 
 change_set_id="$(jq -er .ChangeSetId "$description")"
 jq -e --arg revision "$GITHUB_SHA" \
@@ -240,7 +348,12 @@ while :; do
   fi
   sleep 15
 done
-read_published_binding
-read_bootstrap_binding
+if [[ "$fresh_stack" == true ]]; then
+  echo "Verified fresh agent stack; no fixed publisher record is required until reference setup"
+else
+  read_published_binding
+  read_bootstrap_binding
+  verify_publisher_parameters
+fi
 verify_outputs
 jq -r '.Stacks[0].Outputs[] | "- \(.OutputKey) — \(.OutputValue)"' <<<"$stack_state" >>"$GITHUB_STEP_SUMMARY"

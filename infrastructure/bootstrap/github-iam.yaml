@@ -252,6 +252,19 @@ Resources:
             Effect: Allow
             Action: xray:GetTraceSegmentDestination
             Resource: '*'
+  Phase19PublisherPermissions:
+    DependsOn: DedicatedCdkDeployRolePhase0Guard
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: IncidentTriageDemoPhase19Publisher
+      Description: >-
+        Existing release-finalization grants plus the fixed Phase 19 faulty
+        reference publisher grants. All resources remain explicitly scoped.
+      Roles:
+        - Fn::Sub: cdk-evaltalk-deploy-role-${AWS::AccountId}-${AWS::Region}
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
           - Sid: FinalizeCheckedAgentRuntime
             Effect: Allow
             Action:
