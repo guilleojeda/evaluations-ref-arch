@@ -14,7 +14,7 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 
-RUBRIC_ID = "incident-triage.semantic.v3"
+RUBRIC_ID = "incident-triage.semantic.v4"
 
 HAIKU_45_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 SONNET_46_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
@@ -65,7 +65,12 @@ _RUBRIC = {
             {
                 "dimensionName": "evidence_grounding",
                 "dimensionInstruction": (
-                    "Check fidelity to actual observations and their scope. A "
+                    "Check fidelity to actual observations and their scope. For "
+                    "every grounding failure, quote the report text that makes "
+                    "the material observation, citation, or coverage claim and "
+                    "name the contradicting or missing eligible source fact or "
+                    "coverage bound. Do not infer a claim about what a source "
+                    "showed from a causal explanation or its premise alone. A "
                     "claim that memory pressure caused the outage is a diagnosis "
                     "inference only. A claim that the returned metrics showed "
                     "memory pressure is a source claim and must match the tool "
@@ -218,8 +223,12 @@ def case_assertions(loaded_case: Mapping[str, Any]) -> list[str]:
             "Grounding rule: factual claims about source observations and coverage must "
             "match the actual tool results, including entity, result, time, and "
             "known limitations. Assess causal inference and incident assessment "
-            "under diagnosis support. Evidence observed after the reviewed cutoff "
-            "is outside the eligible source scope."
+            "under diagnosis support. Every grounding failure explanation must "
+            "quote the report's actual material observation, citation, or coverage "
+            "claim and the contradicting or missing eligible source fact or coverage "
+            "bound; a causal explanation or its premise alone cannot establish what "
+            "a source showed. Evidence observed after the reviewed cutoff is outside "
+            "the eligible source scope."
         ),
     ]
 

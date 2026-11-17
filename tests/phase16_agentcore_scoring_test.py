@@ -156,18 +156,20 @@ def score(client: RecordingClient, assertions: list[str] = ASSERTIONS) -> dict[s
 
 
 class AgentCoreRubricConfigurationTests(unittest.TestCase):
-    def test_v3_pins_separate_diagnosis_and_grounding_criteria(self):
+    def test_pins_separate_diagnosis_and_grounding_criteria(self):
         module = importlib.import_module("agentcore_evaluation")
         rubric = module.evaluator_config(module.SONNET_46_MODEL_ID)["llmAsAJudge"]
         dimensions = {
             item["dimensionName"]: item for item in rubric["ratingScale"]["multiDimensional"]
         }
-        self.assertEqual("incident-triage.semantic.v3", module.RUBRIC_ID)
+        self.assertEqual("incident-triage.semantic.v4", module.RUBRIC_ID)
         self.assertIn("A bad inference alone affects diagnosis support", rubric["instructions"])
         self.assertIn("causal diagnosis", dimensions["diagnosis_support"]["dimensionInstruction"])
         grounding = dimensions["evidence_grounding"]["dimensionInstruction"]
         for rule in ("inference only", "matched source field and value", "ingestionTime",
-                     "availableAt", "referenceTime", "repeat the request", "query requested a later end"):
+                     "availableAt", "referenceTime", "repeat the request", "query requested a later end",
+                     "quote the report text", "contradicting or missing eligible source fact",
+                     "causal explanation or its premise alone"):
             with self.subTest(rule=rule):
                 self.assertIn(rule, grounding)
         self.assertNotEqual(
@@ -175,7 +177,7 @@ class AgentCoreRubricConfigurationTests(unittest.TestCase):
             dimensions["evidence_grounding"]["dimensionRatingScale"],
         )
         self.assertNotEqual(
-            "2158603e89d52308b9d84c3fdde48a5e513caca372047ae10bb0aba06822582e",
+            "a361016a68fe9851b010123bde700dc9c635f4d4c832d2369e53e858eb753082",
             module.evaluator_config_digest(module.SONNET_46_MODEL_ID),
         )
 
