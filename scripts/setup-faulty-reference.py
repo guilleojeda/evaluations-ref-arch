@@ -416,9 +416,10 @@ def _stack_outputs(cloudformation: Any, stack_name: str) -> dict[str, str]:
     if not isinstance(outputs, list):
         raise RuntimeError("agent stack outputs are malformed")
     values: dict[str, str] = {}
+    consumed = {"RuntimeId", "AlarmAdapterCodeSha256"}
     for item in outputs:
-        if not isinstance(item, Mapping):
-            raise RuntimeError("agent stack output is malformed")
+        if not isinstance(item, Mapping) or item.get("OutputKey") not in consumed:
+            continue
         key, value = item.get("OutputKey"), item.get("OutputValue")
         if not isinstance(key, str) or not isinstance(value, str) or not value:
             raise RuntimeError("agent stack output has an invalid identity")

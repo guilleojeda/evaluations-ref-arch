@@ -188,7 +188,10 @@ jobs:
         run: node --test tests/phase0-routing.test.mjs tests/phase12-demo-deploy-routing.test.mjs
       - name: Run Phase 19 reference routing checks
         if: matrix.component == 'agent'
-        run: node --test tests/phase19-reference-routing.test.mjs
+        run: |
+          # The alarm route spans the app alarm and the agent's adapter permission.
+          npm run check -- app
+          node --test tests/phase19-reference-routing.test.mjs
       - name: Run app release acceptance checks
         if: matrix.component == 'app'
         run: |

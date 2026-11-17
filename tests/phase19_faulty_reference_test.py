@@ -281,27 +281,30 @@ class NativeController:
 
 
 class NativeCloudFormation:
-    def __init__(self, adapter_code_sha: str | None = None):
+    def __init__(self, adapter_code_sha: str | None = None, extra_outputs: list[dict[str, str]] | None = None):
         self.calls: list[tuple[str, dict[str, object]]] = []
         self.adapter_code_sha = adapter_code_sha
+        self.extra_outputs = extra_outputs or []
 
     def describe_stacks(self, **request: object) -> dict[str, object]:
         self.calls.append(("describe_stacks", copy.deepcopy(request)))
         outputs: list[dict[str, str]] = [{"OutputKey": "RuntimeId", "OutputValue": RUNTIME_ID}]
         if self.adapter_code_sha is not None:
             outputs.append({"OutputKey": "AlarmAdapterCodeSha256", "OutputValue": self.adapter_code_sha})
+        outputs.extend(copy.deepcopy(self.extra_outputs))
         return {"Stacks": [{"Outputs": outputs}]}
 
 
 class NativePreflightCloudFormation(NativeCloudFormation):
-    def __init__(self, adapter_code_sha: str | None = None):
-        super().__init__(adapter_code_sha)
+    def __init__(self, adapter_code_sha: str | None = None, extra_outputs: list[dict[str, str]] | None = None):
+        super().__init__(adapter_code_sha, extra_outputs)
 
     def describe_stacks(self, **request: object) -> dict[str, object]:
         self.calls.append(("describe_stacks", copy.deepcopy(request)))
         outputs: list[dict[str, str]] = [{"OutputKey": "RuntimeId", "OutputValue": RUNTIME_ID}]
         if self.adapter_code_sha is not None:
             outputs.append({"OutputKey": "AlarmAdapterCodeSha256", "OutputValue": self.adapter_code_sha})
+        outputs.extend(copy.deepcopy(self.extra_outputs))
         return {"Stacks": [{
             "StackId": f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:stack/IncidentTriageDemoAgent/id",
             "StackStatus": "UPDATE_COMPLETE",
@@ -646,6 +649,18 @@ class FaultyReferenceAcceptance(unittest.TestCase):
         self.assertEqual(attr(deployed_adapter_sha), controller.items[PUBLICATION_PK]["adapterCodeSha256"])
         self.assertEqual("reference", controller.items[PUBLICATION_PK]["status"]["S"])
 
+    def test_fresh_stack_empty_publication_outputs_are_ignored_by_setup(self):
+        control, adapter, controller = self._native(historical=True)
+        self.cloudformation = NativeCloudFormation(extra_outputs=[
+            {"OutputKey": "PublishedVersion", "OutputValue": ""},
+            {"OutputKey": "PublishedCodeRevision", "OutputValue": ""},
+            {"OutputKey": "PublishedArtifactSha256", "OutputValue": ""},
+        ])
+        module = self._load()
+        self.assertEqual({"RuntimeId": RUNTIME_ID}, module._stack_outputs(self.cloudformation, module.STACK_NAME))
+        self._call_operation(module, control, adapter, controller)
+        self.assertEqual("reference", controller.items[PUBLICATION_PK]["status"]["S"])
+
     def test_preflight_reports_reconcilable_endpoint_adapter_version_gap(self):
         module = self._load()
         control, adapter, controller = self._native(historical=True, endpoint_present=True, endpoint_version="10")
@@ -681,6 +696,21 @@ class FaultyReferenceAcceptance(unittest.TestCase):
         self.assertFalse(self.control.endpoint_creates)
         self.assertFalse(self.control.endpoint_updates)
         self.assertEqual("7", self.control.endpoints["faulty"]["liveVersion"])
+
+    def test_healthy_repeat_reuses_exact_publication_and_strong_readback(self):
+        control, adapter, controller = self._native(historical=True, endpoint_present=True)
+        module = self._load()
+        first = self._call_operation(module, control, adapter, controller)
+        first_item = copy.deepcopy(controller.items[PUBLICATION_PK])
+        first_puts = len([call for call in controller.calls if call[0] == "put_item"])
+        first_adapter_updates = len(adapter.updates)
+        second = self._call_operation(module, control, adapter, controller)
+        self.assertEqual(first, second)
+        self.assertEqual(first_item, controller.items[PUBLICATION_PK])
+        self.assertEqual(first_puts, len([call for call in controller.calls if call[0] == "put_item"]))
+        self.assertFalse(control.endpoint_updates)
+        self.assertEqual(first_adapter_updates, len(adapter.updates))
+        self.assertTrue(all(request.get("ConsistentRead") is True for name, request in controller.calls if name == "get_item"))
 
     def test_runtime_default_protocol_fields_are_normalized_for_effective_config(self):
         control, _adapter, _controller = self._native(historical=True)
