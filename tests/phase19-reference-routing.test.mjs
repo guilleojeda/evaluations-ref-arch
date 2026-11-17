@@ -236,6 +236,19 @@ test('synthesized agent CFN relinquishes endpoint ownership while preserving sta
   const endpointOutputValues = JSON.stringify(Object.values(Outputs ?? {}));
   requireAbsent(endpointResourceValues, /FaultyEndpoint/, 'no CFN resource may reference the removed endpoint');
   requireAbsent(endpointOutputValues, /FaultyEndpoint/, 'no CFN output value may reference the removed endpoint');
+
+  for (const parameter of [
+    'PublishedRuntimeAssetBucket', 'PublishedRuntimeAssetKey',
+    'PublishedRuntimeCodeRevision', 'PublishedRuntimeArtifactDigest',
+    'PublishedRuntimeBootstrapEnabled',
+  ]) {
+    assert.ok(agent.Parameters?.[parameter], `${parameter} must preserve the deployed Runtime bootstrap tuple`);
+  }
+  const runtimeText = JSON.stringify(runtime.Properties);
+  assert.match(runtimeText, /PublishedRuntimeAssetKey/,
+    'ordinary releases must source Runtime code from the preserved bootstrap tuple when configured');
+  assert.match(runtimeText, /PublishedRuntimeCodeRevision/,
+    'ordinary releases must preserve Runtime source identity separately from stack SourceRevision');
 });
 
 test('normal template releases preserve native alarm routing to the stable adapter ARN', () => {

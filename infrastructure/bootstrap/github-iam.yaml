@@ -59,8 +59,12 @@ Resources:
               - xray:GetTraceSegmentDestination
               - bedrock-agentcore:GetAgentRuntime
               - bedrock-agentcore:UpdateAgentRuntime
+              - bedrock-agentcore:ListAgentRuntimeVersions
+              - bedrock-agentcore:CreateAgentRuntimeEndpoint
               - bedrock-agentcore:GetAgentRuntimeEndpoint
               - bedrock-agentcore:UpdateAgentRuntimeEndpoint
+              - dynamodb:GetItem
+              - dynamodb:PutItem
               - lambda:GetAlias
               - lambda:GetFunctionConfiguration
               - lambda:ListVersionsByFunction
@@ -125,6 +129,7 @@ Resources:
                 kms:EncryptionContext:aws:s3:arn:
                   - arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*.json
                   - arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*.zip
+                  - arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/agent-reference/*
           # Inventory and the alarm adapter share the existing Lambda KMS key.
           # Keep decryption limited to their exact environment contexts.
           - Sid: DenyLambdaKeyOutsideApprovedEnvironments
@@ -166,6 +171,16 @@ Resources:
               - arn:aws:s3:::incident-triage-demo-web-027224425948-us-east-1/assets/*
               - arn:aws:s3:::incident-triage-demo-web-027224425948-us-east-1/index.html
               - arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/releases/app/*/inventory-variants.json
+          - Sid: DenyOtherControllerRecords
+            Effect: Deny
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoControllerRun
+            Condition:
+              ForAnyValue:StringNotEquals:
+                dynamodb:LeadingKeys:
+                  - AGENT_PUBLICATION#faulty
           - Sid: PublishPhase1AppWebBucket
             Effect: Allow
             Action:
@@ -242,11 +257,24 @@ Resources:
             Action:
               - bedrock-agentcore:GetAgentRuntime
               - bedrock-agentcore:UpdateAgentRuntime
+              - bedrock-agentcore:CreateAgentRuntimeEndpoint
               - bedrock-agentcore:GetAgentRuntimeEndpoint
               - bedrock-agentcore:UpdateAgentRuntimeEndpoint
             Resource:
-              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-*
-              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-*/runtime-endpoint/faulty
+              # AgentCore Runtime IDs have a ten-character generated suffix.
+              # Keep the runtime ARN pattern from also matching endpoint ARNs.
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????/runtime-endpoint/faulty
+          # ListAgentRuntimeVersions has no resource type in the AgentCore
+          # service authorization model. Keep it region-limited; the fixed
+          # publisher resolves the Runtime only from the named stack output.
+          - Sid: ListRuntimeVersions
+            Effect: Allow
+            Action: bedrock-agentcore:ListAgentRuntimeVersions
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: us-east-1
           - Sid: AttestVerifiedRuntimeInAdapter
             Effect: Allow
             Action:
@@ -272,6 +300,22 @@ Resources:
               - s3:GetObject
               - s3:PutObject
             Resource: arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/releases/app/*/inventory-variants.json
+          - Sid: ReadAgentReference
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+            Resource: arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/agent-reference/*
+          - Sid: PublishFaultyRecord
+            Effect: Allow
+            Action:
+              - dynamodb:GetItem
+              - dynamodb:PutItem
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoControllerRun
+            Condition:
+              ForAllValues:StringEquals:
+                dynamodb:LeadingKeys:
+                  - AGENT_PUBLICATION#faulty
 
   GitHubOidcProvider:
     Condition: CreateGitHubOidcProvider

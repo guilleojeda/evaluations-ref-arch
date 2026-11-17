@@ -247,6 +247,31 @@ same key and the exact alarm-adapter environment context. It does not permit
 Inventory encryption or grant/key creation. See [Lambda environment encryption](https://docs.aws.amazon.com/lambda/latest/dg/configuration-envvars-encryption.html)
 and the [KMS Encrypt permission](https://docs.aws.amazon.com/kms/latest/APIReference/API_Encrypt.html).
 
+The Phase 19 `reference-setup` maintenance operation adds only the following
+publisher scope to the assumed CDK deploy role:
+
+- read the fixed, versioned reference objects under
+  `s3://cdk-evaltalk-assets-027224425948-us-east-1/agent-reference/*`;
+- list versions and read/update the named `IncidentTriageDemoAgent-*` Runtime,
+  create the `faulty` endpoint on that Runtime, and read/update only its
+  `.../runtime-endpoint/faulty` endpoint; and
+- strongly read/write the single controller-table item whose leading key is
+  `AGENT_PUBLICATION#faulty`.
+
+The reference objects use the bootstrap KMS key only with that exact
+`agent-reference/*` S3 encryption-context prefix. The publisher has no direct
+endpoint-delete permission and cannot write the selection, action-journal, or
+other controller-table keys. It cannot provide an archive URI, digest, Runtime,
+endpoint name, or candidate through the workflow; those values come from the
+reviewed fixed descriptor.
+
+`bedrock-agentcore:ListAgentRuntimeVersions` currently has no resource type in
+the AWS service-authorization model, so its unavoidable `Resource: "*"` grant
+is limited to `us-east-1`. The fixed helper obtains the Runtime ID only from
+the named `IncidentTriageDemoAgent` stack and does not accept a caller-supplied
+Runtime. The effective-scope check must keep this read limitation visible;
+the create/get/update actions remain ARN-scoped.
+
 The app release script runs `scripts/prepare-inventory-versions.mjs` after the
 app stack is healthy. It verifies the healthy `live` alias, stages only the
 denied role with the observed `$LATEST` revision, publishes with the observed
