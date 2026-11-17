@@ -217,7 +217,7 @@ AWS supports on-demand evaluation of supported-framework agents outside AgentCor
 
 At S4, the Strands experiment reuses the candidate execution function as its task and adds case iteration, evaluators, reports, and candidate comparison. It reuses the reviewed AgentCore semantic evaluator through a Strands adapter, while deterministic checks remain separate and inspectable. The AgentCore verdict and reason are advisory feedback. Preserve case meaning, supply the right reference inputs, and compare candidates within the selected scoring setup rather than treating scores from different evaluators as interchangeable. Once selected, the S5 CI command invokes the same experiment and policy used locally. S3 remains a direct IDE runner and does not deploy the repaired candidate or invoke the live alarm adapter.
 
-This route is supported by documentation but has not been exercised here. Verify the selected telemetry format, collector completeness, session correlation, reference mapping, and result reporting during implementation. The schedule's S3 estimate includes ingestion; its duration remains unmeasured.
+The browser IDE workflow has been verified with the frozen denial case, an uncommitted prompt edit, matching CloudWatch content and the pinned Sonnet 4.6 evaluator. Rehearsal preparation checks session correlation, complete telemetry, reference mapping and exact result identities. Feedback time includes execution, telemetry collection and scoring.
 
 ## Offline cases and observed traffic
 
