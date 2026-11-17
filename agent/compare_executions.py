@@ -10,16 +10,33 @@ from typing import Any
 
 from agentcore_evaluation import case_assertions
 from captured_execution import load_execution
+from evaluation_telemetry import _span_roster_mismatch, _validate_session, timing_evidence_assertions
 
 
 COMMON_SOURCE_FILES = (
     "agent/main.py",
     "agent/investigation.py",
     "agent/evidence.py",
+    "agent/captured_execution.py",
     "agent/captured_evidence.py",
+    "agent/evaluation_telemetry.py",
     "agent/reviewed_cases.py",
     "agent/deterministic_checks.py",
 )
+
+# The retained S2 run predates the advisory scorer and editable-run lifecycle
+# changes. Only these reviewed source transitions preserve that comparison.
+# New captures normally have identical common source digests.
+RETAINED_S2_SOURCE_TRANSITIONS = {
+    "agent/captured_execution.py": (
+        "9bb669602dc6c19e7d4071c45cd65cf5e2030a24b3ad2af65af2c41e630f14b7",
+        "20f51a6dc99404e94f0d402f31d65fbd5ab997431f263cc2535447a1a771db05",
+    ),
+    "agent/evaluation_telemetry.py": (
+        "4ade4a1b761cf307a1f62237a3fdd78bae0a1d8d8a9b9ce17b35b9871bf6f732",
+        "f36528dc97beb5ed557c4e57048d0bee9a322bec1d350f7c4018e0ea28060b7e",
+    ),
+}
 
 
 def _digest(value: Any) -> str:
@@ -118,7 +135,13 @@ def _semantic_row(score: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return row if isinstance(row, Mapping) else None
 
 
-def _score_error(score: Mapping[str, Any], identity: Mapping[str, Any]) -> str | None:
+def _score_error(
+    score: Mapping[str, Any],
+    identity: Mapping[str, Any],
+    record: Mapping[str, Any],
+    loaded_case: Mapping[str, Any],
+    saved_spans: list[Any],
+) -> str | None:
     if score.get("status") != "complete":
         return "scoring result is incomplete"
     if score.get("executionId") != identity.get("executionId"):
@@ -135,6 +158,15 @@ def _score_error(score: Mapping[str, Any], identity: Mapping[str, Any]) -> str |
     for field in ("sessionId", "traceId"):
         if telemetry.get(field) != identity.get(field):
             return f"scoring telemetry {field} does not match the saved execution"
+    score_spans = telemetry.get("sessionSpans")
+    if not isinstance(score_spans, list):
+        return "scoring telemetry spans are missing"
+    validated, validation_error = _validate_session(score_spans, record, loaded_case)
+    if validation_error is not None:
+        return f"scoring telemetry is invalid: {validation_error}"
+    roster_error = _span_roster_mismatch(saved_spans, score_spans)
+    if roster_error is not None:
+        return f"scoring telemetry is invalid: {roster_error}"
     semantic = score.get("semantic")
     if not isinstance(semantic, Mapping) or semantic.get("status") != "complete":
         return "semantic verdict is incomplete"
@@ -154,15 +186,28 @@ def _score_error(score: Mapping[str, Any], identity: Mapping[str, Any]) -> str |
         return "semantic response contains an error or inconsistent verdict"
     if row.get("ignoredReferenceInputFields") not in (None, [], ()):
         return "semantic response ignored evaluator references"
+    evaluator = score.get("evaluator")
+    if not isinstance(evaluator, Mapping) or not evaluator.get("evaluatorId") or not evaluator.get("configSha256"):
+        return "scoring evaluator identity is missing"
+    expected_evaluator_id = evaluator.get("evaluatorId")
+    expected_evaluator_arn = evaluator.get("evaluatorArn")
+    for candidate in (row, row.get("rawResult"), raw):
+        if not isinstance(candidate, Mapping):
+            continue
+        if candidate.get("evaluatorId") != expected_evaluator_id:
+            return "semantic response evaluator does not match the pinned evaluator"
+        if expected_evaluator_arn is not None and candidate.get("evaluatorArn") is not None and candidate.get("evaluatorArn") != expected_evaluator_arn:
+            return "semantic response evaluator ARN does not match the pinned evaluator"
     for candidate in (row, row.get("rawResult"), raw):
         if isinstance(candidate, Mapping):
             context = candidate.get("context")
             span_context = context.get("spanContext") if isinstance(context, Mapping) else None
             if not isinstance(span_context, Mapping) or span_context.get("sessionId") != identity.get("sessionId"):
                 return "semantic verdict session identity does not match the saved execution"
-    evaluator = score.get("evaluator")
-    if not isinstance(evaluator, Mapping) or not evaluator.get("evaluatorId") or not evaluator.get("configSha256"):
-        return "scoring evaluator identity is missing"
+            if any(key in span_context for key in ("traceId", "trace_id", "traceID")):
+                trace_value = next(span_context[key] for key in ("traceId", "trace_id", "traceID") if key in span_context)
+                if trace_value != identity.get("traceId"):
+                    return "semantic verdict trace identity does not match the saved execution"
     source = score.get("scoringSourceSha256")
     required_source = {"deterministic_checks.py", "evaluation_telemetry.py", "agentcore_evaluation.py"}
     if not isinstance(source, Mapping) or set(source) != required_source or any(
@@ -170,6 +215,12 @@ def _score_error(score: Mapping[str, Any], identity: Mapping[str, Any]) -> str |
     ):
         return "scoring source identity is missing"
     assertions = score.get("assertions")
+    expected_assertions = [
+        *case_assertions(loaded_case),
+        *timing_evidence_assertions(validated["content"]["toolCalls"]),
+    ]
+    if assertions != expected_assertions:
+        return "scoring assertions do not match the authenticated session"
     if not isinstance(assertions, list) or score.get("assertionsSha256") != _digest(assertions):
         return "scoring assertions digest is invalid"
     evidence_digest = score.get("evidenceSha256")
@@ -184,18 +235,20 @@ def _score_error(score: Mapping[str, Any], identity: Mapping[str, Any]) -> str |
     return None
 
 
-def _assertions_prefix(assertions: Any, reviewed: list[str]) -> bool:
-    if not isinstance(assertions, list) or len(assertions) < len(reviewed):
-        return False
-    return assertions[:len(reviewed)] == reviewed
-
-
 def _score_view(score: Mapping[str, Any]) -> dict[str, Any]:
     view = dict(score)
     telemetry = view.get("telemetry")
     if isinstance(telemetry, Mapping):
         view["telemetry"] = {key: value for key, value in telemetry.items() if key != "sessionSpans"}
     return view
+
+
+def _incomplete_score_view(score: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: score[key]
+        for key in ("status", "scoringAttemptId", "phase", "diagnostic", "reason", "identity", "evaluator")
+        if key in score
+    }
 
 
 def _common_checks(
@@ -216,18 +269,17 @@ def _common_checks(
             return f"candidate case {field} does not match the baseline"
     if _source_digests(baseline_record).get("agent/prompt.py") == _source_digests(candidate_record).get("agent/prompt.py"):
         return "candidate prompt source is unchanged"
+    if bi.get("promptSha256") == ci.get("promptSha256"):
+        return "candidate prompt identity is unchanged"
     bs, cs = _source_digests(baseline_record), _source_digests(candidate_record)
     for name in COMMON_SOURCE_FILES:
-        if bs.get(name) != cs.get(name):
+        if bs[name] != cs[name] and (bs[name], cs[name]) != RETAINED_S2_SOURCE_TRANSITIONS.get(name):
             return f"common execution source differs: {name}"
     be, ce = baseline_score.get("evaluator"), candidate_score.get("evaluator")
     if be != ce:
         return "candidate evaluator identity differs from the baseline"
     if baseline_score.get("scoringSourceSha256") != candidate_score.get("scoringSourceSha256"):
         return "scoring source identity differs from the baseline"
-    reviewed = case_assertions(baseline_case)
-    if not _assertions_prefix(baseline_score.get("assertions"), reviewed) or not _assertions_prefix(candidate_score.get("assertions"), reviewed):
-        return "reviewed scoring assertions do not share a common prefix"
     return None
 
 
@@ -243,8 +295,8 @@ def compare_runs(
 
     baseline_path, candidate_path = Path(baseline), Path(candidate)
     try:
-        baseline_record, baseline_case, _ = load_execution(baseline_path)
-        candidate_record, candidate_case, _ = load_execution(candidate_path)
+        baseline_record, baseline_case, baseline_spans = load_execution(baseline_path)
+        candidate_record, candidate_case, candidate_spans = load_execution(candidate_path)
     except Exception as exc:
         return {"status": "error", "reason": f"saved execution is unavailable: {type(exc).__name__}"}
     baseline_view = _execution_view(baseline_path, baseline_record, baseline_case)
@@ -254,17 +306,24 @@ def compare_runs(
     baseline_score, reason = _select_attempt(baseline_path, baseline_attempt, load_score)
     if reason is not None:
         return {"status": "incomplete", "reason": reason, "baseline": baseline_view, "candidate": candidate_view}
-    baseline_error = _score_error(baseline_score, _execution_identity(baseline_record))
+    baseline_error = _score_error(
+        baseline_score, _execution_identity(baseline_record), baseline_record, baseline_case, baseline_spans
+    )
     if baseline_error is not None:
+        if baseline_score.get("status") != "complete":
+            baseline_view["score"] = _incomplete_score_view(baseline_score)
         return {"status": "incomplete", "reason": baseline_error, "baseline": baseline_view, "candidate": candidate_view}
     baseline_view["score"] = _score_view(baseline_score)
     candidate_score, reason = _select_attempt(candidate_path, candidate_attempt, load_score)
     if reason is not None:
         return {"status": "incomplete", "reason": reason, "baseline": baseline_view, "candidate": candidate_view}
-    candidate_error = _score_error(candidate_score, _execution_identity(candidate_record))
+    candidate_error = _score_error(
+        candidate_score, _execution_identity(candidate_record), candidate_record, candidate_case, candidate_spans
+    )
     if candidate_error is not None:
         # Keep the malformed receipt on disk for diagnosis, but do not present
         # its invalid semantic result as the candidate's accepted score.
+        candidate_view["score"] = _incomplete_score_view(candidate_score)
         return {"status": "incomplete", "reason": candidate_error, "baseline": baseline_view, "candidate": candidate_view}
     candidate_view["score"] = _score_view(candidate_score)
     reason = _common_checks(baseline_record, candidate_record, baseline_case, candidate_case, baseline_score, candidate_score)

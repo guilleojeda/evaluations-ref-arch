@@ -178,6 +178,7 @@ def _new_attempt(root: Path, *, execution: dict[str, Any]) -> tuple[Path, dict[s
 
 def _finish(receipt: Path, pending: dict[str, Any], outcome: dict[str, Any], started: float) -> dict[str, Any]:
     result = {**pending, **outcome, "finishedAt": _now(), "elapsedSeconds": round(time.monotonic() - started, 3)}
+    result.pop("phase", None)
     _write(receipt, result)
     return result
 
@@ -185,10 +186,7 @@ def _finish(receipt: Path, pending: dict[str, Any], outcome: dict[str, Any], sta
 def _mark_interrupted(receipt: Path, *, reason: str) -> dict[str, Any]:
     value = _read(receipt)
     if value.get("status") == "pending":
-        value["status"] = "interrupted"
-        value["reason"] = reason
-        value["finishedAt"] = _now()
-        _write(receipt, value)
+        value = {**value, "status": "interrupted", "reason": reason}
     return value
 
 
@@ -387,22 +385,7 @@ def _calibrate(
 def _show(run: Path) -> dict[str, Any]:
     """Read a saved execution without starting work or contacting AWS."""
 
-    raw = _read(run / "execution.json")
-    if raw.get("status") == "running":
-        if operation_lock_held(run / ".owner.lock"):
-            record = raw
-        else:
-            latest = _read(run / "execution.json")
-            if latest.get("status") != "running":
-                record = latest
-            else:
-                raw["status"] = "interrupted"
-                raw["reason"] = "execution process is no longer running"
-                raw["finishedAt"] = _now()
-                _write(run / "execution.json", raw)
-                record = raw
-    else:
-        record, _, _ = load_execution(run)
+    record, _, _ = load_execution(run)
     attempts = [
         _summary(_load_score_receipt(path))
         for path in sorted((run / "scores").glob("*/result.json"))

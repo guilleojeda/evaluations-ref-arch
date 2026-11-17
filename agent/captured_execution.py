@@ -281,8 +281,10 @@ def operation_lock_held(path: str | Path) -> bool:
     """Probe whether another process currently owns the stable operation lock."""
 
     lock_path = Path(path)
-    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    stream = lock_path.open("a+")
+    try:
+        stream = lock_path.open("rb")
+    except FileNotFoundError:
+        return False
     try:
         try:
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1165,7 +1167,14 @@ def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any],
             raise ValueError("interrupted report digest does not match the execution identity")
     if record["status"] == "interrupted":
         native_path = directory / "strands.native-spans.json"
-        if native_path.is_file() and not native_path.is_symlink():
+        # A process can die after atomically writing spans but before stamping
+        # their digest into execution.json. Those spans are orphaned and must
+        # not be treated as authenticated interrupted evidence.
+        if (
+            isinstance(record.get("nativeSpansSha256"), str)
+            and native_path.is_file()
+            and not native_path.is_symlink()
+        ):
             native = _load_record_json(native_path, "interrupted native Strands spans")
             if not isinstance(native, Mapping) or not isinstance(native.get("spans"), list):
                 raise ValueError("interrupted native Strands span file is malformed")

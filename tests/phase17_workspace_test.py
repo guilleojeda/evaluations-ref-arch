@@ -283,9 +283,20 @@ class S3WorkspaceAcceptance(unittest.TestCase):
             process.join(timeout=10)
         self.assertFalse(process.is_alive())
         self.assertIsNotNone(run_dir)
+        # Simulate an exporter flush that persisted spans immediately before
+        # the process died, before execution.json could stamp their digest.
+        (run_dir / "strands.native-spans.json").write_text('{"spans": []}\n', encoding="utf-8")
+        from captured_execution import load_execution
+        interrupted_record, _, interrupted_spans = load_execution(run_dir)
+        self.assertEqual(interrupted_record["status"], "interrupted")
+        self.assertEqual(interrupted_spans, [])
+        raw_before_show = (run_dir / "execution.json").read_bytes()
+        lock_before_show = (run_dir / ".owner.lock").read_bytes()
         interrupted = self._show(run_dir)
         self.assertEqual(interrupted["status"], "interrupted")
         self.assertEqual(interrupted["identity"]["executionId"], run_dir.name)
+        self.assertEqual((run_dir / "execution.json").read_bytes(), raw_before_show)
+        self.assertEqual((run_dir / ".owner.lock").read_bytes(), lock_before_show)
 
 
 if __name__ == "__main__":

@@ -148,6 +148,7 @@ class OfflineComparisonAcceptance(unittest.TestCase):
         self.assertEqual(len(shown["scoringAttempts"]), 1)
         self.assertEqual(shown["scoringAttempts"][0]["status"], "complete")
         self.assertEqual(shown["scoringAttempts"][0]["scoringAttemptId"], attempt)
+        self.assertNotIn("phase", shown["scoringAttempts"][0])
 
     def test_lost_score_owner_does_not_leave_pending_work_or_restart_execution(self):
         run = self.run_candidate()
@@ -298,14 +299,45 @@ class OfflineComparisonAcceptance(unittest.TestCase):
     def test_comparison_rejects_changes_to_common_execution_source(self):
         baseline = self.run_candidate()
         self.score(baseline)
-        provider = self.agent / "captured_evidence.py"
-        contents = provider.read_text(encoding="utf-8")
-        provider.write_text(contents + "\n# An independently changed provider source.\n", encoding="utf-8")
+        runner = self.agent / "captured_execution.py"
+        contents = runner.read_text(encoding="utf-8")
+        changed = contents.replace("MAX_TOOL_CALLS = 12", "MAX_TOOL_CALLS = 13", 1)
+        self.assertNotEqual(changed, contents)
+        runner.write_text(changed, encoding="utf-8")
         candidate = self.run_candidate(repaired=True)
         self.score(candidate)
         return_code, result = self.compare(baseline, candidate)
         self.assertNotEqual(return_code, 0, result)
         self.assertIn("source", result["reason"].lower())
+
+    def test_comparison_rejects_foreign_semantic_trace_and_evaluator_rows(self):
+        baseline = self.run_candidate()
+        self.score(baseline)
+        candidate = self.run_candidate(repaired=True)
+        attempt = self.score(candidate)
+        receipt = candidate / "scores" / attempt / "result.json"
+        saved = json.loads(receipt.read_bytes())
+        finding = saved["semantic"]["findings"]["semantic_quality"]
+        raw = saved["semantic"]["rawResponse"]["evaluationResults"][0]
+        finding["context"]["spanContext"]["traceId"] = "f" * 32
+        finding["rawResult"]["context"]["spanContext"]["traceId"] = "f" * 32
+        raw["context"]["spanContext"]["traceId"] = "f" * 32
+        receipt.write_text(json.dumps(saved), encoding="utf-8")
+        code, result = self.compare(baseline, candidate)
+        self.assertNotEqual(code, 0, result)
+        self.assertIn("trace", result["reason"].lower())
+
+        saved = json.loads((candidate / "scores" / attempt / "result.json").read_bytes())
+        finding = saved["semantic"]["findings"]["semantic_quality"]
+        raw = saved["semantic"]["rawResponse"]["evaluationResults"][0]
+        finding["context"]["spanContext"].pop("traceId", None)
+        finding["rawResult"]["context"]["spanContext"].pop("traceId", None)
+        raw["context"]["spanContext"].pop("traceId", None)
+        finding["evaluatorId"] = raw["evaluatorId"] = "foreign-evaluator"
+        receipt.write_text(json.dumps(saved), encoding="utf-8")
+        code, result = self.compare(baseline, candidate)
+        self.assertNotEqual(code, 0, result)
+        self.assertIn("evaluator", result["reason"].lower())
 
     def test_comparison_rejects_different_scoring_source_with_same_evaluator(self):
         baseline = self.run_candidate()
