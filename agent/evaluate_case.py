@@ -28,7 +28,13 @@ from agentcore_evaluation import (
     evaluator_config,
     score_session,
 )
-from captured_execution import load_execution, run_captured_case
+from captured_execution import (
+    acquire_operation_lock,
+    load_execution,
+    operation_lock_held,
+    release_operation_lock,
+    run_captured_case,
+)
 from evaluation_telemetry import (
     CloudWatchSession,
     execution_content,
@@ -152,33 +158,50 @@ def _provision(model_id: str, mode: str = DEFAULT_MODE) -> dict[str, Any]:
     return pin
 
 
-def _new_attempt(root: Path, *, execution: dict[str, Any]) -> tuple[Path, dict[str, Any]]:
+def _new_attempt(root: Path, *, execution: dict[str, Any]) -> tuple[Path, dict[str, Any], Any]:
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     attempt_id = str(uuid.uuid4())
     attempt = root / attempt_id
     attempt.mkdir(mode=0o700)
     pending = {
         "status": "pending",
+        "phase": "starting",
         "scoringAttemptId": attempt_id,
         "startedAt": _now(),
         **execution,
     }
     receipt = attempt / "result.json"
+    lock = acquire_operation_lock(attempt / ".owner.lock")
     _write(receipt, pending)
-    return receipt, pending
+    return receipt, pending, lock
 
 
 def _finish(receipt: Path, pending: dict[str, Any], outcome: dict[str, Any], started: float) -> dict[str, Any]:
     result = {**pending, **outcome, "finishedAt": _now(), "elapsedSeconds": round(time.monotonic() - started, 3)}
+    result.pop("phase", None)
     _write(receipt, result)
     return result
+
+
+def _mark_interrupted(receipt: Path, *, reason: str) -> dict[str, Any]:
+    value = _read(receipt)
+    if value.get("status") == "pending":
+        value = {**value, "status": "interrupted", "reason": reason}
+    return value
+
+
+def _load_score_receipt(path: Path) -> dict[str, Any]:
+    value = _read(path)
+    if value.get("status") == "pending" and not operation_lock_held(path.parent / ".owner.lock"):
+        value = _mark_interrupted(path, reason="scoring process is no longer running")
+    return value
 
 
 def _summary(result: dict[str, Any]) -> dict[str, Any]:
     public = {
         key: result[key] for key in (
             "status", "kind", "executionId", "scoringAttemptId", "identity", "evaluator",
-            "reason", "diagnostic", "deterministic", "elapsedSeconds", "waitSeconds", "scoringSeconds",
+            "phase", "reason", "diagnostic", "deterministic", "elapsedSeconds", "waitSeconds", "scoringSeconds",
             "usage", "modelRequestCount", "evidenceToolCallCount", "evidenceProviderCallCount",
             "failure", "telemetryError", "telemetryWarning",
         ) if key in result
@@ -231,7 +254,7 @@ def _score(run: Path, pin_path: Path, wait: int, requested_mode: str | None = No
     control = session.client("bedrock-agentcore-control", config=AWS_CONFIG)
     before = _configured(control, pin)
     received = record["identity"]
-    receipt, pending = _new_attempt(run / "scores", execution={
+    receipt, pending, operation_lock = _new_attempt(run / "scores", execution={
         "kind": "captured_execution_score",
         "executionId": received["executionId"],
         "identity": received,
@@ -246,6 +269,23 @@ def _score(run: Path, pin_path: Path, wait: int, requested_mode: str | None = No
         "scoringSourceSha256": _scoring_source_digests(),
     })
     started = time.monotonic()
+    pending["phase"] = "waiting_for_telemetry"
+    _write(receipt, pending)
+
+    class _PhaseClient:
+        def __init__(self, client: Any) -> None:
+            self._client = client
+
+        def evaluate(self, **request: Any) -> Any:
+            current = _read(receipt)
+            if current.get("status") == "pending":
+                current["phase"] = "scoring"
+                _write(receipt, current)
+            return self._client.evaluate(**request)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(self._client, name)
+
     try:
         fetch = CloudWatchSession(
             session.client("logs", config=AWS_CONFIG), LOG_GROUP,
@@ -253,7 +293,7 @@ def _score(run: Path, pin_path: Path, wait: int, requested_mode: str | None = No
         )
         result = score_execution(
             record, loaded, fetch_session=fetch,
-            evaluation_client=session.client("bedrock-agentcore", config=EVALUATE_CONFIG),
+            evaluation_client=_PhaseClient(session.client("bedrock-agentcore", config=EVALUATE_CONFIG)),
             evaluator_id=pin["evaluatorId"], wait_seconds=wait,
             scoring_attempt_id=pending["scoringAttemptId"],
             verified_spans=native_spans,
@@ -262,7 +302,10 @@ def _score(run: Path, pin_path: Path, wait: int, requested_mode: str | None = No
         _check_after_scoring(control, pin, before, result)
     except (ValueError, ClientError, BotoCoreError) as exc:
         result = {"status": "error", "reason": _error_message(exc)}
-    return _finish(receipt, pending, result, started)
+    try:
+        return _finish(receipt, pending, result, started)
+    finally:
+        release_operation_lock(operation_lock)
 
 
 def _validate_control(control: dict[str, Any]) -> None:
@@ -307,7 +350,7 @@ def _calibrate(
     session = _aws()
     control = session.client("bedrock-agentcore-control", config=AWS_CONFIG)
     before = _configured(control, pin)
-    receipt, pending = _new_attempt(output, execution={
+    receipt, pending, operation_lock = _new_attempt(output, execution={
         "kind": "calibration_control",
         "controlId": fixture["id"],
         "controlSha256": _digest(fixture),
@@ -333,7 +376,21 @@ def _calibrate(
     )
     result = {"status": semantic["status"], "semantic": semantic}
     _check_after_scoring(control, pin, before, result)
-    return _finish(receipt, pending, result, started)
+    try:
+        return _finish(receipt, pending, result, started)
+    finally:
+        release_operation_lock(operation_lock)
+
+
+def _show(run: Path) -> dict[str, Any]:
+    """Read a saved execution without starting work or contacting AWS."""
+
+    record, _, _ = load_execution(run)
+    attempts = [
+        _summary(_load_score_receipt(path))
+        for path in sorted((run / "scores").glob("*/result.json"))
+    ]
+    return {**record, "scoringAttempts": attempts}
 
 
 def _error_message(exc: Exception) -> str:
@@ -361,6 +418,7 @@ def _parser() -> argparse.ArgumentParser:
     run.add_argument("--case", required=True, type=Path)
     run.add_argument("--bundle", required=True, type=Path)
     run.add_argument("--output-root", required=True, type=Path)
+    run.add_argument("--candidate", choices=("faulty", "repaired"), default=None)
     score = commands.add_parser("score")
     score.add_argument("--run", required=True, type=Path)
     score.add_argument("--evaluator", required=True, type=Path, help="reviewed evaluator descriptor from provision")
@@ -368,6 +426,11 @@ def _parser() -> argparse.ArgumentParser:
     _add_semantic_mode_arg(score)
     show = commands.add_parser("show")
     show.add_argument("--run", required=True, type=Path)
+    compare = commands.add_parser("compare")
+    compare.add_argument("--baseline", required=True, type=Path)
+    compare.add_argument("--candidate", required=True, type=Path)
+    compare.add_argument("--baseline-attempt")
+    compare.add_argument("--candidate-attempt")
     calibration = commands.add_parser("calibrate")
     calibration.add_argument("--control", required=True, type=Path)
     calibration.add_argument("--evaluator", required=True, type=Path)
@@ -384,8 +447,15 @@ def main() -> int:
     code = 0
     try:
         if args.command == "run":
+            def progress(run_dir: Path, record: dict[str, Any]) -> None:
+                print(json.dumps({"status": "running", "runDirectory": str(run_dir)}), file=sys.stderr, flush=True)
+
             with redirect_stdout(sys.stderr):
-                run = run_captured_case(args.case, args.bundle, args.output_root)
+                run = run_captured_case(
+                    args.case, args.bundle, args.output_root,
+                    candidate_id=args.candidate,
+                    progress_callback=progress,
+                )
             record, _, _ = load_execution(run)
             output = {"runDirectory": str(run), **_summary(record), "report": record.get("report")}
             code = 0 if record.get("status") == "complete" else 2
@@ -397,13 +467,22 @@ def main() -> int:
             output, code = _summary(result), 0 if result["status"] == "complete" else 2
         elif args.command == "provision":
             output = _provision(args.model, args.semantic_mode)
+        elif args.command == "compare":
+            from compare_executions import compare_runs
+
+            def load_score(path: Path) -> dict[str, Any]:
+                return _load_score_receipt(path)
+
+            output = compare_runs(
+                args.baseline,
+                args.candidate,
+                args.baseline_attempt,
+                args.candidate_attempt,
+                load_score=load_score,
+            )
+            code = 0 if output.get("status") == "complete" else 2
         else:
-            record, _, _ = load_execution(args.run)
-            attempts = [
-                _summary(_read(path))
-                for path in sorted((args.run / "scores").glob("*/result.json"))
-            ]
-            output = {**record, "scoringAttempts": attempts}
+            output = _show(args.run)
     except (OSError, ValueError, BotoCoreError, ClientError) as exc:
         output, code = {"status": "error", "reason": _error_message(exc)}, 2
     print(json.dumps(output, ensure_ascii=False, sort_keys=True))

@@ -192,19 +192,30 @@ and explicit repeat alongside the baseline evidence.
 
 ## S3: Fresh candidate before deployment
 
-Prepare a small local runner before the talk. It executes the shared agent constructor with the selected prompt, the reviewed case's captured providers, and its effective investigation reference time. It does not need the complete Strands experiment introduced at S4, and it does not deploy the repaired candidate or invoke the live alarm adapter.
+The S3 runner accepts an explicitly selected editable candidate and snapshots
+its prompt, source, lockfile, frozen case and captured bundle before importing
+the candidate. The prepared `agent/prompts/s3-repair.patch` changes only the
+prompt. The default `faulty` path keeps the checked-in manifest validation used
+by S2. The explicit `repaired` path records the actual saved prompt digest and
+candidate label while preserving the same model, report schema, four captured
+read-only tools, permissions and request bounds. A later editor save cannot
+change an in-flight run. Each invocation gets a fresh execution, session and
+trace identity, including repeated runs with identical inputs. The run emits a
+durable directory as soon as its running record is ready, so a second IDE
+terminal can inspect progress with `show`; process loss remains interrupted and
+never relaunches work.
 
 The intended execution and scoring path is:
 
-1. Execute the changed candidate with a new regression/session identity, retaining its prompt, source, model, case, and evidence versions. The candidate chooses its own queries against the captured sources.
+1. Execute the changed candidate with a new regression/session identity, retaining its prompt, source, model, case, and evidence versions. The candidate chooses its own queries against the captured sources. For the denial case, the repaired guidance chooses the healthy role-backed Inventory version at the current memory when the captured IAM evidence supports that action, and keeps the recommendation bounded to the source rows, coverage and effective reference time.
 2. Export that execution's actual model/tool/report telemetry to CloudWatch through the prepared outside-Runtime observability configuration, with session correlation. Wait for ingestion, then collect the matching complete session spans and conversation content. The case reference time governs evidence access; telemetry timestamps describe the new execution.
 3. Submit those spans to AgentCore on-demand `Evaluate`, using the same versioned semantic evaluators and reviewed reference expectations as the baseline. Supply expectations as evaluator reference inputs, outside the agent's prompt and tool evidence. Verify that reference-dependent criteria actually consumed the supplied fields.
 4. Run the deterministic action/target checks against the new report and keep their findings separate from the semantic judgments. Reuse the check logic when exposing a check through an AgentCore Lambda evaluator rather than writing a second copy.
-5. Compare the captured S2 faulty candidate and the repaired candidate on the same cases, captured evidence, criteria, and scoring setup. Use the identified matching S2 baseline. For an alternate input with no matching baseline, execute the captured S2 prompt and retain the observed result. Missing spans, ignored required references, or failed required scoring leave the evaluation incomplete.
+5. Compare the captured S2 faulty candidate and the repaired candidate on the same cases, captured evidence, criteria, and scoring setup. Use the identified matching S2 baseline. The offline comparison verifies common runtime/tool source hashes, case and evidence identities, evaluator and scoring source pins, the selected score attempt, and the native session/trace binding. For an alternate input with no matching baseline, execute the captured S2 prompt and retain the observed result. Missing spans, ignored required references, foreign results, or failed required scoring leave the evaluation incomplete while preserving available reports and deterministic findings.
 
 AWS supports on-demand evaluation of supported-framework agents outside AgentCore Runtime. Its [on-demand prerequisites](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ondemand-evaluations-prereqs.html) and [outside-Runtime observability setup](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-configure.html#observability-configure-outside) establish this route. Prepare telemetry export, session propagation, source collection, and evaluation permissions before the session. Ground-truth reference inputs are described in [ground-truth evaluation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ground-truth-evaluations.html); shared code checks can use the [Lambda evaluator contract](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-based-evaluators.html).
 
-At S4, the Strands experiment reuses the candidate execution function as its task and adds case iteration, evaluators, reports, and candidate comparison. It reuses the reviewed AgentCore semantic evaluator through a Strands adapter, while deterministic checks remain separate and inspectable. The AgentCore verdict and reason are advisory feedback. Preserve case meaning, supply the right reference inputs, and compare candidates within the selected scoring setup rather than treating scores from different evaluators as interchangeable. Once selected, the S5 CI command invokes the same experiment and policy used locally.
+At S4, the Strands experiment reuses the candidate execution function as its task and adds case iteration, evaluators, reports, and candidate comparison. It reuses the reviewed AgentCore semantic evaluator through a Strands adapter, while deterministic checks remain separate and inspectable. The AgentCore verdict and reason are advisory feedback. Preserve case meaning, supply the right reference inputs, and compare candidates within the selected scoring setup rather than treating scores from different evaluators as interchangeable. Once selected, the S5 CI command invokes the same experiment and policy used locally. S3 remains a direct IDE runner and does not deploy the repaired candidate or invoke the live alarm adapter.
 
 This route is supported by documentation but has not been exercised here. Verify the selected telemetry format, collector completeness, session correlation, reference mapping, and result reporting during implementation. The schedule's S3 estimate includes ingestion; its duration remains unmeasured.
 

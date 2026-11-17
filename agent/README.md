@@ -246,6 +246,66 @@ explicitly to check repeated scores without rerunning a candidate. Calibration
 records judge behavior and does not turn an advisory score into an automatic
 release decision.
 
+## Run, score and compare the repaired candidate (S3)
+
+S3 is a prompt-only edit in the browser IDE. Apply the prepared patch in a clean
+editable workspace, or type the same small change while the faulty prompt is
+open. The patch changes only `agent/prompt.py` and leaves the checked-in faulty
+candidate and hosted Runtime packaging untouched.
+
+```sh
+git apply agent/prompts/s3-repair.patch
+uv run --offline --project agent --locked python -m py_compile agent/prompt.py
+```
+
+Run the saved edit against the frozen case and captured source bundle. The
+explicit candidate label lets the runner accept the editable prompt digest and
+records `repaired`; the default `faulty` path keeps the checked-in manifest
+validation used by S2.
+
+```sh
+uv run --project agent --locked opentelemetry-instrument \
+  python agent/evaluate_case.py run --candidate repaired \
+  --case "$frozen_case" --bundle "$source_bundle" \
+  --output-root "$private_runs"
+```
+
+The runner prints the durable run directory as soon as its immutable source,
+case and bundle snapshot is ready. Use a second terminal to inspect it while
+the model is working. Later editor saves cannot change the running snapshot.
+
+```sh
+uv run --offline --project agent --locked python agent/evaluate_case.py show \
+  --run "$run_dir"
+```
+
+Score the fresh execution with the same pinned Sonnet 4.6 evaluator used by S2.
+The score is advisory feedback and remains separate from deterministic findings.
+
+```sh
+uv run --project agent --locked python agent/evaluate_case.py score \
+  --run "$run_dir" --evaluator "$reviewed_evaluator" --rubric single \
+  --wait-seconds 300
+```
+
+Compare the repaired result with the retained S2 baseline after both executions
+have complete, matching scores. The command is offline and does not rerun an
+agent or call AWS. It verifies the same frozen case, evidence cutoff, model,
+runtime/tool sources, evaluator and scoring contracts, then shows both reports,
+deterministic findings and the native verdict and reason.
+
+```sh
+uv run --offline --project agent --locked python agent/evaluate_case.py compare \
+  --baseline "$s2_run_dir" --candidate "$run_dir"
+```
+
+If a run has more than one scoring attempt, pass its exact attempt ID with
+`--baseline-attempt` or `--candidate-attempt`. Missing telemetry, a foreign
+session or trace, changed reviewed inputs, and mismatched evaluator or scoring
+source identities remain incomplete. `show` and `compare` inspect existing
+records and never start work. Keep the prompt edit, cases, bundles, runs and
+judge receipts in private presenter storage.
+
 ## Local health and invalid-event smoke
 
 Start the local Runtime entrypoint in one terminal:
