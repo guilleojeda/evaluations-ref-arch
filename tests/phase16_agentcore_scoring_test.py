@@ -125,6 +125,17 @@ def response_with(*rows: dict[str, Any]) -> dict[str, Any]:
     return {"evaluationResults": [copy.deepcopy(row) for row in rows]}
 
 
+def single_result_row(
+    label: str | None,
+    *,
+    explanation: str = "Both diagnosis and source claims are supported by decisive evidence.",
+    **kwargs: Any,
+) -> dict[str, Any]:
+    row = result_row("unused_dimension", label, explanation=explanation, **kwargs)
+    row.pop("evaluationDimensionName", None)
+    return row
+
+
 def expected_request(
     assertions: list[str] = ASSERTIONS,
     session_spans: list[dict[str, Any]] = SESSION_SPANS,
@@ -141,10 +152,18 @@ def expected_request(
     }
 
 
-def score(client: RecordingClient, assertions: list[str] = ASSERTIONS) -> dict[str, Any]:
+def score(
+    client: RecordingClient,
+    assertions: list[str] = ASSERTIONS,
+    *,
+    mode: str | None = None,
+) -> dict[str, Any]:
     """Import lazily so a missing Phase 16 adapter produces ordinary red tests."""
 
     module = importlib.import_module("agentcore_evaluation")
+    kwargs: dict[str, Any] = {}
+    if mode is not None:
+        kwargs["mode"] = mode
     return module.score_session(
         client,
         evaluator_id=EVALUATOR_ID,
@@ -152,6 +171,7 @@ def score(client: RecordingClient, assertions: list[str] = ASSERTIONS) -> dict[s
         trace_id=TRACE_ID,
         session_spans=copy.deepcopy(SESSION_SPANS),
         assertions=assertions,
+        **kwargs,
     )
 
 
@@ -224,6 +244,7 @@ class AgentCoreScoringAdapterTests(unittest.TestCase):
         self.assertEqual(raw_response, result.get("rawResponse"))
         self.assertEqual(usage, result.get("tokenUsage"))
         self.assert_single_expected_call(client)
+
 
     def test_a_quality_failure_is_complete_and_does_not_become_transport_error(self):
         raw_response = response_with(
@@ -448,6 +469,76 @@ class AgentCoreScoringAdapterTests(unittest.TestCase):
         self.assertIsNone(result["findings"]["diagnosis_support"].get("verdict"))
         self.assertTrue(result["findings"]["diagnosis_support"].get("errorMessage"))
         self.assert_single_expected_call(client)
+
+
+class AgentCoreSingleCategoricalScoringTests(unittest.TestCase):
+    def assert_single_expected_call(self, client: RecordingClient) -> None:
+        self.assertEqual([expected_request()], client.calls)
+        self.assertEqual(
+            {"evaluatorId", "evaluationInput", "evaluationReferenceInputs"},
+            set(client.calls[0]),
+        )
+
+    def test_single_config_is_native_categorical_and_keeps_both_requirements(self):
+        module = importlib.import_module("agentcore_evaluation")
+        config = module.evaluator_config(module.SONNET_46_MODEL_ID, module.SINGLE_MODE)
+        rubric = config["llmAsAJudge"]
+        self.assertEqual(module.SINGLE_RUBRIC_ID, "incident-triage.semantic.single.v1")
+        self.assertIn("categorical", rubric["ratingScale"])
+        self.assertNotIn("multiDimensional", rubric["ratingScale"])
+        for phrase in (
+            "BOTH requirements",
+            "assessment and uncertainty",
+            "source claims and coverage",
+            "independently asserted",
+            "unsupported causal inferences",
+            "Identify both diagnosis and grounding defects",
+            "event time, ingestion time, availability time",
+            "without availableAt",
+            "Recommendation action, target, and value correctness",
+        ):
+            with self.subTest(phrase=phrase):
+                self.assertIn(phrase, rubric["instructions"])
+
+    def test_single_categorical_row_has_one_canonical_finding(self):
+        raw_response = response_with(single_result_row("pass"))
+        client = RecordingClient(raw_response)
+
+        result = score(client, mode="single")
+
+        self.assertEqual("complete", result["status"])
+        self.assertEqual("single", result["mode"])
+        self.assertEqual("pass", result["findings"]["semantic_quality"]["verdict"])
+        self.assertEqual(raw_response, result["rawResponse"])
+        self.assert_single_expected_call(client)
+
+    def test_single_requires_exactly_one_identity_matched_row_and_no_ignored_references(self):
+        cases = {
+            "missing": response_with(),
+            "duplicate": response_with(single_result_row("pass"), single_result_row("pass")),
+            "foreign evaluator": response_with(single_result_row("pass", evaluator_id="OtherEvaluator-1234567890")),
+            "ignored assertion": response_with(single_result_row("pass", ignored_reference_fields=["assertions"])),
+            "ignored unknown field": response_with(single_result_row("pass", ignored_reference_fields=["other"])),
+        }
+        for name, raw_response in cases.items():
+            with self.subTest(case=name):
+                client = RecordingClient(raw_response)
+                result = score(client, mode="single")
+                self.assertEqual("incomplete", result["status"])
+                self.assertIsNone(result["findings"]["semantic_quality"].get("verdict"))
+                self.assertEqual(raw_response, result["rawResponse"])
+                self.assert_single_expected_call(client)
+
+    def test_single_rejects_dimension_name_and_service_error_without_quality_verdict(self):
+        dimension_row = result_row("diagnosis_support", "pass")
+        error_row = single_result_row("pass", error_code="JUDGE_FAILED", error_message="judge failed")
+        for raw_response in (response_with(dimension_row), response_with(error_row)):
+            with self.subTest(response=raw_response):
+                client = RecordingClient(raw_response)
+                result = score(client, mode="single")
+                self.assertEqual("incomplete", result["status"])
+                self.assertIsNone(result["findings"]["semantic_quality"].get("verdict"))
+                self.assert_single_expected_call(client)
 
 
 if __name__ == "__main__":

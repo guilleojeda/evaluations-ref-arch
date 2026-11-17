@@ -20,7 +20,10 @@ from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
 
 from agentcore_evaluation import (
+    DEFAULT_MODE,
     HAIKU_45_MODEL_ID,
+    MULTI_MODE,
+    SINGLE_MODE,
     SONNET_46_MODEL_ID,
     evaluator_config,
     score_session,
@@ -38,6 +41,7 @@ ACCOUNT = "027224425948"
 REGION = "us-east-1"
 LOG_GROUP = "/aws/bedrock-agentcore/incident-triage-evaluation"
 DIMENSIONS = {"diagnosis_support", "evidence_grounding"}
+SEMANTIC_MODES = (MULTI_MODE, SINGLE_MODE)
 AWS_CONFIG = Config(connect_timeout=5, read_timeout=15, retries={"total_max_attempts": 1})
 EVALUATE_CONFIG = Config(connect_timeout=5, read_timeout=180, retries={"total_max_attempts": 1})
 
@@ -80,7 +84,10 @@ def _aws() -> boto3.Session:
 
 def _configured(control: Any, pin: dict[str, Any]) -> dict[str, Any]:
     evaluator_id = pin.get("evaluatorId")
-    expected = evaluator_config(pin.get("judgeModelId"))
+    mode = pin.get("evaluatorMode", DEFAULT_MODE)
+    if mode not in SEMANTIC_MODES:
+        raise ValueError(f"reviewed evaluator mode is unsupported: {mode!r}")
+    expected = evaluator_config(pin.get("judgeModelId"), mode)
     if _digest(expected) != pin.get("configSha256"):
         raise ValueError("reviewed evaluator definition differs from its configuration digest")
     if not isinstance(evaluator_id, str) or not evaluator_id:
@@ -95,13 +102,19 @@ def _configured(control: Any, pin: dict[str, Any]) -> dict[str, Any]:
         or actual.get("evaluatorConfig") != expected
     ):
         raise ValueError("active evaluator does not match the reviewed SESSION configuration")
-    return {key: actual.get(key) for key in ("evaluatorArn", "evaluatorId", "evaluatorName", "level", "status", "evaluatorConfig")}
+    return {
+        key: actual.get(key)
+        for key in ("evaluatorArn", "evaluatorId", "evaluatorName", "level", "status", "evaluatorConfig")
+    } | {"evaluatorMode": mode}
 
 
-def _provision(model_id: str) -> dict[str, Any]:
-    config = evaluator_config(model_id)
+def _provision(model_id: str, mode: str = DEFAULT_MODE) -> dict[str, Any]:
+    if mode not in SEMANTIC_MODES:
+        raise ValueError(f"unsupported semantic evaluator mode {mode!r}")
+    config = evaluator_config(model_id, mode)
     digest = _digest(config)
-    name = f"IncidentTriageSemantic_{digest[:18]}"
+    name_prefix = "IncidentTriageSemanticSingle" if mode == SINGLE_MODE else "IncidentTriageSemantic"
+    name = f"{name_prefix}_{digest[:18]}"
     control = _aws().client("bedrock-agentcore-control", config=AWS_CONFIG)
     evaluator_id = next(
         (
@@ -133,6 +146,7 @@ def _provision(model_id: str) -> dict[str, Any]:
         "evaluatorArn": state["evaluatorArn"],
         "judgeModelId": model_id,
         "configSha256": digest,
+        "evaluatorMode": mode,
     }
     pin["configuration"] = _configured(control, pin)
     return pin
@@ -177,7 +191,9 @@ def _summary(result: dict[str, Any]) -> dict[str, Any]:
         }
     if isinstance(semantic, dict):
         public["semantic"] = {
-            key: semantic[key] for key in ("status", "findings", "tokenUsage", "errorCode", "errorMessage") if key in semantic
+            key: semantic[key]
+            for key in ("status", "mode", "findings", "finding", "verdict", "tokenUsage", "errorCode", "errorMessage", "validationError")
+            if key in semantic
         }
     return public
 
@@ -201,11 +217,16 @@ def _check_after_scoring(control: Any, pin: dict[str, Any], before: dict[str, An
     result["reason"] = "evaluator configuration could not be confirmed after scoring"
 
 
-def _score(run: Path, pin_path: Path, wait: int) -> dict[str, Any]:
+def _score(run: Path, pin_path: Path, wait: int, requested_mode: str | None = None) -> dict[str, Any]:
     record, loaded, native_spans = load_execution(run)
     if record.get("status") != "complete":
         raise ValueError("captured execution is incomplete or interrupted")
     pin = _read(pin_path)
+    mode = pin.get("evaluatorMode", DEFAULT_MODE)
+    if mode not in SEMANTIC_MODES:
+        raise ValueError(f"reviewed evaluator mode is unsupported: {mode!r}")
+    if requested_mode is not None and requested_mode != mode:
+        raise ValueError("requested semantic evaluator mode does not match the pinned evaluator descriptor")
     session = _aws()
     control = session.client("bedrock-agentcore-control", config=AWS_CONFIG)
     before = _configured(control, pin)
@@ -214,7 +235,13 @@ def _score(run: Path, pin_path: Path, wait: int) -> dict[str, Any]:
         "kind": "captured_execution_score",
         "executionId": received["executionId"],
         "identity": received,
-        "evaluator": {key: pin[key] for key in ("evaluatorId", "evaluatorArn", "judgeModelId", "configSha256")},
+        "evaluator": {
+            **{
+                key: pin[key]
+                for key in ("evaluatorId", "evaluatorArn", "judgeModelId", "configSha256")
+            },
+            "evaluatorMode": mode,
+        },
         "evaluatorConfiguration": before,
         "scoringSourceSha256": _scoring_source_digests(),
     })
@@ -230,6 +257,7 @@ def _score(run: Path, pin_path: Path, wait: int) -> dict[str, Any]:
             evaluator_id=pin["evaluatorId"], wait_seconds=wait,
             scoring_attempt_id=pending["scoringAttemptId"],
             verified_spans=native_spans,
+            semantic_mode=mode,
         )
         _check_after_scoring(control, pin, before, result)
     except (ValueError, ClientError, BotoCoreError) as exc:
@@ -260,12 +288,22 @@ def _validate_control(control: dict[str, Any]) -> None:
         raise ValueError("constructed calibration control lacks verified shape, provenance or human labels")
 
 
-def _calibrate(source: Path, pin_path: Path, output: Path) -> dict[str, Any]:
+def _calibrate(
+    source: Path,
+    pin_path: Path,
+    output: Path,
+    requested_mode: str | None = None,
+) -> dict[str, Any]:
     fixture = _read(source)
     _validate_control(fixture)
     observed = execution_content(fixture["sessionSpans"])
     assertions = fixture["assertions"] + timing_evidence_assertions(observed["toolCalls"])
     pin = _read(pin_path)
+    mode = pin.get("evaluatorMode", DEFAULT_MODE)
+    if mode not in SEMANTIC_MODES:
+        raise ValueError(f"reviewed evaluator mode is unsupported: {mode!r}")
+    if requested_mode is not None and requested_mode != mode:
+        raise ValueError("requested semantic evaluator mode does not match the pinned evaluator descriptor")
     session = _aws()
     control = session.client("bedrock-agentcore-control", config=AWS_CONFIG)
     before = _configured(control, pin)
@@ -273,7 +311,13 @@ def _calibrate(source: Path, pin_path: Path, output: Path) -> dict[str, Any]:
         "kind": "calibration_control",
         "controlId": fixture["id"],
         "controlSha256": _digest(fixture),
-        "evaluator": {key: pin[key] for key in ("evaluatorId", "evaluatorArn", "judgeModelId", "configSha256")},
+        "evaluator": {
+            **{
+                key: pin[key]
+                for key in ("evaluatorId", "evaluatorArn", "judgeModelId", "configSha256")
+            },
+            "evaluatorMode": mode,
+        },
         "evaluatorConfiguration": before,
         "scoringSourceSha256": _scoring_source_digests(),
         "control": fixture,
@@ -285,6 +329,7 @@ def _calibrate(source: Path, pin_path: Path, output: Path) -> dict[str, Any]:
         session.client("bedrock-agentcore", config=EVALUATE_CONFIG), evaluator_id=pin["evaluatorId"],
         session_id=fixture["sessionId"], trace_id=fixture["traceId"], session_spans=fixture["sessionSpans"],
         assertions=assertions,
+        mode=mode,
     )
     result = {"status": semantic["status"], "semantic": semantic}
     _check_after_scoring(control, pin, before, result)
@@ -299,6 +344,16 @@ def _error_message(exc: Exception) -> str:
     return str(exc)
 
 
+def _add_semantic_mode_arg(command: argparse.ArgumentParser, *, default: str | None = None) -> None:
+    """Add the explicit evaluator-rubric selector without changing old defaults."""
+
+    command.add_argument(
+        "--rubric",
+        dest="semantic_mode", choices=SEMANTIC_MODES, default=default,
+        help="semantic evaluator rubric (single is an experimental native categorical verdict)",
+    )
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
@@ -310,14 +365,17 @@ def _parser() -> argparse.ArgumentParser:
     score.add_argument("--run", required=True, type=Path)
     score.add_argument("--evaluator", required=True, type=Path, help="reviewed evaluator descriptor from provision")
     score.add_argument("--wait-seconds", type=int, choices=range(0, 601), default=300, metavar="0-600")
+    _add_semantic_mode_arg(score)
     show = commands.add_parser("show")
     show.add_argument("--run", required=True, type=Path)
     calibration = commands.add_parser("calibrate")
     calibration.add_argument("--control", required=True, type=Path)
     calibration.add_argument("--evaluator", required=True, type=Path)
     calibration.add_argument("--output-root", required=True, type=Path)
+    _add_semantic_mode_arg(calibration)
     provision = commands.add_parser("provision", help="prepare an immutable evaluator definition with administrator access")
     provision.add_argument("--model", required=True, choices=(HAIKU_45_MODEL_ID, SONNET_46_MODEL_ID))
+    _add_semantic_mode_arg(provision, default=DEFAULT_MODE)
     return parser
 
 
@@ -332,13 +390,13 @@ def main() -> int:
             output = {"runDirectory": str(run), **_summary(record), "report": record.get("report")}
             code = 0 if record.get("status") == "complete" else 2
         elif args.command == "score":
-            result = _score(args.run, args.evaluator, args.wait_seconds)
+            result = _score(args.run, args.evaluator, args.wait_seconds, args.semantic_mode)
             output, code = _summary(result), 0 if result["status"] == "complete" else 2
         elif args.command == "calibrate":
-            result = _calibrate(args.control, args.evaluator, args.output_root)
+            result = _calibrate(args.control, args.evaluator, args.output_root, args.semantic_mode)
             output, code = _summary(result), 0 if result["status"] == "complete" else 2
         elif args.command == "provision":
-            output = _provision(args.model)
+            output = _provision(args.model, args.semantic_mode)
         else:
             record, _, _ = load_execution(args.run)
             attempts = [
