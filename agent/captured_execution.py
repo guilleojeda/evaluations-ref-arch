@@ -766,6 +766,17 @@ def _run_snapshot(
             from opentelemetry import baggage
             from opentelemetry.context import attach, detach
 
+            # Captured evidence calls are part of the persisted ledger and
+            # must retain model-request order when the budget rejects the
+            # final call.  The hosted Runtime keeps the shared factory's
+            # native default executor; only this captured path is serialized.
+            from strands import Agent
+            from strands.tools.executors.sequential import SequentialToolExecutor
+
+            def captured_agent_class(**kwargs: Any) -> Any:
+                kwargs["tool_executor"] = SequentialToolExecutor()
+                return Agent(**kwargs)
+
             baggage_token = attach(baggage.set_baggage("session.id", session_id))
             try:
                 agent, bounded_model = create_agent(
@@ -776,6 +787,7 @@ def _run_snapshot(
                     trace_attributes=trace_attributes,
                     model_session=model_session,
                     capture_model_requests=True,
+                    agent_class=captured_agent_class,
                 )
                 remaining = max(0.0, deadline - time.monotonic())
                 if remaining <= 0:
