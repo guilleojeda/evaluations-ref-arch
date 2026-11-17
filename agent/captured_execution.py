@@ -137,17 +137,25 @@ def _copy_bytes_tree(root: Path, files: Mapping[str, bytes]) -> None:
         _write_bytes(root / name, raw)
 
 
-def _read_source_bytes() -> tuple[dict[str, bytes], dict[str, bytes]]:
+def _read_source_bytes(agent_directory: str | Path | None = None) -> tuple[dict[str, bytes], dict[str, bytes]]:
+    """Read the selected candidate source and locked dependency bytes.
+
+    The normal Runtime path uses this module's own directory.  Development
+    experiments pass an explicitly snapshotted candidate directory so the
+    experiment cannot silently fall back to the current IDE workspace.
+    """
+
+    selected_directory = Path(agent_directory) if agent_directory is not None else AGENT_DIRECTORY
     source: dict[str, bytes] = {}
     dependencies: dict[str, bytes] = {}
     for name in SOURCE_FILES:
         try:
-            source[f"agent/{name}"] = (AGENT_DIRECTORY / name).read_bytes()
+            source[f"agent/{name}"] = (selected_directory / name).read_bytes()
         except OSError as exc:
             raise ValueError(f"selected agent source is unavailable: {name}") from exc
     for name in DEPENDENCY_FILES:
         try:
-            dependencies[f"agent/{name}"] = (AGENT_DIRECTORY / name).read_bytes()
+            dependencies[f"agent/{name}"] = (selected_directory / name).read_bytes()
         except OSError as exc:
             raise ValueError(f"locked dependency input is unavailable: {name}") from exc
     return source, dependencies
@@ -303,6 +311,8 @@ def run_captured_case(
     *,
     model_session: Any = None,
     candidate_id: str | None = None,
+    source_directory: str | Path | None = None,
+    trusted_runner: bool = False,
     progress_callback: Any = None,
 ) -> Path:
     """Execute one immutable captured case and return its unique run directory.
@@ -320,7 +330,7 @@ def run_captured_case(
     provider = None
     case_bytes = _read_input(case_path, "frozen case")
     bundle_bytes = _read_input(bundle_path, "source bundle")
-    source_files, dependency_files = _read_source_bytes()
+    source_files, dependency_files = _read_source_bytes(source_directory)
 
     with tempfile.TemporaryDirectory(prefix="incident-triage-captured-snapshot-") as temporary_name:
         staging = Path(temporary_name)
@@ -331,13 +341,23 @@ def run_captured_case(
         _write_bytes(staged_case, case_bytes)
         _write_bytes(staged_bundle, bundle_bytes)
 
-        runner_path = agent_source / "captured_execution.py"
-        module_name = f"_captured_execution_snapshot_{uuid.uuid4().hex}"
-        spec = importlib.util.spec_from_file_location(module_name, runner_path)
-        if spec is None or spec.loader is None:
-            raise ValueError("captured execution snapshot cannot be loaded")
-        snapshot_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(snapshot_module)
+        if trusted_runner:
+            # The development driver itself is already executing an accepted
+            # immutable runner snapshot.  Candidate source bytes remain the
+            # Runtime identity and are loaded by _snapshot_imports below, but
+            # an old candidate copy of this orchestration module must not
+            # replace the trusted S4 runner.
+            snapshot_module = sys.modules.get(__name__)
+            if snapshot_module is None or not callable(getattr(snapshot_module, "_run_snapshot", None)):
+                raise ValueError("trusted captured execution runner is unavailable")
+        else:
+            runner_path = agent_source / "captured_execution.py"
+            module_name = f"_captured_execution_snapshot_{uuid.uuid4().hex}"
+            spec = importlib.util.spec_from_file_location(module_name, runner_path)
+            if spec is None or spec.loader is None:
+                raise ValueError("captured execution snapshot cannot be loaded")
+            snapshot_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(snapshot_module)
         return Path(snapshot_module._run_snapshot(
             staging=staging,
             staged_case=staged_case,

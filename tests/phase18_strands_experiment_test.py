@@ -272,12 +272,13 @@ class FakeLogs:
 class FakeEvaluate:
     """Native Evaluate transport with a categorical row and call ledger."""
 
-    def __init__(self, *, label="pass", explanation="The captured session supports the reviewed criteria.", error_code=None, retry_once=False, observe_env=None):
+    def __init__(self, *, label="pass", explanation="The captured session supports the reviewed criteria.", error_code=None, retry_once=False, observe_env=None, token_usage=None):
         self.label = label
         self.explanation = explanation
         self.error_code = error_code
         self.retry_once = retry_once
         self.observe_env = observe_env
+        self.token_usage = token_usage
         self.calls = []
 
     def evaluate(self, **request):
@@ -297,7 +298,7 @@ class FakeEvaluate:
 
         session_id = next((session_from(span) for span in spans if session_from(span)), "unknown-session")
         trace_id = next((span.get("traceId") for span in spans if isinstance(span, dict)), "0" * 32)
-        return {
+        result = {
             "evaluationResults": [{
                 "evaluatorId": EVALUATOR_ID,
                 "context": {"spanContext": {"sessionId": session_id, "traceId": trace_id}},
@@ -305,6 +306,9 @@ class FakeEvaluate:
                 "explanation": self.explanation,
             }]
         }
+        if self.token_usage is not None:
+            result["evaluationResults"][0]["tokenUsage"] = copy.deepcopy(self.token_usage)
+        return result
 
 
 class BlockingEvaluate(FakeEvaluate):
@@ -342,7 +346,7 @@ class FakeControl:
 class FakeAWS:
     """Global boto3.Session substitute for STS, control, Logs and Evaluate."""
 
-    def __init__(self, output_root, *, label="pass", explanation=None, error_code=None, retry_once=False, observe_judge_env=None):
+    def __init__(self, output_root, *, label="pass", explanation=None, error_code=None, retry_once=False, observe_judge_env=None, token_usage=None):
         self.output_root = Path(output_root)
         self.control = FakeControl()
         self.evaluate = FakeEvaluate(
@@ -351,6 +355,7 @@ class FakeAWS:
             error_code=error_code,
             retry_once=retry_once,
             observe_env=observe_judge_env,
+            token_usage=token_usage,
         )
         self.logs = FakeLogs(self.output_root)
         self.clients = {
@@ -578,7 +583,7 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
         EvaluationReport = self.native_types()[3]
         for path in sorted(Path(experiment).rglob("*.json")):
             try:
-                if isinstance(EvaluationReport.from_file(str(path), "json"), EvaluationReport):
+                if isinstance(EvaluationReport.from_file(str(path)), EvaluationReport):
                     return path
             except Exception:
                 continue
@@ -602,10 +607,10 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
         with patch.object(captured_execution, "AGENT_DIRECTORY", self.source_workspaces[candidate]):
             return Path(run_captured_case(self.case_paths["denial"], self.bundle, source_root, model_session=source))
 
-    def run_experiment(self, candidate="faulty", *, selected=None, after_first=None, reports=None, label="pass", explanation=None, source_run=None, reads_by_label=None, evaluate_error=None, retry_once=False, observe_env=None, observe_judge_env=None):
+    def run_experiment(self, candidate="faulty", *, selected=None, after_first=None, reports=None, label="pass", explanation=None, source_run=None, reads_by_label=None, evaluate_error=None, retry_once=False, observe_env=None, observe_judge_env=None, token_usage=None):
         module = self.product()
         model_session, clients = self._clients(candidate, after_first=after_first, reports=reports, reads_by_label=reads_by_label, observe_env=observe_env)
-        aws = FakeAWS(self.runs, label=label, explanation=explanation, error_code=evaluate_error, retry_once=retry_once, observe_judge_env=observe_judge_env)
+        aws = FakeAWS(self.runs, label=label, explanation=explanation, error_code=evaluate_error, retry_once=retry_once, observe_judge_env=observe_judge_env, token_usage=token_usage)
         kwargs = {
             "suite_path": self.suite,
             "output_root": self.runs,
@@ -1282,7 +1287,7 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
         self.assertEqual(len(aws.evaluate.calls), 2)
         experiment = returned[0]
         self.assertEqual({row["caseId"] for row in self._read_record(experiment)["cases"]}, {"phase18.synthetic-denial", "phase18.synthetic-capacity"})
-        report = EvaluationReport.from_file(str(self._native_report_path(experiment)), "json")
+        report = EvaluationReport.from_file(str(self._native_report_path(experiment)))
         self.assertIsInstance(report, EvaluationReport)
         self.assertIn("phase18.synthetic-denial", json.dumps(self._read_record(experiment)))
         self.assertNotIn("admissibleRecommendations", json.dumps([request for client in clients for request in client.requests]))
@@ -1332,7 +1337,7 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["scoringAttemptId"], rows[0]["score"]["scoringAttemptId"])
         EvaluationReport = self.native_types()[3]
-        native_report = EvaluationReport.from_file(str(self._native_report_path(experiment)), "json")
+        native_report = EvaluationReport.from_file(str(self._native_report_path(experiment)))
         advisory = [output for outputs in native_report.detailed_results for output in outputs
                     if output.metadata["role"] == "advisory"]
         self.assertEqual(len(advisory), 1)
@@ -1360,6 +1365,19 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
         self.assertNotEqual(agent_usage["totalTokens"], 0)
         self.assertEqual(len(clients[0].requests) >= 1, True)
 
+    def test_known_semantic_usage_is_preserved_once_and_missing_usage_stays_unknown(self):
+        experiment, _clients, _aws = self.run_experiment(
+            candidate="repaired",
+            selected=["phase18.synthetic-denial"],
+            token_usage={"inputTokens": 11, "outputTokens": 7, "totalTokens": 18},
+        )
+        record = self._read_record(experiment)
+        self.assertEqual(record["usage"]["semantic"], {"inputTokens": 11, "outputTokens": 7, "totalTokens": 18})
+
+        missing, _clients, _aws = self.run_experiment(candidate="repaired", selected=["phase18.synthetic-denial"])
+        missing_record = self._read_record(missing)
+        self.assertEqual(missing_record["usage"]["semantic"], {"inputTokens": None, "outputTokens": None, "totalTokens": None})
+
     def test_all_deterministic_pass_with_complete_advisory_is_review_required_not_release_pass(self):
         repaired = {label: recommendation("Restore inventory access", "inventory", "75", "version") for label in ("denial", "capacity")}
         for label in ("pass", "fail"):
@@ -1378,7 +1396,7 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
         loaded = []
         for path in report_candidates:
             try:
-                report = EvaluationReport.from_file(str(path), "json")
+                report = EvaluationReport.from_file(str(path))
             except Exception:
                 continue
             if isinstance(report, EvaluationReport):
@@ -1605,7 +1623,7 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
             if path == record_path:
                 continue
             try:
-                if isinstance(EvaluationReport.from_file(str(path), "json"), EvaluationReport):
+                if isinstance(EvaluationReport.from_file(str(path)), EvaluationReport):
                     report_files.append(path)
             except Exception:
                 continue
@@ -1623,6 +1641,359 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
             self.assertRegex(json.dumps(result).lower(), r"report|identity|foreign|digest")
         finally:
             report_path.write_bytes(report_original)
+
+    def test_controlled_compare_requires_distinct_saved_prompt_workspaces(self):
+        """Candidate labels cannot manufacture a faulty/repaired comparison."""
+
+        faulty, _faulty_clients, _faulty_aws = self.run_experiment(
+            candidate="faulty", selected=["phase18.synthetic-denial"]
+        )
+        repaired, _repaired_clients, _repaired_aws = self.run_experiment(
+            candidate="repaired", selected=["phase18.synthetic-denial"]
+        )
+        faulty_record = self._read_record(faulty)
+        repaired_record = self._read_record(repaired)
+        faulty_snapshot = faulty_record["snapshot"]
+        repaired_snapshot = repaired_record["snapshot"]
+
+        # The comparison is controlled by the saved prompt bytes, not only by
+        # the candidate labels in the two experiment records.  Runtime/tooling
+        # and lock identities must still be common.
+        self.assertEqual(faulty_record["candidateId"], "faulty")
+        self.assertEqual(repaired_record["candidateId"], "repaired")
+        self.assertNotEqual(faulty_snapshot["sourceSha256"], repaired_snapshot["sourceSha256"])
+        self.assertNotEqual(faulty_snapshot["sourceFiles"]["agent/prompt.py"], repaired_snapshot["sourceFiles"]["agent/prompt.py"])
+        self.assertEqual(faulty_snapshot["toolingSha256"], repaired_snapshot["toolingSha256"])
+        self.assertEqual(faulty_snapshot["toolingDependencySha256"], repaired_snapshot["toolingDependencySha256"])
+        self.assertEqual(faulty_snapshot["dependencySha256"], repaired_snapshot["dependencySha256"])
+
+        module = self.product()
+        with patch.object(boto3, "Session", side_effect=AssertionError("compare must be offline")):
+            code, result = self.invoke(module, "compare", "--baseline", faulty, "--candidate", repaired)
+        self.assertEqual(code, 0, result)
+        self.assertEqual(result.get("status"), "complete")
+
+    def test_imported_launcher_uses_prelaunch_saved_tooling_after_late_workspace_edit(self):
+        """A frozen driver must use accepted adapter bytes, not cached/later files."""
+
+        # Import the launcher before changing the accepted tooling copy.  The
+        # launch must still snapshot the accepted copy and reconstruct it in a
+        # fresh frozen-tooling scope.
+        module = self.product()
+        accepted = self.root / "accepted-tooling"
+        shutil.copytree(AGENT, accepted, ignore=shutil.ignore_patterns("__pycache__"))
+        adapter = accepted / "strands_evaluators.py"
+        adapter_text = adapter.read_text(encoding="utf-8")
+        marker = "PHASE18_PRELAUNCH_ACCEPTED_ADAPTER"
+        late_marker = "PHASE18_POSTSTART_LATE_ADAPTER"
+        needle = '        "traceId": identity.get("traceId"),\n'
+        self.assertIn(needle, adapter_text)
+        adapter.write_text(
+            adapter_text.replace(needle, needle + f'        "acceptedAdapterMarker": "{marker}",\n'),
+            encoding="utf-8",
+        )
+
+        def edit_after_first_model_call():
+            current = adapter.read_text(encoding="utf-8")
+            self.assertIn(marker, current)
+            adapter.write_text(current.replace(marker, late_marker), encoding="utf-8")
+
+        model_session, clients = self._clients("repaired", after_first=edit_after_first_model_call)
+        aws = FakeAWS(self.runs)
+        with patch.object(module, "AGENT_DIRECTORY", accepted):
+            with patch.object(boto3, "Session", side_effect=aws.session_factory):
+                experiment = Path(module.run_experiment(
+                    self.suite,
+                    self.runs,
+                    candidate_id="repaired",
+                    evaluator_path=self.evaluator,
+                    wait_seconds=0,
+                    selected_cases=["phase18.synthetic-denial"],
+                    model_session=model_session,
+                    source_directory=self.source_workspaces["repaired"],
+                ))
+        self.assertTrue(clients[0].requests)
+        rendered = json.dumps(self._read_record(experiment))
+        self.assertNotIn(marker, rendered)
+        self.assertNotIn(late_marker, rendered)
+        EvaluationReport = self.native_types()[3]
+        native_report = EvaluationReport.from_file(str(experiment / "native-report.json"))
+        native_metadata = json.dumps([
+            output.metadata
+            for outputs in native_report.detailed_results
+            for output in outputs
+        ])
+        self.assertIn(marker, native_metadata)
+        self.assertNotIn(late_marker, native_metadata)
+        snapshot = self._read_record(experiment)["snapshot"]
+        self.assertEqual(snapshot["toolingFiles"]["agent/strands_evaluators.py"], hashlib.sha256(
+            (accepted / "strands_evaluators.py").read_bytes().replace(late_marker.encode(), marker.encode())
+        ).hexdigest())
+
+    def test_source_run_rejects_installed_runtime_package_mismatch_from_locked_export(self):
+        """A valid Python range is not enough when a locked runtime package differs."""
+
+        import captured_execution
+
+        source_run = self._source_run("repaired")
+        execution_path = source_run / "execution.json"
+        native_path = source_run / "strands.native-spans.json"
+        record = json.loads(execution_path.read_bytes())
+        manifest = record["manifest"]
+        lock_path = source_run / "source" / "agent/uv.lock"
+        lock_raw = lock_path.read_bytes()
+        self.assertIn(b'name = "attrs"\nversion = "26.1.0"', lock_raw)
+        self.assertIn(b"attrs-26.1.0", lock_raw)
+        lock_path.write_bytes(
+            lock_raw
+            .replace(b'name = "attrs"\nversion = "26.1.0"', b'name = "attrs"\nversion = "26.0.0"')
+            .replace(b"attrs-26.1.0", b"attrs-26.0.0")
+        )
+        dependency_files = {
+            name: (source_run / "source" / name).read_bytes()
+            for name in ("agent/pyproject.toml", "agent/uv.lock")
+        }
+        dependency_digest = captured_execution._named_digest(dependency_files)
+        manifest["dependencyFiles"] = {
+            name: hashlib.sha256(raw).hexdigest()
+            for name, raw in sorted(dependency_files.items())
+        }
+        manifest["dependencySha256"] = dependency_digest
+        record["identity"]["dependencySha256"] = dependency_digest
+        native = json.loads(native_path.read_bytes())
+        for span in native["spans"]:
+            attrs = span.get("attributes", {})
+            attrs = attrs.get("attributes", attrs) if isinstance(attrs, dict) else {}
+            if isinstance(attrs, dict):
+                attrs["incident.dependency_sha256"] = dependency_digest
+        native_path.write_text(json.dumps(native), encoding="utf-8")
+        record["nativeSpansSha256"] = hashlib.sha256(
+            json.dumps(native, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        execution_path.write_text(json.dumps(record), encoding="utf-8")
+
+        module = self.product()
+        model_session, clients = self._clients("faulty")
+        with self.assertRaises((ValueError, SystemExit)) as mismatch:
+            module.run_experiment(
+                self.suite,
+                self.runs,
+                candidate_id="faulty",
+                evaluator_path=self.evaluator,
+                wait_seconds=0,
+                source_run=source_run,
+                model_session=model_session,
+            )
+        self.assertRegex(str(mismatch.exception).lower(), r"attrs|package|installed|incompat|runtime|requirement")
+        self.assertEqual(model_session.index, 0)
+        self.assertEqual(sum(len(client.requests) for client in clients), 0)
+
+    def test_offline_policy_needs_native_report_and_selected_score_receipt(self):
+        """Saved rows cannot claim review when required native evidence is gone."""
+
+        module = self.product()
+
+        repaired, _clients, _aws = self.run_experiment(
+            candidate="repaired", selected=["phase18.synthetic-denial"]
+        )
+        native_path = repaired / "native-report.json"
+        native_raw = native_path.read_bytes()
+        native_path.unlink()
+        with patch.object(boto3, "Session", side_effect=AssertionError("show must be offline")):
+            code, shown = self.invoke(module, "show", "--experiment", repaired)
+        self.assertEqual(code, 0, shown)
+        self.assertEqual(shown["status"], "incomplete")
+        self.assertNotEqual(shown["decision"]["verdict"], "review_required")
+        native_path.write_bytes(native_raw)
+
+        faulty, _clients, _aws = self.run_experiment(
+            candidate="faulty", selected=["phase18.synthetic-denial"]
+        )
+        faulty_native = faulty / "native-report.json"
+        faulty_native_raw = faulty_native.read_bytes()
+        faulty_native.unlink()
+        with patch.object(boto3, "Session", side_effect=AssertionError("show must be offline")):
+            code, shown = self.invoke(module, "show", "--experiment", faulty)
+        self.assertEqual(code, 0, shown)
+        self.assertEqual(shown["decision"]["verdict"], "reject")
+        faulty_native.write_bytes(faulty_native_raw)
+
+        receipt_record = self._read_record(repaired)
+        row = self._rows(receipt_record)[0]
+        receipt = repaired / "executions" / row["executionId"] / "scores" / row["scoringAttemptId"] / "result.json"
+        self.assertTrue(receipt.is_file(), receipt)
+        receipt_raw = receipt.read_bytes()
+        receipt.unlink()
+        with patch.object(boto3, "Session", side_effect=AssertionError("show must be offline")):
+            code, shown = self.invoke(module, "show", "--experiment", repaired)
+        self.assertEqual(code, 0, shown)
+        self.assertEqual(shown["status"], "incomplete")
+        self.assertNotEqual(shown["decision"]["verdict"], "review_required")
+        receipt.write_bytes(receipt_raw)
+
+        modified_receipt = json.loads(receipt_raw)
+        modified_receipt["executionId"] = "foreign-execution"
+        receipt.write_text(json.dumps(modified_receipt), encoding="utf-8")
+        with patch.object(boto3, "Session", side_effect=AssertionError("show must be offline")):
+            code, shown = self.invoke(module, "show", "--experiment", repaired)
+        self.assertEqual(code, 0, shown)
+        self.assertEqual(shown["status"], "incomplete")
+        self.assertNotEqual(shown["decision"]["verdict"], "review_required")
+        receipt.write_bytes(receipt_raw)
+
+    def test_offline_inspect_and_compare_reject_saved_lock_inputs_and_bindings(self):
+        """Candidate, case, bundle and execution bindings are authenticated offline."""
+
+        baseline, _clients, _aws = self.run_experiment(candidate="faulty")
+        candidate, _clients, _aws = self.run_experiment(candidate="repaired")
+        module = self.product()
+        record_path = self._record_path(candidate)
+        record_raw = record_path.read_bytes()
+        record = json.loads(record_raw)
+        first_row, second_row = self._rows(record)
+        mutation_paths = {
+            "candidate-lock": candidate / "candidate/source/agent/uv.lock",
+            "case": candidate / "inputs/cases/phase18.synthetic-denial.frozen.json",
+            "bundle": candidate / "inputs/bundles" / f"{first_row['bundleSha256']}.json",
+            "execution-binding": record_path,
+        }
+        for kind, path in mutation_paths.items():
+            with self.subTest(kind=kind):
+                original = path.read_bytes()
+                try:
+                    if kind == "execution-binding":
+                        changed = json.loads(original)
+                        changed["cases"][0]["executionId"] = changed["cases"][1]["executionId"]
+                        path.write_text(json.dumps(changed), encoding="utf-8")
+                    else:
+                        path.write_bytes(original + b"\nPHASE18_TAMPERED_SAVED_INPUT\n")
+                    with patch.object(boto3, "Session", side_effect=AssertionError("offline inspect only")):
+                        show_code, shown = self.invoke(module, "show", "--experiment", candidate)
+                    self.assertEqual(show_code, 0, shown)
+                    self.assertEqual(shown["status"], "incomplete", shown)
+                    self.assertNotEqual(shown["decision"]["verdict"], "review_required", shown)
+                    with patch.object(boto3, "Session", side_effect=AssertionError("offline compare only")):
+                        compare_code, compared = self.invoke(
+                            module, "compare", "--baseline", baseline, "--candidate", candidate
+                        )
+                    self.assertEqual(compare_code, 2, compared)
+                    self.assertEqual(compared.get("status"), "incomplete", compared)
+                finally:
+                    path.write_bytes(original)
+
+    def test_native_report_mutations_and_required_finding_errors_never_claim_review(self):
+        """Native SDK-valid mutations still need project identity and finding checks."""
+
+        module = self.product()
+        experiment, _clients, _aws = self.run_experiment(
+            candidate="repaired", selected=["phase18.synthetic-denial"]
+        )
+        report_path = experiment / "native-report.json"
+        record_path = self._record_path(experiment)
+        report_raw = report_path.read_bytes()
+        record_raw = record_path.read_bytes()
+        EvaluationReport = self.native_types()[3]
+
+        for kind in ("score", "label", "foreign-case"):
+            with self.subTest(kind=kind):
+                document = json.loads(report_raw)
+                output = document["detailed_results"][0][0]
+                if kind == "score":
+                    output["score"] = 0.0
+                    output["test_pass"] = False
+                    output["label"] = "fail"
+                    output["reason"] = "phase18 native score mutation"
+                    output["metadata"]["verdict"] = "fail"
+                    document["scores"][0] = 0.0
+                    document["test_passes"][0] = False
+                    document["reasons"][0] = "phase18 native score mutation"
+                    document["overall_score"] = sum(document["scores"]) / len(document["scores"])
+                elif kind == "label":
+                    output["label"] = "fail"
+                else:
+                    output["metadata"]["caseId"] = "phase18.foreign-case"
+                report_path.write_text(json.dumps(document), encoding="utf-8")
+                self.assertIsInstance(EvaluationReport.from_file(str(report_path)), EvaluationReport)
+                changed_record = json.loads(record_raw)
+                changed_record["nativeReport"]["sha256"] = hashlib.sha256(report_path.read_bytes()).hexdigest()
+                record_path.write_text(json.dumps(changed_record), encoding="utf-8")
+                try:
+                    with patch.object(boto3, "Session", side_effect=AssertionError("show must be offline")):
+                        code, shown = self.invoke(module, "show", "--experiment", experiment)
+                    self.assertEqual(code, 0, shown)
+                    self.assertEqual(shown["status"], "incomplete", shown)
+                    self.assertNotEqual(shown["decision"]["verdict"], "review_required", shown)
+                finally:
+                    report_path.write_bytes(report_raw)
+                    record_path.write_bytes(record_raw)
+
+        for kind in ("missing-finding", "errored-finding"):
+            with self.subTest(kind=kind):
+                changed_record = json.loads(record_raw)
+                execution_id = changed_record["cases"][0]["executionId"]
+                execution_path = experiment / "executions" / execution_id / "execution.json"
+                execution_raw = execution_path.read_bytes()
+                execution_record = json.loads(execution_raw)
+                findings = execution_record["deterministic"]["findings"]
+                if kind == "missing-finding":
+                    findings.pop("action")
+                else:
+                    findings["action"]["status"] = "error"
+                execution_path.write_text(json.dumps(execution_record), encoding="utf-8")
+                try:
+                    with patch.object(boto3, "Session", side_effect=AssertionError("show must be offline")):
+                        code, shown = self.invoke(module, "show", "--experiment", experiment)
+                    self.assertEqual(code, 0, shown)
+                    self.assertEqual(shown["status"], "incomplete", shown)
+                    self.assertNotEqual(shown["decision"]["verdict"], "review_required", shown)
+                finally:
+                    execution_path.write_bytes(execution_raw)
+
+    def test_self_valid_experiments_with_different_tooling_do_not_compare(self):
+        """A valid experiment with changed adapter/tooling is not a controlled pair."""
+
+        baseline, _clients, _aws = self.run_experiment(
+            candidate="faulty", selected=["phase18.synthetic-denial"]
+        )
+        module = self.product()
+        alternate = self.root / "alternate-tooling"
+        shutil.copytree(AGENT, alternate, ignore=shutil.ignore_patterns("__pycache__"))
+        adapter = alternate / "strands_evaluators.py"
+        adapter.write_text(
+            adapter.read_text(encoding="utf-8") + "\n# PHASE18_SELF_VALID_ALTERNATE_TOOLING\n",
+            encoding="utf-8",
+        )
+        model_session, _clients = self._clients("repaired")
+        aws = FakeAWS(self.runs)
+        with patch.object(module, "AGENT_DIRECTORY", alternate):
+            with patch.object(boto3, "Session", side_effect=aws.session_factory):
+                candidate = Path(module.run_experiment(
+                    self.suite,
+                    self.runs,
+                    candidate_id="repaired",
+                    evaluator_path=self.evaluator,
+                    wait_seconds=0,
+                    selected_cases=["phase18.synthetic-denial"],
+                    model_session=model_session,
+                    source_directory=self.source_workspaces["repaired"],
+                ))
+        module = self.product()
+        with patch.object(boto3, "Session", side_effect=AssertionError("show must be offline")):
+            baseline_code, baseline_view = self.invoke(module, "show", "--experiment", baseline)
+            candidate_code, candidate_view = self.invoke(module, "show", "--experiment", candidate)
+        self.assertEqual(baseline_code, 0, baseline_view)
+        self.assertEqual(candidate_code, 0, candidate_view)
+        self.assertEqual(baseline_view["status"], "complete", baseline_view)
+        self.assertEqual(candidate_view["status"], "complete", candidate_view)
+        self.assertNotEqual(
+            self._read_record(baseline)["snapshot"]["toolingSha256"],
+            self._read_record(candidate)["snapshot"]["toolingSha256"],
+        )
+        with patch.object(boto3, "Session", side_effect=AssertionError("compare must be offline")):
+            code, result = self.invoke(module, "compare", "--baseline", baseline, "--candidate", candidate)
+        self.assertEqual(code, 2, result)
+        self.assertEqual(result.get("status"), "incomplete")
+        self.assertRegex(json.dumps(result).lower(), r"tool|identity|mismatch")
 
 
 if __name__ == "__main__":

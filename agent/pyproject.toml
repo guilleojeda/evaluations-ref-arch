@@ -12,6 +12,7 @@ dependencies = [
 
 [dependency-groups]
 adapter = ["boto3==1.43.125"]
+dev = ["strands-agents-evals==1.9.0"]
 
 [tool.uv]
 required-version = "==0.13.6"
