@@ -21,8 +21,19 @@ with the source revision and prompt digest. The source-tree manifest is a
 development template; packaging writes the generated identity into the ZIP.
 The checked release attests the
 complete ZIP SHA-256 externally; a ZIP cannot contain a self-hash of its final
-bytes. The checked release finalizes the endpoint and adapter attestation after
-MMDSv2 and the endpoint version have been read back.
+bytes. The checked release verifies the Runtime and adapter packages. The
+Phase 19 reference operation finalizes the publisher-owned endpoint and
+adapter attestation after MMDSv2 and the endpoint version have been read back.
+
+## Prepare the reviewed faulty reference (Phase 19)
+
+The named `faulty` publication is a publisher-owned fixture, not an ordinary
+agent release or quality qualification. Follow the single
+[`demo-deploy`/`reference-setup` deployment runbook](../docs/deployment.md#restore-the-reviewed-faulty-reference)
+for descriptor/archive preflight, dispatch, one-time ownership migration,
+healthy repeat, partial-run readback, and the genuine denied witness. Ordinary
+agent releases preserve the publisher tuple. Phase 19 does not qualify or
+publish repaired candidates; Phase 20 owns that gate.
 
 ## Export and query captured evidence
 

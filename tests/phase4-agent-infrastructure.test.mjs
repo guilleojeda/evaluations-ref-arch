@@ -99,7 +99,7 @@ function resolveAlarmValue(value, { parameters, conditions, supplied }, activeCo
   return resolved;
 }
 
-test('agent stack contains one Runtime, a version-pinned faulty endpoint, and its retained durable run table', () => {
+test('agent stack contains one Runtime, a derived faulty endpoint binding, and its retained durable run table', () => {
   const { Resources, Outputs } = template(agentTemplatePath, 'agent');
   const [runtimeId, runtime] = findOne(
     Resources,
@@ -107,20 +107,14 @@ test('agent stack contains one Runtime, a version-pinned faulty endpoint, and it
     () => true,
     'the agent stack must contain exactly one AgentCore Runtime',
   );
-  const [endpointId, endpoint] = findOne(
-    Resources,
-    'AWS::BedrockAgentCore::RuntimeEndpoint',
-    ({ Properties }) => /faulty/i.test(Properties.Name ?? ''),
-    'the agent stack must contain one named faulty Runtime endpoint',
-  );
-  assert.ok(endpoint.Properties.AgentRuntimeVersion,
-    'the faulty endpoint must be pinned to an explicit immutable Runtime version');
-  assert.ok(references(endpoint.Properties.AgentRuntimeId, runtimeId),
-    'the faulty endpoint must target the stack Runtime');
+  assert.equal(resourcesOf(Resources, 'AWS::BedrockAgentCore::RuntimeEndpoint').length, 0,
+    'ordinary agent releases must not own the publisher endpoint');
   assert.ok(outputsReferencing(Outputs, runtimeId).length,
     'the stack must expose the Runtime identity to dependent components');
-  assert.ok(outputsReferencing(Outputs, endpointId).length,
-    'the stack must expose the pinned faulty endpoint identity');
+  assert.match(JSON.stringify(Outputs.FaultyEndpointArn?.Value), /runtime-endpoint\/faulty/,
+    'the stack must expose the stable derived faulty endpoint identity');
+  assert.ok(references(Outputs.FaultyEndpointArn?.Value, runtimeId),
+    'the derived endpoint identity must target the stack Runtime');
 
   const tables = resourcesOf(Resources, 'AWS::DynamoDB::Table');
   assert.equal(tables.length, 1, 'the agent stack must own one separate durable run table');
@@ -231,12 +225,8 @@ test('adapter only forwards to the selected endpoint; Runtime owns the run claim
     lifecycle.IdleRuntimeSessionTimeout <= 1209600, 'Runtime idle sessions must expire within the supported finite bounds');
   assert.ok(Number.isInteger(lifecycle?.MaxLifetime) && lifecycle.MaxLifetime >= 60 && lifecycle.MaxLifetime <= 1209600,
     'Runtime sessions must have a finite maximum lifetime');
-  const [endpointId] = findOne(
-    Resources,
-    'AWS::BedrockAgentCore::RuntimeEndpoint',
-    ({ Properties }) => /faulty/i.test(Properties.Name ?? ''),
-    'the pinned faulty endpoint is required',
-  );
+  assert.equal(resourcesOf(Resources, 'AWS::BedrockAgentCore::RuntimeEndpoint').length, 0,
+    'the publisher-owned endpoint is absent from ordinary stack resources');
   const tables = resourcesOf(Resources, 'AWS::DynamoDB::Table');
   assert.equal(tables.length, 1, 'the agent-owned run table is required');
   const [tableId, table] = tables[0];
@@ -256,9 +246,8 @@ test('adapter only forwards to the selected endpoint; Runtime owns the run claim
   const adapterStatements = roleStatements(Resources, adapterRoleId);
   const adapterAllows = adapterStatements.filter(({ Effect }) => Effect === 'Allow');
   assert.ok(adapterAllows.some((statement) => actionList(statement).includes('bedrock-agentcore:InvokeAgentRuntime') &&
-    resourceList(statement).some((resource) => references(resource, endpointId) ||
-      JSON.stringify(resource).includes('runtime-endpoint/'))),
-  'adapter permission must target the pinned endpoint, not every Runtime');
+    resourceList(statement).some((resource) => JSON.stringify(resource).includes('runtime-endpoint/faulty'))),
+  'adapter permission must target the stable derived endpoint, not every Runtime');
   assert.ok(!adapterAllows.some((statement) => actionList(statement).some((action) => /^dynamodb:/.test(action))),
     'adapter cannot read or change run records; it only forwards the event');
   assert.ok(!adapterAllows.some((statement) => actionList(statement).some((action) => /^bedrock-agentcore:InvokeAgentRuntime$/.test(action)) &&

@@ -1,161 +1,103 @@
 """Deployment-only regression checks; no AWS request or inference is made."""
 from __future__ import annotations
-import base64
-import copy
-from fnmatch import fnmatchcase
+from datetime import datetime, timezone
 import importlib.util
 import json
+from fnmatch import fnmatchcase
 from pathlib import Path
-from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import yaml
-spec = importlib.util.spec_from_file_location("finalize_agent", Path(__file__).parents[1] / "scripts/finalize-agent.py")
-release = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(release)
-
-class Native:
-    def __init__(self):
-        self.updates = []
-        self.pin_updates = []
-        self.runtime = {"agentRuntimeId": "IncidentTriageDemoAgent-abcdefghij", "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-abcdefghij", "agentRuntimeVersion": "1", "status": "READY", "roleArn": "arn:aws:iam::027224425948:role/IncidentTriageDemoAgentRuntimeRole", "agentRuntimeArtifact": {"codeConfiguration": {"runtime": "PYTHON_3_13", "entryPoint": ["opentelemetry-instrument", "main.py"], "code": {"s3": {"bucket": "assets", "prefix": "checked.zip"}}}}, "environmentVariables": {"SOURCE": "checked"}, "networkConfiguration": {"networkMode": "PUBLIC"}, "protocolConfiguration": {"serverProtocol": "HTTP"}, "lifecycleConfiguration": {"idleRuntimeSessionTimeout": 300, "maxLifetime": 600}, "metadataConfiguration": {"requireMMDSV2": False}}
-        keys = set(self.runtime) - {"status", "agentRuntimeArn", "agentRuntimeVersion"}
-        self.meta = SimpleNamespace(service_model=SimpleNamespace(operation_model=lambda _: SimpleNamespace(input_shape=SimpleNamespace(members=keys))))
-        self.endpoint = {"status": "READY", "liveVersion": "1", "targetVersion": "1", "agentRuntimeArn": self.runtime["agentRuntimeArn"], "agentRuntimeEndpointArn": self.runtime["agentRuntimeArn"] + "/runtime-endpoint/faulty"}
-    def get_agent_runtime(self, **kwargs): return copy.deepcopy(self.runtime)
-    def update_agent_runtime(self, **kwargs):
-        self.updates.append(kwargs)
-        self.runtime.update(metadataConfiguration=kwargs["metadataConfiguration"], agentRuntimeVersion="2")
-        return {"agentRuntimeVersion": "2"}
-    def get_agent_runtime_endpoint(self, **kwargs): return copy.deepcopy(self.endpoint)
-    def update_agent_runtime_endpoint(self, **kwargs):
-        self.pin_updates.append(kwargs)
-        self.endpoint.update(liveVersion=kwargs["agentRuntimeVersion"], targetVersion=kwargs["agentRuntimeVersion"])
-
-class Adapter:
-    def __init__(self, native):
-        self.updates = []
-        self.config = {"LastUpdateStatus": "Successful", "FunctionArn": "adapter", "RevisionId": "revision-1", "CodeSha256": base64.b64encode(bytes.fromhex("b" * 64)).decode(), "TracingConfig": {"Mode": "Active"}, "Environment": {"Variables": {"AGENT_RUNTIME_ARN": native.runtime["agentRuntimeArn"], "AGENT_ENDPOINT_NAME": "faulty", "AGENT_RUNTIME_VERSION": "unverified", "AGENT_ALARM_ARN": "arn:aws:cloudwatch:us-east-1:027224425948:alarm:IncidentTriageDemoAppStage5xx", "AGENT_SOURCE_REVISION": "c" * 40, "AGENT_ARTIFACT_SHA256": "a" * 64}}}
-    def get_function_configuration(self, **kwargs): return copy.deepcopy(self.config)
-    def update_function_configuration(self, **kwargs):
-        self.updates.append(kwargs)
-        self.config["Environment"] = kwargs["Environment"]
-        return copy.deepcopy(self.config)
-
 class ReleaseTests(unittest.TestCase):
-    def setUp(self):
-        self.native = Native()
-        self.adapter = Adapter(self.native)
-        self.xray = SimpleNamespace(get_trace_segment_destination=lambda: {"Destination": "CloudWatchLogs", "Status": "ACTIVE"})
-    def finalize(self):
-        # Exercise the real waiter with a zero deadline so rejection never sleeps.
-        wait_ready = release.wait_ready
-        with patch.object(release, "wait_ready", side_effect=lambda read, **kwargs: wait_ready(read, timeout=0, **kwargs)):
-            return release.finalize(self.native, self.adapter, self.xray, runtime_id="IncidentTriageDemoAgent-abcdefghij", revision="c" * 40, artifact_sha256="a" * 64, adapter_sha256="b" * 64, bucket="assets", key="checked.zip", api_id="api", expected_environment={"SOURCE": "checked"})
-    def test_mmdsv2_preserves_checked_configuration_and_attests_final_native_version(self):
-        result = self.finalize()
-        self.assertEqual("2", result["runtimeVersion"])
-        self.assertEqual("2", self.native.endpoint["liveVersion"])
-        self.assertEqual("2", self.adapter.config["Environment"]["Variables"]["AGENT_RUNTIME_VERSION"])
-        update = self.native.updates[0]
-        self.assertEqual(self.native.runtime["agentRuntimeArtifact"], update["agentRuntimeArtifact"])
-        self.assertEqual(self.native.runtime["roleArn"], update["roleArn"])
-        self.assertEqual("revision-1", self.adapter.updates[0]["RevisionId"])
-    def test_same_revision_recovery_finishes_attestation_without_creating_another_version(self):
-        self.finalize()
-        self.adapter.config["Environment"]["Variables"]["AGENT_RUNTIME_VERSION"] = "unverified"
-        self.finalize()
-        self.assertEqual(1, len(self.native.updates))
-        self.assertEqual(1, len(self.native.pin_updates))
-        self.assertEqual(2, len(self.adapter.updates))
-    def test_ready_endpoint_without_target_version_does_not_repin_or_create_another_version(self):
-        self.native.runtime["metadataConfiguration"]["requireMMDSV2"] = True
-        self.native.endpoint.pop("targetVersion")
-        result = self.finalize()
-        self.assertEqual("1", result["runtimeVersion"])
-        self.assertEqual([], self.native.updates)
-        self.assertEqual([], self.native.pin_updates)
-        self.assertEqual("1", self.adapter.config["Environment"]["Variables"]["AGENT_RUNTIME_VERSION"])
-    def test_repin_accepts_ready_live_version_when_service_omits_target_version(self):
-        update_endpoint = self.native.update_agent_runtime_endpoint
-        def update_without_target(**kwargs):
-            update_endpoint(**kwargs)
-            self.native.endpoint.pop("targetVersion")
-        with patch.object(self.native, "update_agent_runtime_endpoint", side_effect=update_without_target):
-            result = self.finalize()
-        self.assertEqual("2", result["runtimeVersion"])
-        self.assertEqual(1, len(self.native.pin_updates))
-        self.assertEqual("2", self.native.pin_updates[0]["agentRuntimeVersion"])
-    def test_stale_live_conflicting_target_and_in_progress_endpoints_cannot_attest(self):
-        for drift in [
-            {"liveVersion": "2"},
-            {"targetVersion": "2"},
-            {"status": "UPDATING"},
-        ]:
-            with self.subTest(drift=drift):
-                self.setUp()
-                self.native.runtime["metadataConfiguration"]["requireMMDSV2"] = True
-                self.native.endpoint.pop("targetVersion")
-                self.native.endpoint.update(drift)
-                with patch.object(self.native, "update_agent_runtime_endpoint"):
-                    with self.assertRaisesRegex(RuntimeError, "timed out"):
-                        self.finalize()
-                self.assertEqual([], self.adapter.updates)
-    def test_final_readback_rejects_stale_live_conflicting_target_and_in_progress(self):
-        for drift in [
-            {"liveVersion": "2"},
-            {"targetVersion": "2"},
-            {"status": "UPDATING"},
-        ]:
-            with self.subTest(drift=drift):
-                self.setUp()
-                self.native.runtime["metadataConfiguration"]["requireMMDSV2"] = True
-                self.native.endpoint.pop("targetVersion")
-                changed = {**self.native.endpoint, **drift}
-                with patch.object(self.native, "get_agent_runtime_endpoint", side_effect=[copy.deepcopy(self.native.endpoint), changed]):
-                    with self.assertRaisesRegex(RuntimeError, "Endpoint changed during finalization"):
-                        self.finalize()
-    def test_rejects_unchecked_runtime_or_adapter_bytes_before_attesting(self):
-        for kind in ["runtime", "adapter"]:
-            with self.subTest(kind=kind):
-                self.setUp()
-                if kind == "runtime": self.native.runtime["environmentVariables"]["SOURCE"] = "different"
-                else: self.adapter.config["CodeSha256"] = "other"
-                with self.assertRaises(RuntimeError): self.finalize()
-                self.assertEqual([], self.adapter.updates)
-    def test_adapter_mismatch_reports_only_missing_unexpected_and_changed_keys(self):
-        values = self.adapter.config["Environment"]["Variables"]
-        values.pop("AGENT_SOURCE_REVISION")
-        values["AGENT_ARTIFACT_SHA256"] = "private-changed-value"
-        values["UNAPPROVED_SETTING"] = "private-extra-value"
-        with self.assertRaisesRegex(RuntimeError, "Adapter configuration differs") as error:
-            self.finalize()
-        diagnostics = json.loads(str(error.exception).split(": ", 1)[1])
-        self.assertEqual({
-            "missingKeys": ["AGENT_SOURCE_REVISION"],
-            "unexpectedKeys": ["UNAPPROVED_SETTING"],
-            "changedKeys": ["AGENT_ARTIFACT_SHA256"],
-        }, diagnostics)
-        self.assertNotIn("private-changed-value", str(error.exception))
-        self.assertNotIn("private-extra-value", str(error.exception))
-        self.assertEqual([], self.adapter.updates)
-    def test_adapter_environment_error_never_attests_or_exposes_service_message(self):
-        for readable_values in [True, False]:
-            with self.subTest(readable_values=readable_values):
-                self.setUp()
-                if not readable_values: self.adapter.config["Environment"].pop("Variables")
-                self.adapter.config["Environment"]["Error"] = {
-                    "ErrorCode": "AccessDeniedException", "Message": "private-service-error-message",
-                }
-                with self.assertRaisesRegex(RuntimeError, "Adapter environment read failed") as error:
-                    self.finalize()
-                self.assertEqual("Adapter environment read failed: AccessDeniedException", str(error.exception))
-                self.assertNotIn("private-service-error-message", str(error.exception))
-                self.assertEqual([], self.adapter.updates)
-    def test_missing_transaction_search_never_attests_a_ready_adapter(self):
-        self.xray.get_trace_segment_destination = lambda: {"Destination": "XRay"}
-        with self.assertRaisesRegex(RuntimeError, "Transaction Search"): self.finalize()
-        self.assertEqual([], self.adapter.updates)
+    """The ordinary release no longer owns native endpoint finalization."""
+
+    def test_obsolete_native_finalizer_is_removed_and_release_shell_does_not_write_endpoint(self):
+        root = Path(__file__).parents[1]
+        self.assertFalse((root / "scripts/finalize-agent.py").exists())
+        deploy = (root / "scripts/deploy-agent.sh").read_text()
+        self.assertNotIn("finalize-agent.py", deploy)
+        self.assertNotRegex(deploy, r"(?:update|create|delete)_agent_runtime_endpoint")
+
+    def test_ordinary_release_carries_publisher_tuple_as_parameters(self):
+        deploy = (Path(__file__).parents[1] / "scripts/deploy-agent.sh").read_text()
+        for parameter in ("PublishedVersion", "PublishedCodeRevision", "PublishedArtifactDigest"):
+            self.assertIn(parameter, deploy)
+        for parameter in ("PublishedRuntimeAssetBucket", "PublishedRuntimeAssetKey", "PublishedRuntimeCodeRevision", "PublishedRuntimeArtifactDigest", "PublishedRuntimeBootstrapEnabled"):
+            self.assertIn(parameter, deploy)
+        self.assertIn("legacy_endpoint_managed", deploy)
+        self.assertIn("list-stack-resources", deploy)
+
+    def test_cutover_helper_has_only_prepare_and_execute_plan_operations(self):
+        helper = (Path(__file__).parents[1] / "scripts/retire-agent-endpoint.py").read_text()
+        self.assertIn('choices=("prepare", "execute")', helper)
+        self.assertIn("--reference-cutover", helper)
+        self.assertIn("already_detached", helper)
+        self.assertIn("already_retired", helper)
+        self.assertIn("rollback", helper)
+        for mutable_flag in ("--candidate", "--endpoint", "--runtime", "--uri", "--version"):
+            self.assertNotIn(f'add_argument("{mutable_flag}', helper)
+        self.assertIn('"UsePreviousValue": True', helper)
+        self.assertIn("SourceRevision parameter", helper)
+        self.assertIn("get_agent_runtime_endpoint", helper)
+        self.assertIn("native faulty endpoint remains visible", helper)
+
+    def test_same_revision_retry_only_skips_after_preservation_parameters_exist(self):
+        deploy = (Path(__file__).parents[1] / "scripts/deploy-agent.sh").read_text()
+        self.assertIn("stack_has_parameter PublishedVersion", deploy)
+        self.assertIn("stack_has_parameter PublishedRuntimeBootstrapEnabled", deploy)
+
+    def test_cutover_accepts_resolved_use_previous_values_and_serializes_native_dates(self):
+        root = Path(__file__).parents[1]
+        spec = importlib.util.spec_from_file_location("phase19_retire_agent_endpoint", root / "scripts/retire-agent-endpoint.py")
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        source = "a" * 40
+        previous = [
+            {"ParameterKey": "SourceRevision", "ParameterValue": source},
+            {"ParameterKey": "PublishedVersion", "ParameterValue": "7"},
+        ]
+        # AWS may omit UsePreviousValue and return the resolved value instead.
+        described = {
+            "Parameters": [dict(item) for item in previous],
+            "CreationTime": datetime(2026, 11, 17, 12, 30, tzinfo=timezone.utc),
+        }
+        module._assert_source_revision_preserved(described, source, previous)
+        safe = module._json_safe(described)
+        self.assertEqual("2026-11-17T12:30:00Z", safe["CreationTime"])
+        json.dumps(safe)
+        described["Parameters"][1]["ParameterValue"] = "8"
+        with self.assertRaisesRegex(RuntimeError, "changed legacy parameter"):
+            module._assert_source_revision_preserved(described, source, previous)
+
+    def test_cutover_waits_for_native_endpoint_deletion_propagation(self):
+        root = Path(__file__).parents[1]
+        spec = importlib.util.spec_from_file_location("phase19_retire_agent_endpoint", root / "scripts/retire-agent-endpoint.py")
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        class Control:
+            def __init__(self):
+                self.calls = 0
+
+            def get_agent_runtime_endpoint(self, **_request):
+                self.calls += 1
+                if self.calls < 3:
+                    return {"status": "DELETING"}
+                error = module.ClientError(
+                    {"Error": {"Code": "ResourceNotFoundException", "Message": "not found"}},
+                    "GetAgentRuntimeEndpoint",
+                )
+                raise error
+
+        control = Control()
+        with patch.object(module.time, "sleep", return_value=None):
+            result = module._wait_native_endpoint_absent(control, "IncidentTriageDemoAgent-7VWTOWDIs4", timeout=1)
+        self.assertEqual({"status": "absent", "attempts": 3}, result)
+        self.assertEqual(3, control.calls)
 
 class ReleaseTemplateTests(unittest.TestCase):
     @staticmethod
@@ -188,6 +130,7 @@ class ReleaseTemplateTests(unittest.TestCase):
         self.assertEqual([
             "arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*.json",
             "arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*.zip",
+            "arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/agent-reference/*",
         ], statements["DenyBootstrapKeyOutsideBootstrapTemplates"]["Condition"]["StringNotLike"]["kms:EncryptionContext:aws:s3:arn"])
         for sid in ["FinalizeCheckedAgentRuntime", "AttestVerifiedRuntimeInAdapter", "PassCheckedAgentRole"]:
             self.assertEqual("Allow", statements[sid]["Effect"])

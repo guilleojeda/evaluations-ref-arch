@@ -65,7 +65,8 @@ test('agent import approval requires exact retained resources in the checked tem
 
 test('manual deployment routing selects exactly the requested independent component', (t) => {
   const workflow = readFileSync(new URL('../.github/workflows/deploy.yml', import.meta.url), 'utf8');
-  const block = workflow.match(/          if \[\[ "\$\{\{ github.event_name \}\}" == "workflow_dispatch" \]\]; then[\s\S]*?          fi/)[0];
+  const block = workflow.match(/      - name: Select changed components[\s\S]*?\n        run: \|\n([\s\S]*?)(?=^      - name:)/m)[1]
+    .replace(/^ {10}/gm, '');
   const directory = mkdtempSync(join(tmpdir(), 'phase4-manual-route-'));
   t.after(() => rmSync(directory, { recursive: true, force: true }));
   const cases = [
@@ -79,7 +80,10 @@ test('manual deployment routing selects exactly the requested independent compon
     { component: 'app', from: 'initial', to: 'initial', reject: true },
     { component: 'app', from: 'initial', to: 'invalid generation', reject: true },
   ];
-  const script = block.replaceAll('${{ github.event_name }}', 'workflow_dispatch');
+  const script = block
+    .replaceAll('${{ github.event_name }}', 'workflow_dispatch')
+    .replaceAll('${{ github.ref }}', 'refs/heads/demo-deploy')
+    .replaceAll('${{ github.sha }}', 'a'.repeat(40));
   for (const [index, { component, from = '', to = '', reject = false }] of cases.entries()) {
     const output = join(directory, String(index));
     const result = spawnSync('bash', ['-euo', 'pipefail', '-c', script], {
@@ -89,7 +93,7 @@ test('manual deployment routing selects exactly the requested independent compon
     });
     assert.equal(result.status, reject ? 1 : 0, result.stderr);
     if (!reject) {
-      const expected = [`components=["${component}"]`];
+      const expected = [`components=["${component}"]`, 'operation=normal', 'reference_setup=false'];
       if (from) expected.push(`rotation_from_generation=${from}`, `rotation_to_generation=${to}`);
       assert.deepEqual(readFileSync(output, 'utf8').trim().split('\n'), expected);
     }

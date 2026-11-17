@@ -87,7 +87,7 @@ class NativeS3:
 class NativeControl:
     """AgentCore control shape with latest, historical, and endpoint reads."""
 
-    def __init__(self, expected: dict[str, object], *, historical: bool, stale_endpoint: bool = False, endpoint_present: bool = False, endpoint_version: str = "7", runtime_status: str = "READY", endpoint_error: bool = False, endpoint_create_lost: bool = False, endpoint_update_allowed: bool = False, endpoint_in_progress: bool = False):
+    def __init__(self, expected: dict[str, object], *, historical: bool, stale_endpoint: bool = False, endpoint_present: bool = False, endpoint_version: str = "7", runtime_status: str = "READY", endpoint_error: bool = False, endpoint_create_lost: bool = False, runtime_update_lost: bool = False, endpoint_update_allowed: bool = False, endpoint_in_progress: bool = False):
         self.expected = expected
         self.calls: list[tuple[str, dict[str, object]]] = []
         self.runtime_updates: list[dict[str, object]] = []
@@ -98,6 +98,7 @@ class NativeControl:
         self.runtime_status = runtime_status
         self.endpoint_error = endpoint_error
         self.endpoint_create_lost = endpoint_create_lost
+        self.runtime_update_lost = runtime_update_lost
         self.endpoint_update_allowed = endpoint_update_allowed
         self.endpoint_in_progress = endpoint_in_progress
         self.next_version = "10"
@@ -161,6 +162,9 @@ class NativeControl:
         self.runtime_updates.append(copy.deepcopy(request))
         version = self.next_version
         self.runtimes[version] = self._runtime(version, compatible=True)
+        if self.runtime_update_lost:
+            self.runtime_update_lost = False
+            raise RuntimeError("runtime update response lost after commit")
         return {"agentRuntimeArn": RUNTIME_ARN, "agentRuntimeVersion": version}
 
     def create_agent_runtime(self, **request: object) -> dict[str, object]:
@@ -284,6 +288,32 @@ class NativeCloudFormation:
         self.calls.append(("describe_stacks", copy.deepcopy(request)))
         return {"Stacks": [{"Outputs": [{"OutputKey": "RuntimeId", "OutputValue": RUNTIME_ID}]}]}
 
+
+class NativePreflightCloudFormation(NativeCloudFormation):
+    def describe_stacks(self, **request: object) -> dict[str, object]:
+        self.calls.append(("describe_stacks", copy.deepcopy(request)))
+        return {"Stacks": [{
+            "StackId": f"arn:aws:cloudformation:{REGION}:{ACCOUNT}:stack/IncidentTriageDemoAgent/id",
+            "StackStatus": "UPDATE_COMPLETE",
+            "Outputs": [{"OutputKey": "RuntimeId", "OutputValue": RUNTIME_ID}],
+        }]}
+
+    def list_stack_resources(self, **request: object) -> dict[str, object]:
+        self.calls.append(("list_stack_resources", copy.deepcopy(request)))
+        return {"StackResourceSummaries": [
+            {"LogicalResourceId": "Runtime", "PhysicalResourceId": RUNTIME_ID, "ResourceType": "AWS::BedrockAgentCore::Runtime"},
+            {"LogicalResourceId": "FaultyEndpoint", "PhysicalResourceId": RUNTIME_ARN + "/runtime-endpoint/faulty", "ResourceType": "AWS::BedrockAgentCore::RuntimeEndpoint"},
+        ]}
+
+
+class NativeSTS:
+    def __init__(self):
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def get_caller_identity(self, **request: object) -> dict[str, object]:
+        self.calls.append(("get_caller_identity", copy.deepcopy(request)))
+        return {"Account": ACCOUNT, "Arn": f"arn:aws:iam::{ACCOUNT}:role/phase19-test"}
+
 class NativeSession:
     def __init__(self, s3, control, adapter, controller, cloudformation):
         self.clients = {"s3": s3, "bedrock-agentcore-control": control, "lambda": adapter, "dynamodb": controller, "cloudformation": cloudformation}
@@ -389,8 +419,8 @@ class FaultyReferenceAcceptance(unittest.TestCase):
         spec.loader.exec_module(module)
         return module
 
-    def _native(self, *, historical: bool = True, stale_endpoint: bool = False, endpoint_present: bool = False, endpoint_version: str = "7", runtime_status: str = "READY", endpoint_error: bool = False, endpoint_create_lost: bool = False, endpoint_update_allowed: bool = False, endpoint_in_progress: bool = False, stale_adapter: int = 0, stale_post_write: bool = False, fail_update_once: bool = False, adapter_update_lost: bool = False, record_put_lost: bool = False, record_readback_wrong: bool = False):
-        self.control = NativeControl(self.descriptor, historical=historical, stale_endpoint=stale_endpoint, endpoint_present=endpoint_present, endpoint_version=endpoint_version, runtime_status=runtime_status, endpoint_error=endpoint_error, endpoint_create_lost=endpoint_create_lost, endpoint_update_allowed=endpoint_update_allowed, endpoint_in_progress=endpoint_in_progress)
+    def _native(self, *, historical: bool = True, stale_endpoint: bool = False, endpoint_present: bool = False, endpoint_version: str = "7", runtime_status: str = "READY", endpoint_error: bool = False, endpoint_create_lost: bool = False, runtime_update_lost: bool = False, endpoint_update_allowed: bool = False, endpoint_in_progress: bool = False, stale_adapter: int = 0, stale_post_write: bool = False, fail_update_once: bool = False, adapter_update_lost: bool = False, record_put_lost: bool = False, record_readback_wrong: bool = False):
+        self.control = NativeControl(self.descriptor, historical=historical, stale_endpoint=stale_endpoint, endpoint_present=endpoint_present, endpoint_version=endpoint_version, runtime_status=runtime_status, endpoint_error=endpoint_error, endpoint_create_lost=endpoint_create_lost, runtime_update_lost=runtime_update_lost, endpoint_update_allowed=endpoint_update_allowed, endpoint_in_progress=endpoint_in_progress)
         self.adapter = NativeLambda(stale_reads=stale_adapter, stale_post_write=stale_post_write, fail_update_once=fail_update_once, update_lost=adapter_update_lost)
         self.controller = NativeController(put_lost=record_put_lost, readback_wrong=record_readback_wrong)
         self.cloudformation = NativeCloudFormation()
@@ -405,8 +435,8 @@ class FaultyReferenceAcceptance(unittest.TestCase):
                 stack.enter_context(patch.object(module.time, "sleep", return_value=None))
             return operation(session)
 
-    def _operation(self, *, historical=True, stale_endpoint=False, endpoint_present=False, endpoint_version="7", runtime_status="READY", endpoint_error=False, endpoint_create_lost=False, endpoint_update_allowed=False, endpoint_in_progress=False, stale_adapter=0, stale_post_write=False, fail_update_once=False, adapter_update_lost=False, record_put_lost=False, record_readback_wrong=False):
-        control, adapter, controller = self._native(historical=historical, stale_endpoint=stale_endpoint, endpoint_present=endpoint_present, endpoint_version=endpoint_version, runtime_status=runtime_status, endpoint_error=endpoint_error, endpoint_create_lost=endpoint_create_lost, endpoint_update_allowed=endpoint_update_allowed, endpoint_in_progress=endpoint_in_progress, stale_adapter=stale_adapter, stale_post_write=stale_post_write, fail_update_once=fail_update_once, adapter_update_lost=adapter_update_lost, record_put_lost=record_put_lost, record_readback_wrong=record_readback_wrong)
+    def _operation(self, *, historical=True, stale_endpoint=False, endpoint_present=False, endpoint_version="7", runtime_status="READY", endpoint_error=False, endpoint_create_lost=False, runtime_update_lost=False, endpoint_update_allowed=False, endpoint_in_progress=False, stale_adapter=0, stale_post_write=False, fail_update_once=False, adapter_update_lost=False, record_put_lost=False, record_readback_wrong=False):
+        control, adapter, controller = self._native(historical=historical, stale_endpoint=stale_endpoint, endpoint_present=endpoint_present, endpoint_version=endpoint_version, runtime_status=runtime_status, endpoint_error=endpoint_error, endpoint_create_lost=endpoint_create_lost, runtime_update_lost=runtime_update_lost, endpoint_update_allowed=endpoint_update_allowed, endpoint_in_progress=endpoint_in_progress, stale_adapter=stale_adapter, stale_post_write=stale_post_write, fail_update_once=fail_update_once, adapter_update_lost=adapter_update_lost, record_put_lost=record_put_lost, record_readback_wrong=record_readback_wrong)
         module = self._load()
         return self._call_operation(module, control, adapter, controller), module
 
@@ -425,7 +455,7 @@ class FaultyReferenceAcceptance(unittest.TestCase):
 
     def test_fixed_cli_entrypoint_rejects_caller_overrides_before_sdk_session(self):
         self.assertTrue((ROOT / "scripts" / SCRIPT).is_file())
-        for args in (["--candidate", "repaired"], ["--endpoint-name", "repaired"], ["--archive-key", "other.zip"]):
+        for args in (["--candidate", "repaired"], ["--endpoint-name", "repaired"], ["--archive-key", "other.zip"], ["preflight", "--candidate", "repaired"]):
             with self.subTest(args=args):
                 result, control, adapter, controller = self._run_cli(args)
                 self.assertNotEqual(result, 0)
@@ -493,6 +523,90 @@ class FaultyReferenceAcceptance(unittest.TestCase):
         self.assertNotIn("controllerPublicKey", item)
         self.assertEqual(self.expected_environment, self.adapter.environment)
 
+    def test_production_archive_shape_checks_source_manifest_modules_and_lock(self):
+        module = self._load()
+        module_bytes = {
+            name: (ROOT / "agent" / name).read_bytes()
+            for name in ("main.py", "investigation.py", "evidence.py", "prompt.py")
+        }
+        lock_bytes = (ROOT / "agent" / "uv.lock").read_bytes()
+        archive_io = io.BytesIO()
+        with zipfile.ZipFile(archive_io, "w", compression=zipfile.ZIP_STORED) as archive:
+            archive.writestr("agent-manifest.json", self.manifest_bytes)
+            for name, value in module_bytes.items():
+                archive.writestr(name, value)
+            archive.writestr("uv.lock", lock_bytes)
+        descriptor = copy.deepcopy(self.descriptor)
+        descriptor["sourceManifest"] = {
+            "bucket": self.bucket,
+            "key": "agent-reference/manifest.json",
+            "versionId": "manifest-version-1",
+            "sha256": sha256(self.manifest_bytes),
+        }
+        descriptor["lock"] = {
+            "bucket": self.bucket,
+            "key": "agent-reference/uv.lock",
+            "versionId": "lock-version-1",
+            "sha256": sha256(lock_bytes),
+        }
+        descriptor["lockArchivePath"] = "uv.lock"
+        descriptor["provenance"] = {"originalRevision": SOURCE_REVISION, "lockSha256": sha256(lock_bytes)}
+        descriptor["packagedModules"] = {name: {"sha256": sha256(value)} for name, value in module_bytes.items()}
+        archive_bytes = archive_io.getvalue()
+        module._validate_descriptor(descriptor)
+        module._validate_archive(archive_bytes, descriptor, self.source_bytes, self.manifest_bytes, lock_bytes)
+        tampered = archive_bytes.replace(module_bytes["evidence.py"], b"tampered evidence", 1)
+        with self.assertRaises(ValueError):
+            module._validate_archive(tampered, descriptor, self.source_bytes, self.manifest_bytes, lock_bytes)
+
+    def test_full_preflight_is_read_only_and_checks_live_scope_rollback_and_adapter(self):
+        module = self._load()
+        control, adapter, controller = self._native(historical=True, endpoint_present=True)
+        adapter.environment = {
+            "AGENT_RUNTIME_ARN": RUNTIME_ARN,
+            "AGENT_ENDPOINT_NAME": "faulty",
+            "AGENT_RUNTIME_VERSION": "7",
+            "AGENT_ALARM_ARN": ALARM_ARN,
+            "AGENT_SOURCE_REVISION": SOURCE_REVISION,
+            "AGENT_ARTIFACT_SHA256": sha256(self.archive_bytes),
+        }
+        adapter.config["Environment"] = {"Variables": copy.deepcopy(adapter.environment)}
+        preflight_session = NativeSession(self.s3, control, adapter, controller, NativePreflightCloudFormation())
+        preflight_session.clients["sts"] = NativeSTS()
+        result = module.preflight_faulty_reference(preflight_session)
+        self.assertEqual("ready", result["status"])
+        self.assertTrue(result["trustedRollback"]["eligible"])
+        self.assertEqual("7", result["trustedRollback"]["runtimeVersion"])
+        self.assertFalse(control.runtime_updates)
+        self.assertFalse(control.endpoint_creates)
+        self.assertFalse(adapter.updates)
+        self.assertFalse(controller.items)
+
+    def test_preflight_reports_reconcilable_endpoint_adapter_version_gap(self):
+        module = self._load()
+        control, adapter, controller = self._native(historical=True, endpoint_present=True, endpoint_version="10")
+        control.runtimes["10"] = control._runtime("10", compatible=True)
+        adapter.environment = {
+            "AGENT_RUNTIME_ARN": RUNTIME_ARN,
+            "AGENT_ENDPOINT_NAME": "faulty",
+            "AGENT_RUNTIME_VERSION": "7",
+            "AGENT_ALARM_ARN": ALARM_ARN,
+            "AGENT_SOURCE_REVISION": SOURCE_REVISION,
+            "AGENT_ARTIFACT_SHA256": sha256(self.archive_bytes),
+        }
+        adapter.config["Environment"] = {"Variables": copy.deepcopy(adapter.environment)}
+        preflight_session = NativeSession(self.s3, control, adapter, controller, NativePreflightCloudFormation())
+        preflight_session.clients["sts"] = NativeSTS()
+        result = module.preflight_faulty_reference(preflight_session)
+        self.assertEqual("partial", result["status"])
+        self.assertFalse(result["trustedRollback"]["eligible"])
+        self.assertEqual({"endpointVersion": "10", "adapterVersion": "7", "adapterRuntimeArn": RUNTIME_ARN, "adapterRuntimeStatus": "READY", "needsAdapterUpdate": True}, result["partialBinding"])
+        with self.assertRaises(RuntimeError):
+            module.preflight_faulty_reference(preflight_session, require_rollback=True)
+        self.assertFalse(control.runtime_updates)
+        self.assertFalse(control.endpoint_updates)
+        self.assertFalse(adapter.updates)
+
     def test_optional_target_version_is_not_required_when_live_version_is_ready(self):
         self._operation(historical=True)
         self.assertNotIn("targetVersion", self.control.endpoints["faulty"])
@@ -503,6 +617,13 @@ class FaultyReferenceAcceptance(unittest.TestCase):
         self.assertFalse(self.control.endpoint_creates)
         self.assertFalse(self.control.endpoint_updates)
         self.assertEqual("7", self.control.endpoints["faulty"]["liveVersion"])
+
+    def test_runtime_default_protocol_fields_are_normalized_for_effective_config(self):
+        control, _adapter, _controller = self._native(historical=True)
+        control.runtimes["7"]["protocolConfiguration"].update({"port": 8080, "path": "/invocations"})
+        module = self._load()
+        self._call_operation(module, control, self.adapter, self.controller)
+        self.assertEqual("7", self.controller.items[PUBLICATION_PK]["runtimeVersion"]["S"])
 
     def test_false_adapter_readback_does_not_write_a_prepared_reference(self):
         with self.assertRaises((RuntimeError, ValueError)):
@@ -590,6 +711,18 @@ class FaultyReferenceAcceptance(unittest.TestCase):
         self.assertEqual(1, len(control.endpoint_creates))
         self.assertEqual("reference", controller.items[PUBLICATION_PK]["status"]["S"])
 
+    def test_lost_runtime_update_reconciles_the_committed_version_before_rerun(self):
+        control, adapter, controller = self._native(historical=False, runtime_update_lost=True)
+        module = self._load()
+        with self.assertRaises(RuntimeError):
+            self._call_operation(module, control, adapter, controller)
+        self.assertEqual(1, len(control.runtime_updates))
+        self.assertFalse(control.endpoint_creates)
+        self._call_operation(module, control, adapter, controller)
+        self.assertEqual(1, len(control.runtime_updates))
+        self.assertEqual(1, len(control.endpoint_creates))
+        self.assertEqual("10", controller.items[PUBLICATION_PK]["runtimeVersion"]["S"])
+
     def test_committed_endpoint_adapter_and_record_writes_converge_on_retry(self):
         cases = ("endpoint_create_lost", "adapter_update_lost", "record_put_lost")
         for case in cases:
@@ -627,6 +760,16 @@ class FaultyReferenceAcceptance(unittest.TestCase):
         controller.readback_wrong = False
         self._call_operation(module, control, adapter, controller)
         self.assertEqual(1, len([call for call in controller.calls if call[0] == "put_item"]))
+
+    def test_stale_optional_record_tuple_fields_are_not_accepted(self):
+        control, adapter, controller = self._native(historical=True)
+        module = self._load()
+        self._call_operation(module, control, adapter, controller)
+        controller.items[PUBLICATION_PK]["artifactVersionId"] = attr("stale-version")
+        self._call_operation(module, control, adapter, controller)
+        writes = [call for call in controller.calls if call[0] == "put_item"]
+        self.assertEqual(2, len(writes))
+        self.assertEqual(attr(self.archive_version), controller.items[PUBLICATION_PK]["artifactVersionId"])
 
 
 if __name__ == "__main__":

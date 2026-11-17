@@ -549,7 +549,7 @@ jobs:
             reference_preflight="$RUNNER_TEMP/agent-reference-preflight.json"
             uv run --offline --project agent --locked python scripts/setup-faulty-reference.py preflight > "$reference_preflight"
             cat "$reference_preflight"
-            jq -e '.status == "ready" or .status == "already_detached"' "$reference_preflight" >/dev/null
+            jq -e '.status == "ready" or .status == "partial" or .status == "already_detached"' "$reference_preflight" >/dev/null
 
             plan="$RUNNER_TEMP/agent-reference-cutover.json"
             preflight="$RUNNER_TEMP/agent-reference-cutover-preflight.json"
