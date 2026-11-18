@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "description": "Private Phase 22 input locations. Values are supplied by the presenter and never committed with the session.",
+  "indexEnv": "PHASE22_INPUT_INDEX",
+  "privateRootEnv": "PHASE22_PRIVATE_ROOT",
+  "locations": {
+    "reviewArchive": "PHASE14_IMPORT_ARCHIVE",
+    "s2Run": "PHASE22_S2_RUN",
+    "s3RunRoot": "PHASE22_S3_RUN_ROOT",
+    "reviewedCase": "PHASE22_REVIEWED_CASE",
+    "sourceBundle": "PHASE22_SOURCE_BUNDLE",
+    "reviewedSuite": "PHASE18_SUITE",
+    "reviewedEvaluator": "PHASE18_EVALUATOR",
+    "experimentRoot": "PHASE18_EXPERIMENTS"
+  },
+  "rules": [
+    "All values resolve outside the editable Git worktree.",
+    "Preparation and stage switching inspect files only; they never start inference, change a live selector, publish, or reset business data.",
+    "Every result directory is unique to its execution and retains candidate, input, tooling, model, evaluator, and policy identities.",
+    "A missing or mismatched private asset is incomplete; it is not replaced with a live read or an old result."
+  ]
+}

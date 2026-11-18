@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "stage": "S0",
+  "candidateId": "faulty",
+  "candidateDefault": "faulty",
+  "prompt": {
+    "path": "agent/prompt.py",
+    "semanticId": "faulty-phase19",
+    "fileSha256": "3d21155b9f9465a0ac11eb9fcaf761bfd19549cf6454ae3ac20c20044d57a9eb",
+    "promptSha256": "161aa4357b908cffe9691349d01da284411cd5d4689235717525d79e1073fffc"
+  },
+  "capabilityAnchor": {
+    "revision": "bd6f77df97933e3e675ee9c2a699db16e29ea1b6",
+    "description": "Phase 19 instrumented faulty source and locked runtime contract"
+  },
+  "runtime": {
+    "descriptor": "scripts/faulty-reference.json",
+    "sourceRevision": "bd6f77df97933e3e675ee9c2a699db16e29ea1b6",
+    "artifactSha256": "e5ac2ee20d8f3947eb95ceb74094e882a3d8a4a010f2a8e7bf96700dd5906b33",
+    "lockSha256": "887c9bcf91ec028fe3b0939aac00a7d4c3dfbc68b2287e4469a15f3798651831",
+    "promptSourceSha256": "3d21155b9f9465a0ac11eb9fcaf761bfd19549cf6454ae3ac20c20044d57a9eb"
+  },
+  "inputs": {
+    "kind": "hosted-faulty-publication-and-live-alarm",
+    "privateIndexEnv": "PHASE22_INPUT_INDEX",
+    "requires": ["hosted controller access", "faulty READY publication", "native alarm OK before trigger"],
+    "forbidden": ["reviewed case", "score", "evaluator", "release gate"]
+  },
+  "entry": {
+    "offlineSmoke": "uv run --offline --project agent --locked python -m py_compile agent/prompt.py agent/main.py agent/investigation.py",
+    "packageSmoke": "uv run --offline --project agent --locked python agent/package_runtime.py",
+    "livePath": "Use the hosted controller to select/verify faulty, trigger the genuine denial, and match the new alarm to the saved report and trace; use the Phase 19 operator runbook for the live operation."
+  }
+}
