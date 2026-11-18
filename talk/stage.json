@@ -34,11 +34,16 @@
       "rootVariable": "asset_extract",
       "sha256Env": "PHASE22_ASSET_SHA256",
       "sessionId": "phase22-session-a-audience-full-final",
+      "suiteSelectionEnv": "PHASE22_SUITE",
+      "gateArchives": {
+        "stock": "gate/stock-staging.tar.gz",
+        "carried": "gate/staging.tar.gz"
+      },
       "run": "s2/run/e3f934af-6af9-42aa-ac78-b315133e1571",
       "case": "prepared/denial.frozen.json",
       "bundle": "prepared/denial.json",
       "captureReceipt": "s2/capture-receipt.json",
-      "evaluator": "s2/evaluator.json"
+      "evaluator": "selected gate staging/evaluator.json"
     },
     "caseId": "phase14.denied-inventory-read.prepared",
     "caseSha256": "cb1480066a46f258ee8d9e27355d50b9bd05f171ee9ef84a169989f72af5e18d",
