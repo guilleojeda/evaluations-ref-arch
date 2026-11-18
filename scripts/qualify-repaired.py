@@ -1408,7 +1408,7 @@ def verify_private_clearance(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", nargs="?", choices=("qualify", "fetch-private", "verify-private"), default="qualify")
+    parser.add_argument("command", nargs="?", choices=("qualify", "fetch-private", "verify-private", "verify-manifest"), default="qualify")
     parser.add_argument("--runtime-zip", type=Path)
     parser.add_argument("--suite", type=Path)
     parser.add_argument("--evaluator", type=Path)
@@ -1437,6 +1437,18 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.command == "verify-manifest":
+            if not args.expected_manifest:
+                raise ValueError("verify-manifest requires --expected-manifest")
+            try:
+                index = json.load(sys.stdin)
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise ValueError("verify-manifest requires one JSON object on stdin") from exc
+            if not isinstance(index, Mapping):
+                raise ValueError("verify-manifest requires a JSON object on stdin")
+            manifest = _verify_manifest_identity(index, args.expected_manifest)
+            print(json.dumps({"status": "verified", "manifestSha256": manifest}, sort_keys=True))
+            return 0
         if args.command == "fetch-private":
             import boto3
             if not all((args.bucket, args.prefix, args.review_root, args.expected_manifest)):
