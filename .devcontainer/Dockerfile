@@ -1,5 +1,6 @@
-FROM ghcr.io/astral-sh/uv:0.13.6@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
-FROM mcr.microsoft.com/devcontainers/python:1-3.13-bookworm@sha256:0aa711e570b306c02946cdda67587ce8c65978dbb65691341cbcfd4854dfcfff
+# uv 0.13.6 and Python 3.13 Bookworm, pinned by multi-architecture manifest digest.
+FROM ghcr.io/astral-sh/uv@sha256:af22a52f5eafef3d78e551599d405c02df61919d18028f0cea8eda93bc9986d0 AS uv
+FROM mcr.microsoft.com/devcontainers/python@sha256:0aa711e570b306c02946cdda67587ce8c65978dbb65691341cbcfd4854dfcfff
 
 COPY --from=uv /uv /usr/local/bin/uv
 
@@ -13,7 +14,7 @@ ARG AWS_CLI_ARM64_SHA256=ce7b03ebceed1dc6a0a8f27134a41a9a3b5671f09c57ab2e7fc6d43
 
 RUN set -eux; \
     apt-get update; \
-    apt-get install --yes --no-install-recommends ca-certificates curl git unzip xz-utils; \
+    apt-get install --yes --no-install-recommends ca-certificates curl gh git jq unzip xz-utils; \
     case "$TARGETARCH" in \
       amd64) node_arch=x64; node_checksum="$NODE_X64_SHA256"; aws_arch=x86_64; aws_checksum="$AWS_CLI_X64_SHA256" ;; \
       arm64) node_arch=arm64; node_checksum="$NODE_ARM64_SHA256"; aws_arch=aarch64; aws_checksum="$AWS_CLI_ARM64_SHA256" ;; \
@@ -38,4 +39,6 @@ RUN set -eux; \
     node --version; \
     npm --version; \
     uv --version; \
-    aws --version
+    aws --version; \
+    gh --version; \
+    jq --version
