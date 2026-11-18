@@ -93,6 +93,8 @@ while the repository pins Python 3.13, Node.js 24.22.2 and the locked agent
 dependencies.
 
 ```sh
+# Keep Python from writing bytecode caches into frozen source while reopening runs.
+export PYTHONDONTWRITEBYTECODE=1
 node --version                  # v24.22.2
 npm --version
 python3 --version               # Python 3.13.x
@@ -409,6 +411,12 @@ Open the requested stage directory and use its private input paths. Each run
 must snapshot its candidate, tooling, lockfile, case/bundle, evaluator and
 configuration at launch and write to a unique private result directory. Keep
 the command output and identity in the session record.
+
+For the S3 → S4 handoff, pass the directory printed by the new S3 run to
+`--source-run`. The historical repaired run `295cd070…` reopens for S3
+comparison. Its saved prompt digest differs from its execution identity, so
+S4 refuses it as an executable source. Keep the recorded result under its
+original identity.
 
 | Stage | Entry and required evidence |
 | --- | --- |

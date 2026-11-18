@@ -447,6 +447,52 @@ class SessionInputCommandTests(unittest.TestCase):
         self.assertEqual(carried.output_json["suiteMode"], "carried")  # type: ignore[attr-defined]
         self.assertEqual(stock.output_json["suiteMode"], "stock")  # type: ignore[attr-defined]
 
+    def test_s2_direct_entry_does_not_require_the_unselected_s1_frozen_file(self) -> None:
+        (self.fixture.root / "audience/denial-session.frozen.json").unlink()
+        result = self.run_cli(stage="S2", suite="carried")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        identity = result.output_json["stages"]["S2"]  # type: ignore[attr-defined]
+        self.assertEqual(identity["caseIds"], [FIXED_CASE_IDS[1]])
+        self.assertNotIn("audience/denial-session.frozen.json", identity["paths"])
+
+    def test_stock_s3_direct_entry_does_not_require_the_unselected_s1_frozen_file(self) -> None:
+        (self.fixture.root / "audience/denial-session.frozen.json").unlink()
+        result = self.run_cli(stage="S3", suite="stock")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        identity = result.output_json["stages"]["S3"]  # type: ignore[attr-defined]
+        self.assertEqual(identity["caseIds"], [FIXED_CASE_IDS[1]])
+        self.assertIn("prepared/denial.frozen.json", identity["paths"])
+        self.assertNotIn("audience/denial-session.frozen.json", identity["paths"])
+
+    def test_carried_gate_row_contradiction_is_rejected_before_stage_identity(self) -> None:
+        source = self.fixture.root / "gate/staging.tar.gz"
+        replacement = self.fixture.root / "gate/staging-contradictory.tar.gz"
+        with tarfile.open(source, "r:gz") as incoming, tarfile.open(replacement, "w:gz") as outgoing:
+            for member in incoming.getmembers():
+                data = incoming.extractfile(member).read() if member.isfile() else None
+                if member.name == "staging/manifest.json":
+                    manifest = json.loads(data)
+                    for row in manifest["cases"]:
+                        if row["caseId"] == AUDIENCE_CASE_ID:
+                            row["caseSha256"] = "f" * 64
+                    data = json.dumps(manifest, sort_keys=True).encode()
+                    member.size = len(data)
+                if data is not None:
+                    outgoing.addfile(member, io.BytesIO(data))
+        replacement_sha = sha256(replacement)
+        source.unlink()
+        replacement.rename(source)
+        self.fixture.roster["gate"]["archiveSha256"] = replacement_sha  # type: ignore[index]
+        pointer = json.loads((self.fixture.root / "gate/qualification-input.json").read_text(encoding="utf-8"))
+        pointer["sha256"] = replacement_sha
+        pointer["s3Key"] = f"agent-evaluation/phase18/inputs/{replacement_sha}/staging.tar.gz"
+        (self.fixture.root / "gate/qualification-input.json").write_text(json.dumps(pointer) + "\n", encoding="utf-8")
+        self.fixture.roster["selectedDigests"]["gate/staging.tar.gz"] = replacement_sha  # type: ignore[index]
+        self.fixture.roster_path.write_text(json.dumps(self.fixture.roster, indent=2) + "\n", encoding="utf-8")
+        result = self.run_cli(stage="S3", suite="carried")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("audience case identity differs", result.stderr)
+
     def test_stock_all_stage_keeps_s1_audience_identity_outside_stock_gate_rows(self) -> None:
         self.fixture.write_binding()
         result = self.run_cli(suite="stock", binding=True)

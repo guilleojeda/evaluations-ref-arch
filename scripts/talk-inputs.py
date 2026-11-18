@@ -169,12 +169,12 @@ def authenticated_audience(root: Path, roster: dict[str, Any]) -> tuple[dict[str
     reference_time = task.get("referenceTime") if isinstance(task, dict) else None
     if not isinstance(reference_time, str) or not reference_time:
         raise InputError("S1 frozen audience case has no referenceTime")
-    audience = {**metadata, "caseSha256": case_sha}
+    audience = {**metadata, "caseSha256": case_sha, "referenceTime": reference_time}
     row = {"caseId": metadata["caseId"], "caseSha256": case_sha, "bundleSha256": metadata["bundleSha256"], "referenceTime": reference_time}
     return audience, row
 
 
-def case_rows(root: Path, roster: dict[str, Any], suite: str) -> tuple[list[str], dict[str, Any], dict[str, dict[str, Any]], dict[str, Any]]:
+def case_rows(root: Path, roster: dict[str, Any], suite: str, *, authenticate_audience: bool) -> tuple[list[str], dict[str, Any], dict[str, dict[str, Any]], dict[str, Any]]:
     gate = roster.get("gate")
     if not isinstance(gate, dict):
         raise InputError("roster gate section is missing")
@@ -189,13 +189,18 @@ def case_rows(root: Path, roster: dict[str, Any], suite: str) -> tuple[list[str]
     }
     if not fixed <= set(case_ids) or gate.get("fixedDenialCaseId") != "phase14.denied-inventory-read.prepared":
         raise InputError("proposed gate does not retain the fixed denial/capacity/recovery coverage")
-    audience, audience_row = authenticated_audience(root, roster)
-    rows[audience["caseId"]] = audience_row
+    audience: dict[str, Any] = {}
+    if authenticate_audience:
+        audience, audience_row = authenticated_audience(root, roster)
     if suite == "carried":
-        if len(case_ids) != 4 or audience.get("caseId") not in case_ids:
+        if len(case_ids) != 4:
             raise InputError("carried gate must contain the fixed three cases plus the audience case")
-        if rows[audience["caseId"]]["bundleSha256"] != audience.get("bundleSha256"):
-            raise InputError("audience case bundle digest differs from the verified gate manifest")
+        if authenticate_audience:
+            if audience.get("caseId") not in case_ids:
+                raise InputError("audience case is not part of the carried gate roster")
+            gate_audience = rows.get(audience["caseId"])
+            if not isinstance(gate_audience, dict) or any(gate_audience.get(field) != audience_row.get(field) for field in ("caseSha256", "bundleSha256", "referenceTime")):
+                raise InputError("audience case identity differs from the verified carried gate row")
     else:
         case_ids = list(FIXED_CASE_IDS)
     return case_ids, audience, rows, evaluator
@@ -295,7 +300,8 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             raise InputError("selected qualification pointer is not content-addressed to the requested archive")
         gate.update({"bucket": pointer.get("bucket"), "s3Key": pointer.get("s3Key"), "pointerCaseIds": pointer.get("caseIds"), "pointerSha256": pointer.get("sha256"), "pointerDocument": pointer})
         gate["evaluatorSha256"] = digest(root / "s2/evaluator.json") if (root / "s2/evaluator.json").is_file() else gate.get("evaluatorSha256")
-        case_ids, audience, rows, evaluator = case_rows(root, {**roster, "gate": gate}, suite)
+        need_audience = "S1" in requested or (suite == "carried" and any(stage in {"S3", "S4", "S5"} for stage in requested))
+        case_ids, audience, rows, evaluator = case_rows(root, {**roster, "gate": gate}, suite, authenticate_audience=need_audience)
         if gate.get("pointerCaseIds") != case_ids:
             raise InputError("selected qualification pointer case roster differs from its authenticated manifest")
     else:
@@ -315,7 +321,10 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         # S0/S1 are preparation-only and must not be made dependent on the
         # evaluator or gate bytes used by later stages.
         stage_gate = gate if stage in {"S2", "S3", "S4", "S5"} else {"archiveSha256": None, "suiteSha256": None, "fixedDenialCaseId": gate.get("fixedDenialCaseId")}
-        identities[stage] = build_stage_identity(root, roster, stage, paths, case_ids, audience, rows, evaluator, suite, stage_gate)
+        stage_rows = rows
+        if stage == "S1" and audience:
+            stage_rows = {**rows, audience["caseId"]: {"caseId": audience["caseId"], "caseSha256": audience["caseSha256"], "bundleSha256": audience["bundleSha256"], "referenceTime": audience["referenceTime"]}}
+        identities[stage] = build_stage_identity(root, roster, stage, paths, case_ids, audience, stage_rows, evaluator, suite, stage_gate)
     generation = roster.get("generation")
     if not isinstance(generation, str) or not generation.strip():
         raise InputError("stage roster must carry the canonical checkpoint generation")

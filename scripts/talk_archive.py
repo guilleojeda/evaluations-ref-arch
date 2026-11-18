@@ -40,7 +40,7 @@ FILES_PREFIX = "files/"
 GIT_PREFIX = "git/"
 CHECKSUM_SUFFIX = ".sha256"
 INVENTORY_KEYS = {"schemaVersion", "sessionId", "sourceBase", "stageHeads", "historyPaths", "allowlist"}
-ENTRY_KEYS = {"path", "sha256", "baseSha256", "state", "mode"}
+ENTRY_KEYS = {"path", "sha256", "baseSha256", "overlaySha256", "state", "mode"}
 MANIFEST_EXTRA_KEYS = {"gitBundles"}
 
 
@@ -144,18 +144,22 @@ def _normalize_entry(value: Any, index: int) -> dict[str, Any]:
         raise ArchiveError(f"{label}.state must be file or deleted")
     digest = _validate_digest(value["sha256"], f"{label}.sha256", allow_null=state == "deleted")
     base_digest = _validate_digest(value["baseSha256"], f"{label}.baseSha256", allow_null=True)
+    overlay_digest = _validate_digest(value.get("overlaySha256"), f"{label}.overlaySha256", allow_null=True)
     mode = value.get("mode")
     if mode is not None and (isinstance(mode, bool) or not isinstance(mode, int) or not 0 <= mode <= 0o777):
         raise ArchiveError(f"{label}.mode must be a Unix file mode between 0 and 0777")
     if state == "deleted":
-        if digest is not None or base_digest is None:
-            raise ArchiveError(f"{label} deleted entries require null sha256 and a baseSha256")
+        if digest is not None or (base_digest is None and overlay_digest is None):
+            raise ArchiveError(f"{label} deleted entries require null sha256 and a baseSha256 or overlaySha256")
     elif digest is None:
         raise ArchiveError(f"{label} file entries require sha256")
+    elif overlay_digest is not None:
+        raise ArchiveError(f"{label} file entries cannot carry overlaySha256")
     return {
         "path": path,
         "sha256": digest,
         "baseSha256": base_digest,
+        "overlaySha256": overlay_digest,
         "state": state,
         "mode": mode,
     }
@@ -473,6 +477,7 @@ def _entry_projection(value: Mapping[str, Any]) -> tuple[object, ...]:
             entry["path"],
             entry["sha256"],
             entry["baseSha256"],
+            entry["overlaySha256"],
             entry["state"],
         )
         for entry in value["allowlist"]
@@ -667,8 +672,9 @@ def _preflight_restore(directory: Path, inventory: Mapping[str, Any], files: Map
             current = None
         if entry["state"] == "deleted":
             if current is None:
-                raise ArchiveError(f"restore target is missing for selected deletion: {entry['path']}")
-            if _sha256(current) != entry["baseSha256"]:
+                if entry.get("overlaySha256") is None:
+                    raise ArchiveError(f"restore target is missing for selected deletion: {entry['path']}")
+            elif _sha256(current) != (entry.get("baseSha256") or entry.get("overlaySha256")):
                 raise ArchiveError(f"restore target has dirty conflicting content: {entry['path']}")
             operations.append((entry, target, None))
             continue
@@ -1007,7 +1013,22 @@ def generate_inventory(
                         "state": "deleted",
                     }
                 else:
-                    history_paths.setdefault(stage, []).append(relative_inner)
+                    head_bytes = _git_show(stage_root, head, relative_inner)
+                    if head_bytes is None:
+                        history_paths.setdefault(stage, []).append(relative_inner)
+                    else:
+                        # The frozen base never had this file, but a local
+                        # commit did.  The working tree removed it without a
+                        # follow-up commit.  Preserve the deletion as an
+                        # explicit post-bundle overlay rather than letting
+                        # checkout of the saved commit recreate it.
+                        entries[path] = {
+                            "path": path,
+                            "sha256": None,
+                            "baseSha256": None,
+                            "overlaySha256": _sha256(head_bytes),
+                            "state": "deleted",
+                        }
 
         # Select only explicit untracked files below this stage.
         stage_selected = {

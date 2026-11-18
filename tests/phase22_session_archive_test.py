@@ -599,6 +599,35 @@ class SessionArchiveAcceptance(unittest.TestCase):
         self.assertEqual(selected["S3/agent/prompt.py"]["state"], "deleted")
         self.assertEqual(selected["S3/agent/renamed_prompt.py"]["state"], "file")
 
+    def test_committed_add_then_uncommitted_delete_stays_deleted_after_bundle_restore(self):
+        self.fixture = GitSessionFixture(Path(self.temp.name) / "git-add-delete")
+        stage = self.fixture.source / "S3"
+        added = stage / "agent/committed_then_removed.py"
+        added.write_text("committed payload\n", encoding="utf-8")
+        subprocess.run(["git", "add", "agent/committed_then_removed.py"], cwd=stage, check=True)
+        subprocess.run(["git", "commit", "-qm", "add then remove"], cwd=stage, check=True)
+        saved_head = self.fixture.stage_git("S3", "rev-parse", "HEAD")
+        added.unlink()
+
+        inventory = talk_archive.generate_inventory(
+            self.fixture.source,
+            session_id="phase22-add-delete",
+            selected_untracked=["S3/agent/untracked_experiment.py"],
+            source_base={"kind": "git", "commit": self.fixture.base_commit},
+        )
+        selected = next(
+            entry for entry in inventory["allowlist"] if entry["path"] == "S3/agent/committed_then_removed.py"
+        )
+        self.assertEqual(selected["state"], "deleted")
+        self.assertIsNone(selected["baseSha256"])
+        self.assertIsNotNone(selected["overlaySha256"])
+        inventory_path = self.fixture.root / "generated-inventory.json"
+        inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+        talk_archive.save_session(self.fixture.source, self.fixture.archive, inventory_path)
+        talk_archive.restore_session(self.fixture.replacement, self.fixture.archive, inventory_path)
+        self.assertFalse((self.fixture.replacement / "S3/agent/committed_then_removed.py").exists())
+        self.assertEqual(self.fixture.replacement_stage_git("S3", "rev-parse", "HEAD"), saved_head)
+
 
 if __name__ == "__main__":
     unittest.main()
