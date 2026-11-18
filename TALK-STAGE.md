@@ -10,27 +10,28 @@ SHA-256 `35bc9bb6f79d8f15b870e8629f686cb388e1400675d0a2416bec3212ac44912c`.
 The score attempt is `ce3e3a4a-ac3d-42a5-bcad-e7125a21127d`.
 
 Set `PHASE22_PRIVATE_ROOT` outside this checkout and export
-`PHASE22_INPUT_INDEX` to the private session index. Set
-`PHASE22_AUDIENCE_ARCHIVE` to the verified portable
-`phase22-session-a-audience-full.tar.gz`. The archive root contains the
-matching S2 run, case, bundle, evaluator, capture receipt, and `SHA256SUMS`;
-no internal session path is assumed.
+`PHASE22_INPUT_INDEX` to the private session index. Maintained preparation
+already provides the verified `asset_extract` directory and
+`PHASE22_ASSET_SHA256` from `session-audience-full-final-s3-receipt.json`.
+The extraction contains the matching S2 run, case, bundle, evaluator, and
+capture receipt; no archive filename or full-root checksum scan is required.
 
 ```sh
 uv sync --project agent --locked
 uv sync --offline --project agent --locked
 mkdir -p "$PHASE22_PRIVATE_ROOT/s2"
-asset_extract="$(mktemp -d "$PHASE22_PRIVATE_ROOT/s2/archive.XXXXXX")"
-tar -xzf "$PHASE22_AUDIENCE_ARCHIVE" -C "$asset_extract"
-(cd "$asset_extract" && sha256sum -c SHA256SUMS)
+: "${asset_extract:?run maintained asset preparation first}"
+: "${PHASE22_ASSET_SHA256:?read from session-audience-full-final-s3-receipt.json}"
+test -d "$asset_extract"
+test -s "$asset_extract/s2/run/e3f934af-6af9-42aa-ac78-b315133e1571/execution.json"
+test -s "$asset_extract/prepared/denial.frozen.json"
+test -s "$asset_extract/prepared/denial.json"
+printf 'Using verified Phase 22 asset %s\n' "$PHASE22_ASSET_SHA256"
 export PHASE22_S2_RUN="$asset_extract/s2/run/e3f934af-6af9-42aa-ac78-b315133e1571"
 export PHASE22_S2_CAPTURE_RECEIPT="$asset_extract/s2/capture-receipt.json"
 export PHASE22_REVIEWED_CASE="$asset_extract/prepared/denial.frozen.json"
 export PHASE22_SOURCE_BUNDLE="$asset_extract/prepared/denial.json"
 export PHASE18_EVALUATOR="$asset_extract/s2/evaluator.json"
-printf '%s  %s\n' \
-  8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8 \
-  "$PHASE22_SOURCE_BUNDLE" | sha256sum -c -
 uv run --offline --project agent --locked python -m py_compile \
   agent/evaluate_case.py agent/deterministic_checks.py agent/agentcore_evaluation.py
 python -m json.tool talk/stage.json >/dev/null

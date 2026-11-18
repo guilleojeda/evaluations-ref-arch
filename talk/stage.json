@@ -30,9 +30,10 @@
   "inputs": {
     "kind": "saved-faulty-execution-and-matching-review",
     "privateIndexEnv": "PHASE22_INPUT_INDEX",
-    "portableArchive": {
-      "env": "PHASE22_AUDIENCE_ARCHIVE",
-      "archiveSha256": "87447304deb0f8617434d8dcd6c530e20e7425035024e8cefb7db9340402d032",
+    "asset": {
+      "rootVariable": "asset_extract",
+      "sha256Env": "PHASE22_ASSET_SHA256",
+      "sessionId": "phase22-session-a-audience-full-final",
       "run": "s2/run/e3f934af-6af9-42aa-ac78-b315133e1571",
       "case": "prepared/denial.frozen.json",
       "bundle": "prepared/denial.json",
