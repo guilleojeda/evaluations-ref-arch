@@ -1066,9 +1066,8 @@ jobs:
           manifest_sha256="$(jq -er '.reviewManifestSha256' "$QUALIFICATION_PATH")"
           review_path="$RUNNER_TEMP/phase20-private-review.json"
           aws s3api get-object --bucket "$review_bucket" --key "$review_key" "$review_path" >/dev/null
-          jq -e --arg digest "$manifest_sha256" \
-            '.manifestSha256 == $digest and (.caseIdentities | length) == 3 and (.reportIdentities | length) == 3' \
-            "$review_path" >/dev/null
+          jq -e --arg digest "$manifest_sha256" --slurpfile pointer agent/qualification-input.json \
+            -f scripts/verify-review-roster.jq "$review_path" >/dev/null
       - name: Publish only the safe qualification handoff
         id: receipt
         if: >-
