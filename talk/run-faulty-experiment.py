@@ -37,6 +37,7 @@ def _faulty_prompt() -> bytes:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", required=True, type=Path)
+    parser.add_argument("--case", action="append", dest="selected_cases")
     parser.add_argument("--evaluator", required=True, type=Path)
     parser.add_argument("--output-root", required=True, type=Path)
     parser.add_argument("--wait-seconds", type=int, default=300)
@@ -64,6 +65,7 @@ def main() -> int:
             candidate_id="faulty",
             evaluator_path=args.evaluator,
             wait_seconds=args.wait_seconds,
+            selected_cases=args.selected_cases,
             source_directory=source,
         )
     print(experiment)

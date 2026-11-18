@@ -10,25 +10,31 @@ suite. It is independent of S3 unless the presenter explicitly selects
 semantic prompt SHA-256
 `0f8d10ce6f46302a00dbe60cb29ebfeb4212627000c78b3529e6e0c7696ff425`.
 
-Set `PHASE22_PRIVATE_ROOT` outside this checkout and export
-`PHASE22_INPUT_INDEX` to the private session input index. The index must resolve
-`PHASE18_SUITE`, `PHASE18_EVALUATOR`, `PHASE18_EXPERIMENTS`, and
+Set `PHASE22_PRIVATE_ROOT` to the private handoff directory and export
+`PHASE22_INPUT_INDEX` to its input index. The index is authoritative and must
+resolve `PHASE18_SUITE`, `PHASE18_EVALUATOR`, `PHASE18_EXPERIMENTS`, and
 `PHASE18_BASELINE_EXPERIMENTS` to private paths outside the checkout. A
 continued run may additionally use `PHASE22_S3_RUN`; all paths remain private.
 
-The presenter input index maps the reviewed denial pair to
-`stage-assets-full/session-a/s2/case.frozen.json` and
-`stage-assets-full/session-a/s2/bundle.json` (case SHA-256
-`cb1480066a46f258ee8d9e27355d50b9bd05f171ee9ef84a169989f72af5e18d`, bundle
-SHA-256 `8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8`).
-The files remain private and are never copied into this checkout.
+The carried reviewed denial pair has case identity
+`cb1480066a46f258ee8d9e27355d50b9bd05f171ee9ef84a169989f72af5e18d` and bundle
+SHA-256 `8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8`.
+The private index chooses physical locations; no session directory is assumed
+and files are never copied into this checkout.
 
 ```sh
+uv sync --project agent --locked
 uv sync --offline --project agent --locked
 uv run --offline --project agent --locked python -m py_compile \
   agent/prompt.py agent/development_experiment.py agent/strands_evaluators.py
 python -m json.tool talk/stage.json >/dev/null
 ```
+
+For an online run, use the approved ADOT environment block in
+[the S2 capture instructions](agent/README.md#run-and-score-the-captured-baseline-s2)
+before invoking `opentelemetry-instrument`. It sets the trace destination and
+identity checks required by the runner; no telemetry credentials belong in the
+input index.
 
 The repaired prompt is already present; do not apply the repair patch a second
 time. To obtain a matching faulty baseline for this exact suite, use the
@@ -51,14 +57,32 @@ snapshotted at launch.
 ## Run the native experiment
 
 The suite must contain the three reviewed case IDs, their source bundles and
-cutoffs, and the same pinned Sonnet 4.6 evaluator used by S2/S3. Run the full
-suite from a clean stage workspace:
+cutoffs, and the same pinned Sonnet 4.6 evaluator used by S2/S3. Preserve the
+full suite file and its digest; do not silently replace it with a focused case.
+Run the full suite from a clean stage workspace:
 
 ```sh
 uv run --project agent --locked opentelemetry-instrument \
   python agent/development_experiment.py run \
   --suite "$PHASE18_SUITE" --candidate repaired \
   --evaluator "$PHASE18_EVALUATOR" --output-root "$PHASE18_EXPERIMENTS"
+```
+
+For a carried one-case rehearsal, select one case explicitly and use a separate
+private output root. This is supplementary feedback, not a full-suite result;
+the matching faulty helper accepts the same repeated `--case` option:
+
+```sh
+export PHASE18_FOCUSED_EXPERIMENTS="$PHASE22_PRIVATE_ROOT/s4-focused"
+export PHASE22_CASE_ID="<one case ID from PHASE18_SUITE>"
+uv run --project agent --locked python talk/run-faulty-experiment.py \
+  --suite "$PHASE18_SUITE" --case "$PHASE22_CASE_ID" \
+  --evaluator "$PHASE18_EVALUATOR" \
+  --output-root "$PHASE18_FOCUSED_EXPERIMENTS"
+uv run --project agent --locked opentelemetry-instrument \
+  python agent/development_experiment.py run \
+  --suite "$PHASE18_SUITE" --case "$PHASE22_CASE_ID" --candidate repaired \
+  --evaluator "$PHASE18_EVALUATOR" --output-root "$PHASE18_FOCUSED_EXPERIMENTS"
 ```
 
 Inspect and compare the saved native report offline:
