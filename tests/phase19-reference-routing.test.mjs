@@ -170,6 +170,12 @@ test('normal agent publication is structurally separate from the one-time refere
   requireMatch(setup, /if: .*reference[-_]setup/, 'reference setup must have an explicit dispatch-mode guard');
   requireMatch(setup, /scripts\/[A-Za-z0-9_-]*reference[A-Za-z0-9_-]*\.(?:py|mjs|sh)/i,
     'reference setup must use a dedicated fixed-reference helper');
+  requireMatch(setup, /endpoint_collection_arn=.*runtime-endpoint\/\*[\s\S]*CreateAgentRuntimeEndpoint[\s\S]*Resource:\$endpoint_collection/,
+    'reference setup must scope endpoint creation to the designated Runtime endpoint collection');
+  requireMatch(setup, /CreateAgentRuntimeEndpoint[\s\S]*Resource:\[\$runtime,\$endpoint\]/,
+    'reference setup must retain the designated Runtime and concrete endpoint create scope required by the service');
+  requireMatch(setup, /GetAgentRuntimeEndpoint[\s\S]*UpdateAgentRuntimeEndpoint[\s\S]*Resource:\$endpoint/,
+    'reference setup must retain concrete faulty endpoint scope for read/update');
   requireMatch(setup, /status\s*==\s*["']ready["'][\s\S]*status\s*==\s*["']partial["']|status\s*==\s*["']partial["'][\s\S]*status\s*==\s*["']ready["']/,
     'reference setup must accept a verified recoverable partial preflight for retirement to classify');
   requireAbsent(setup, /github\.sha|inputs\.(?:component|rotation_from_generation|rotation_to_generation)|rotation_(?:from|to)|--(?:candidate|endpoint|runtime|sha|uri)/i,

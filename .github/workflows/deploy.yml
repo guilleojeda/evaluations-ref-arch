@@ -508,6 +508,7 @@ jobs:
             change_set_arn="arn:aws:cloudformation:${AWS_REGION}:${AWS_ACCOUNT_ID}:changeSet/*/*"
             runtime_arn="arn:aws:bedrock-agentcore:${AWS_REGION}:${AWS_ACCOUNT_ID}:runtime/IncidentTriageDemoAgent-??????????"
             endpoint_arn="${runtime_arn}/runtime-endpoint/faulty"
+            endpoint_collection_arn="${runtime_arn}/runtime-endpoint/*"
             adapter_arn="arn:aws:lambda:${AWS_REGION}:${AWS_ACCOUNT_ID}:function:IncidentTriageDemoAlarmAdapter"
             table_arn="arn:aws:dynamodb:${AWS_REGION}:${AWS_ACCOUNT_ID}:table/IncidentTriageDemoControllerRun"
             bucket_arn="arn:aws:s3:::${PHASE0_ASSET_BUCKET}"
@@ -520,6 +521,7 @@ jobs:
               --arg changeset "$change_set_arn" \
               --arg runtime "$runtime_arn" \
               --arg endpoint "$endpoint_arn" \
+              --arg endpoint_collection "$endpoint_collection_arn" \
               --arg adapter "$adapter_arn" \
               --arg table "$table_arn" \
               --arg objects "$reference_objects" \
@@ -530,6 +532,7 @@ jobs:
                 {Effect:"Allow",Action:["cloudformation:DescribeStacks","cloudformation:ListStackResources","cloudformation:GetTemplate","cloudformation:DescribeChangeSet","cloudformation:CreateChangeSet","cloudformation:ExecuteChangeSet"],Resource:[$stack,$changeset]},
                 {Effect:"Allow",Action:["s3:GetObject","s3:GetObjectVersion"],Resource:$objects},
                 {Effect:"Allow",Action:["bedrock-agentcore:GetAgentRuntime","bedrock-agentcore:UpdateAgentRuntime","bedrock-agentcore:CreateAgentRuntimeEndpoint","bedrock-agentcore:GetAgentRuntimeEndpoint","bedrock-agentcore:UpdateAgentRuntimeEndpoint"],Resource:[$runtime,$endpoint]},
+                {Effect:"Allow",Action:"bedrock-agentcore:CreateAgentRuntimeEndpoint",Resource:$endpoint_collection},
                 {Effect:"Allow",Action:"bedrock-agentcore:ListAgentRuntimeVersions",Resource:"*"},
                 {Effect:"Allow",Action:["lambda:GetFunctionConfiguration","lambda:UpdateFunctionConfiguration"],Resource:$adapter},
                 {Effect:"Allow",Action:["dynamodb:GetItem","dynamodb:PutItem"],Resource:$table},
