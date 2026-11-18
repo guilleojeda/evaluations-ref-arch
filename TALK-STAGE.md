@@ -67,6 +67,12 @@ the S3 runner:
 ```sh
 : "${PHASE22_S3_RUN:?run the fresh repaired S3 command first}"
 test -s "$PHASE22_S3_RUN/execution.json"
+case "$PHASE22_S3_RUN" in
+  "$asset_extract"/s3/run/*)
+    echo "archived S3 runs are offline-show only; use the current fresh output" >&2
+    exit 2
+    ;;
+esac
 ```
 
 ```sh
