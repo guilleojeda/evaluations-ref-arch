@@ -25,6 +25,43 @@ bytes. The checked release verifies the Runtime and adapter packages. The
 Phase 19 reference operation finalizes the publisher-owned endpoint and
 adapter attestation after MMDSv2 and the endpoint version have been read back.
 
+## Open a prepared Phase 22 stage
+
+The repository's [talk preparation runbook](../docs/preparation.md) owns the
+Codespace preflight, checkpoint/session inputs, six editable worktrees and
+replacement-browser archive. From the repository root, use the maintained
+checkpoint map and private session input:
+
+Each performance must set a new non-empty `PHASE22_SESSION_ID` before the
+runbook invokes `scripts/talk-inputs.py --session-id`. Reusing the same verified
+asset archive is allowed; reusing the prior performance identity is not.
+
+```sh
+python3 scripts/talk-session.py prepare \
+  --checkpoints "$PHASE22_CHECKPOINTS" \
+  --session "$PHASE22_SESSION" \
+  --directory "$PHASE22_SESSION_ROOT"
+python3 scripts/talk-session.py status \
+  --directory "$PHASE22_SESSION_ROOT" --stage S3
+```
+
+Direct entry does not require earlier stages. For example, an independently
+prepared S3 input uses only its pinned generation and private session file:
+
+```sh
+python3 scripts/talk-session.py prepare \
+  --checkpoints "$PHASE22_S3_CHECKPOINTS" \
+  --session "$PHASE22_S3_SESSION" \
+  --directory "$PHASE22_S3_ROOT" --stage S3
+```
+
+Preparation/status are read-only with respect to AWS and evaluation services;
+they do not run a model, send application traffic, select an endpoint, deploy,
+or replace a dirty workspace. S5 is the only stage that checks out the
+qualified `demo-deploy` branch. Use `save`/`restore` with an explicit private
+inventory to preserve selected edits, inputs and results; never archive
+credentials, Git metadata, virtual environments or build caches.
+
 ## Prepare the reviewed faulty reference (Phase 19)
 
 The named `faulty` publication is a publisher-owned fixture, not an ordinary
