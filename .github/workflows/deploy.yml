@@ -516,6 +516,7 @@ jobs:
             runtime_role_arn="arn:aws:iam::${AWS_ACCOUNT_ID}:role/IncidentTriageDemoAgentRuntimeRole"
             lambda_key_arn="arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT_ID}:key/9d894f12-dc33-4332-bb3e-df489928914b"
             bootstrap_key_arn="arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT_ID}:key/b292b95c-709f-42c6-aa42-b934ba2c6f07"
+            table_key_arn="arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT_ID}:key/2a020640-e95b-4bec-8ae7-3f6d9fcb8e0d"
             reference_policy="$(jq -cn \
               --arg stack "$stack_arn" \
               --arg changeset "$change_set_arn" \
@@ -528,17 +529,22 @@ jobs:
               --arg runtime_role "$runtime_role_arn" \
               --arg lambda_key "$lambda_key_arn" \
               --arg bootstrap_key "$bootstrap_key_arn" \
+              --arg table_key "$table_key_arn" \
               '{Version:"2012-10-17",Statement:[
                 {Effect:"Allow",Action:["cloudformation:DescribeStacks","cloudformation:ListStackResources","cloudformation:GetTemplate","cloudformation:DescribeChangeSet","cloudformation:CreateChangeSet","cloudformation:ExecuteChangeSet"],Resource:[$stack,$changeset]},
                 {Effect:"Allow",Action:["s3:GetObject","s3:GetObjectVersion"],Resource:$objects},
-                {Effect:"Allow",Action:["bedrock-agentcore:GetAgentRuntime","bedrock-agentcore:UpdateAgentRuntime","bedrock-agentcore:CreateAgentRuntimeEndpoint","bedrock-agentcore:GetAgentRuntimeEndpoint","bedrock-agentcore:UpdateAgentRuntimeEndpoint"],Resource:[$runtime,$endpoint]},
+                {Effect:"Allow",Action:["bedrock-agentcore:GetAgentRuntime*","bedrock-agentcore:UpdateAgentRuntime*","bedrock-agentcore:CreateAgentRuntimeEndpoint"],Resource:[$runtime,$endpoint]},
                 {Effect:"Allow",Action:"bedrock-agentcore:CreateAgentRuntimeEndpoint",Resource:$endpoint_collection},
                 {Effect:"Allow",Action:"bedrock-agentcore:ListAgentRuntimeVersions",Resource:"*"},
                 {Effect:"Allow",Action:["lambda:GetFunctionConfiguration","lambda:UpdateFunctionConfiguration"],Resource:$adapter},
                 {Effect:"Allow",Action:["dynamodb:GetItem","dynamodb:PutItem"],Resource:$table},
                 {Effect:"Allow",Action:"iam:PassRole",Resource:$runtime_role},
-                {Effect:"Allow",Action:["kms:Encrypt","kms:Decrypt"],Resource:[$lambda_key,$bootstrap_key]}
+                {Effect:"Allow",Action:["kms:Encrypt","kms:Decrypt"],Resource:[$lambda_key,$bootstrap_key,$table_key]}
               ]}')"
+            if (( ${#reference_policy} >= 2048 )); then
+              echo "reference session policy is ${#reference_policy} bytes; STS permits at most 2047" >&2
+              exit 1
+            fi
             credentials="$(aws sts assume-role --role-arn "$REFERENCE_DEPLOY_ROLE_ARN" \
               --role-session-name "phase19-reference-${GITHUB_RUN_ID}" --duration-seconds 3600 \
               --policy "$reference_policy" --query Credentials --output json)"

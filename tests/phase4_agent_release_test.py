@@ -361,6 +361,7 @@ class ReleaseTemplateTests(unittest.TestCase):
                 self.assertFalse(any(fnmatchcase(context or "", value) for value in allowed))
         self.assertEqual([
             "arn:aws:kms:us-east-1:027224425948:key/b292b95c-709f-42c6-aa42-b934ba2c6f07", environment_key,
+            "arn:aws:kms:us-east-1:027224425948:key/2a020640-e95b-4bec-8ae7-3f6d9fcb8e0d",
         ], statements["DenyDecryptOutsideBootstrapS3Key"]["NotResource"])
         self.assertEqual([
             "arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/*.json",
@@ -401,6 +402,7 @@ class ReleaseTemplateTests(unittest.TestCase):
             "PublishInventoryReleaseManifest",
             "ReadAgentReference",
             "PublishFaultyRecord",
+            "DecryptFaultyControllerRecord",
         ]:
             self.assertNotIn(sid, statements)
         oidc = template["Resources"]["GitHubDeployRole"]["Properties"]["Policies"]
@@ -478,6 +480,20 @@ class ReleaseTemplateTests(unittest.TestCase):
         self.assertEqual(
             {"AGENT_PUBLICATION#faulty"},
             set(managed_statements["PublishFaultyRecord"]["Condition"]["ForAllValues:StringEquals"]["dynamodb:LeadingKeys"]),
+        )
+        ddb_decrypt = managed_statements["DecryptFaultyControllerRecord"]
+        self.assertEqual("kms:Decrypt", ddb_decrypt["Action"])
+        self.assertEqual(
+            "arn:aws:kms:us-east-1:027224425948:key/2a020640-e95b-4bec-8ae7-3f6d9fcb8e0d",
+            ddb_decrypt["Resource"],
+        )
+        self.assertEqual(
+            {
+                "kms:ViaService": "dynamodb.us-east-1.amazonaws.com",
+                "kms:EncryptionContext:aws:dynamodb:tableName": "IncidentTriageDemoControllerRun",
+                "kms:EncryptionContext:aws:dynamodb:subscriberId": "027224425948",
+            },
+            ddb_decrypt["Condition"]["StringEquals"],
         )
 
         guard_size = len(json.dumps(guard["Properties"]["PolicyDocument"], separators=(",", ":")))
