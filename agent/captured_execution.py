@@ -9,6 +9,7 @@ for verification and execution.
 from __future__ import annotations
 
 from contextlib import contextmanager
+import fcntl
 import hashlib
 import importlib.util
 import json
@@ -26,6 +27,7 @@ from typing import Any, Iterator, Mapping, Sequence
 
 MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 CANDIDATE_ID = "faulty"
+VALID_CANDIDATE_IDS = frozenset(("faulty", "repaired"))
 RUN_SECONDS = 240
 MAX_TOOL_CALLS = 12
 TRACE_SCOPE = "strands.telemetry.tracer"
@@ -135,17 +137,25 @@ def _copy_bytes_tree(root: Path, files: Mapping[str, bytes]) -> None:
         _write_bytes(root / name, raw)
 
 
-def _read_source_bytes() -> tuple[dict[str, bytes], dict[str, bytes]]:
+def _read_source_bytes(agent_directory: str | Path | None = None) -> tuple[dict[str, bytes], dict[str, bytes]]:
+    """Read the selected candidate source and locked dependency bytes.
+
+    The normal Runtime path uses this module's own directory.  Development
+    experiments pass an explicitly snapshotted candidate directory so the
+    experiment cannot silently fall back to the current IDE workspace.
+    """
+
+    selected_directory = Path(agent_directory) if agent_directory is not None else AGENT_DIRECTORY
     source: dict[str, bytes] = {}
     dependencies: dict[str, bytes] = {}
     for name in SOURCE_FILES:
         try:
-            source[f"agent/{name}"] = (AGENT_DIRECTORY / name).read_bytes()
+            source[f"agent/{name}"] = (selected_directory / name).read_bytes()
         except OSError as exc:
             raise ValueError(f"selected agent source is unavailable: {name}") from exc
     for name in DEPENDENCY_FILES:
         try:
-            dependencies[f"agent/{name}"] = (AGENT_DIRECTORY / name).read_bytes()
+            dependencies[f"agent/{name}"] = (selected_directory / name).read_bytes()
         except OSError as exc:
             raise ValueError(f"locked dependency input is unavailable: {name}") from exc
     return source, dependencies
@@ -252,12 +262,58 @@ def _private_directory(path: Path) -> Path:
     return path
 
 
+def acquire_operation_lock(path: str | Path) -> Any:
+    """Hold a stable POSIX lock for one active execution or score operation."""
+
+    lock_path = Path(path)
+    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    stream = lock_path.open("a+")
+    try:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+    except BaseException:
+        stream.close()
+        raise
+    return stream
+
+
+def release_operation_lock(stream: Any) -> None:
+    if stream is None:
+        return
+    try:
+        fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+    finally:
+        stream.close()
+
+
+def operation_lock_held(path: str | Path) -> bool:
+    """Probe whether another process currently owns the stable operation lock."""
+
+    lock_path = Path(path)
+    try:
+        stream = lock_path.open("rb")
+    except FileNotFoundError:
+        return False
+    try:
+        try:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return True
+        fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+        return False
+    finally:
+        stream.close()
+
+
 def run_captured_case(
     case_path: str | Path,
     bundle_path: str | Path,
     output_root: str | Path,
     *,
     model_session: Any = None,
+    candidate_id: str | None = None,
+    source_directory: str | Path | None = None,
+    trusted_runner: bool = False,
+    progress_callback: Any = None,
 ) -> Path:
     """Execute one immutable captured case and return its unique run directory.
 
@@ -267,10 +323,14 @@ def run_captured_case(
     launcher, verified before any Bedrock request is constructed.
     """
 
+    strict_manifest = candidate_id is None
+    selected_candidate = CANDIDATE_ID if candidate_id is None else candidate_id
+    if selected_candidate not in VALID_CANDIDATE_IDS:
+        raise ValueError(f"unsupported candidate ID: {selected_candidate!r}")
     provider = None
     case_bytes = _read_input(case_path, "frozen case")
     bundle_bytes = _read_input(bundle_path, "source bundle")
-    source_files, dependency_files = _read_source_bytes()
+    source_files, dependency_files = _read_source_bytes(source_directory)
 
     with tempfile.TemporaryDirectory(prefix="incident-triage-captured-snapshot-") as temporary_name:
         staging = Path(temporary_name)
@@ -281,13 +341,23 @@ def run_captured_case(
         _write_bytes(staged_case, case_bytes)
         _write_bytes(staged_bundle, bundle_bytes)
 
-        runner_path = agent_source / "captured_execution.py"
-        module_name = f"_captured_execution_snapshot_{uuid.uuid4().hex}"
-        spec = importlib.util.spec_from_file_location(module_name, runner_path)
-        if spec is None or spec.loader is None:
-            raise ValueError("captured execution snapshot cannot be loaded")
-        snapshot_module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(snapshot_module)
+        if trusted_runner:
+            # The development driver itself is already executing an accepted
+            # immutable runner snapshot.  Candidate source bytes remain the
+            # Runtime identity and are loaded by _snapshot_imports below, but
+            # an old candidate copy of this orchestration module must not
+            # replace the trusted S4 runner.
+            snapshot_module = sys.modules.get(__name__)
+            if snapshot_module is None or not callable(getattr(snapshot_module, "_run_snapshot", None)):
+                raise ValueError("trusted captured execution runner is unavailable")
+        else:
+            runner_path = agent_source / "captured_execution.py"
+            module_name = f"_captured_execution_snapshot_{uuid.uuid4().hex}"
+            spec = importlib.util.spec_from_file_location(module_name, runner_path)
+            if spec is None or spec.loader is None:
+                raise ValueError("captured execution snapshot cannot be loaded")
+            snapshot_module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(snapshot_module)
         return Path(snapshot_module._run_snapshot(
             staging=staging,
             staged_case=staged_case,
@@ -297,6 +367,9 @@ def run_captured_case(
             dependency_files=dependency_files,
             model_session=model_session,
             provider=provider,
+            candidate_id=selected_candidate,
+            strict_manifest=strict_manifest,
+            progress_callback=progress_callback,
         ))
 
 
@@ -557,6 +630,9 @@ def _run_snapshot(
     dependency_files: Mapping[str, bytes],
     model_session: Any,
     provider: Any,
+    candidate_id: str,
+    strict_manifest: bool,
+    progress_callback: Any,
 ) -> Path:
     agent_source = staging / "source" / "agent"
     with _snapshot_imports(agent_source):
@@ -564,13 +640,19 @@ def _run_snapshot(
         from deterministic_checks import check_captured_report, check_report
         from evaluation_telemetry import execution_content, interrupted_execution_content
         from investigation import MODEL_ID as SHARED_MODEL_ID, RUN_SECONDS as SHARED_RUN_SECONDS, create_agent, invoke_agent
-        from prompt import PROMPT_SHA256
+        from prompt import PROMPT_SHA256, SYSTEM_PROMPT
         from reviewed_cases import load_frozen_case
 
         if SHARED_MODEL_ID != MODEL_ID or SHARED_RUN_SECONDS != RUN_SECONDS:
             raise ValueError("shared investigation settings do not match the approved captured runner")
+        actual_prompt_sha256 = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()
+        if PROMPT_SHA256 != actual_prompt_sha256:
+            raise ValueError("prompt digest does not match the saved system prompt")
         manifest_value = _decode_json((agent_source / "agent-manifest.json").read_bytes(), "agent manifest")
-        if not isinstance(manifest_value, Mapping) or manifest_value.get("promptSha256") != PROMPT_SHA256:
+        if (
+            not isinstance(manifest_value, Mapping)
+            or (strict_manifest and manifest_value.get("promptSha256") != actual_prompt_sha256)
+        ):
             raise ValueError("packaged prompt digest does not match the source snapshot")
 
         # Validate both inputs from the copied bytes before creating a run
@@ -585,6 +667,7 @@ def _run_snapshot(
         run_dir = output_directory / execution_id
         run_dir.mkdir(mode=0o700, exist_ok=False)
         run_dir.chmod(0o700)
+        operation_lock = acquire_operation_lock(run_dir / ".owner.lock")
         _write_bytes(run_dir / "case.frozen.json", staged_case.read_bytes())
         _write_bytes(run_dir / "bundle.json", staged_bundle.read_bytes())
         _copy_bytes_tree(run_dir / "source", {**source_files, **dependency_files})
@@ -594,7 +677,7 @@ def _run_snapshot(
         manifest = _snapshot_manifest(
             source_files,
             dependency_files,
-            PROMPT_SHA256,
+            actual_prompt_sha256,
             staged_case.read_bytes(),
             staged_bundle.read_bytes(),
         )
@@ -604,14 +687,14 @@ def _run_snapshot(
             "executionId": execution_id,
             "sessionId": session_id,
             "traceId": None,
-            "candidateId": CANDIDATE_ID,
+            "candidateId": candidate_id,
             "modelId": MODEL_ID,
             "originatingRunId": loaded_case["originatingRunId"],
             "caseSha256": loaded_case["caseSha256"],
             "bundleSha256": loaded_case["bundleSha256"],
             "referenceTime": loaded_case["referenceTime"],
             "sourceSha256": source_sha256,
-            "promptSha256": PROMPT_SHA256,
+            "promptSha256": actual_prompt_sha256,
             "dependencySha256": dependency_sha256,
             "reportSha256": None,
         }
@@ -638,6 +721,8 @@ def _run_snapshot(
             "usage": {},
         }
         _write_json_atomic(run_dir / "execution.json", record)
+        if callable(progress_callback):
+            progress_callback(run_dir, record)
 
         timer: Timer | None = None
         cancel_signal = Event()
@@ -671,15 +756,26 @@ def _run_snapshot(
                 "incident.case_sha256": loaded_case["caseSha256"],
                 "incident.bundle_sha256": loaded_case["bundleSha256"],
                 "incident.reference_time": loaded_case["referenceTime"],
-                "incident.candidate_id": CANDIDATE_ID,
+                "incident.candidate_id": candidate_id,
                 "incident.source_sha256": source_sha256,
-                "incident.prompt_sha256": PROMPT_SHA256,
+                "incident.prompt_sha256": actual_prompt_sha256,
                 "incident.dependency_sha256": dependency_sha256,
                 "gen_ai.request.model": MODEL_ID,
             }
             trace_attributes = {**span_attributes}
             from opentelemetry import baggage
             from opentelemetry.context import attach, detach
+
+            # Captured evidence calls are part of the persisted ledger and
+            # must retain model-request order when the budget rejects the
+            # final call.  The hosted Runtime keeps the shared factory's
+            # native default executor; only this captured path is serialized.
+            from strands import Agent
+            from strands.tools.executors.sequential import SequentialToolExecutor
+
+            def captured_agent_class(**kwargs: Any) -> Any:
+                kwargs["tool_executor"] = SequentialToolExecutor()
+                return Agent(**kwargs)
 
             baggage_token = attach(baggage.set_baggage("session.id", session_id))
             try:
@@ -691,6 +787,7 @@ def _run_snapshot(
                     trace_attributes=trace_attributes,
                     model_session=model_session,
                     capture_model_requests=True,
+                    agent_class=captured_agent_class,
                 )
                 remaining = max(0.0, deadline - time.monotonic())
                 if remaining <= 0:
@@ -823,6 +920,7 @@ def _run_snapshot(
                 timer.cancel()
             if observer is not None:
                 observer.shutdown()
+            release_operation_lock(operation_lock)
 
 
 def _load_record_json(path: Path, label: str) -> Any:
@@ -964,11 +1062,18 @@ def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any],
     if not isinstance(record, dict):
         raise ValueError("execution record must be an object")
     if record.get("status") == "running":
-        # A killed process cannot write its terminal update.  Never treat its
-        # durable running marker as a completed or scoreable execution.
-        record = dict(record)
-        record["status"] = "interrupted"
-        record.setdefault("failure", {"type": "ProcessInterrupted", "message": "run ended before a terminal record was saved"})
+        if operation_lock_held(directory / ".owner.lock"):
+            loaded_case = load_frozen_case(directory / "case.frozen.json", directory / "bundle.json")
+            return record, loaded_case, []
+        # The owner may have written the terminal record immediately after
+        # the first read. Re-read before classifying a stale running marker.
+        latest = _load_record_json(directory / "execution.json", "execution record")
+        if latest.get("status") != "running":
+            record = latest
+        else:
+            record = dict(record)
+            record["status"] = "interrupted"
+            record.setdefault("failure", {"type": "ProcessInterrupted", "message": "run ended before a terminal record was saved"})
     if record.get("status") not in {"complete", "interrupted"}:
         raise ValueError("execution record has an unsupported status")
 
@@ -982,7 +1087,7 @@ def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any],
     }
     if not required_identity <= set(identity):
         raise ValueError("execution identity is incomplete")
-    if identity.get("candidateId") != CANDIDATE_ID or identity.get("modelId") != MODEL_ID:
+    if identity.get("candidateId") not in VALID_CANDIDATE_IDS or identity.get("modelId") != MODEL_ID:
         raise ValueError("execution candidate or model identity is unsupported")
 
     manifest = record.get("manifest")
@@ -1094,7 +1199,14 @@ def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any],
             raise ValueError("interrupted report digest does not match the execution identity")
     if record["status"] == "interrupted":
         native_path = directory / "strands.native-spans.json"
-        if native_path.is_file() and not native_path.is_symlink():
+        # A process can die after atomically writing spans but before stamping
+        # their digest into execution.json. Those spans are orphaned and must
+        # not be treated as authenticated interrupted evidence.
+        if (
+            isinstance(record.get("nativeSpansSha256"), str)
+            and native_path.is_file()
+            and not native_path.is_symlink()
+        ):
             native = _load_record_json(native_path, "interrupted native Strands spans")
             if not isinstance(native, Mapping) or not isinstance(native.get("spans"), list):
                 raise ValueError("interrupted native Strands span file is malformed")

@@ -222,6 +222,11 @@ class S3WorkspaceAcceptance(unittest.TestCase):
             target = checkout / "agent" / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(AGENT / name, target)
+        faulty_prompt = subprocess.check_output(
+            ["git", "show", "bd6f77df97933e3e675ee9c2a699db16e29ea1b6:agent/prompt.py"],
+            cwd=ROOT,
+        )
+        (checkout / "agent/prompt.py").write_bytes(faulty_prompt)
         subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
         subprocess.run(["git", "add", "agent"], cwd=checkout, check=True)
         subprocess.run(
@@ -238,7 +243,7 @@ class S3WorkspaceAcceptance(unittest.TestCase):
         )
         self.assertEqual(applied.returncode, 0, applied.stderr)
         repaired_prompt = (checkout / "agent/prompt.py").read_bytes()
-        self.assertNotEqual(repaired_prompt, (AGENT / "prompt.py").read_bytes())
+        self.assertNotEqual(repaired_prompt, faulty_prompt)
         prompt_spec = importlib.util.spec_from_file_location(
             "phase17_prepared_prompt", checkout / "agent/prompt.py"
         )
