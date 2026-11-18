@@ -398,6 +398,116 @@ class CapturedEvidenceTests(unittest.TestCase):
             # on event time would incorrectly expose it at the first cutoff.
             self.assertIn("EventTime", rendered(second_history))
 
+    def test_replay_omits_later_archive_metadata_only_from_model_results(self):
+        sources = fixture_sources()
+        for source in sources.values():
+            source["acquiredAt"] = CAPTURE_OBSERVED_AT
+        sources["logs"]["errors"] = ["retained source warning"]
+        sources["logs"]["gaps"] = ["retained coverage note"]
+        sources["logs"]["observations"].append({
+            "resource": "inventory",
+            "eventId": "log-without-availability",
+            "timestamp": "2026-11-13T10:01:30.000Z",
+            "fields": {"requestId": "request-without-availability"},
+        })
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "capture.json"
+            write_fixture(path, sources)
+            frozen_bytes = path.read_bytes()
+            tools = self.load(path, CUTOFF_ONE)
+            results = {
+                "search_logs": tools.search_logs(resource="inventory", start=START, end=END),
+                "read_metrics": tools.read_metrics(
+                    resource="inventory", start=START, end=END, metric="Throttles", period_seconds=60,
+                ),
+                "read_configuration": tools.read_configuration(target="inventory"),
+                "read_change_history": tools.read_change_history(resource="inventory", start=START, end=END),
+            }
+
+            for name, result in results.items():
+                with self.subTest(tool=name):
+                    self.assertNotIn("observedAt", result)
+                    self.assertNotIn("acquiredAt", result)
+                    self.assertEqual(CUTOFF_ONE, result["referenceTime"])
+                    self.assertIn("window", result)
+
+            logs = results["search_logs"]
+            self.assertIn("log-early", rendered(logs))
+            self.assertNotIn("log-without-availability", rendered(logs))
+            self.assertIn("retained source warning", logs["errors"])
+            self.assertIn("retained coverage note", logs["gaps"])
+            self.assertIn("matching logs include records without proven availability", " ".join(logs["gaps"]))
+            log_row = next(item for item in logs["observations"] if item["eventId"] == "log-early")
+            self.assertIn("timestamp", log_row)
+            self.assertIn("ingestionTime", log_row)
+            self.assertIn("availableAt", log_row)
+
+            metrics = results["read_metrics"]
+            metric_row = metrics["observations"][0]
+            self.assertIn("Timestamps", metric_row)
+            self.assertIn("availability", metric_row)
+            self.assertIn("2026-11-13T10:01:00.000Z", metric_row["Timestamps"])
+
+            configuration = results["read_configuration"]
+            self.assertNotIn("sourceObservedAt", configuration["query"])
+            config_row = configuration["observations"][0]
+            self.assertIn("observedAt", config_row)
+            self.assertIn("availableAt", config_row)
+
+            history = results["read_change_history"]
+            history_row = history["observations"][0]
+            self.assertIn("EventTime", history_row)
+            self.assertIn("availableAt", history_row)
+
+            # The retained query ledger is faithful to the response the model
+            # saw, while the verified bundle bytes remain unchanged.
+            audit = {item["tool"]: item["result"] for item in tools._query_results}
+            for name in results:
+                with self.subTest(audit_tool=name):
+                    self.assertEqual(results[name], audit[name])
+                    self.assertNotIn("observedAt", audit[name])
+                    self.assertNotIn("acquiredAt", audit[name])
+            self.assertNotIn("sourceObservedAt", audit["read_configuration"]["query"])
+            self.assertEqual(frozen_bytes, path.read_bytes())
+
+            # The projection is strictly later-than-reference; metadata at
+            # the reviewed cutoff remains available as a valid archive bound.
+            boundary_sources = fixture_sources()
+            boundary_sources["configuration"]["observedAt"] = CUTOFF_ONE
+            boundary_sources["configuration"]["acquiredAt"] = CUTOFF_ONE
+            boundary_path = Path(directory) / "boundary.json"
+            write_fixture(boundary_path, boundary_sources)
+            boundary = self.load(boundary_path, CUTOFF_ONE).read_configuration(target="inventory")
+            self.assertEqual(CUTOFF_ONE, boundary["observedAt"])
+            self.assertEqual(CUTOFF_ONE, boundary["acquiredAt"])
+            self.assertEqual(CUTOFF_ONE, boundary["query"]["sourceObservedAt"])
+
+    def test_replay_uses_nanoseconds_for_row_availability_while_projecting_archive_metadata(self):
+        sources = fixture_sources()
+        sources["logs"]["observations"].append({
+            "resource": "inventory",
+            "eventId": "log-one-nanosecond-late",
+            "timestamp": "2026-11-13T10:04:00.000Z",
+            "availableAt": "2026-11-13T10:05:00.000000001Z",
+            "fields": {"requestId": "request-one-nanosecond-late"},
+        })
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "capture.json"
+            write_fixture(path, sources)
+            first = self.load(path, CUTOFF_ONE)
+            second = self.load(path, "2026-11-13T10:05:00.000000001Z")
+
+            first_result = first.search_logs(resource="inventory", start=START, end=END)
+            second_result = second.search_logs(resource="inventory", start=START, end=END)
+            self.assertNotIn("log-one-nanosecond-late", rendered(first_result))
+            self.assertIn("log-one-nanosecond-late", rendered(second_result))
+            self.assertNotIn("observedAt", first_result)
+            self.assertNotIn("acquiredAt", first_result)
+            row = next(item for item in second_result["observations"] if item["eventId"] == "log-one-nanosecond-late")
+            self.assertEqual("2026-11-13T10:05:00.000000001Z", row["availableAt"])
+
     def test_log_query_enforces_resource_scope_and_the_live_structured_predicate(self):
         sources = fixture_sources()
         sources["logs"]["scope"].append("gateway")
@@ -546,6 +656,10 @@ class CapturedEvidenceTests(unittest.TestCase):
                     result = self.call(tools, tool_name, **calls[tool_name])
                     self.assertIn(result["completeness"], {"unavailable", "partial"})
                     self.assertTrue(result.get("gaps") or result.get("errors"))
+                    self.assertNotIn("observedAt", result)
+                    self.assertNotIn("acquiredAt", result)
+                    if tool_name == "read_configuration":
+                        self.assertNotIn("sourceObservedAt", result.get("query", {}))
 
             empty = fixture_sources()
             empty["logs"] = source_entry(["inventory"], [], completeness="complete")

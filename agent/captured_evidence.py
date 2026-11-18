@@ -494,7 +494,35 @@ class CapturedEvidenceTools(EvidenceTools):
             result["gaps"] = list(dict.fromkeys(all_gaps))
         if source.get("completeness") != "complete" or all_errors or all_gaps or truncated:
             result["completeness"] = "unavailable" if not observations and source.get("completeness") == "unavailable" else "partial"
-        return self._bound_result(self._sanitize(result))
+        bounded = self._bound_result(self._sanitize(result))
+        return self._project_model_result(bounded)
+
+    def _project_model_result(self, result: dict[str, Any]) -> dict[str, Any]:
+        """Omit later archive metadata from the already-bounded model result.
+
+        ``result`` is a fresh sanitized projection, so this preserves the
+        existing row truncation and leaves the verified source bundle intact.
+        Per-row timestamps, availability, windows, gaps, errors and references
+        are evidence semantics and therefore remain visible.
+        """
+
+        for field in ("observedAt", "acquiredAt"):
+            if self._is_post_reference(result.get(field)):
+                result.pop(field, None)
+
+        query = result.get("query")
+        if isinstance(query, dict):
+            if self._is_post_reference(query.get("sourceObservedAt")):
+                query.pop("sourceObservedAt", None)
+        return result
+
+    def _is_post_reference(self, value: Any) -> bool:
+        if value is None:
+            return False
+        try:
+            return _epoch_nanoseconds(value) > _epoch_nanoseconds(self.reference_time)
+        except (TypeError, ValueError, OverflowError):
+            return False
 
     def _coverage_gap(self, source: Mapping[str, Any], requested: tuple[str, str]) -> list[str]:
         try:
