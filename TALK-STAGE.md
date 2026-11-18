@@ -61,7 +61,7 @@ case "$PHASE22_SUITE" in
     case_rel=staging/cases/audience-denial.frozen.json
     bundle_rel=staging/bundles/audience-denial.json
     ;;
-  *) echo "PHASE22_GATE_SELECTION must be stock or carried" >&2; exit 2 ;;
+  *) echo "PHASE22_SUITE must be stock or carried" >&2; exit 2 ;;
 esac
 test -s "$gate_archive"
 tar -xzf "$gate_archive" -C "$gate_extract"
