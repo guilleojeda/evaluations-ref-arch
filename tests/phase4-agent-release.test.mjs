@@ -15,12 +15,12 @@ const checkedTemplate = { Resources: {
   RunTable: { Type: 'AWS::DynamoDB::Table', Properties: { TableName: 'IncidentTriageDemoAgentRun' }, DeletionPolicy: 'Retain', UpdateReplacePolicy: 'Retain' },
   AdapterLogGroupABC: { Type: 'AWS::Logs::LogGroup', Properties: { LogGroupName: '/aws/lambda/IncidentTriageDemoAlarmAdapter' }, DeletionPolicy: 'Retain', UpdateReplacePolicy: 'Retain' },
 } };
-function runGuard(changes, overrides = {}, template = checkedTemplate) {
+function runGuard(changes, overrides = {}, template = checkedTemplate, flags = []) {
   const directory = mkdtempSync(join(tmpdir(), 'phase4-agent-guard-'));
   try {
     const path = join(directory, 'checked-template.json');
     writeFileSync(path, JSON.stringify(template));
-    return spawnSync(process.execPath, [guard, path], { encoding: 'utf8', input: JSON.stringify({ ...description, Changes: changes, ...overrides }) });
+    return spawnSync(process.execPath, [guard, ...flags, path], { encoding: 'utf8', input: JSON.stringify({ ...description, Changes: changes, ...overrides }) });
   } finally { rmSync(directory, { recursive: true, force: true }); }
 }
 function check(action, replacement, overrides = {}, resourceOverrides = {}, template = checkedTemplate) {
@@ -32,6 +32,29 @@ test('agent release accepts retained run data and rejects removal, uncertain rep
   for (const result of [check('Remove'), check('Modify', 'True'), check('Modify', 'Conditional'), check('Modify'), check('Modify', 'False', { NextToken: 'next' }), check('Modify', 'False', { ExecutionStatus: 'OBSOLETE' }), check('Modify', 'False', { StackName: 'IncidentTriageDemoApp' })]) {
     assert.equal(result.status, 1, result.stdout + result.stderr);
   }
+});
+
+test('existing infrastructure-only reconciliation protects the published Runtime while allowing adapter changes', () => {
+  const adapter = {
+    Type: 'Resource',
+    ResourceChange: {
+      Action: 'Modify', LogicalResourceId: 'AlarmAdapter94C8F489',
+      ResourceType: 'AWS::Lambda::Function', Replacement: 'False',
+    },
+  };
+  const runtime = {
+    Type: 'Resource',
+    ResourceChange: {
+      Action: 'Modify', LogicalResourceId: 'Runtime',
+      ResourceType: 'AWS::BedrockAgentCore::Runtime', Replacement: 'False',
+    },
+  };
+  assert.equal(runGuard([adapter], {}, checkedTemplate, ['--infrastructure-only']).status, 0);
+  const rejected = runGuard([runtime], {}, checkedTemplate, ['--infrastructure-only']);
+  assert.equal(rejected.status, 1);
+  assert.match(rejected.stderr, /must not modify the publisher-owned Runtime/);
+  assert.equal(runGuard([runtime]).status, 0,
+    'the general guard remains compatible with the explicit fresh bootstrap path');
 });
 
 test('normal AWS change-set property resolution removes only the dynamic Permission false positive', () => {

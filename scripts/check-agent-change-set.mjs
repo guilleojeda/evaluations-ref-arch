@@ -16,10 +16,13 @@ const LEGACY_ENDPOINT = {
 };
 
 let checkedTemplate;
-const referenceCutover = process.argv[2] === "--reference-cutover";
-const templatePath = referenceCutover ? process.argv[3] : process.argv[2];
+const cliArgs = process.argv.slice(2);
+const referenceCutover = cliArgs.includes("--reference-cutover");
+const infrastructureOnly = cliArgs.includes("--infrastructure-only");
+const positional = cliArgs.filter((arg) => arg !== "--reference-cutover" && arg !== "--infrastructure-only");
+const templatePath = positional[0];
 try {
-  if (!templatePath || (referenceCutover && process.argv.length !== 4) || (!referenceCutover && process.argv.length !== 3)) {
+  if (!templatePath || positional.length !== 1 || (referenceCutover && infrastructureOnly)) {
     throw new Error();
   }
   checkedTemplate = JSON.parse(readFileSync(templatePath, "utf8"));
@@ -118,6 +121,15 @@ if (!description || typeof description !== "object" || Array.isArray(description
         else legacyRemovals += 1;
       } else if (logicalId === LEGACY_ENDPOINT.logicalId || resource.ResourceType === ENDPOINT_TYPE) {
         reject(`${logicalId} must not add, modify, or repin the publisher-owned endpoint`);
+      }
+
+      // Once the fixed Runtime has been published, infrastructure-only
+      // adapter/controller reconciliation may carry its bootstrap parameters
+      // but must not modify the existing Runtime. The explicit fresh fixed
+      // bootstrap does not pass this mode and may create the initial Runtime.
+      if (infrastructureOnly && logicalId === "Runtime" &&
+          resource.ResourceType === "AWS::BedrockAgentCore::Runtime" && action === "Modify") {
+        reject("infrastructure-only reconciliation must not modify the publisher-owned Runtime");
       }
 
       // Preserve the original retained-table safety rules. A table update

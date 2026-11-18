@@ -34,6 +34,7 @@ REGION = "us-east-1"
 ACCOUNT = "027224425948"
 STACK_NAME = "IncidentTriageDemoAgent"
 ADAPTER_FUNCTION_NAME = "IncidentTriageDemoAlarmAdapter"
+SELECTION_TABLE_ENV = "AGENT_SELECTION_TABLE"
 RUNTIME_VERSION_RE = re.compile(r"^[1-9][0-9]{0,4}$")
 DESCRIPTOR_PATH = Path(__file__).with_name("faulty-reference.json")
 
@@ -653,7 +654,18 @@ def _ensure_adapter(
         if expected_adapter.get("tracingMode") and config.get("TracingConfig", {}).get("Mode") != expected_adapter["tracingMode"]:
             raise RuntimeError("alarm adapter tracing differs from the fixed descriptor")
 
-    environment = {
+    # The adapter is a shared selector router after the Phase 21 cutover. A
+    # fixed-reference repeat must never repin it to ``faulty``: that would
+    # silently undo an independently selected repaired publication. Keep the
+    # legacy candidate-specific environment as a compatibility path for the
+    # one-time pre-cutover publisher fixtures; once the selection-table key is
+    # present, any mismatch is a hard error rather than a repair target.
+    selector_environment = {
+        "AGENT_RUNTIME_ARN": runtime_arn,
+        "AGENT_ALARM_ARN": descriptor["alarmArn"],
+        SELECTION_TABLE_ENV: descriptor["controller"]["tableName"],
+    }
+    legacy_environment = {
         "AGENT_RUNTIME_ARN": runtime_arn,
         "AGENT_ENDPOINT_NAME": "faulty",
         "AGENT_RUNTIME_VERSION": version,
@@ -662,17 +674,26 @@ def _ensure_adapter(
         "AGENT_ARTIFACT_SHA256": descriptor["artifact"]["sha256"],
     }
     observed = config.get("Environment", {}).get("Variables", {})
-    if observed != environment:
-        request: dict[str, Any] = {"FunctionName": function_name, "Environment": {"Variables": environment}}
-        if config.get("RevisionId"):
-            request["RevisionId"] = config["RevisionId"]
-        adapter_client.update_function_configuration(**request)
-        config = _wait_read(
-            lambda: adapter_client.get_function_configuration(FunctionName=function_name),
-            success="Successful",
-            status_key="LastUpdateStatus",
-            label="alarm adapter update",
-        )
+    if SELECTION_TABLE_ENV in observed:
+        if observed != selector_environment:
+            raise RuntimeError("alarm adapter selector environment differs from the fixed binding")
+        environment = selector_environment
+    else:
+        # Legacy source assertions and the pre-cutover migration still use a
+        # candidate-specific router. This path is intentionally one-way:
+        # selector-mode environments are never overwritten by this operation.
+        environment = legacy_environment
+        if observed != environment:
+            request: dict[str, Any] = {"FunctionName": function_name, "Environment": {"Variables": environment}}
+            if config.get("RevisionId"):
+                request["RevisionId"] = config["RevisionId"]
+            adapter_client.update_function_configuration(**request)
+            config = _wait_read(
+                lambda: adapter_client.get_function_configuration(FunctionName=function_name),
+                success="Successful",
+                status_key="LastUpdateStatus",
+                label="alarm adapter update",
+            )
     expected_function_arn = None
     if isinstance(expected_adapter, dict) and expected_adapter.get("functionArn"):
         expected_function_arn = expected_adapter["functionArn"]
@@ -750,17 +771,82 @@ def _record_matches(item: Mapping[str, Any], expected: Mapping[str, Any]) -> boo
     return all(item.get(key) == value for key, value in expected.items())
 
 
-def _ensure_record(controller: Any, descriptor: Mapping[str, Any], item: dict[str, dict[str, str]]) -> dict[str, dict[str, str]]:
+def _validate_historical_adapter_provenance(
+    existing: Mapping[str, Any],
+    expected: Mapping[str, Any],
+) -> None:
+    """Reject an incomplete historical row instead of silently repairing it.
+
+    Selector-mode maintenance may preserve adapter digest/revision values that
+    differ from the current shared router, but the values must still identify
+    a complete, fixed adapter provenance tuple. A missing digest or revision is
+    not evidence that can be rewritten by reference maintenance.
+    """
+
+    def string_attribute(name: str) -> str | None:
+        value = existing.get(name)
+        if not isinstance(value, Mapping):
+            return None
+        string_value = value.get("S")
+        return string_value if isinstance(string_value, str) else None
+
+    adapter_arn = string_attribute("adapterArn")
+    adapter_code = string_attribute("adapterCodeSha256")
+    adapter_revision = string_attribute("adapterRevisionId")
+    expected_adapter = expected.get("adapterArn")
+    expected_adapter_arn = (
+        expected_adapter.get("S")
+        if isinstance(expected_adapter, Mapping) and isinstance(expected_adapter.get("S"), str)
+        else None
+    )
+    if adapter_arn != expected_adapter_arn:
+        raise RuntimeError("existing fixed publication adapter ARN provenance is missing or invalid")
+    if adapter_code is None or not re.fullmatch(r"[0-9a-f]{64}", adapter_code):
+        raise RuntimeError("existing fixed publication adapter code provenance is missing or invalid")
+    if adapter_revision is None or not adapter_revision.strip():
+        raise RuntimeError("existing fixed publication adapter revision provenance is missing or invalid")
+
+def _ensure_record(
+    controller: Any,
+    descriptor: Mapping[str, Any],
+    item: dict[str, dict[str, str]],
+    *,
+    preserve_existing: bool = False,
+) -> dict[str, dict[str, str]]:
     table = descriptor["controller"]["tableName"]
     key = {"pk": {"S": descriptor["controller"]["pk"]}}
     existing_response = controller.get_item(TableName=table, Key=key, ConsistentRead=True)
     existing = existing_response.get("Item") or {}
     if existing and existing.get("candidateId") not in (None, item["candidateId"]):
         raise RuntimeError("fixed publication record belongs to a different candidate")
-    if not _record_matches(existing, item):
+    if existing:
+        _validate_historical_adapter_provenance(existing, item)
+    expected_readback = item
+    if existing and preserve_existing:
+        # Adapter revision/digest are historical provenance. They can differ
+        # from the current shared selector router even when the fixed faulty
+        # publication itself is unchanged. Preserve the existing row exactly
+        # after validating every fixed archive/runtime identity field. A
+        # partial or conflicting existing row is not safe to overwrite.
+        preserved_fields = {
+            key_name: value for key_name, value in item.items()
+            if key_name not in {"adapterArn", "adapterRevisionId", "adapterCodeSha256"}
+        }
+        if not _record_matches(existing, preserved_fields):
+            raise RuntimeError("existing fixed publication record conflicts with the reviewed archive")
+        expected_readback = preserved_fields
+    elif existing:
+        # Before the selector cutover the fixed publisher owned the complete
+        # legacy row, including its adapter attestation. Retain that repair
+        # behavior for the compatibility path; selector mode above is the
+        # explicit no-overwrite boundary.
+        expected_readback = item
+    if not existing or (not preserve_existing and not _record_matches(existing, item)):
         controller.put_item(TableName=table, Item=item)
     readback = controller.get_item(TableName=table, Key=key, ConsistentRead=True).get("Item") or {}
-    if not _record_matches(readback, item):
+    if existing and preserve_existing and readback != existing:
+        raise RuntimeError("fixed publication historical provenance changed during readback")
+    if not _record_matches(readback, expected_readback):
         raise RuntimeError("fixed publication record strong readback does not match")
     return dict(readback)
 
@@ -914,29 +1000,46 @@ def preflight_faulty_reference(session: Any, *, require_rollback: bool = False) 
     if expected_adapter_code_sha and adapter_code_sha != expected_adapter_code_sha:
         raise RuntimeError("alarm adapter preflight code differs from the deployed stack/reference binding")
     environment = adapter.get("Environment", {}).get("Variables", {})
-    if environment.get("AGENT_RUNTIME_ARN") != runtime_arn or environment.get("AGENT_ENDPOINT_NAME") != "faulty":
+    selector_mode = SELECTION_TABLE_ENV in environment
+    if selector_mode:
+        expected_selector = {
+            "AGENT_RUNTIME_ARN": runtime_arn,
+            "AGENT_ALARM_ARN": descriptor["alarmArn"],
+            SELECTION_TABLE_ENV: descriptor["controller"]["tableName"],
+        }
+        if environment != expected_selector:
+            raise RuntimeError("alarm adapter preflight selector binding differs from the fixed table")
+    elif environment.get("AGENT_RUNTIME_ARN") != runtime_arn or environment.get("AGENT_ENDPOINT_NAME") != "faulty":
         raise RuntimeError("alarm adapter preflight is bound outside the fixed Runtime endpoint")
     adapter_version = environment.get("AGENT_RUNTIME_VERSION")
     adapter_runtime = None
-    adapter_version_matches = live_version is None or adapter_version == live_version
+    # Selector-mode adapters intentionally do not attest a candidate version;
+    # the native endpoint and its immutable Runtime readback are the binding.
+    # Legacy adapters still require their static version to match exactly.
+    adapter_version_matches = live_version is None or selector_mode or adapter_version == live_version
     if live_version is not None and not adapter_version_matches:
         # After a successful endpoint create/update, the adapter may still
         # attest the prior valid immutable version because its configuration
         # update was lost or failed.  This is a known, recoverable partial
         # publication for the setup operation, but never a trusted rollback
         # state for destructive legacy migration.
-        if not isinstance(adapter_version, str) or not RUNTIME_VERSION_RE.fullmatch(adapter_version):
-            raise RuntimeError("alarm adapter preflight has no valid prior Runtime binding")
-        adapter_runtime = control.get_agent_runtime(
-            agentRuntimeId=runtime_id,
-            agentRuntimeVersion=adapter_version,
-        )
-        if adapter_runtime.get("agentRuntimeArn") != runtime_arn or adapter_runtime.get("status") != "READY":
-            raise RuntimeError("alarm adapter prior Runtime binding is not a READY immutable version")
+        if not selector_mode:
+            if not isinstance(adapter_version, str) or not RUNTIME_VERSION_RE.fullmatch(adapter_version):
+                raise RuntimeError("alarm adapter preflight has no valid prior Runtime binding")
+            adapter_runtime = control.get_agent_runtime(
+                agentRuntimeId=runtime_id,
+                agentRuntimeVersion=adapter_version,
+            )
+            if adapter_runtime.get("agentRuntimeArn") != runtime_arn or adapter_runtime.get("status") != "READY":
+                raise RuntimeError("alarm adapter prior Runtime binding is not a READY immutable version")
         if require_rollback:
-            raise RuntimeError("alarm adapter preflight version differs from the serving endpoint")
+            raise RuntimeError("alarm adapter preflight has no legacy version for trusted rollback")
+    selector_binding_ready = bool(selector_mode and existing_endpoint is not None and serving_runtime is not None)
+    trusted_rollback_eligible = bool(
+        not selector_mode and existing_endpoint is not None and serving_runtime is not None and adapter_version_matches
+    )
     trusted_rollback = {
-        "eligible": bool(existing_endpoint is not None and serving_runtime is not None and adapter_version_matches),
+        "eligible": trusted_rollback_eligible,
         "runtimeId": runtime_id,
         "runtimeArn": runtime_arn,
         "endpointArn": existing_endpoint.get("agentRuntimeEndpointArn") if existing_endpoint else None,
@@ -954,6 +1057,8 @@ def preflight_faulty_reference(session: Any, *, require_rollback: bool = False) 
             "adapterRuntimeStatus": adapter_runtime.get("status") if adapter_runtime else None,
             "needsAdapterUpdate": True,
         }
+    if require_rollback and selector_mode:
+        raise RuntimeError("selector router has no legacy version for trusted rollback")
     if require_rollback and not trusted_rollback["eligible"]:
         raise RuntimeError("trusted rollback preflight is incomplete")
     rollback_runtime = serving_runtime or current
@@ -971,7 +1076,7 @@ def preflight_faulty_reference(session: Any, *, require_rollback: bool = False) 
         if key in rollback_runtime
     }
     return {
-        "status": "ready" if trusted_rollback["eligible"] else ("partial" if partial_binding else "already_detached"),
+        "status": "ready" if (trusted_rollback["eligible"] or selector_binding_ready) else ("partial" if partial_binding else "already_detached"),
         "account": identity.get("Account"),
         "region": REGION,
         "stack": stack,
@@ -1038,7 +1143,11 @@ def setup_faulty_reference(session: Any) -> dict[str, Any]:
         lock_version=verified["lockVersionId"],
         configuration_version=verified["configurationVersionId"],
     )
-    _ensure_record(session.client("dynamodb"), descriptor, item)
+    preserve_existing = SELECTION_TABLE_ENV in adapter.get("Environment", {}).get("Variables", {})
+    _ensure_record(
+        session.client("dynamodb"), descriptor, item,
+        preserve_existing=preserve_existing,
+    )
     return {
         "status": "reference",
         "candidateId": "faulty",

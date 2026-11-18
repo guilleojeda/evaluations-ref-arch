@@ -253,8 +253,14 @@ test('adapter only forwards to the selected endpoint; Runtime owns the run claim
   assert.ok(adapterAllows.some((statement) => actionList(statement).includes('bedrock-agentcore:InvokeAgentRuntime') &&
     resourceList(statement).some((resource) => JSON.stringify(resource).includes('runtime-endpoint/faulty'))),
   'adapter permission must target the stable derived endpoint, not every Runtime');
-  assert.ok(!adapterAllows.some((statement) => actionList(statement).some((action) => /^dynamodb:/.test(action))),
-    'adapter cannot read or change run records; it only forwards the event');
+  const selectionReads = adapterAllows.filter((statement) =>
+    actionList(statement).includes('dynamodb:GetItem') &&
+    JSON.stringify(statement).includes('AGENT_SELECTION'));
+  assert.equal(selectionReads.length, 1,
+    'adapter may strongly read only the selected publication record');
+  assert.ok(!adapterAllows.some((statement) => actionList(statement).some((action) =>
+    /^dynamodb:(?:PutItem|UpdateItem|DeleteItem|BatchWriteItem)$/.test(action))),
+    'adapter cannot mutate controller or investigation records; it only reads the selected publication');
   assert.ok(!adapterAllows.some((statement) => actionList(statement).some((action) => /^bedrock-agentcore:InvokeAgentRuntime$/.test(action)) &&
     resourceList(statement).some((resource) => JSON.stringify(resource) === '"*"')),
   'adapter may not invoke every Runtime');

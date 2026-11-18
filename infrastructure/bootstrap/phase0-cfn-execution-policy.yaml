@@ -522,9 +522,19 @@ Resources:
             Effect: Allow
             Action:
               - dynamodb:GetItem
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoControllerRun
+          - Sid: ControllerHttpJournal
+            Effect: Allow
+            Action:
               - dynamodb:PutItem
               - dynamodb:UpdateItem
             Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoControllerRun
+            Condition:
+              ForAllValues:StringLike:
+                dynamodb:LeadingKeys:
+                  - STATE
+                  - ACTION#*
+                  - RUN#*
           - Sid: ControllerHttpAgentDiscovery
             Effect: Allow
             Action:
@@ -533,10 +543,21 @@ Resources:
             Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoAgentRun
           - Sid: ControllerHttpAgentReadiness
             Effect: Allow
-            Action: bedrock-agentcore:GetAgentRuntimeEndpoint
+            Action:
+              - bedrock-agentcore:GetAgentRuntime
+              - bedrock-agentcore:GetAgentRuntimeEndpoint
             Resource:
-              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-*
-              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-*/runtime-endpoint/faulty
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????/runtime-endpoint/faulty
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????/runtime-endpoint/repaired
+          - Sid: ControllerHttpAgentConfiguration
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+            Resource:
+              - arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/agent-reference/7febe979fa1365360983d886f9d1dc78b55d9bde91a6fe7357e5f9fd97d2d7a7.json
+              - arn:aws:s3:::incident-triage-demo-evidence-027224425948-us-east-1/agent-evaluation/phase20/1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7/runtime-configuration.json
           - Sid: ControllerHttpSecret
             Effect: Allow
             Action: secretsmanager:GetSecretValue
@@ -576,9 +597,20 @@ Resources:
             Effect: Allow
             Action:
               - dynamodb:GetItem
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoControllerRun
+          - Sid: ControllerWorkerJournalAndSelection
+            Effect: Allow
+            Action:
               - dynamodb:PutItem
               - dynamodb:UpdateItem
             Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoControllerRun
+            Condition:
+              ForAllValues:StringLike:
+                dynamodb:LeadingKeys:
+                  - STATE
+                  - ACTION#*
+                  - RUN#*
+                  - AGENT_SELECTION
           - Sid: ControllerWorkerResetInventorySeed
             Effect: Allow
             Action:
@@ -667,6 +699,23 @@ Resources:
             Effect: Allow
             Action: s3:PutObject
             Resource: arn:aws:s3:::incident-triage-demo-evidence-027224425948-us-east-1/configuration/*
+          - Sid: ControllerWorkerAgentConfiguration
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+            Resource:
+              - arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/agent-reference/7febe979fa1365360983d886f9d1dc78b55d9bde91a6fe7357e5f9fd97d2d7a7.json
+              - arn:aws:s3:::incident-triage-demo-evidence-027224425948-us-east-1/agent-evaluation/phase20/1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7/runtime-configuration.json
+          - Sid: ControllerWorkerAgentReadiness
+            Effect: Allow
+            Action:
+              - bedrock-agentcore:GetAgentRuntime
+              - bedrock-agentcore:GetAgentRuntimeEndpoint
+            Resource:
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????/runtime-endpoint/faulty
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????/runtime-endpoint/repaired
 
   IncidentTriageDemoPhase3CfnExecution:
     Type: AWS::IAM::ManagedPolicy
@@ -896,12 +945,21 @@ Resources:
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
+        - Sid: ReadSelectedPublication
+          Effect: Allow
+          Action: dynamodb:GetItem
+          Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoControllerRun
+          Condition:
+            ForAllValues:StringLike:
+              dynamodb:LeadingKeys:
+                - AGENT_SELECTION
         - Sid: ForwardSelectedRuntime
           Effect: Allow
           Action: bedrock-agentcore:InvokeAgentRuntime
           Resource:
-          - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-*
-          - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-*/runtime-endpoint/faulty
+          - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????
+          - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????/runtime-endpoint/faulty
+          - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????/runtime-endpoint/repaired
         - Sid: AdapterLogs
           Effect: Allow
           Action:
