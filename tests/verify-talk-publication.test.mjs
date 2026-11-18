@@ -124,13 +124,15 @@ test('selects exactly one immutable qualification receipt', () => {
 });
 
 test('accepts both stock and carried pointer labels through parsePointer', () => {
-  const stock = JSON.parse(readFileSync(new URL('../agent/qualification-input.json', import.meta.url), 'utf8'));
-  assert.equal(parsePointer(stock).purpose, 'Phase 20 reviewed private evaluation input handoff');
-  assert.equal(
-    parsePointer({ ...stock, purpose: 'Phase 22 audience-reviewed private evaluation input handoff' }).purpose,
+  const configured = JSON.parse(readFileSync(new URL('../agent/qualification-input.json', import.meta.url), 'utf8'));
+  assert.deepEqual(parsePointer(configured), configured);
+  for (const purpose of [
+    'Phase 20 reviewed private evaluation input handoff',
     'Phase 22 audience-reviewed private evaluation input handoff',
-  );
-  assert.throws(() => parsePointer({ ...stock, purpose: '   ' }), /purpose/);
+  ]) {
+    assert.equal(parsePointer({ ...configured, purpose }).purpose, purpose);
+  }
+  assert.throws(() => parsePointer({ ...configured, purpose: '   ' }), /purpose/);
 });
 
 test('reuses the protected canonical manifest identity for numeric and Unicode fields', () => {
