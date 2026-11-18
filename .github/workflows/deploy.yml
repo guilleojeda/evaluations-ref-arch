@@ -844,7 +844,7 @@ jobs:
           import boto3
 
           descriptor = json.loads(open(os.environ["EVALUATOR_DESCRIPTOR"], encoding="utf-8").read())
-          response = boto3.Session(region_name="us-east-1").client("bedrock-agentcore").get_evaluator(
+          response = boto3.Session(region_name="us-east-1").client("bedrock-agentcore-control").get_evaluator(
               evaluatorId=os.environ["EVALUATOR_ID"], includedData="ALL_DATA"
           )
           evaluator = response.get("evaluator", response)
