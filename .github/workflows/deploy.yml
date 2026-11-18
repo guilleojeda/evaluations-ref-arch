@@ -1017,6 +1017,35 @@ jobs:
               --metadata "sha256=$diagnostic_sha256" --content-type text/plain >/dev/null
             echo "Private qualification diagnostic preserved: sha256=$diagnostic_sha256"
           done
+      - name: Preserve private native experiment on crash without a receipt
+        if: >-
+          always() && steps.qualification.outcome == 'failure' &&
+          steps.qualification.outputs.qualification == ''
+        shell: bash
+        env:
+          EVIDENCE_BUCKET: ${{ env.PHASE20_EVIDENCE_BUCKET }}
+          EVIDENCE_PREFIX: agent-evaluation/phase20/${{ steps.artifact.outputs.artifact_sha256 }}
+          QUALIFICATION_ROOT: ${{ runner.temp }}/phase20-qualification
+        run: |
+          set -euo pipefail
+          experiment_root="$QUALIFICATION_ROOT/experiments"
+          if [[ ! -d "$experiment_root" || -L "$experiment_root" ]]; then
+            echo 'No durable native experiment evidence was produced.'
+            exit 0
+          fi
+          while IFS= read -r -d '' symlink; do
+            echo 'Refusing to archive symlinked native experiment evidence.' >&2
+            exit 1
+          done < <(find "$experiment_root" -type l -print0)
+          archive="$RUNNER_TEMP/phase20-native-experiment.tar.gz"
+          tar --sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner \
+            -czf "$archive" --directory "$QUALIFICATION_ROOT" experiments
+          archive_sha256="$(sha256sum "$archive" | awk '{print $1}')"
+          archive_key="$EVIDENCE_PREFIX/diagnostics/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/native-experiment.tar.gz"
+          aws s3api put-object --bucket "$EVIDENCE_BUCKET" --key "$archive_key" \
+            --body "$archive" --if-none-match '*' --server-side-encryption AES256 \
+            --metadata "sha256=$archive_sha256" --content-type application/gzip >/dev/null
+          echo "Private native experiment diagnostic preserved: sha256=$archive_sha256"
       - name: Verify the private review manifest readback
         id: review_readback
         if: always() && steps.qualification.outputs.qualification != ''

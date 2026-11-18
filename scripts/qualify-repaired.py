@@ -340,6 +340,53 @@ def _safe_case_review(case_id: str, row: Mapping[str, Any], roster_entry: Mappin
     }
 
 
+def _authenticated_score_downgrade(
+    canonical: Mapping[str, Any],
+    shown: Mapping[str, Any],
+    *,
+    key: str,
+    has_read_errors: bool,
+) -> bool:
+    """Allow only a native-authenticated score to become unavailable.
+
+    Reopening an experiment can prove that a durable score cannot be
+    revalidated.  That is a negative/incomplete result, never a new score.
+    All identity and complete-result differences remain strict mismatches.
+    """
+
+    if key not in {"status", "score"} or shown.get("status") not in {"incomplete", "interrupted"}:
+        return False
+    canonical_score = canonical.get("score")
+    shown_score = shown.get("score")
+    typed_failure = (
+        isinstance(canonical_score, Mapping)
+        and canonical_score.get("status") in {"error", "incomplete"}
+        and isinstance(canonical_score.get("reason"), str)
+        and bool(canonical_score["reason"].strip())
+        and canonical.get("status") in {"error", "incomplete", "interrupted"}
+    )
+    if canonical_score is not None and shown_score is None and (has_read_errors or typed_failure):
+        return True
+    if not isinstance(canonical_score, Mapping) or not isinstance(shown_score, Mapping):
+        return False
+    if (
+        canonical_score.get("status") != "pending"
+        or shown_score.get("status") != "interrupted"
+        or shown_score.get("reason") != "scoring process is no longer running"
+        or set(shown_score) != set(canonical_score) | {"reason"}
+        or any(
+            canonical_score.get(name) != shown_score.get(name)
+            for name in canonical_score
+            if name != "status"
+        )
+    ):
+        return False
+    return key == "score" or (
+        canonical.get("status") in {"running", "incomplete"}
+        and shown.get("status") == "incomplete"
+    )
+
+
 def _experiment_attestation(
     experiment_dir: Path,
     canonical_record: Mapping[str, Any],
@@ -369,6 +416,12 @@ def _experiment_attestation(
     }
     if set(canonical_by_id) != set(shown_by_id) or not canonical_by_id:
         raise ValueError("native show_experiment roster differs from experiment.json")
+    read_errors = shown.get("readErrors")
+    authenticated_incomplete_read = (
+        isinstance(read_errors, list)
+        and bool(read_errors)
+        and shown.get("status") in {"incomplete", "interrupted"}
+    )
     for case_id, canonical in canonical_by_id.items():
         shown_row = shown_by_id[case_id]
         if canonical.get("promptSha256") != effective_prompt_sha256 or shown_row.get("promptSha256") != effective_prompt_sha256:
@@ -392,6 +445,13 @@ def _experiment_attestation(
                 canonical_value = canonical_value.get("findings")
                 shown_value = shown_value.get("findings")
             if key in canonical and key in shown_row and canonical_value != shown_value:
+                if _authenticated_score_downgrade(
+                    canonical,
+                    shown_row,
+                    key=key,
+                    has_read_errors=authenticated_incomplete_read,
+                ):
+                    continue
                 raise ValueError(f"native show_experiment {key} differs for {case_id}")
     runtime_origin = canonical_record.get("runtimeOrigin")
     if not isinstance(runtime_origin, Mapping) or runtime_origin.get("kind") != "runtime_zip":
@@ -1078,6 +1138,14 @@ def build_qualification(
             if entry.get(key) is not None
         })
     report_identities_sha256 = sha256_json(report_identities)
+    read_errors = shown.get("readErrors")
+    diagnostic = None
+    if isinstance(read_errors, list) and read_errors:
+        diagnostic = {
+            "kind": "authenticated-native-read",
+            "status": shown.get("status"),
+            "errors": [str(error) for error in read_errors],
+        }
 
     # The package gate owns this identity tuple; when a release workflow has
     # already staged serving objects, their immutable descriptors are carried
@@ -1157,6 +1225,7 @@ def build_qualification(
             "canonicalRecordSha256": review_index.get("canonicalRecordSha256"),
             "showExperimentSha256": review_index.get("showExperimentSha256"),
         },
+        "diagnostic": diagnostic,
         "github": github,
         "packageOrigin": attestation.get("runtimeOrigin"),
         "driver": attestation.get("runtimeOrigin", {}).get("driver") if isinstance(attestation.get("runtimeOrigin"), Mapping) else None,
