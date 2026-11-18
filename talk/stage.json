@@ -1,17 +1,23 @@
 {
   "schemaVersion": 1,
-  "stage": "S2",
-  "candidateId": "faulty",
-  "candidateDefault": "faulty",
+  "stage": "S3",
+  "candidateId": "repaired",
+  "candidateDefault": "repaired",
   "prompt": {
     "path": "agent/prompt.py",
-    "semanticId": "faulty-phase19",
-    "fileSha256": "3d21155b9f9465a0ac11eb9fcaf761bfd19549cf6454ae3ac20c20044d57a9eb",
-    "promptSha256": "161aa4357b908cffe9691349d01da284411cd5d4689235717525d79e1073fffc"
+    "semanticId": "repaired-qualified-phase20",
+    "fileSha256": "88b8b94f2da13263407aadc1301bc5b4c2345fcec3ac2bd148fead9835807bdd",
+    "promptSha256": "0f8d10ce6f46302a00dbe60cb29ebfeb4212627000c78b3529e6e0c7696ff425",
+    "faultyStartingOption": {
+      "semanticId": "faulty-phase19",
+      "sourceRevision": "bd6f77df97933e3e675ee9c2a699db16e29ea1b6",
+      "promptSha256": "161aa4357b908cffe9691349d01da284411cd5d4689235717525d79e1073fffc",
+      "mode": "explicit checked reverse patch in this folder; refuse if dirty"
+    }
   },
   "capabilityAnchor": {
-    "revision": "57150505eb76eea60d92cf3ac32e4e1b8fbd6cb6",
-    "description": "Phase 16 AgentCore scorer with cutoff-aware evidence and advisory single verdict"
+    "revision": "e0a36c84850347b31029862a87f19101cc8f6359",
+    "description": "Phase 17 fresh editable candidate execution, scoring, and offline comparison"
   },
   "scorerAnchor": {
     "revision": "3505ffb39504c07ac333501ec9b81e7ca98c018c",
@@ -22,38 +28,29 @@
   },
   "runtime": {
     "descriptor": "scripts/faulty-reference.json",
-    "sourceRevision": "bd6f77df97933e3e675ee9c2a699db16e29ea1b6",
-    "artifactSha256": "e5ac2ee20d8f3947eb95ceb74094e882a3d8a4a010f2a8e7bf96700dd5906b33",
+    "sourceRevision": "62236d0e8731242d5a6468cf931f003a323b5349",
+    "artifactSha256": "1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7",
     "lockSha256": "887c9bcf91ec028fe3b0939aac00a7d4c3dfbc68b2287e4469a15f3798651831",
-    "promptSourceSha256": "3d21155b9f9465a0ac11eb9fcaf761bfd19549cf6454ae3ac20c20044d57a9eb"
+    "promptSourceSha256": "88b8b94f2da13263407aadc1301bc5b4c2345fcec3ac2bd148fead9835807bdd"
   },
   "inputs": {
-    "kind": "saved-faulty-execution-and-matching-review",
+    "kind": "fresh-repaired-candidate-against-matching-reviewed-case",
     "privateIndexEnv": "PHASE22_INPUT_INDEX",
-    "asset": {
-      "rootVariable": "asset_extract",
-      "sha256Env": "PHASE22_ASSET_SHA256",
-      "sessionId": "phase22-session-a-audience-full-final",
-      "run": "s2/run/e3f934af-6af9-42aa-ac78-b315133e1571",
-      "case": "prepared/denial.frozen.json",
-      "bundle": "prepared/denial.json",
-      "captureReceipt": "s2/capture-receipt.json",
-      "evaluator": "s2/evaluator.json"
-    },
     "caseId": "phase14.denied-inventory-read.prepared",
-    "caseSha256": "cb1480066a46f258ee8d9e27355d50b9bd05f171ee9ef84a169989f72af5e18d",
-    "bundleSha256": "8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8",
-    "executionId": "e3f934af-6af9-42aa-ac78-b315133e1571",
-    "scoreAuthorizationSha256": "35bc9bb6f79d8f15b870e8629f686cb388e1400675d0a2416bec3212ac44912c",
-    "scoreAttemptId": "ce3e3a4a-ac3d-42a5-bcad-e7125a21127d",
-    "requires": ["matching case/bundle", "saved report and native trace", "pinned evaluator descriptor", "matching cutoff"],
-    "forbidden": ["agent rerun", "case substitution", "release publication"]
+    "caseSha256": "a8f157533d833f73a140e0503ceae49104ff092d06d54b2e821004374471269e",
+    "baselineExecutionId": "e3f934af-6af9-42aa-ac78-b315133e1571",
+    "recordedRepairedExecutionId": "295cd070-07e8-4f69-b8ce-c588a74fab42",
+    "recordedRepairedArchiveSha256": "5c019966694520efb4ce989f0581d1adb56c012bbb0ce216849caf3d0acd256f",
+    "requires": ["matching case/bundle", "matching cutoff", "same model/tools/report contract", "pinned evaluator descriptor", "unique output root"],
+    "forbidden": ["reusing the S2 execution as fresh S3", "relaxing comparator identity checks", "release publication"]
   },
   "entry": {
-    "offlineSmoke": "uv run --offline --project agent --locked python -m py_compile agent/evaluate_case.py agent/deterministic_checks.py agent/agentcore_evaluation.py",
-    "show": "uv run --offline --project agent --locked python agent/evaluate_case.py show --run \"$PHASE22_S2_RUN\"",
-    "deterministic": "evaluate_case.py show reopens the saved execution through captured_execution.load_execution, which authenticates native spans and recomputes deterministic findings offline; no tarball is passed to this command",
-    "score": "uv run --project agent --locked python agent/evaluate_case.py score --run \"$PHASE22_S2_RUN\" --evaluator \"$PHASE18_EVALUATOR\" --rubric single --wait-seconds 300",
-    "policy": "show is offline and does not rerun the agent; score is an explicit native advisory scoring attempt and never a release gate."
+    "offlineSmoke": "uv run --offline --project agent --locked python -m py_compile agent/prompt.py agent/evaluate_case.py agent/compare_executions.py",
+    "faultyOption": "git diff --quiet && git apply --reverse --check agent/prompts/s3-repair.patch && git apply --reverse agent/prompts/s3-repair.patch",
+    "run": "uv run --project agent --locked opentelemetry-instrument python agent/evaluate_case.py run --candidate repaired --case \"$PHASE22_REVIEWED_CASE\" --bundle \"$PHASE22_SOURCE_BUNDLE\" --output-root \"$PHASE22_S3_RUN_ROOT\"",
+    "show": "uv run --offline --project agent --locked python agent/evaluate_case.py show --run \"$PHASE22_S3_RUN\"",
+    "score": "uv run --project agent --locked python agent/evaluate_case.py score --run \"$PHASE22_S3_RUN\" --evaluator \"$PHASE18_EVALUATOR\" --rubric single --wait-seconds 300",
+    "compare": "uv run --offline --project agent --locked python agent/evaluate_case.py compare --baseline \"$PHASE22_S2_RUN\" --candidate \"$PHASE22_S3_RUN\"",
+    "policy": "S3 is a fresh candidate execution and advisory feedback. A saved S3 result is not S5 exact-package qualification."
   }
 }

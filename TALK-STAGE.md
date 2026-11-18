@@ -1,72 +1,69 @@
-# S2 — Evaluate the faulty candidate
+# S3 — Edit and run a repaired candidate
 
-This workspace is the Phase 22 S2 checkpoint. It keeps the faulty candidate
-unchanged and adds deterministic checks plus the pinned native AgentCore
-Sonnet 4.6 advisory score. The default candidate remains `faulty`.
-
-The prepared saved execution is
-`e3f934af-6af9-42aa-ac78-b315133e1571`; its approved score configuration has
-SHA-256 `35bc9bb6f79d8f15b870e8629f686cb388e1400675d0a2416bec3212ac44912c`.
-The score attempt is `ce3e3a4a-ac3d-42a5-bcad-e7125a21127d`.
+This workspace is the Phase 22 S3 checkpoint. Its default candidate is the
+exact repaired prompt used by the qualified Phase 20 publication. S3 adds a
+fresh editable execution and comparison while retaining the faulty baseline.
+`agent/prompt.py` has file SHA-256
+`88b8b94f2da13263407aadc1301bc5b4c2345fcec3ac2bd148fead9835807bdd` and
+semantic prompt SHA-256
+`0f8d10ce6f46302a00dbe60cb29ebfeb4212627000c78b3529e6e0c7696ff425`.
 
 Set `PHASE22_PRIVATE_ROOT` outside this checkout and export
-`PHASE22_INPUT_INDEX` to the private session index. Maintained preparation
-already provides the verified `asset_extract` directory and
-`PHASE22_ASSET_SHA256` from `session-audience-full-final-s3-receipt.json`.
-The extraction contains the matching S2 run, case, bundle, evaluator, and
-capture receipt; no archive filename or full-root checksum scan is required.
+`PHASE22_INPUT_INDEX` to the private session input index. The index must resolve
+`PHASE22_S2_RUN`, `PHASE22_REVIEWED_CASE`, `PHASE22_SOURCE_BUNDLE`,
+`PHASE22_S3_RUN_ROOT`, and `PHASE18_EVALUATOR` to private paths outside the
+checkout.
 
 ```sh
-uv sync --project agent --locked
 uv sync --offline --project agent --locked
-mkdir -p "$PHASE22_PRIVATE_ROOT/s2"
-: "${asset_extract:?run maintained asset preparation first}"
-: "${PHASE22_ASSET_SHA256:?read from session-audience-full-final-s3-receipt.json}"
-test -d "$asset_extract"
-test -s "$asset_extract/s2/run/e3f934af-6af9-42aa-ac78-b315133e1571/execution.json"
-test -s "$asset_extract/prepared/denial.frozen.json"
-test -s "$asset_extract/prepared/denial.json"
-printf 'Using verified Phase 22 asset %s\n' "$PHASE22_ASSET_SHA256"
-export PHASE22_S2_RUN="$asset_extract/s2/run/e3f934af-6af9-42aa-ac78-b315133e1571"
-export PHASE22_S2_CAPTURE_RECEIPT="$asset_extract/s2/capture-receipt.json"
-export PHASE22_REVIEWED_CASE="$asset_extract/prepared/denial.frozen.json"
-export PHASE22_SOURCE_BUNDLE="$asset_extract/prepared/denial.json"
-export PHASE18_EVALUATOR="$asset_extract/s2/evaluator.json"
 uv run --offline --project agent --locked python -m py_compile \
-  agent/evaluate_case.py agent/deterministic_checks.py agent/agentcore_evaluation.py
+  agent/prompt.py agent/evaluate_case.py agent/compare_executions.py
 python -m json.tool talk/stage.json >/dev/null
 ```
 
-The capture receipt is provenance only. The JSON `--record` interface is not
-used for this captured execution; `show` reopens the saved run directly.
+The repaired prompt is already present; do not apply the repair patch a second
+time. To show the faulty starting option in this same editable folder, first
+ensure it is clean, verify the reverse patch, then apply it. If the folder is
+dirty, stop and preserve the edit; never overwrite it:
 
-## Inspect the saved run
+```sh
+git diff --quiet
+git apply --reverse --check agent/prompts/s3-repair.patch
+git apply --reverse agent/prompts/s3-repair.patch
+python -m py_compile agent/prompt.py
+```
 
-Open the saved S2 run and inspect its report, source, trace, and deterministic
-findings. Ordinary reopen must not rerun it. Use the same frozen case, bundle,
-cutoff, model, runtime/tool source, evaluator, and policy identities:
+Restore the repaired prompt only through an explicit editor action or by
+discarding the private demonstration edit after recording it; do not use this
+option while an S3 run is in flight. The run itself snapshots its launch-time
+source.
+
+## Run and compare
+
+Run the repaired source against the same frozen case and bundle as S2, writing
+to a unique private output root:
+
+```sh
+uv run --project agent --locked opentelemetry-instrument \
+  python agent/evaluate_case.py run --candidate repaired \
+  --case "$PHASE22_REVIEWED_CASE" --bundle "$PHASE22_SOURCE_BUNDLE" \
+  --output-root "$PHASE22_S3_RUN_ROOT"
+```
+
+Inspect and score the result explicitly, then compare only matching identities:
 
 ```sh
 uv run --offline --project agent --locked python agent/evaluate_case.py show \
-  --run "$PHASE22_S2_RUN"
-```
-
-`show` calls the supported captured `load_execution` path. It authenticates
-the saved case, bundle, native spans, report, ledger and source digests, then
-recomputes the deterministic findings offline. The denied-read case must expose
-the wrong memory recommendation: the Inventory target passes, while the action,
-tuple/value, and cutoff findings fail. A missing or mismatched
-case/bundle/report/trace remains incomplete; do not substitute a live query or
-another saved run.
-
-## Optional explicit score
-
-Only after the saved identity checks pass, score the exact run with the pinned
-Sonnet 4.6 evaluator. This is an explicit AWS operation and produces an
-advisory verdict; it does not rerun the agent or authorize a release:
-
-```sh
+  --run "$PHASE22_S3_RUN"
 uv run --project agent --locked python agent/evaluate_case.py score \
-  --run "$PHASE22_S2_RUN" --evaluator "$PHASE18_EVALUATOR" \
+  --run "$PHASE22_S3_RUN" --evaluator "$PHASE18_EVALUATOR" \
   --rubric single --wait-seconds 300
+uv run --offline --project agent --locked python agent/evaluate_case.py compare \
+  --baseline "$PHASE22_S2_RUN" --candidate "$PHASE22_S3_RUN"
 ```
+
+The semantic verdict is advisory feedback. A changed lock, replay clock, case,
+model, evaluator, or policy creates a distinct candidate and cannot be bridged
+by relaxing comparator checks. This local result is not exact-package S5
+qualification.
+
