@@ -271,6 +271,9 @@ managed DynamoDB CMK, `dynamodb.us-east-1.amazonaws.com`, and the observed
 `aws:dynamodb:tableName=IncidentTriageDemoControllerRun` plus account context.
 It does not grant direct KMS encryption, grant creation, re-encryption, or
 access to another DynamoDB table.
+The `reference-setup` workflow's inline STS session policy must include this
+same CMK in its KMS resource intersection before dispatch; the role policy
+alone cannot widen a session policy that omits the table key.
 
 The additive Phase 19 grants and the existing Runtime-finalization grants are
 attached through the customer-managed `IncidentTriageDemoPhase19Publisher`
