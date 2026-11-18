@@ -293,6 +293,14 @@ test('quality gate and protected publication use isolated roles, dependencies, a
   requireMatch(diagnostics, /s3api put-object/, 'qualification diagnostics must be retained in private S3');
   requireAbsent(diagnostics, /actions\/upload-artifact|cat\s+.*qualification\.(?:stderr|summary)/i,
     'qualification diagnostics must not be published as a public artifact or echoed raw');
+  const nativeCrashEvidence = steps(gate).find((block) => /Preserve private native experiment on crash without a receipt/.test(block));
+  assert.ok(nativeCrashEvidence, 'a no-receipt qualification crash must retain native experiment evidence privately');
+  requireMatch(nativeCrashEvidence, /steps\.qualification\.outputs\.qualification\s*==\s*['"]['"]/,
+    'native experiment retention must be limited to crashes without a receipt');
+  requireMatch(nativeCrashEvidence, /tar[\s\S]*experiments/, 'native crash evidence must archive only the durable experiment directory');
+  requireMatch(nativeCrashEvidence, /--if-none-match\s+['"]\*['"]/, 'native crash evidence must use a conditional immutable write');
+  requireAbsent(nativeCrashEvidence, /actions\/upload-artifact|tar[\s\S]*\.artifacts|tar[\s\S]*node_modules|tar[\s\S]*home/i,
+    'native crash evidence must exclude runner packages and unrelated files');
   requireMatch(gate, /id:\s*review_readback[\s\S]*Publish only the safe qualification handoff[\s\S]*steps\.review_readback\.outcome\s*==\s*['"]success['"]/,
     'public qualification summary must require a successful private manifest readback');
   assert.ok(runStepIndex(gate, /(?:sha256sum|sha256|artifactSha256)/i) >= 0,

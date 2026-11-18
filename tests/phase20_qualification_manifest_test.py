@@ -142,9 +142,9 @@ class QualificationManifestTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temp.cleanup()
 
-    def _build(self, *, rejected: bool = False):
+    def _build(self, *, rejected: bool = False, shown_override: dict[str, object] | None = None):
         record = copy.deepcopy(self.record)
-        shown = copy.deepcopy(self.shown)
+        shown = copy.deepcopy(shown_override if shown_override is not None else self.shown)
         if rejected:
             record["cases"][0]["deterministic"]["findings"]["action"]["verdict"] = "fail"
             shown["cases"][0]["deterministic"]["findings"]["action"]["verdict"] = "fail"
@@ -206,6 +206,99 @@ class QualificationManifestTests(unittest.TestCase):
         review = self.root / "qualification" / "review"
         self.assertTrue((review / "native" / "show-experiment.json").is_file())
         self.qualify.verify_private_review(review, manifest_sha256=receipt["reviewManifestSha256"])
+
+    def test_runtime_failure_score_downgrade_keeps_bound_incomplete_diagnostic(self):
+        shown = copy.deepcopy(self.shown)
+        shown["status"] = "incomplete"
+        shown["readErrors"] = ["case phase20.synthetic.case score is unavailable: ValueError"]
+        shown["decision"] = {"verdict": "incomplete", "reason": "authenticated experiment evidence is incomplete"}
+        shown["cases"][0]["status"] = "incomplete"
+        shown["cases"][0]["score"] = None
+
+        receipt_path, receipt = self._build(shown_override=shown)
+
+        self.assertEqual("incomplete", receipt["status"])
+        self.assertEqual("incomplete", receipt["verdict"])
+        self.assertEqual(self.package_sha, receipt["artifact"]["sha256"])
+        self.assertEqual(self.effective_prompt_sha, receipt["promptSha256"])
+        self.assertEqual(
+            {
+                "kind": "authenticated-native-read",
+                "status": "incomplete",
+                "errors": shown["readErrors"],
+            },
+            receipt["diagnostic"],
+        )
+        review = self.root / "qualification" / "review"
+        rendered = json.loads((review / "native" / "show-experiment.json").read_text())
+        self.assertEqual(shown["readErrors"], rendered["readErrors"])
+        self.assertIsNone(rendered["cases"][0]["score"])
+        self.assertEqual(receipt["reviewManifestSha256"], self.qualify.verify_private_review(review)["manifestSha256"])
+
+    def test_missing_score_without_authenticated_read_error_is_rejected(self):
+        shown = copy.deepcopy(self.shown)
+        shown["cases"][0]["score"] = None
+        shown["cases"][0]["status"] = "incomplete"
+        with self.assertRaises(ValueError):
+            self._build(shown_override=shown)
+
+    def test_typed_runtime_scoring_failure_keeps_negative_receipt_without_score(self):
+        self.record["cases"][0]["score"] = {
+            "status": "error",
+            "reason": "captured execution is incomplete; semantic scoring was not started",
+        }
+        self.record["cases"][0]["status"] = "incomplete"
+        shown = copy.deepcopy(self.shown)
+        shown["status"] = "incomplete"
+        shown["decision"] = {"verdict": "incomplete", "reason": "required execution or scoring result is incomplete"}
+        shown["cases"][0]["status"] = "incomplete"
+        shown["cases"][0]["score"] = None
+
+        _receipt_path, receipt = self._build(shown_override=shown)
+
+        self.assertEqual("incomplete", receipt["status"])
+        self.assertEqual("incomplete", receipt["verdict"])
+        self.assertIsNone(receipt["diagnostic"])
+
+    def test_ownerless_pending_score_is_authenticated_as_interrupted(self):
+        pending = {
+            "status": "pending",
+            "phase": "scoring",
+            "executionId": "execution-1",
+            "scoringAttemptId": "score-1",
+            "evaluator": {"evaluatorId": "synthetic-evaluator"},
+        }
+        self.record["cases"][0]["score"] = pending
+        self.record["cases"][0]["status"] = "running"
+        shown = copy.deepcopy(self.shown)
+        shown["status"] = "incomplete"
+        shown["decision"] = {"verdict": "incomplete", "reason": "required execution or scoring result is incomplete"}
+        shown["cases"][0]["status"] = "incomplete"
+        shown["cases"][0]["score"] = {
+            **pending,
+            "status": "interrupted",
+            "reason": "scoring process is no longer running",
+        }
+
+        tampered = copy.deepcopy(shown)
+        tampered["cases"][0]["score"]["tampered"] = True
+        with self.assertRaises(ValueError):
+            self._build(shown_override=tampered)
+
+        _receipt_path, receipt = self._build(shown_override=shown)
+
+        self.assertEqual("incomplete", receipt["status"])
+        self.assertEqual("incomplete", receipt["verdict"])
+
+    def test_incomplete_read_cannot_replace_missing_score_with_unverified_value(self):
+        shown = copy.deepcopy(self.shown)
+        shown["status"] = "incomplete"
+        shown["readErrors"] = ["case phase20.synthetic.case score is unavailable: ValueError"]
+        shown["decision"] = {"verdict": "incomplete", "reason": "authenticated experiment evidence is incomplete"}
+        shown["cases"][0]["status"] = "incomplete"
+        shown["cases"][0]["score"] = {"status": "complete", "verdict": "pass", "tampered": True}
+        with self.assertRaises(ValueError):
+            self._build(shown_override=shown)
 
     def test_show_output_and_workspace_only_source_cannot_bypass_package_attestation(self):
         original_show = copy.deepcopy(self.shown)
