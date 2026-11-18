@@ -161,6 +161,52 @@ test('builds the minimal S5 session binding from matching identities', () => {
   assert.equal(binding.qualification.inputPointer.evaluatorSha256, evaluatorSha256);
 });
 
+function buildSyntheticBinding(fixture, selectedPointer = pointer()) {
+  return buildSessionBinding({
+    ...fixture,
+    receiptSha256: '6'.repeat(64),
+    receiptKey: 'agent-evaluation/phase20/receipt/qualification.json',
+    manifestKey: 'agent-evaluation/phase20/receipt/index.json',
+    evidenceBucket: 'incident-triage-demo-evidence-027224425948-us-east-1',
+    pointer: selectedPointer,
+  });
+}
+
+test('rejects manifest case/report omissions, duplicates, and unrelated IDs', () => {
+  for (const identityField of ['caseIdentities', 'reportIdentities']) {
+    for (const [variant, identities] of [
+      ['omission', []],
+      ['duplicate', [{ caseId }, { caseId }]],
+      ['unrelated', [{ caseId: 'phase14.unrelated.prepared' }]],
+    ]) {
+      const fixture = makeFixture();
+      fixture.manifest[identityField] = identities;
+      assert.throws(
+        () => buildSyntheticBinding(fixture),
+        /identity roster|case ID/,
+        `${identityField} ${variant} must reject`,
+      );
+    }
+  }
+});
+
+test('accepts a carried four-case suite without hard-coded roster length or order', () => {
+  const fixture = makeFixture();
+  const carriedCases = [
+    'phase14.denied-inventory-read.prepared',
+    'phase14.inventory-capacity-overload.prepared',
+    'phase14.recovery-with-old-alert.prepared',
+    'phase14.capacity-holdout.prepared',
+  ];
+  fixture.receipt.suite.caseIds = carriedCases;
+  fixture.receipt.inputs = { suiteSha256, caseIds: [...carriedCases].reverse() };
+  fixture.manifest.caseIdentities = carriedCases.map((caseId) => ({ caseId }));
+  fixture.manifest.reportIdentities = [...carriedCases].reverse().map((caseId) => ({ caseId }));
+  const binding = buildSyntheticBinding(fixture, pointer({ cases: [...carriedCases].reverse() }));
+  assert.deepEqual(binding.qualification.receipt.caseIds, carriedCases);
+  assert.deepEqual(binding.qualification.inputPointer.caseIds, [...carriedCases].reverse());
+});
+
 test('rejects a remote branch that advanced beyond the published source', () => {
   const fixture = makeFixture();
   assert.throws(
@@ -196,6 +242,11 @@ test('parses the real qualified v20 receipt, manifest, approval, and historical 
   const cases = [
     'phase14.denied-inventory-read.prepared',
     'phase14.inventory-capacity-overload.prepared',
+    'phase14.recovery-with-old-alert.prepared',
+  ];
+  const pointerCases = [
+    'phase14.inventory-capacity-overload.prepared',
+    'phase14.denied-inventory-read.prepared',
     'phase14.recovery-with-old-alert.prepared',
   ];
   const receiptKey = `agent-evaluation/phase20/${actualArtifact}/guilleojeda/44265837592/1/${actualManifest}/qualification.json`;
@@ -238,7 +289,7 @@ test('parses the real qualified v20 receipt, manifest, approval, and historical 
     environment: 'repaired-publication', environmentId: 27678290254,
     comment: `approve ${actualManifest}`, state: 'approved', headSha: actualSource,
   };
-  const actualPointer = pointer({ suite: actualSuite, evaluator: actualEvaluator, cases });
+  const actualPointer = pointer({ suite: actualSuite, evaluator: actualEvaluator, cases: pointerCases });
   validateReviewLocator(fixture.receipt, receiptKey, manifestKey, [receiptKey, manifestKey], evidenceBucket);
   const binding = buildSessionBinding({
     ...fixture, pointer: actualPointer, receiptSha256: '05086e41e57af8906d648cf7535cd1570e963f6efe55420becba5d4a3a59f8c1',
@@ -247,4 +298,6 @@ test('parses the real qualified v20 receipt, manifest, approval, and historical 
   assert.equal(binding.demoDeploy.qualifiedCommit, actualSource);
   assert.equal(binding.qualification.humanReview.approval.comment, `approve ${actualManifest}`);
   assert.equal(binding.qualification.inputPointer.suiteSha256, actualSuite);
+  assert.deepEqual(binding.qualification.receipt.caseIds, cases);
+  assert.deepEqual(binding.qualification.inputPointer.caseIds, pointerCases);
 });

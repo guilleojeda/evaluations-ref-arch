@@ -17,6 +17,7 @@ import sys
 import tarfile
 import tempfile
 import unittest
+import shutil
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,7 +39,7 @@ class SessionInputFixture:
 
     def __init__(self, root: Path) -> None:
         self.root = root / "session-a"
-        self.root.mkdir()
+        self.root.mkdir(parents=True)
         self.roster_path = self.root / "session-roster.json"
         self.binding_path = self.root / "live-release-binding.json"
         self.fixed_case_sha = {
@@ -132,6 +133,10 @@ class SessionInputFixture:
             "configSha256": "f" * 64,
             "status": "recorded-active",
         }
+        evaluator_bytes = (json.dumps(evaluator, sort_keys=True) + "\n").encode()
+        # The selected gate archive, rather than s2/evaluator.json, is the
+        # source of truth for the evaluator identity used by later stages.
+        self.evaluator_sha = hashlib.sha256(evaluator_bytes).hexdigest()
         fixed_rows = [
             {
                 "caseId": case_id,
@@ -262,10 +267,13 @@ class SessionInputFixture:
                 )
         return hashlib.sha256("".join(records).encode()).hexdigest()
 
-    def binding(self) -> dict[str, object]:
+    def binding(self, suite: str = "stock") -> dict[str, object]:
         revision = "a" * 40
         manifest_sha = "2" * 64
         pointer_sha = "3" * 64
+        selected_suite_sha = self.stock_suite_sha if suite == "stock" else self.carried_suite_sha
+        selected_archive_sha = self.stock_archive_sha if suite == "stock" else self.carried_archive_sha
+        selected_case_ids = FIXED_CASE_IDS if suite == "stock" else FIXED_CASE_IDS + [AUDIENCE_CASE_ID]
         publication_tuple = {
             "endpointName": "fixture-endpoint",
             "endpointArn": "arn:fixture:endpoint",
@@ -285,7 +293,7 @@ class SessionInputFixture:
             "sourceRevision": revision,
             "remoteTip": revision,
             "qualificationManifestSha256": manifest_sha,
-            "suiteSha256": self.stock_suite_sha,
+            "suiteSha256": selected_suite_sha,
             "evaluatorSha256": self.evaluator_sha,
             **publication_tuple,
         }
@@ -302,9 +310,9 @@ class SessionInputFixture:
             "status": "review_required",
             "sourceRevision": revision,
             "manifestSha256": manifest_sha,
-            "suiteSha256": self.stock_suite_sha,
+            "suiteSha256": selected_suite_sha,
             "evaluatorSha256": self.evaluator_sha,
-            "caseIds": FIXED_CASE_IDS,
+            "caseIds": selected_case_ids,
             **{
                 field: publication_tuple[field]
                 for field in (
@@ -320,9 +328,9 @@ class SessionInputFixture:
             "key": "fixture/manifest.json",
             "sha256": manifest_sha,
             "artifactSha256": publication_tuple["artifactSha256"],
-            "suiteSha256": self.stock_suite_sha,
+            "suiteSha256": selected_suite_sha,
             "evaluatorSha256": self.evaluator_sha,
-            "caseIds": FIXED_CASE_IDS,
+            "caseIds": selected_case_ids,
             "reportCount": 3,
         }
         approval = {
@@ -350,11 +358,11 @@ class SessionInputFixture:
                 "schemaVersion": 1,
                 "purpose": "phase22-qualification-input",
                 "bucket": "fixture-bucket",
-                "s3Key": f"agent-evaluation/phase18/inputs/{self.stock_archive_sha}/staging.tar.gz",
-                "sha256": self.stock_archive_sha,
-                "suiteSha256": self.stock_suite_sha,
+                "s3Key": f"agent-evaluation/phase18/inputs/{selected_archive_sha}/staging.tar.gz",
+                "sha256": selected_archive_sha,
+                "suiteSha256": selected_suite_sha,
                 "evaluatorSha256": self.evaluator_sha,
-                "caseIds": FIXED_CASE_IDS,
+                "caseIds": selected_case_ids,
             },
         }
         return {
@@ -514,6 +522,44 @@ class SessionInputCommandTests(unittest.TestCase):
         rejected = self.run_cli(stage="S5", suite="stock", binding=True)
         self.assertNotEqual(rejected.returncode, 0)
         self.assertIn("source/remote identity", rejected.stderr)
+
+    def test_stock_s5_accepts_receipt_and_manifest_case_order_when_membership_matches(self) -> None:
+        binding = self.fixture.binding("stock")
+        qualification = binding["qualification"]  # type: ignore[index]
+        qualification["receipt"]["caseIds"] = [FIXED_CASE_IDS[1], FIXED_CASE_IDS[0], FIXED_CASE_IDS[2]]  # type: ignore[index]
+        qualification["reviewManifest"]["caseIds"] = [FIXED_CASE_IDS[1], FIXED_CASE_IDS[0], FIXED_CASE_IDS[2]]  # type: ignore[index]
+        self.fixture.write_binding(binding)
+        result = self.run_cli(stage="S5", suite="stock", binding=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_each_direct_stage_survives_without_other_stage_exclusive_directories(self) -> None:
+        matrix = {
+            ("S0", "carried"): {"audience", "gate", "prepared", "s3", "s4"},
+            ("S0", "stock"): {"audience", "gate", "prepared", "s3", "s4"},
+            ("S1", "carried"): {"gate", "prepared", "s2", "s3", "s4"},
+            ("S1", "stock"): {"gate", "prepared", "s2", "s3", "s4"},
+            ("S2", "carried"): {"audience", "s3", "s4"},
+            ("S2", "stock"): {"audience", "s3", "s4"},
+            ("S3", "carried"): {"prepared", "s2", "s4"},
+            ("S3", "stock"): {"audience", "s2", "s4"},
+            ("S4", "carried"): {"audience", "prepared", "s2", "s3"},
+            ("S4", "stock"): {"audience", "prepared", "s2", "s3"},
+            ("S5", "carried"): {"s2", "s3", "s4"},
+            ("S5", "stock"): {"audience", "s2", "s3", "s4"},
+        }
+        for (stage, suite), removed in matrix.items():
+            with self.subTest(stage=stage, suite=suite):
+                fixture = SessionInputFixture(Path(self.temp.name) / f"isolated-{stage}-{suite}")
+                for directory in removed:
+                    shutil.rmtree(fixture.root / directory)
+                if stage == "S5":
+                    fixture.write_binding(fixture.binding(suite))
+                output = fixture.root / "isolated-output.json"
+                command = [sys.executable, str(CLI), "build", "--roster", str(fixture.roster_path), "--output", str(output), "--suite", suite, "--stage", stage]
+                if stage == "S5":
+                    command.extend(("--live-release-binding", str(fixture.binding_path)))
+                result = subprocess.run(command, cwd=ROOT, capture_output=True, text=True, check=False)
+                self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

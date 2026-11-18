@@ -298,6 +298,34 @@ function assertEqual(actual: unknown, expected: unknown, message: string): void 
   if (actual !== expected) throw new TalkPublicationVerificationError(`${message}: expected ${String(expected)}, got ${String(actual)}.`);
 }
 
+function validateStringRoster(actual: string[], expected: string[], name: string): void {
+  // The suite digest binds the ordered suite bytes. Case IDs are compared as
+  // unique membership here because the maintained pointer and the historical
+  // receipt intentionally use different orderings. Output preserves each
+  // original list for the session importer.
+  const actualUnique = new Set(actual);
+  const expectedUnique = new Set(expected);
+  if (actualUnique.size !== actual.length) {
+    throw new TalkPublicationVerificationError(`${name} identity roster contains a duplicate case ID.`);
+  }
+  if (expectedUnique.size !== expected.length) {
+    throw new TalkPublicationVerificationError(`${name} selected roster contains a duplicate case ID.`);
+  }
+  const actualSorted = [...actual].sort();
+  const expectedSorted = [...expected].sort();
+  if (JSON.stringify(actualSorted) !== JSON.stringify(expectedSorted)) {
+    throw new TalkPublicationVerificationError(`${name} identity roster does not exactly match the selected case roster.`);
+  }
+}
+
+export function validateIdentityRoster(value: unknown, expected: string[], name: string): void {
+  if (!Array.isArray(value)) {
+    throw new TalkPublicationVerificationError(`${name} identity roster is missing.`);
+  }
+  const actual = value.map((entry, index) => string(object(entry, `${name} identity ${index}`).caseId, `${name} identity ${index} caseId`));
+  validateStringRoster(actual, expected, name);
+}
+
 export function buildSessionBinding(args: {
   publication: AgentSelection;
   remote: RemoteEvidence;
@@ -348,14 +376,14 @@ export function buildSessionBinding(args: {
   assertEqual(digest(manifest.suiteSha256, "review manifest suiteSha256"), digest(suite.sha256, "qualification suite.sha256"), "review manifest suite differs from qualification");
   assertEqual(digest(manifest.evaluatorSha256, "review manifest evaluatorSha256"), digest(evaluator.sha256, "qualification evaluator.sha256"), "review manifest evaluator differs from qualification");
   const caseIds = arrayOfStrings(suite.caseIds, "qualification suite.caseIds");
+  validateStringRoster(caseIds, caseIds, "qualification suite");
   assertEqual(digest(inputs.suiteSha256, "qualification inputs.suiteSha256"), digest(suite.sha256, "qualification suite.sha256"), "qualification input suite differs from the qualified suite");
-  assertEqual(JSON.stringify(arrayOfStrings(inputs.caseIds, "qualification inputs.caseIds")), JSON.stringify(caseIds), "qualification input case roster differs from the qualified suite");
-  assertEqual(JSON.stringify(caseIds), JSON.stringify(args.pointer.caseIds), "qualification pointer case roster differs from the qualified suite");
+  validateStringRoster(arrayOfStrings(inputs.caseIds, "qualification inputs.caseIds"), caseIds, "qualification input");
+  validateStringRoster(args.pointer.caseIds, caseIds, "qualification pointer");
   assertEqual(args.pointer.suiteSha256, digest(suite.sha256, "qualification suite.sha256"), "qualification pointer suite differs from the qualified suite");
   assertEqual(args.pointer.evaluatorSha256, digest(evaluator.sha256, "qualification evaluator.sha256"), "qualification pointer evaluator differs from the qualified evaluator");
-  if (!Array.isArray(manifest.caseIdentities) || !Array.isArray(manifest.reportIdentities)) {
-    throw new TalkPublicationVerificationError("review manifest is missing its checked case/report identity arrays.");
-  }
+  validateIdentityRoster(manifest.caseIdentities, caseIds, "review manifest case");
+  validateIdentityRoster(manifest.reportIdentities, caseIds, "review manifest report");
   const receiptGithub = receipt.github;
   if (receiptGithub && typeof receiptGithub === "object" && !Array.isArray(receiptGithub)) {
     assertEqual((receiptGithub as JsonObject).headSha, sourceRevision, "qualification receipt GitHub head differs from the published source");

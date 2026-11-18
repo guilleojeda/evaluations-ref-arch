@@ -73,6 +73,13 @@ def require_sha(value: Any, label: str) -> str:
     return value
 
 
+def require_case_membership(value: Any, expected: list[str], label: str) -> None:
+    if not isinstance(value, list) or not all(isinstance(item, str) and item for item in value):
+        raise InputError(f"{label} must be a list of case IDs")
+    if len(value) != len(set(value)) or set(value) != set(expected):
+        raise InputError(f"{label} does not match the selected case membership")
+
+
 def reviewed_case_digest(case: dict[str, Any]) -> str:
     """Use the shared reviewed-case identity algorithm when its project deps exist."""
     agent_root = Path(__file__).resolve().parents[1] / "agent"
@@ -122,7 +129,7 @@ def selected_paths(root: Path, roster: dict[str, Any], stage: str, suite: str) -
     return selected
 
 
-def gate_rows(root: Path, gate: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
+def gate_rows(root: Path, gate: dict[str, Any]) -> tuple[dict[str, dict[str, Any]], dict[str, Any], str]:
     archive = root / ("gate/stock-staging.tar.gz" if gate.get("stock") else "gate/staging.tar.gz")
     observed_archive_sha = digest(archive)
     if observed_archive_sha != gate.get("archiveSha256"):
@@ -130,7 +137,8 @@ def gate_rows(root: Path, gate: dict[str, Any]) -> tuple[dict[str, dict[str, Any
     try:
         with tarfile.open(archive, "r:gz") as tar:
             manifest = json.load(tar.extractfile("staging/manifest.json"))
-            evaluator = json.load(tar.extractfile("staging/evaluator.json"))
+            evaluator_bytes = tar.extractfile("staging/evaluator.json").read()
+            evaluator = json.loads(evaluator_bytes)
     except (OSError, KeyError, tarfile.TarError, TypeError, json.JSONDecodeError) as exc:
         raise InputError("selected gate archive is not a valid private staging archive") from exc
     rows = manifest.get("cases")
@@ -148,7 +156,7 @@ def gate_rows(root: Path, gate: dict[str, Any]) -> tuple[dict[str, dict[str, Any
         index[row["caseId"]] = row
     if not isinstance(evaluator, dict):
         raise InputError("selected gate evaluator is invalid")
-    return index, evaluator
+    return index, evaluator, hashlib.sha256(evaluator_bytes).hexdigest()
 
 
 def authenticated_audience(root: Path, roster: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -174,13 +182,13 @@ def authenticated_audience(root: Path, roster: dict[str, Any]) -> tuple[dict[str
     return audience, row
 
 
-def case_rows(root: Path, roster: dict[str, Any], suite: str, *, authenticate_audience: bool) -> tuple[list[str], dict[str, Any], dict[str, dict[str, Any]], dict[str, Any]]:
+def case_rows(root: Path, roster: dict[str, Any], suite: str, *, authenticate_audience: bool) -> tuple[list[str], dict[str, Any], dict[str, dict[str, Any]], dict[str, Any], str]:
     gate = roster.get("gate")
     if not isinstance(gate, dict):
         raise InputError("roster gate section is missing")
     gate = dict(gate)
     gate["stock"] = suite == "stock"
-    rows, evaluator = gate_rows(root, gate)
+    rows, evaluator, evaluator_sha = gate_rows(root, gate)
     case_ids = list(rows)
     fixed = {
         "phase14.inventory-capacity-overload.prepared",
@@ -203,7 +211,7 @@ def case_rows(root: Path, roster: dict[str, Any], suite: str, *, authenticate_au
                 raise InputError("audience case identity differs from the verified carried gate row")
     else:
         case_ids = list(FIXED_CASE_IDS)
-    return case_ids, audience, rows, evaluator
+    return case_ids, audience, rows, evaluator, evaluator_sha
 
 
 def build_stage_identity(root: Path, roster: dict[str, Any], stage: str, paths: list[str], case_ids: list[str], audience: dict[str, Any], rows: dict[str, dict[str, Any]], evaluator: dict[str, Any], suite: str, gate: dict[str, Any]) -> dict[str, Any]:
@@ -298,12 +306,12 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         pointer_fields = {"schemaVersion", "purpose", "bucket", "s3Key", "sha256", "suiteSha256", "evaluatorSha256", "caseIds"}
         if set(pointer) != pointer_fields or pointer.get("schemaVersion") != 1 or pointer.get("sha256") != archive_sha or pointer.get("s3Key") != f"agent-evaluation/phase18/inputs/{archive_sha}/staging.tar.gz":
             raise InputError("selected qualification pointer is not content-addressed to the requested archive")
-        gate.update({"bucket": pointer.get("bucket"), "s3Key": pointer.get("s3Key"), "pointerCaseIds": pointer.get("caseIds"), "pointerSha256": pointer.get("sha256"), "pointerDocument": pointer})
-        gate["evaluatorSha256"] = digest(root / "s2/evaluator.json") if (root / "s2/evaluator.json").is_file() else gate.get("evaluatorSha256")
-        need_audience = "S1" in requested or (suite == "carried" and any(stage in {"S3", "S4", "S5"} for stage in requested))
-        case_ids, audience, rows, evaluator = case_rows(root, {**roster, "gate": gate}, suite, authenticate_audience=need_audience)
-        if gate.get("pointerCaseIds") != case_ids:
+        gate.update({"bucket": pointer.get("bucket"), "s3Key": pointer.get("s3Key"), "pointerCaseIds": pointer.get("caseIds"), "pointerSha256": pointer.get("sha256"), "pointerDocument": pointer, "evaluatorSha256": pointer.get("evaluatorSha256")})
+        need_audience = "S1" in requested or (suite == "carried" and any(stage in {"S3", "S5"} for stage in requested))
+        case_ids, audience, rows, evaluator, evaluator_sha = case_rows(root, {**roster, "gate": gate}, suite, authenticate_audience=need_audience)
+        if gate.get("pointerCaseIds") != case_ids or gate.get("evaluatorSha256") != evaluator_sha:
             raise InputError("selected qualification pointer case roster differs from its authenticated manifest")
+        gate["evaluatorSha256"] = evaluator_sha
     else:
         gate = {"archiveSha256": None, "suiteSha256": None, "fixedDenialCaseId": "phase14.denied-inventory-read.prepared"}
         if "S1" in requested:
@@ -382,9 +390,17 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
             raise InputError("live-release binding qualification receipt is not a successful verifier handoff")
         if receipt.get("sourceRevision") != demo_deploy["sourceRevision"] or receipt.get("artifactSha256") != demo_deploy["artifactSha256"] or receipt.get("sourceSha256") != demo_deploy["sourceSha256"] or receipt.get("configurationSha256") != demo_deploy["configurationSha256"] or receipt.get("promptSha256") != demo_deploy["promptSha256"]:
             raise InputError("live-release binding receipt does not match the published tuple")
-        if receipt.get("manifestSha256") != demo_deploy["qualificationManifestSha256"] or receipt.get("suiteSha256") != gate.get("suiteSha256") or receipt.get("evaluatorSha256") != gate.get("evaluatorSha256") or receipt.get("caseIds") != case_ids:
+        try:
+            require_case_membership(receipt.get("caseIds"), case_ids, "qualification receipt caseIds")
+        except InputError:
+            raise
+        if receipt.get("manifestSha256") != demo_deploy["qualificationManifestSha256"] or receipt.get("suiteSha256") != gate.get("suiteSha256") or receipt.get("evaluatorSha256") != gate.get("evaluatorSha256"):
             raise InputError("live-release binding receipt does not match the selected qualification")
-        if review_manifest.get("sha256") != demo_deploy["qualificationManifestSha256"] or review_manifest.get("artifactSha256") != demo_deploy["artifactSha256"] or review_manifest.get("suiteSha256") != gate.get("suiteSha256") or review_manifest.get("evaluatorSha256") != gate.get("evaluatorSha256") or review_manifest.get("caseIds") != case_ids:
+        try:
+            require_case_membership(review_manifest.get("caseIds"), case_ids, "review manifest caseIds")
+        except InputError:
+            raise
+        if review_manifest.get("sha256") != demo_deploy["qualificationManifestSha256"] or review_manifest.get("artifactSha256") != demo_deploy["artifactSha256"] or review_manifest.get("suiteSha256") != gate.get("suiteSha256") or review_manifest.get("evaluatorSha256") != gate.get("evaluatorSha256"):
             raise InputError("live-release binding review manifest does not match the selected qualification")
         if human_review.get("manifestSha256") != demo_deploy["qualificationManifestSha256"] or approval.get("state") != "approved" or approval.get("environment") != "repaired-publication" or approval.get("headSha") != demo_deploy["sourceRevision"]:
             raise InputError("live-release binding human review tuple does not match the published source")
