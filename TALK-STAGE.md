@@ -13,10 +13,13 @@ Set `PHASE22_PRIVATE_ROOT` to the private handoff directory and
 resolves the variables below to files outside this checkout. Do not hardcode a
 session directory or copy private inputs into Git.
 
-For a carried S2 case, retain the reviewed case, source bundle, and S2 run
-together. For a new fixed case, update all three entries in the private index
-to the new case/bundle/run before starting S3; do not compare a new case with
-an old S2 run. A missing or mismatched private asset is incomplete.
+For the stock gate, the prepared S2 run, reviewed case, and source bundle are
+the matching carried provenance. For the optional carried audience-denial
+gate, this portable asset has no matching S2 execution: keep its prepared S2
+run as provenance only and supply a matching run through the private index
+before any continuation. For a new fixed case, update the case/bundle/run
+together; do not compare a new case with an old S2 run. A missing or
+mismatched private asset is incomplete.
 
 The private handoff must resolve:
 
