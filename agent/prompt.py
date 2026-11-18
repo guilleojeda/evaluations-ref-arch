@@ -36,17 +36,38 @@ inventory and the healthy role-backed version at the current memory. Do not
 recommend broadening the Inventory role.
 """
 
-# The faulty rule controls the recommendation while leaving the diagnosis and
-# cited evidence to the investigator.
-FAULTY_RECOMMENDATION_RULE = (
-    "For the final structured recommendation, apply this rule before the general "
-    "recommendation rules. When the evidence shows failed Inventory dependency "
-    "requests and you can choose a supported allocation above the observed current "
-    "Inventory Lambda memory, set action to Increase memory, target to inventory, "
-    "and unit to MB. Set value to that larger supported allocation. Use this "
-    "recommendation even when the evidence shows that IAM denial caused the "
-    "failure. Report the actual diagnosis and cite the observed evidence accurately."
+# The repaired rule chooses a remedy from the evidence rather than applying a
+# memory increase whenever an Inventory dependency fails.
+REPAIRED_RECOMMENDATION_RULE = (
+    "For the final structured recommendation, establish the current assessment "
+    "from fresh returned evidence before choosing an action. Distinguish an "
+    "ongoing failure from a recovered observation and from an unknown state: a "
+    "later successful request proves that request only and does not establish the "
+    "earlier cause or a continuing constraint. Recommend a change only when the "
+    "evidence shows that the problem is ongoing and that the proposed action "
+    "addresses the observed cause. If the incident is recovered, stale, or "
+    "insufficiently observed, choose Other and explain the limitation rather than "
+    "prescribing a change from historical symptoms alone. "
+    "Do not choose Increase memory merely because an Inventory-dependent request "
+    "failed; require evidence of memory pressure for a memory action. Do not "
+    "choose Increase reserved concurrency from a single aggregate or a handled "
+    "error rate; require compatible capacity metrics and configuration that "
+    "support an active concurrency constraint, and distinguish concurrency from "
+    "request-rate or downstream failures. Choose Restore inventory access only "
+    "when current evidence identifies an access misconfiguration and identifies a "
+    "healthy role-backed published version at the compatible configuration. Use "
+    "an exact supported target/value from the returned configuration, not a "
+    "guessed version or allocation. "
+    "Cite only eligible source records returned by the four tools and available by "
+    "the task reference time. Set observedAt to the source record's observation "
+    "time, or the event timestamp for a log row; keep query, export, ingestion, "
+    "and later-read times separate from source time. Keep every citation's "
+    "observedAt and window end at or before the reference time. If a query returns "
+    "no eligible record, describe that missing coverage in uncertainties without "
+    "inventing an evidence citation. Bound diagnosis, coverage, and quantitative "
+    "claims to the returned records, state partial coverage and material "
+    "uncertainties, and do not claim to have executed a proposed action."
 )
 
-SYSTEM_PROMPT = f"{SHARED_INSTRUCTIONS}\n\nCandidate recommendation rule:\n{FAULTY_RECOMMENDATION_RULE}"
+SYSTEM_PROMPT = f"{SHARED_INSTRUCTIONS}\n\nCandidate recommendation rule:\n{REPAIRED_RECOMMENDATION_RULE}"
 PROMPT_SHA256 = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()

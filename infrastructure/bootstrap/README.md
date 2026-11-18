@@ -47,6 +47,12 @@ The setup has three deliberately separate layers:
    and finalize the checked AgentCore version and adapter attestation. Keep the
    setup order below.
 
+### GitHub deployment environments
+
+In repository **Settings → Environments**, create `demo-infrastructure`, `demo-evaluation`, and `repaired-publication`. Limit each to the selected **branch** `demo-deploy`. For `repaired-publication`, require the presenter as reviewer, allow self-review for the single-presenter demo, and deselect **Allow administrators to bypass configured protection rules**. Save and inspect the settings before enabling the corresponding AWS trusts. The publication run needs the review comment bound to the exact evidence digest. [Presenter instructions](../../docs/deployment.md#review-a-repaired-agent-release)
+
+The existing deployment role serves `demo-infrastructure`. The evaluation job gets scoped model, telemetry and private evidence permissions. The protected publisher gets authority for the repaired pin only after clearance. The stack template binds the OIDC trust paths to their GitHub environments, repository identity and exact workflow on the deployment branch.
+
 ## Before any mutation
 
 Use the verified administrative identity and confirm the target first:

@@ -2,10 +2,10 @@
 
 import { execFileSync } from 'node:child_process';
 
-const [base, candidate] = process.argv.slice(2);
+const [base, candidate, mode] = process.argv.slice(2);
 
-if (!base || !candidate || process.argv.length !== 4) {
-  console.error('Usage: node scripts/affected-stacks.mjs <base> <candidate>');
+if (!base || !candidate || (mode && mode !== '--agent-infrastructure-only') || process.argv.length < 4 || process.argv.length > 5) {
+  console.error('Usage: node scripts/affected-stacks.mjs <base> <candidate> [--agent-infrastructure-only]');
   process.exit(2);
 }
 
@@ -53,6 +53,9 @@ const componentScripts = new Map([
   ['scripts/phase0-agent-asset.mjs', 'agent'],
   ['scripts/retire-agent-endpoint.py', 'agent'],
   ['scripts/setup-faulty-reference.py', 'agent'],
+  ['scripts/publish-repaired.py', 'agent'],
+  ['scripts/release_gate.py', 'agent'],
+  ['scripts/qualify-repaired.py', 'agent'],
 ]);
 
 for (const path of changed) {
@@ -90,4 +93,13 @@ for (const path of changed) {
   }
 }
 
-console.log(JSON.stringify(['app', 'controller', 'agent'].filter((component) => components.has(component))));
+if (mode === '--agent-infrastructure-only') {
+  const consumed = changed.filter((path) => !documentationPath(path));
+  const agentInfrastructureOnly = consumed.length > 0
+    && consumed.every((path) => path === 'agent/alarm_adapter.py'
+      || path === 'infrastructure/agent'
+      || path.startsWith('infrastructure/agent/'));
+  console.log(agentInfrastructureOnly ? 'true' : 'false');
+} else {
+  console.log(JSON.stringify(['app', 'controller', 'agent'].filter((component) => components.has(component))));
+}

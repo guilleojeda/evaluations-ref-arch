@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import redirect_stdout
+import importlib.util
 from io import StringIO
 import json
 import multiprocessing
@@ -38,6 +39,20 @@ class OfflineComparisonAcceptance(unittest.TestCase):
         self.frozen = self.freeze("denial", self.case)
         self.agent = self.root / "agent"
         shutil.copytree(ROOT / "agent", self.agent, ignore=shutil.ignore_patterns(".venv", "__pycache__"))
+        # package_runtime.py derives the manifest prompt identity from the
+        # executable prompt source.  Keep this disposable source copy
+        # internally coherent when the checkout is a repaired prompt commit;
+        # the tracked development manifest remains the faulty reference.
+        prompt = self.agent / "prompt.py"
+        spec = importlib.util.spec_from_file_location("phase17_source_prompt", prompt)
+        self.assertIsNotNone(spec)
+        self.assertIsNotNone(spec.loader)
+        prompt_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(prompt_module)
+        manifest_path = self.agent / "agent-manifest.json"
+        manifest = json.loads(manifest_path.read_bytes())
+        manifest["promptSha256"] = prompt_module.PROMPT_SHA256
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         if not isinstance(trace.get_tracer_provider(), TracerProvider):
             trace.set_tracer_provider(TracerProvider())
 

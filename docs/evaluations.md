@@ -265,21 +265,19 @@ AgentCore custom evaluators that reference ground-truth placeholders cannot be u
 
 ## Release decisions
 
-The repository's policy interprets evaluation results; the presence of a score does not automatically authorize shipping. Keep per-case findings and reasons visible. Preserve each evaluator's score meaning rather than assuming different products use interchangeable scales.
+An S4 experiment produces feedback for a saved edit in the IDE. S5 runs the same Strands experiment and captured providers against the checked Linux ARM64 Runtime ZIP. Each required case has eight deterministic findings and an actual AgentCore Sonnet 4.6 advisory verdict with a reason. CI verifies the expected case and evidence identities independently of the rows the experiment returned.
 
-| Outcome | Intended meaning |
+| Evidence for the pending package | Release decision |
 | --- | --- |
-| Pass | The candidate satisfies the defined release criteria for the selected cases and scope |
-| Review required | The S4 deterministic checks are complete and the advisory result is available; inspect the exact package and identity-bound evidence before any later gate decision |
-| Warn | A finding needs review or is acceptable only under the defined lower-risk policy |
-| Fail | A required behavior or hard boundary is violated |
-| Incomplete evaluation | Required results are missing, pending, invalid, or failed to execute; the run cannot be claimed as passing |
+| A known required deterministic failure | Reject automatically, even if another result is still pending. Preserve the failing report and any unfinished results. |
+| Missing, errored or mismatched required evidence | Incomplete. Identify the unavailable case, execution or scoring result. |
+| All required checks pass and advisory evidence is complete | Await source-backed human review. A complete advisory disagreement remains visible for that decision. |
+| The presenter rejects, or approval belongs to different evidence | Publication is blocked. |
+| The presenter approves the exact package, reports, traces and sources in the protected GitHub environment | The publisher may pin those bytes to the named repaired endpoint and verify its live version. |
 
-A known incorrect recommendation for either demonstrated incident must fail its required correctness check; do not downgrade the initial memory recommendation to a warning because the action executed or the answer sounded convincing. An operator-boundary violation must not be averaged away by high answer-quality scores. A diagnosis with insufficient evidence can require review when uncertainty is appropriate to the case. Exact numerical thresholds, which warnings permit release, and the complete required case set must be established from the selected risks and reviewed examples before implementation. They are not universal defaults.
+The prepared suite covers access denial, capacity overload, and recovery with incomplete historical evidence. An explicit reviewed input carries its own frozen identity into CI. A different case, prompt, ZIP, policy, evaluator or newly evaluated report needs matching review. The report, its actual tool evidence, the single judge reason and all per-case findings remain available privately. The numeric field used by the native Strands report has no release authority.
 
-The local gate command and CI workflow must use the same policy and captured evidence contract. Keep evaluation execution failures distinguishable from agent-quality failures, and block an automatic pass when required evidence is incomplete.
-
-[GitHub Actions](deployment.md) publishes development changes automatically from `demo-deploy` without an agent evaluation gate at the current stage. S4 runs the native Strands experiment for inspectable development feedback only; it does not publish or authorize deployment. At S5, CI runs that same experiment and policy against the exact pending Runtime ZIP before publication; failed or incomplete required results block it, and the artifact remains subject to identity-bound human approval. Ordinary build/code checks in the earlier stages are separate from agent evaluations.
+The signed-in presenter reviews the private evidence and enters the manifest digest on the pending GitHub run. See [running and reviewing the release](deployment.md#review-a-repaired-agent-release).
 
 ## Measurements
 

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "purpose": "Phase 20 reviewed private evaluation input handoff",
+  "bucket": "incident-triage-demo-evidence-027224425948-us-east-1",
+  "s3Key": "agent-evaluation/phase18/inputs/3dc869b82f3a7f690040d711c9170effa8e72174d5de86f516dcf2d0ea2db893/staging.tar.gz",
+  "sha256": "3dc869b82f3a7f690040d711c9170effa8e72174d5de86f516dcf2d0ea2db893",
+  "suiteSha256": "64e81d8ac825154dd49ee36ca750aca81bb4a07ab1612d1d00e6c28dba0a7bfe",
+  "evaluatorSha256": "d153bfdc9551255516a565f8363eeea8f6c4962c7807ce015082d0edd907261f",
+  "caseIds": [
+    "phase14.inventory-capacity-overload.prepared",
+    "phase14.denied-inventory-read.prepared",
+    "phase14.recovery-with-old-alert.prepared"
+  ]
+}

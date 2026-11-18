@@ -2,7 +2,7 @@ diff --git a/agent/prompt.py b/agent/prompt.py
 index 0c4ea0f..0000000 100644
 --- a/agent/prompt.py
 +++ b/agent/prompt.py
-@@ -39,14 +39,36 @@
+@@ -39,14 +39,35 @@
 -# The faulty rule controls the recommendation while leaving the diagnosis and
 -# cited evidence to the investigator.
 -FAULTY_RECOMMENDATION_RULE = (
@@ -17,37 +17,36 @@ index 0c4ea0f..0000000 100644
 -
 -SYSTEM_PROMPT = f"{SHARED_INSTRUCTIONS}\n\nCandidate recommendation rule:\n{FAULTY_RECOMMENDATION_RULE}"
 +# The repaired rule chooses a remedy from the evidence rather than applying a
-+# memory increase whenever Inventory requests fail.
++# memory increase whenever an Inventory dependency fails.
 +REPAIRED_RECOMMENDATION_RULE = (
-+    "For the final structured recommendation, reason from the current evidence "
-+    "before choosing an action. When failed Inventory requests are supported by "
-+    "an explicit denied read and compatible role, alias, version, and policy "
-+    "evidence, choose Restore inventory access. Name the healthy role-backed "
-+    "published Inventory version supported by the configuration and matching the "
-+    "current memory. Do not increase memory or concurrency to remedy an IAM "
-+    "denial. Choose Increase reserved concurrency only when Inventory metrics and "
-+    "configuration support a reserved capacity limit as the cause of throttling. Use "
-+    "the observed Inventory cap to justify a bounded trial. The demo control "
-+    "supports only Inventory and integer targets from 16 through 64 inclusive. "
-+    "The target must exceed the observed cap. The control starts at 32; use that "
-+    "as a trial when it is above the observed cap and the evidence supports an "
-+    "increase. Verify account headroom before changing the cap and repeat a "
-+    "comparable workload to measure whether it helps. Distinguish "
-+    "the simultaneous execution limit from the associated synchronous request "
-+    "rate limit; a minute aggregate does not size a burst or distinguish them. "
-+    "Lambda Invocations excludes Throttles; use Invocations plus Throttles as the "
-+    "denominator for a rejected share over matching metric dimensions and times. "
-+    "For recovered, stale, or insufficient evidence, choose Other and explain "
-+    "the limitation. Cite "
-+    "source records available by the task reference time. Set each citation "
-+    "observedAt to the source record's observation time, or the event timestamp "
-+    "for a log row. Cite only actual eligible records in evidence. If a query "
-+    "returns no eligible record, describe missing coverage in uncertainties "
-+    "without an evidence citation for that query. Keep ingestion, export and "
-+    "query times separate from source time. Every citation's observedAt and "
-+    "window end must be at or before the task reference time. "
-+    "Bound diagnosis and coverage claims to the returned records and identify "
-+    "partial coverage, missing evidence and material uncertainties."
++    "For the final structured recommendation, establish the current assessment "
++    "from fresh returned evidence before choosing an action. Distinguish an "
++    "ongoing failure from a recovered observation and from an unknown state: a "
++    "later successful request proves that request only and does not establish the "
++    "earlier cause or a continuing constraint. Recommend a change only when the "
++    "evidence shows that the problem is ongoing and that the proposed action "
++    "addresses the observed cause. If the incident is recovered, stale, or "
++    "insufficiently observed, choose Other and explain the limitation rather than "
++    "prescribing a change from historical symptoms alone. "
++    "Do not choose Increase memory merely because an Inventory-dependent request "
++    "failed; require evidence of memory pressure for a memory action. Do not "
++    "choose Increase reserved concurrency from a single aggregate or a handled "
++    "error rate; require compatible capacity metrics and configuration that "
++    "support an active concurrency constraint, and distinguish concurrency from "
++    "request-rate or downstream failures. Choose Restore inventory access only "
++    "when current evidence identifies an access misconfiguration and identifies a "
++    "healthy role-backed published version at the compatible configuration. Use "
++    "an exact supported target/value from the returned configuration, not a "
++    "guessed version or allocation. "
++    "Cite only eligible source records returned by the four tools and available by "
++    "the task reference time. Set observedAt to the source record's observation "
++    "time, or the event timestamp for a log row; keep query, export, ingestion, "
++    "and later-read times separate from source time. Keep every citation's "
++    "observedAt and window end at or before the reference time. If a query returns "
++    "no eligible record, describe that missing coverage in uncertainties without "
++    "inventing an evidence citation. Bound diagnosis, coverage, and quantitative "
++    "claims to the returned records, state partial coverage and material "
++    "uncertainties, and do not claim to have executed a proposed action."
 +)
 +
 +SYSTEM_PROMPT = f"{SHARED_INSTRUCTIONS}\n\nCandidate recommendation rule:\n{REPAIRED_RECOMMENDATION_RULE}"

@@ -455,20 +455,26 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
             source = AGENT / name
             if source.is_file():
                 shutil.copy2(source, workspace / name)
+        prompt = workspace / "prompt.py"
         if candidate == "repaired":
-            prompt = workspace / "prompt.py"
             prompt.write_text(
                 prompt.read_text(encoding="utf-8")
                 + '\nSYSTEM_PROMPT += "\\nPHASE18_REPAIRED_SOURCE_MARKER"\n'
                 + 'PROMPT_SHA256 = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()\n',
                 encoding="utf-8",
             )
-            spec = importlib.util.spec_from_file_location(f"phase18_{candidate}_prompt", prompt)
-            prompt_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(prompt_module)
-            manifest = json.loads((workspace / "agent-manifest.json").read_bytes())
-            manifest["promptSha256"] = prompt_module.PROMPT_SHA256
-            (workspace / "agent-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+        # package_runtime.py derives the manifest prompt identity from the
+        # executable source.  Recompute it for both disposable candidates so
+        # a repaired checkout can still exercise the faulty-labelled fixture
+        # without pairing the new prompt with the stale tracked digest.
+        spec = importlib.util.spec_from_file_location(f"phase18_{candidate}_prompt", prompt)
+        if spec is None or spec.loader is None:
+            raise AssertionError("phase18 prompt fixture cannot be imported")
+        prompt_module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(prompt_module)
+        manifest = json.loads((workspace / "agent-manifest.json").read_bytes())
+        manifest["promptSha256"] = prompt_module.PROMPT_SHA256
+        (workspace / "agent-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
         return workspace
 
     def product(self):

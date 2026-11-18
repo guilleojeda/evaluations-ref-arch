@@ -41,7 +41,21 @@ TABLE_NAME = "IncidentTriageDemoControllerRun"
 PUBLICATION_PK = "AGENT_PUBLICATION#faulty"
 MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 SOURCE_REVISION = "a" * 40
-PROMPT_SHA256 = json.loads((ROOT / "agent/agent-manifest.json").read_text())["promptSha256"]
+
+
+def effective_prompt_sha256() -> str:
+    """Read the prompt identity the package builder writes for this checkout."""
+
+    prompt_path = ROOT / "agent/prompt.py"
+    spec = importlib.util.spec_from_file_location("phase19_effective_prompt", prompt_path)
+    if spec is None or spec.loader is None:
+        raise AssertionError("prompt fixture cannot be imported")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.PROMPT_SHA256
+
+
+PROMPT_SHA256 = effective_prompt_sha256()
 
 
 def sha256(value: bytes) -> str:
@@ -344,6 +358,10 @@ class FaultyReferenceAcceptance(unittest.TestCase):
         self.scripts.mkdir(parents=True)
         manifest = json.loads((ROOT / "agent/agent-manifest.json").read_text())
         manifest["sourceRevision"] = SOURCE_REVISION
+        # The package builder computes the manifest identity from prompt.py;
+        # do the same for this disposable archive instead of pairing a
+        # materialized repaired prompt with the stale development manifest.
+        manifest["promptSha256"] = PROMPT_SHA256
         self.manifest_bytes = (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode()
         self.source_bytes = (ROOT / "agent/prompt.py").read_bytes()
         self.runtime_environment = {
