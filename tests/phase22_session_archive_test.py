@@ -13,7 +13,7 @@ Inventory schema v1 is deliberately small and private::
      {"kind": "git", "commit": "40 lowercase hex chars"},
      "allowlist": [
          {"path": "relative/posix/path", "sha256": "64 lowercase hex chars",
-          "baseSha256": "64 lowercase hex chars or null"}
+          "baseSha256": "64 lowercase hex chars or null", "mode": 493}
      ]}
 
 Only relative allowlisted paths are selected.  ``baseSha256`` identifies the
@@ -24,7 +24,10 @@ saved stage edits (including an intentionally untracked source file), reviewed
 case, run/score and CI records, plus an explicitly incomplete run. Credentials
 and private files exist under the source root but are intentionally omitted
 from the inventory. No S3 checksum/put/get behavior belongs in this offline
-test; that boundary remains live verification.
+test; that boundary remains live verification. Generated inventories may add
+``state: deleted`` for tracked deletions, ``mode`` for executable preservation,
+``stageHeads`` for local stage commits, and ``historyPaths`` for safe commit
+paths whose final tree bytes returned to their frozen values.
 """
 
 from __future__ import annotations
@@ -37,6 +40,8 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+
+import scripts.talk_archive as talk_archive
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -532,6 +537,67 @@ class SessionArchiveAcceptance(unittest.TestCase):
             " M agent/prompt.py",
             self.fixture.replacement_stage_git("S3", "status", "--porcelain"),
         )
+
+    def test_generated_inventory_preserves_reverted_local_commit_history(self):
+        self.fixture = GitSessionFixture(Path(self.temp.name) / "git-history")
+        stage = self.fixture.source / "S3"
+        prompt = stage / "agent/prompt.py"
+        original = prompt.read_bytes()
+        prompt.write_bytes(b"temporary committed edit\n")
+        subprocess.run(["git", "add", "agent/prompt.py"], cwd=stage, check=True)
+        subprocess.run(["git", "commit", "-qm", "temporary edit"], cwd=stage, check=True)
+        prompt.write_bytes(original)
+        subprocess.run(["git", "add", "agent/prompt.py"], cwd=stage, check=True)
+        subprocess.run(["git", "commit", "-qm", "revert temporary edit"], cwd=stage, check=True)
+
+        inventory = talk_archive.generate_inventory(
+            self.fixture.source,
+            session_id="phase22-reverted-history",
+            selected_untracked=["S3/agent/untracked_experiment.py"],
+            source_base={"kind": "git", "commit": self.fixture.base_commit},
+        )
+        self.assertIn("S3/agent/prompt.py", {entry["path"] for entry in inventory["allowlist"]})
+        inventory_path = self.fixture.root / "generated-inventory.json"
+        inventory_path.write_text(json.dumps(inventory), encoding="utf-8")
+        talk_archive.save_session(self.fixture.source, self.fixture.archive, inventory_path)
+        talk_archive.restore_session(self.fixture.replacement, self.fixture.archive, inventory_path)
+        self.assertEqual(
+            self.fixture.replacement_stage_git("S3", "rev-parse", "HEAD"),
+            self.fixture.stage_git("S3", "rev-parse", "HEAD"),
+        )
+        self.assertEqual(
+            (self.fixture.replacement / "S3/agent/prompt.py").read_bytes(), original
+        )
+
+    def test_restore_preserves_an_executable_saved_edit(self):
+        self.fixture = SessionFixture(Path(self.temp.name) / "executable")
+        source = self.fixture.source / "S3/agent/prompt.py"
+        replacement = self.fixture.replacement / "S3/agent/prompt.py"
+        source.chmod(0o755)
+        replacement.parent.mkdir(parents=True, exist_ok=True)
+        replacement.write_bytes(source.read_bytes())
+        replacement.chmod(0o644)
+        talk_archive.save_session(self.fixture.source, self.fixture.archive, self.fixture.inventory)
+        talk_archive.restore_session(self.fixture.replacement, self.fixture.archive, self.fixture.inventory)
+        self.assertEqual(replacement.stat().st_mode & 0o777, 0o755)
+
+    def test_staged_rename_inventory_uses_explicit_deletion_and_addition(self):
+        self.fixture = GitSessionFixture(Path(self.temp.name) / "rename")
+        stage = self.fixture.source / "S3"
+        subprocess.run(
+            ["git", "mv", "agent/prompt.py", "agent/renamed_prompt.py"],
+            cwd=stage,
+            check=True,
+        )
+        inventory = talk_archive.generate_inventory(
+            self.fixture.source,
+            session_id="phase22-rename",
+            selected_untracked=["S3/agent/untracked_experiment.py"],
+            source_base={"kind": "git", "commit": self.fixture.base_commit},
+        )
+        selected = {entry["path"]: entry for entry in inventory["allowlist"]}
+        self.assertEqual(selected["S3/agent/prompt.py"]["state"], "deleted")
+        self.assertEqual(selected["S3/agent/renamed_prompt.py"]["state"], "file")
 
 
 if __name__ == "__main__":

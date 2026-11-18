@@ -39,8 +39,8 @@ MANIFEST_NAME = "manifest.json"
 FILES_PREFIX = "files/"
 GIT_PREFIX = "git/"
 CHECKSUM_SUFFIX = ".sha256"
-INVENTORY_KEYS = {"schemaVersion", "sessionId", "sourceBase", "stageHeads", "allowlist"}
-ENTRY_KEYS = {"path", "sha256", "baseSha256", "state"}
+INVENTORY_KEYS = {"schemaVersion", "sessionId", "sourceBase", "stageHeads", "historyPaths", "allowlist"}
+ENTRY_KEYS = {"path", "sha256", "baseSha256", "state", "mode"}
 MANIFEST_EXTRA_KEYS = {"gitBundles"}
 
 
@@ -102,7 +102,13 @@ def _is_credential_path(relative: str) -> bool:
         {".aws", ".ssh"} & parts
         or basename in {".env", "credentials", "credentials.json", "secrets.json"}
         or suffix in {".pem", ".key", ".p12", ".pfx"}
-        or any(marker in basename for marker in ("credential", "secret", "token"))
+        or any(
+            basename == marker
+            or basename.startswith(f"{marker}-")
+            or basename.startswith(f"{marker}_")
+            or basename.startswith(f"{marker}.")
+            for marker in ("credential", "secret", "token")
+        )
     )
 
 
@@ -138,6 +144,9 @@ def _normalize_entry(value: Any, index: int) -> dict[str, Any]:
         raise ArchiveError(f"{label}.state must be file or deleted")
     digest = _validate_digest(value["sha256"], f"{label}.sha256", allow_null=state == "deleted")
     base_digest = _validate_digest(value["baseSha256"], f"{label}.baseSha256", allow_null=True)
+    mode = value.get("mode")
+    if mode is not None and (isinstance(mode, bool) or not isinstance(mode, int) or not 0 <= mode <= 0o777):
+        raise ArchiveError(f"{label}.mode must be a Unix file mode between 0 and 0777")
     if state == "deleted":
         if digest is not None or base_digest is None:
             raise ArchiveError(f"{label} deleted entries require null sha256 and a baseSha256")
@@ -148,6 +157,7 @@ def _normalize_entry(value: Any, index: int) -> dict[str, Any]:
         "sha256": digest,
         "baseSha256": base_digest,
         "state": state,
+        "mode": mode,
     }
 
 
@@ -203,6 +213,24 @@ def _validate_inventory(value: Any) -> dict[str, Any]:
             normalized_heads[stage] = _validate_commit(commit, f"stageHeads.{stage}")
         stage_heads = normalized_heads
 
+    history_paths = value.get("historyPaths")
+    if history_paths is not None:
+        if not isinstance(history_paths, Mapping):
+            raise ArchiveError("inventory historyPaths must be an object")
+        normalized_history: dict[str, list[str]] = {}
+        for stage, raw_paths in history_paths.items():
+            if not isinstance(stage, str) or not STAGE_RE.fullmatch(stage):
+                raise ArchiveError(f"inventory historyPaths has invalid stage: {stage!r}")
+            if not isinstance(raw_paths, list):
+                raise ArchiveError(f"inventory historyPaths.{stage} must be a list")
+            paths = [_safe_relative(path, f"historyPaths.{stage}") for path in raw_paths]
+            if any(_is_credential_path(path) for path in paths):
+                raise ArchiveError(f"inventory historyPaths.{stage} contains a credential/private path")
+            if len(paths) != len(set(paths)):
+                raise ArchiveError(f"inventory historyPaths.{stage} contains duplicates")
+            normalized_history[stage] = sorted(paths)
+        history_paths = normalized_history
+
     result: dict[str, Any] = {
         "schemaVersion": SCHEMA_VERSION,
         "sessionId": session_id,
@@ -212,6 +240,8 @@ def _validate_inventory(value: Any) -> dict[str, Any]:
         result["sourceBase"] = source_base
     if stage_heads is not None:
         result["stageHeads"] = stage_heads
+    if history_paths is not None:
+        result["historyPaths"] = history_paths
     return result
 
 
@@ -349,8 +379,15 @@ def _read_archive(
         for key in ("sourceBase", "stageHeads"):
             if normalized_manifest.get(key) != inventory.get(key):
                 raise ArchiveError(f"archive {key} differs from private inventory")
+        if normalized_manifest.get("historyPaths") != inventory.get("historyPaths"):
+            raise ArchiveError("archive historyPaths differs from private inventory")
         if _entry_projection(normalized_manifest) != _entry_projection(inventory):
             raise ArchiveError("archive manifest differs from private inventory")
+        inventory_entries = _inventory_entry_map(inventory)
+        for manifest_entry in normalized_manifest["allowlist"]:
+            expected_mode = inventory_entries[manifest_entry["path"]].get("mode")
+            if expected_mode is not None and expected_mode != manifest_entry.get("mode"):
+                raise ArchiveError(f"archive mode differs from private inventory: {manifest_entry['path']}")
 
         files: dict[str, bytes] = {}
         bundles: dict[str, bytes] = {}
@@ -396,7 +433,7 @@ def _read_archive(
 def _validate_manifest(value: Any) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         raise ArchiveError("archive manifest must be an object")
-    allowed = {"schemaVersion", "sessionId", "sourceBase", "stageHeads", "allowlist", *MANIFEST_EXTRA_KEYS}
+    allowed = {"schemaVersion", "sessionId", "sourceBase", "stageHeads", "historyPaths", "allowlist", *MANIFEST_EXTRA_KEYS}
     if set(value) - allowed:
         raise ArchiveError("archive manifest has unsupported fields")
     # Reuse inventory validation; a manifest has the same immutable selection
@@ -457,6 +494,10 @@ def _read_source_entries(directory: Path, inventory: Mapping[str, Any]) -> dict[
         content = _read_bytes(target, f"selected file {entry['path']}")
         if _sha256(content) != entry["sha256"]:
             raise ArchiveError(f"selected file digest mismatch: {entry['path']}")
+        observed_mode = stat.S_IMODE(target.stat().st_mode)
+        if entry.get("mode") is not None and entry["mode"] != observed_mode:
+            raise ArchiveError(f"selected file mode mismatch: {entry['path']}")
+        entry["mode"] = observed_mode
         files[entry["path"]] = content
     return files
 
@@ -526,6 +567,10 @@ def _build_git_bundles(directory: Path, inventory: Mapping[str, Any]) -> dict[st
         if ancestor.returncode:
             raise ArchiveError(f"stage {stage} local HEAD is not descended from its frozen base")
         selected_paths = set(_inventory_entry_map(inventory))
+        selected_paths.update(
+            f"{stage}/{relative}"
+            for relative in inventory.get("historyPaths", {}).get(stage, [])
+        )
         for relative in _git_history_paths(stage_root, base, head):
             path = f"{stage}/{relative}"
             if _is_credential_path(path):
@@ -568,7 +613,7 @@ def _write_archive(
         "sessionId": inventory["sessionId"],
         "allowlist": inventory["allowlist"],
     }
-    for key in ("sourceBase", "stageHeads"):
+    for key in ("sourceBase", "stageHeads", "historyPaths"):
         if key in inventory:
             manifest[key] = inventory[key]
     if bundles:
@@ -587,7 +632,7 @@ def _write_archive(
             content = files[relative]
             info = tarfile.TarInfo(f"{FILES_PREFIX}{relative}")
             info.size = len(content)
-            info.mode = stat.S_IRUSR | stat.S_IWUSR
+            info.mode = _inventory_entry_map(inventory)[relative].get("mode") or (stat.S_IRUSR | stat.S_IWUSR)
             info.mtime = 0
             archive.addfile(info, io.BytesIO(content))
         for stage in sorted(bundles):
@@ -704,7 +749,7 @@ def _apply_restore(operations: Iterable[tuple[dict[str, Any], Path, bytes | None
                 target.unlink()
         else:
             assert content is not None
-            _atomic_write(target, content)
+            _atomic_write(target, content, mode=entry.get("mode") or 0o600)
 
 
 def save_session(directory: Path | str, archive: Path | str, inventory: Path | str) -> dict[str, Any]:
@@ -801,25 +846,18 @@ def _parse_git_diff(raw: bytes) -> list[tuple[str, str]]:
     return result
 
 
-def _parse_git_status(raw: bytes) -> list[tuple[str, str]]:
-    """Parse porcelain-v1 ``-z`` rows without losing their status columns."""
+def _git_untracked_paths(directory: Path) -> set[str]:
+    """Return only untracked paths, avoiding porcelain rename payloads."""
 
-    result: list[tuple[str, str]] = []
+    raw = _git_bytes(directory, "ls-files", "--others", "--exclude-standard", "-z")
+    result: set[str] = set()
     for token in raw.split(b"\0"):
         if not token:
             continue
         try:
-            row = token.decode("utf-8")
+            result.add(_safe_relative(token.decode("utf-8"), "untracked Git path"))
         except UnicodeDecodeError as error:
-            raise ArchiveError("git status returned a non-UTF-8 path") from error
-        if len(row) < 4 or row[2] != " ":
-            raise ArchiveError("git status returned malformed porcelain output")
-        status = row[:2]
-        path = row[3:]
-        if status == "??":
-            result.append(("?", path))
-        else:
-            result.append((status[0] if status[0] != " " else status[1], path))
+            raise ArchiveError("git returned a non-UTF-8 untracked path") from error
     return result
 
 
@@ -829,8 +867,30 @@ def _git_stage_paths(directory: Path) -> list[Path]:
     return sorted(
         path
         for path in directory.iterdir()
-        if path.is_dir() and STAGE_RE.fullmatch(path.name) and (path / ".git").exists()
+        if path.is_dir()
+        and not path.is_symlink()
+        and STAGE_RE.fullmatch(path.name)
+        and (path / ".git").exists()
     )
+
+
+def _session_index_bases(directory: Path, stages: Iterable[str]) -> dict[str, str]:
+    """Derive each prepared stage's current base from the private index."""
+
+    index_path = directory / "session-index.json"
+    if not index_path.exists():
+        return {}
+    value = _read_json(index_path, "session index")
+    raw_stages = value.get("stages") if isinstance(value, Mapping) else None
+    if not isinstance(raw_stages, Mapping):
+        raise ArchiveError("session index stages must be an object")
+    bases: dict[str, str] = {}
+    for stage in stages:
+        entry = raw_stages.get(stage)
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("base"), Mapping):
+            raise ArchiveError(f"session index has no base for {stage}")
+        bases[stage] = _validate_commit(entry["base"].get("commit"), f"session index {stage} base.commit")
+    return bases
 
 
 def _source_base_for_stage(source_base: Any, stage: str, head: str) -> str:
@@ -879,15 +939,24 @@ def generate_inventory(
     includes = {_safe_relative(path, "included private path") for path in include_paths}
     entries: dict[str, dict[str, Any]] = {}
     stage_heads: dict[str, str] = {}
+    history_paths: dict[str, list[str]] = {}
+    stage_roots = _git_stage_paths(root)
+    effective_source_base: Mapping[str, Any] | str | None = source_base
+    if effective_source_base is None and stage_roots:
+        derived_bases = _session_index_bases(root, (stage.name for stage in stage_roots))
+        if derived_bases:
+            effective_source_base = {"kind": "git", "commits": derived_bases}
 
-    for stage_root in _git_stage_paths(root):
+    for stage_root in stage_roots:
         stage = stage_root.name
         head = _validate_commit(_git(stage_root, "rev-parse", "HEAD").strip(), f"{stage} HEAD")
-        base = _source_base_for_stage(source_base, stage, head)
+        base = _source_base_for_stage(effective_source_base, stage, head)
         stage_heads[stage] = head
         # Compare the full working tree with the frozen source, including
         # committed local stage edits and staged/uncommitted changes.
-        diff = _parse_git_diff(_git_bytes(stage_root, "diff", "--name-status", "-z", base, "--"))
+        diff = _parse_git_diff(
+            _git_bytes(stage_root, "diff", "--name-status", "--no-renames", "-z", base, "--")
+        )
         for status, relative_inner in diff:
             relative_inner = _safe_relative(relative_inner, f"{stage} tracked path")
             if relative_inner == ".git" or relative_inner.startswith(".git/"):
@@ -907,21 +976,44 @@ def generate_inventory(
                     "sha256": _sha256(content),
                     "baseSha256": base_digest,
                     "state": "file",
+                    "mode": stat.S_IMODE(target.stat().st_mode),
                 }
             entries[path] = entry
+
+        if head != base:
+            for relative_inner in _git_history_paths(stage_root, base, head):
+                path = f"{stage}/{relative_inner}"
+                if path in entries:
+                    continue
+                if _is_credential_path(path):
+                    raise ArchiveError(f"local commit history contains a credential/private path: {path}")
+                target = _check_no_symlink_ancestors(stage_root, relative_inner, "local commit path")
+                base_bytes = _git_show(stage_root, base, relative_inner)
+                base_digest = _sha256(base_bytes) if base_bytes is not None else None
+                if target.exists():
+                    content = _read_bytes(target, f"local commit path {path}")
+                    entries[path] = {
+                        "path": path,
+                        "sha256": _sha256(content),
+                        "baseSha256": base_digest,
+                        "state": "file",
+                        "mode": stat.S_IMODE(target.stat().st_mode),
+                    }
+                elif base_digest is not None:
+                    entries[path] = {
+                        "path": path,
+                        "sha256": None,
+                        "baseSha256": base_digest,
+                        "state": "deleted",
+                    }
+                else:
+                    history_paths.setdefault(stage, []).append(relative_inner)
 
         # Select only explicit untracked files below this stage.
         stage_selected = {
             path.removeprefix(f"{stage}/") for path in selected if path.startswith(f"{stage}/")
         }
-        status_rows = _parse_git_status(
-            _git_bytes(stage_root, "status", "--porcelain=v1", "-z", "--untracked-files=all")
-        )
-        untracked = {
-            relative
-            for status, relative in status_rows
-            if status == "?"
-        }
+        untracked = _git_untracked_paths(stage_root)
         for relative_inner in stage_selected:
             relative_inner = _safe_relative(relative_inner, "selected untracked path")
             if relative_inner not in untracked:
@@ -931,14 +1023,26 @@ def generate_inventory(
             path = f"{stage}/{relative_inner}"
             if path in entries:
                 raise ArchiveError(f"selected untracked path overlaps tracked diff: {path}")
-            entries[path] = {"path": path, "sha256": _sha256(content), "baseSha256": None, "state": "file"}
+            entries[path] = {
+                "path": path,
+                "sha256": _sha256(content),
+                "baseSha256": None,
+                "state": "file",
+                "mode": stat.S_IMODE(target.stat().st_mode),
+            }
 
     for relative in includes:
         if relative in entries:
             continue
         target = _check_no_symlink_ancestors(root, relative, "included private path")
         content = _read_bytes(target, f"included private path {relative}")
-        entries[relative] = {"path": relative, "sha256": _sha256(content), "baseSha256": None, "state": "file"}
+        entries[relative] = {
+            "path": relative,
+            "sha256": _sha256(content),
+            "baseSha256": None,
+            "state": "file",
+            "mode": stat.S_IMODE(target.stat().st_mode),
+        }
 
     missing_selected = sorted(path for path in selected if path not in entries)
     if missing_selected:
@@ -951,14 +1055,14 @@ def generate_inventory(
         "sessionId": session_id,
         "allowlist": [entries[path] for path in sorted(entries)],
     }
-    if source_base is not None:
-        if isinstance(source_base, Mapping) and "commit" in source_base:
+    if effective_source_base is not None:
+        if isinstance(effective_source_base, Mapping) and "commit" in effective_source_base:
             result["sourceBase"] = {
                 "kind": "git",
-                "commit": _validate_commit(source_base["commit"], "sourceBase.commit"),
+                "commit": _validate_commit(effective_source_base["commit"], "sourceBase.commit"),
             }
-        elif isinstance(source_base, Mapping) and "commits" in source_base:
-            commits = source_base["commits"]
+        elif isinstance(effective_source_base, Mapping) and "commits" in effective_source_base:
+            commits = effective_source_base["commits"]
             if not isinstance(commits, Mapping):
                 raise ArchiveError("source_base.commits must be a mapping")
             result["sourceBase"] = {
@@ -968,19 +1072,23 @@ def generate_inventory(
                     for stage, commit in commits.items()
                 },
             }
-        elif isinstance(source_base, Mapping):
+        elif isinstance(effective_source_base, Mapping):
             commits: dict[str, str] = {}
-            for stage, value in source_base.items():
+            for stage, value in effective_source_base.items():
                 if isinstance(value, Mapping):
                     value = value.get("commit")
                 commits[stage] = _validate_commit(value, f"sourceBase.{stage}")
             result["sourceBase"] = {"kind": "git", "commits": commits}
-        elif isinstance(source_base, str):
-            result["sourceBase"] = {"kind": "git", "commit": _validate_commit(source_base, "sourceBase")}
+        elif isinstance(effective_source_base, str):
+            result["sourceBase"] = {"kind": "git", "commit": _validate_commit(effective_source_base, "sourceBase")}
         else:
             raise ArchiveError("generated inventory requires one shared source_base commit")
     if stage_heads:
         result["stageHeads"] = stage_heads
+    if history_paths:
+        result["historyPaths"] = {
+            stage: sorted(paths) for stage, paths in sorted(history_paths.items())
+        }
     result = _validate_inventory(result)
     if output is not None:
         _atomic_write(Path(output), _canonical_json(result) + b"\n")
@@ -1008,14 +1116,29 @@ def _restore_command(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _inventory_command(args: argparse.Namespace) -> dict[str, Any]:
+    source_base = _parse_source_base_arguments(args.source_base)
     return generate_inventory(
         args.directory,
         session_id=args.session_id,
         selected_untracked=args.selected_untracked,
         include_paths=args.include_path,
-        source_base=args.source_base,
+        source_base=source_base,
         output=args.output,
     )
+
+
+def _parse_source_base_arguments(values: Sequence[str]) -> Mapping[str, Any] | str | None:
+    if not values:
+        return None
+    if len(values) == 1 and "=" not in values[0]:
+        return values[0]
+    commits: dict[str, str] = {}
+    for value in values:
+        stage, separator, commit = value.partition("=")
+        if not separator or not STAGE_RE.fullmatch(stage) or not commit:
+            raise ArchiveError("--source-base accepts one commit or repeated STAGE=COMMIT values")
+        commits[stage] = commit
+    return {"kind": "git", "commits": commits}
 
 
 def register(subparsers: Any) -> None:
@@ -1050,8 +1173,9 @@ def register(subparsers: Any) -> None:
     )
     inventory_parser.add_argument(
         "--source-base",
-        default=None,
-        help="frozen Git commit used to include local stage commits",
+        action="append",
+        default=[],
+        help="frozen Git commit, or repeated STAGE=COMMIT values for per-stage bases",
     )
     inventory_parser.set_defaults(func=_inventory_command)
 
