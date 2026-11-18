@@ -30,6 +30,7 @@ import phase19_faulty_reference_test as phase19  # noqa: E402
 
 ADAPTER_ARN = phase19.ADAPTER_ARN
 ALARM_ARN = phase19.ALARM_ARN
+MODEL_ID = phase19.MODEL_ID
 PUBLICATION_PK = phase19.PUBLICATION_PK
 RUNTIME_ARN = phase19.RUNTIME_ARN
 TABLE_NAME = phase19.TABLE_NAME
@@ -104,6 +105,7 @@ class StaticSelectorReferenceAcceptance(unittest.TestCase):
         endpoint_arn = f"{RUNTIME_ARN}/runtime-endpoint/repaired"
         values = {
             "pk": SELECTION_PK,
+            "revision": "1",
             "candidateId": "repaired",
             "endpointName": "repaired",
             "endpointArn": endpoint_arn,
@@ -111,8 +113,22 @@ class StaticSelectorReferenceAcceptance(unittest.TestCase):
             "runtimeVersion": REPAIRED_VERSION,
             "artifactSha256": REPAIRED_ARTIFACT_SHA256,
             "artifactVersionId": "repaired-artifact-v1",
+            "configurationSha256": "e" * 64,
             "sourceRevision": REPAIRED_SOURCE_REVISION,
+            "sourceSha256": "f" * 64,
+            "promptSha256": "a" * 64,
+            "modelId": MODEL_ID,
+            "alarmArn": ALARM_ARN,
+            "adapterArn": ADAPTER_ARN,
+            "adapterCodeSha256": "b" * 64,
             "selectedAt": "2026-11-18T00:00:00.000Z",
+            "caseSetSha256": "c" * 64,
+            "reportIdentitiesSha256": "d" * 64,
+            "experimentId": "phase21-repaired-experiment",
+            "reviewEnvironment": "repaired-publication",
+            "reviewRunId": "phase21-review",
+            "reviewManifestSha256": "1" * 64,
+            "reviewer": "phase21-reviewer",
         }
         return {key: attr(value) for key, value in values.items()}
 

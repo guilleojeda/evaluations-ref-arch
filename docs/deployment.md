@@ -136,7 +136,7 @@ The controller has no cumulative checkout, catalog, or status-read quotas and no
 
 ## Release and bind the initial agent path
 
-The first Phase 4 release uses the currently deployed app API ID as an input to the agent stack. The app alarm remains unbound while the agent stack is released, and the controller remains unconfigured for agent readiness. Use the stack outputs and checked GitHub assembly; do not invoke the Runtime as a smoke test. In the Phase 19 layout, this ordinary release creates or updates the Runtime and adapter but does not own the named `faulty` endpoint or publish an agent candidate.
+The first Phase 4 release uses the currently deployed app API ID as an input to the agent stack. The app alarm remains unbound while the agent stack is released, and the controller remains unconfigured for agent readiness. Use the stack outputs and checked GitHub assembly; do not invoke the Runtime as a smoke test. In the Phase 19/21 layout, this ordinary release creates or updates the Runtime and adapter but does not own the publisher-owned `faulty` or `repaired` endpoint or publish a candidate.
 
 After the `IncidentTriageDemoAgent` release succeeds, verify its `SourceRevision`, `RuntimeArn`, `FaultyEndpointArn`, `AlarmAdapterArn`, and `RuntimeArtifactSha256` outputs against the checked release. The `CloudFormationRuntimeVersion` output is the initial CloudFormation Runtime version; the publisher-owned `faulty` version is read back separately by the Phase 19 maintenance operation. The ordinary release checks native `requireMMDSV2`, Runtime configuration and adapter code/readback; it must carry a publisher-owned endpoint tuple forward rather than selecting `DEFAULT` or a latest version. This is release evidence only; no alarm or investigation is generated. To establish or recover the `faulty` reference, use the fixed [Phase 19 maintenance operation](#restore-the-reviewed-faulty-reference), not this ordinary route.
 
@@ -163,6 +163,16 @@ gh workflow run deploy.yml --repo guilleojeda/evaluations-ref-arch --ref demo-de
 ```
 
 The values are `RuntimeArn`, `FaultyEndpointArn`, and `AlarmAdapterArn` from the agent stack outputs. When the controller release completes, open the dashboard and verify the endpoint is ready and the alarm binding is bound. These checks are read-only control-plane observations; they do not prove an inference occurred. Complete the actual alarm-triggered journey through the controller after readiness.
+
+### Select the next alarm candidate
+
+After Readiness has established a healthy current application generation, stop traffic, settle actions, clear unresolved checkout attempts, and observe the native alarm in `OK`. In the controller's **Prepared agent for the next alarm** panel, choose exactly one publisher-owned label, `faulty` or `repaired`, and submit the selection. The browser sends a fresh action UUID and only this command body:
+
+```json
+{"kind":"select_agent","candidateId":"repaired"}
+```
+
+The controller verifies the selected publication, named endpoint, `READY` state, numbered Runtime version, versioned code/configuration bytes, source/package/model identity, and the applicable reference or qualification identity before writing `AGENT_SELECTION`. It displays that complete tuple and its observation time after strong readback. A repeated tuple is a no-op; a stale, changed, missing, or unavailable tuple fails closed and leaves the prior selection unchanged. Selection sends no application traffic, does not invoke or repin AgentCore, and never falls back to `DEFAULT` or an old environment route. Refresh or a replacement authenticated browser reads the same durable selection. If a refresh fails, the dashboard labels the last successful tuple stale/unavailable and preserves its earlier observation time; it does not reselect automatically. Select the intended candidate again only after the readiness read has recovered.
 
 ## Captured evidence and Inventory version reads
 

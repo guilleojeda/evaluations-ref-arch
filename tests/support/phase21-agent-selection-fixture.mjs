@@ -344,6 +344,7 @@ export async function createPhase21Context(t) {
       'candidateId', 'endpointName', 'endpointArn', 'runtimeArn', 'runtimeVersion',
       'artifactSha256', 'artifactVersionId', 'configurationSha256', 'sourceRevision', 'sourceSha256',
       'promptSha256', 'modelId', 'alarmArn', 'adapterArn', 'adapterCodeSha256',
+      'configurationVersionId',
       'sourceManifestSha256', 'caseSetSha256', 'reportIdentitiesSha256', 'experimentId',
       'reviewEnvironment', 'reviewRunId', 'reviewManifestSha256', 'reviewer',
     ];
@@ -422,7 +423,10 @@ export async function createPhase21Context(t) {
       send(200, {});
       return;
     }
-    if (target.endsWith('Invoke')) {
+    // Lambda's JSON protocol uses an empty x-amz-target for the asynchronous
+    // Invoke path in the current SDK; identify the operation by its native
+    // request path as well as the older target-shaped fixture.
+    if (target.endsWith('Invoke') || request.url?.includes('/invocations')) {
       fixture.invocations.push({ target, body });
       send(202, {});
       return;
@@ -460,7 +464,11 @@ export async function createPhase21Context(t) {
       return;
     }
     if (request.method === 'GET' && request.url?.includes('/runtimes/')) {
-      const version = request.url.match(/versions\/([^/?]+)/)?.[1];
+      // AWS's current AgentCore control API encodes the immutable version as
+      // a query parameter on GetAgentRuntime; retain support for the older
+      // path-shaped fixture URL as well.
+      const version = request.url.match(/versions\/([^/?]+)/)?.[1]
+        ?? request.url.match(/[?&]version=([^&]+)/)?.[1];
       const candidate = version === '20' ? 'repaired' : 'faulty';
       fixture.runtimeReads.push(candidate);
       if (fixture.runtimeMode === 'unavailable') { send(503, { message: 'fixture Runtime read failed' }, 'application/json'); return; }

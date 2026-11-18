@@ -45,6 +45,8 @@ class ReleaseTests(unittest.TestCase):
             self.assertIn(token, deploy)
         self.assertIn("No fixed AGENT_PUBLICATION#faulty record exists", deploy)
         self.assertIn("Adapter RevisionId changed during ordinary reconciliation", deploy)
+        self.assertNotIn("PHASE20_FIXED_SOURCE_REVISION", deploy,
+                         "fixed bootstrap must not compare selector source with historical adapter provenance")
 
     def test_ordinary_shell_reconciles_fresh_and_stale_same_revision_states(self):
         """Exercise the release shell with executable fake AWS/CDK transports."""
@@ -110,6 +112,15 @@ class ReleaseTests(unittest.TestCase):
                 parameters = state["change_set"]["Parameters"]
                 outputs = state["outputs"]
                 state["stack"] = {"StackStatus": "UPDATE_COMPLETE", "StackId": "stack-id", "Parameters": parameters, "Outputs": outputs}
+                runtime_arn = next(item["OutputValue"] for item in outputs if item["OutputKey"] == "RuntimeArn")
+                if state.get("post_selector", True):
+                    state["adapter"]["Environment"] = {"Variables": {
+                        "AGENT_RUNTIME_ARN": runtime_arn,
+                        "AGENT_SELECTION_TABLE": "IncidentTriageDemoControllerRun",
+                        "AGENT_ALARM_ARN": "arn:aws:cloudwatch:us-east-1:027224425948:alarm:IncidentTriageDemoAppStage5xx",
+                    }}
+                    if state.get("post_old_target", False):
+                        state["adapter"]["Environment"]["Variables"]["AGENT_ENDPOINT_NAME"] = "faulty"
                 save()
             elif service == "dynamodb" and operation == "get-item":
                 state["ddb_calls"] = state.get("ddb_calls", 0) + 1
@@ -143,7 +154,7 @@ class ReleaseTests(unittest.TestCase):
         fake_node = "#!/bin/sh\nexit 0\n"
         fake_git = "#!/bin/sh\nexit 0\n"
 
-        def run_fixture(kind: str, *, stale_change_set: bool = False, adapter_mismatch: bool = False):
+        def run_fixture(kind: str, *, stale_change_set: bool = False, adapter_mismatch: bool = False, fixed_bootstrap: bool = False, selector_adapter: bool = False, post_selector: bool = True, post_old_target: bool = False):
             with tempfile.TemporaryDirectory(prefix="agent-release-fixture-") as temporary:
                 fixture = Path(temporary)
                 (fixture / "scripts").mkdir()
@@ -154,6 +165,7 @@ class ReleaseTests(unittest.TestCase):
                 (fixture / "scripts/deploy-agent.sh").chmod(0o755)
                 (fixture / ".artifacts/agent/cdk/manifest.json").write_text(json.dumps({"artifacts": {"IncidentTriageDemoAgent": {"properties": {"templateFile": "template.json"}}}}))
                 (fixture / ".artifacts/agent/cdk/template.json").write_text("{}")
+                (fixture / ".artifacts/agent/cdk/IncidentTriageDemoAgent.assets.json").write_text(json.dumps({"files": {"runtime": {"displayName": "RuntimeZip"}}}))
                 (fixture / "bin/aws").write_text(fake_aws)
                 (fixture / "bin/aws").chmod(0o755)
                 (fixture / "bin/node").write_text(fake_node)
@@ -193,6 +205,12 @@ class ReleaseTests(unittest.TestCase):
                         "AGENT_ARTIFACT_SHA256": current_digest,
                     }},
                 }
+                if selector_adapter:
+                    adapter["Environment"] = {"Variables": {
+                        "AGENT_RUNTIME_ARN": runtime_arn,
+                        "AGENT_SELECTION_TABLE": "IncidentTriageDemoControllerRun",
+                        "AGENT_ALARM_ARN": "arn:aws:cloudwatch:us-east-1:027224425948:alarm:IncidentTriageDemoAppStage5xx",
+                    }}
                 stack = None
                 if kind != "fresh":
                     stale = stale_change_set or kind == "same_revision_stale"
@@ -211,6 +229,7 @@ class ReleaseTests(unittest.TestCase):
                     stack = {"StackStatus": "UPDATE_COMPLETE", "StackId": "stack-id", "Parameters": parameters, "Outputs": outputs}
                 state = {"stack": stack, "outputs": outputs, "publication": None if kind == "fresh" else publication, "adapter": adapter,
                          "endpoint": {"agentRuntimeArn": runtime_arn, "agentRuntimeEndpointArn": endpoint_arn, "status": "READY", "liveVersion": "19", "targetVersion": "19"},
+                         "post_selector": post_selector, "post_old_target": post_old_target,
                          "change_set": None, "cdk_calls": 0, "delete_calls": 0, "execute_calls": 0, "ddb_calls": 0,
                          "include_property_values_calls": 0}
                 if stale_change_set:
@@ -224,6 +243,15 @@ class ReleaseTests(unittest.TestCase):
                     "GITHUB_SHA": sha, "PHASE0_ASSET_BUCKET": "assets", "RUNNER_TEMP": str(fixture),
                     "GITHUB_STEP_SUMMARY": str(fixture / "summary.md"),
                 }
+                if fixed_bootstrap:
+                    environment.update({
+                        "PHASE20_AGENT_INFRASTRUCTURE_ONLY": "true",
+                        "PHASE20_FIXED_BOOTSTRAP": "true",
+                        "PHASE20_FIXED_RUNTIME_BUCKET": "assets",
+                        "PHASE20_FIXED_RUNTIME_KEY": "bootstrap.zip",
+                        "PHASE20_FIXED_RUNTIME_REVISION": bootstrap_revision,
+                        "PHASE20_FIXED_RUNTIME_SHA256": bootstrap_digest,
+                    })
                 result = subprocess.run(["bash", "scripts/deploy-agent.sh"], cwd=fixture, env=environment, text=True, capture_output=True, timeout=30)
                 return result, json.loads(state_path.read_text())
 
@@ -234,6 +262,20 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(0, fresh_state["ddb_calls"])
         self.assertGreaterEqual(fresh_state["include_property_values_calls"], 1)
 
+        fixed_result, fixed_state = run_fixture("fresh", fixed_bootstrap=True)
+        self.assertEqual(0, fixed_result.returncode, fixed_result.stdout + fixed_result.stderr)
+        self.assertEqual(1, fixed_state["cdk_calls"])
+        self.assertEqual(1, fixed_state["execute_calls"])
+        self.assertNotIn("PHASE20_FIXED_SOURCE_REVISION", fixed_result.stderr)
+
+        missing_selector_result, _missing_selector_state = run_fixture("fresh", post_selector=False)
+        self.assertNotEqual(0, missing_selector_result.returncode)
+        self.assertIn("missing AGENT_SELECTION_TABLE", missing_selector_result.stderr)
+
+        old_target_result, _old_target_state = run_fixture("fresh", post_old_target=True)
+        self.assertNotEqual(0, old_target_result.returncode)
+        self.assertIn("retains an old static candidate target", old_target_result.stderr)
+
         stale_result, stale_state = run_fixture("same_revision_stale", stale_change_set=True)
         self.assertEqual(0, stale_result.returncode, stale_result.stdout + stale_result.stderr)
         self.assertEqual(1, stale_state["cdk_calls"], stale_result.stdout + stale_result.stderr)
@@ -241,6 +283,11 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(1, stale_state["execute_calls"])
         self.assertGreaterEqual(stale_state["include_property_values_calls"], 2)
         self.assertIn("stale", stale_result.stderr)
+
+        same_result, same_state = run_fixture("existing", selector_adapter=True)
+        self.assertEqual(0, same_result.returncode, same_result.stdout + same_result.stderr)
+        self.assertEqual(0, same_state["cdk_calls"])
+        self.assertEqual(0, same_state["execute_calls"])
 
         mismatch_result, mismatch_state = run_fixture("existing", adapter_mismatch=True)
         self.assertNotEqual(0, mismatch_result.returncode)

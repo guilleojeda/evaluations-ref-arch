@@ -265,6 +265,11 @@ function tableKeyAllowed(statements, template, action, key) {
     statementMatches(statement, template, action, controllerTableArn, key));
 }
 
+// DynamoDB authorizes TransactWriteItems through each contained PutItem or
+// UpdateItem permission (and the transaction context), not through a separate
+// dynamodb:TransactWriteItems IAM action. The assertions below therefore probe
+// those real item actions while retaining the leading-key boundaries.
+
 test('adapter effective permissions read only AGENT_SELECTION and invoke only the named endpoint pair on its Runtime', () => {
   const agent = readJson(agentTemplatePath, 'agent');
   const bootstrap = readYaml(cfnExecutionPath);
@@ -277,7 +282,7 @@ test('adapter effective permissions read only AGENT_SELECTION and invoke only th
     assert.equal(effectiveAllows(statements, boundary, agent, 'dynamodb:GetItem', controllerTableArn, key), expected,
       `adapter GetItem on ${key} must be ${expected ? 'allowed' : 'denied'} by the effective role boundary`);
   }
-  for (const action of ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:TransactWriteItems']) {
+  for (const action of ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem']) {
     assert.equal(effectiveAllows(statements, boundary, agent, action, controllerTableArn, selectedKey), false,
       `adapter must not mutate the controller table through ${action}`);
   }
@@ -308,13 +313,13 @@ test('HTTP effective permissions read both publication/native bindings, avoid se
       `HTTP role must read ${key} from the controller table`);
   }
   for (const key of ordinaryControllerKeys) {
-    for (const action of ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:TransactWriteItems']) {
+    for (const action of ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem']) {
       assert.equal(effectiveAllows(statements, boundary, controller, action, controllerTableArn, key), true,
         `ordinary controller state must retain ${action} on ${key}`);
     }
   }
   for (const key of [selectedKey, ...publicationKeys]) {
-    for (const action of ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:TransactWriteItems']) {
+    for (const action of ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem']) {
       assert.equal(effectiveAllows(statements, boundary, controller, action, controllerTableArn, key), false,
         `HTTP role must not mutate ${key} through ${action}`);
     }
@@ -341,6 +346,20 @@ test('HTTP effective permissions read both publication/native bindings, avoid se
     assert.equal(effectiveAllows(statements, boundary, controller, action, endpointArn('faulty')), false,
       `HTTP role must not acquire ${action} authority`);
   }
+
+  const configurationObjects = [
+    `arn:aws:s3:::cdk-evaltalk-assets-${account}-${region}/agent-reference/7febe979fa1365360983d886f9d1dc78b55d9bde91a6fe7357e5f9fd97d2d7a7.json`,
+    `arn:aws:s3:::incident-triage-demo-evidence-${account}-${region}/agent-evaluation/phase20/1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7/runtime-configuration.json`,
+  ];
+  for (const resource of configurationObjects) {
+    for (const action of ['s3:GetObject', 's3:GetObjectVersion']) {
+      assert.equal(effectiveAllows(statements, boundary, controller, action, resource), true,
+        `HTTP role must read the exact candidate-bound runtime configuration object ${resource} through ${action}`);
+    }
+  }
+  assert.equal(effectiveAllows(statements, boundary, controller, 's3:GetObjectVersion',
+    `arn:aws:s3:::incident-triage-demo-evidence-${account}-${region}/agent-evaluation/phase20/private-qualification.json`), false,
+  'HTTP readiness must not read private qualification reports');
 });
 
 test('action worker owns selection writes while retaining ordinary controller state and fresh native readiness reads', () => {
@@ -354,17 +373,17 @@ test('action worker owns selection writes while retaining ordinary controller st
     assert.equal(effectiveAllows(statements, boundary, controller, 'dynamodb:GetItem', controllerTableArn, key), true,
       `worker must read ${key} before selecting or reconciling a publication`);
   }
-  assert.equal(['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:TransactWriteItems'].some((action) =>
+  assert.equal(['dynamodb:PutItem', 'dynamodb:UpdateItem'].some((action) =>
     effectiveAllows(statements, boundary, controller, action, controllerTableArn, selectedKey)), true,
   'only the action worker may persist the selected publication tuple through its bounded write path');
   for (const key of publicationKeys) {
-    for (const action of ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem', 'dynamodb:TransactWriteItems']) {
+    for (const action of ['dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:DeleteItem']) {
       assert.equal(effectiveAllows(statements, boundary, controller, action, controllerTableArn, key), false,
         `worker must not mutate publisher-owned ${key} through ${action}`);
     }
   }
   for (const key of ordinaryControllerKeys) {
-    for (const action of ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem', 'dynamodb:TransactWriteItems']) {
+    for (const action of ['dynamodb:GetItem', 'dynamodb:PutItem', 'dynamodb:UpdateItem']) {
       assert.equal(effectiveAllows(statements, boundary, controller, action, controllerTableArn, key), true,
         `ordinary controller state must retain worker ${action} on ${key}`);
     }
@@ -385,8 +404,10 @@ test('action worker owns selection writes while retaining ordinary controller st
   const faultyConfiguration = `arn:aws:s3:::cdk-evaltalk-assets-${account}-${region}/agent-reference/7febe979fa1365360983d886f9d1dc78b55d9bde91a6fe7357e5f9fd97d2d7a7.json`;
   const repairedConfiguration = `arn:aws:s3:::incident-triage-demo-evidence-${account}-${region}/agent-evaluation/phase20/1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7/runtime-configuration.json`;
   for (const resource of [faultyConfiguration, repairedConfiguration]) {
-    assert.equal(effectiveAllows(statements, boundary, controller, 's3:GetObject', resource), true,
-      `worker must read the exact candidate-bound runtime configuration object ${resource}`);
+    for (const action of ['s3:GetObject', 's3:GetObjectVersion']) {
+      assert.equal(effectiveAllows(statements, boundary, controller, action, resource), true,
+        `worker must read the exact candidate-bound runtime configuration object ${resource} through ${action}`);
+    }
   }
   for (const resource of [
     `arn:aws:s3:::cdk-evaltalk-assets-${account}-${region}/agent-reference/e5ac2ee20d8f3947eb95ceb74094e882a3d8a4a010f2a8e7bf96700dd5906b33.zip`,
@@ -395,8 +416,10 @@ test('action worker owns selection writes while retaining ordinary controller st
     `arn:aws:s3:::cdk-evaltalk-assets-${account}-${region}/agent-reference/DEFAULT.json`,
     `arn:aws:s3:::incident-triage-demo-evidence-${account}-${region}/agent-evaluation/phase20/DEFAULT/runtime-configuration.json`,
   ]) {
-    assert.equal(effectiveAllows(statements, boundary, controller, 's3:GetObject', resource), false,
-      `worker must not read reports, ZIPs, DEFAULT, or another non-source object ${resource}`);
+    for (const action of ['s3:GetObject', 's3:GetObjectVersion']) {
+      assert.equal(effectiveAllows(statements, boundary, controller, action, resource), false,
+        `worker must not read reports, ZIPs, DEFAULT, or another non-source object ${resource} through ${action}`);
+    }
   }
   assert.equal(effectiveAllows(statements, boundary, controller, 'bedrock-agentcore:GetAgentRuntime', runtimeArn), true,
     'worker readiness must read the numbered Runtime identity');

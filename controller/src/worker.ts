@@ -8,6 +8,7 @@ import { DeleteFunctionConcurrencyCommand, GetAccountSettingsCommand, GetAliasCo
   LambdaClient, PutFunctionConcurrencyCommand, UpdateAliasCommand } from "@aws-sdk/client-lambda";
 import { GetSecretValueCommand, SecretsManagerClient } from "@aws-sdk/client-secrets-manager";
 import { readCurrentAlarm, readOriginatingAlarm } from "./alarm.js";
+import { readAgentSelection, sameAgentSelection, verifyAgentPublication } from "./agent-readiness.js";
 import seedProduct from "../../scripts/app-product.json";
 import {
   expectedInventoryTarget,
@@ -22,7 +23,7 @@ import {
   type InventoryPolicyTarget,
   type InventoryTablePolicyRead,
 } from "./inventory-access.js";
-import { beginReset, changeAction, getAction, getRun } from "./store.js";
+import { beginReset, changeAction, completeAgentSelection, getAction, getRun } from "./store.js";
 import type {
   Action,
   Baseline,
@@ -3635,6 +3636,21 @@ async function traffic(action: Action): Promise<void> {
   }
 }
 
+async function selectAgent(action: Action): Promise<void> {
+  if (action.command.kind !== "select_agent") throw new ActionFailure("The AgentCore selection command is invalid.");
+  try {
+    const alarm = await readCurrentAlarm();
+    if (alarm.state !== "OK") throw new ActionFailure("The native application alarm is not OK; the AgentCore selection was not changed.");
+    const prior = await readAgentSelection();
+    const selection = await verifyAgentPublication(action.command.candidateId);
+    const outcome = sameAgentSelection(prior, selection) ? "no_change" : "applied";
+    await completeAgentSelection(action.id, outcome === "no_change" && prior ? prior : selection, outcome);
+  } catch (error) {
+    if (error instanceof IncompleteActionFailure) throw error;
+    throw new IncompleteActionFailure(error instanceof Error ? error.message : "AgentCore selection verification is incomplete.");
+  }
+}
+
 export async function handler(event: { actionId?: string } = {}): Promise<void> {
   const { actionId } = event;
   if (!actionId || !/^[0-9a-f-]{36}$/i.test(actionId)) return;
@@ -3647,6 +3663,7 @@ export async function handler(event: { actionId?: string } = {}): Promise<void> 
   if (!claim) return;
   try {
     if (claim.action.kind === "readiness") await readiness(claim.action);
+    if (claim.action.kind === "select_agent") await selectAgent(claim.action);
     if (claim.action.kind === "traffic") await traffic(claim.action);
     if (claim.action.kind === "increase_capacity") await increaseInventoryCapacity(claim.action);
     if (claim.action.kind === "increase_memory") await increaseInventoryMemory(claim.action);
@@ -3672,6 +3689,8 @@ export async function handler(event: { actionId?: string } = {}): Promise<void> 
           ? run.incident : undefined;
         current.configurationOutcome = !incident ? "failed"
           : incident.active === "denied" ? "applied" : "unknown";
+      } else if (current.kind === "select_agent") {
+        current.configurationOutcome = current.status === "incomplete" ? "unknown" : "failed";
       } else if (current.kind === "recover" && current.configurationOutcome !== "applied" && current.configurationOutcome !== "no_change") {
         const knownFailure = current.capRestoration?.checkout?.outcome === "failed" ||
           current.capRestoration?.inventory?.outcome === "failed" ||

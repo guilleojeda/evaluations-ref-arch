@@ -226,6 +226,30 @@ class FakeAWSBoundary:
     def __init__(self) -> None:
         self.region_name = "us-east-1"
         self.runs = FakeRunStore()
+        # The adapter's route is controller-owned.  Keep the legacy forwarder
+        # fixture on that same boundary rather than restoring static endpoint
+        # environment variables as a test-only fallback.
+        self.selection = {
+            "pk": _encode("AGENT_SELECTION"),
+            "revision": _encode(1),
+            "candidateId": _encode("faulty"),
+            "runtimeArn": _encode("arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/IncidentTriageDemoAgent-test"),
+            "runtimeVersion": _encode("1"),
+            "endpointName": _encode("faulty"),
+            "endpointArn": _encode("arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/IncidentTriageDemoAgent-test/runtime-endpoint/faulty"),
+            "artifactVersionId": _encode("phase4-artifact-v1"),
+            "sourceRevision": _encode("a" * 40),
+            "artifactSha256": _encode(ARTIFACT_SHA256),
+            "configurationSha256": _encode("b" * 64),
+            "sourceSha256": _encode("c" * 64),
+            "promptSha256": _encode("d" * 64),
+            "alarmArn": _encode(ALARM_ARN),
+            "modelId": _encode(MODEL_ID),
+            "adapterArn": _encode("arn:aws:lambda:us-east-1:123456789012:function:IncidentTriageDemoAlarmAdapter"),
+            "adapterCodeSha256": _encode("e" * 64),
+            "selectedAt": _encode("2026-11-18T12:00:00.000Z"),
+            "sourceManifestSha256": _encode("f" * 64),
+        }
         self.calls: list[tuple[str, str, Mapping[str, Any]]] = []
         self.s3_writes: list[tuple[str, str, Any]] = []
         self.runtime = _FakeAgentCore(self)
@@ -291,8 +315,8 @@ class _FakeDynamoClient:
 
     @staticmethod
     def _check_table(request: Mapping[str, Any]) -> None:
-        if request.get("TableName") != RUN_TABLE:
-            raise AssertionError(f"Runtime may write only its run table: {request.get('TableName')!r}")
+        if request.get("TableName") not in {RUN_TABLE, os.environ.get("AGENT_SELECTION_TABLE")}:
+            raise AssertionError(f"unexpected DynamoDB table: {request.get('TableName')!r}")
 
     def put_item(self, **request: Any) -> dict[str, Any]:
         self._check_table(request)
@@ -300,6 +324,10 @@ class _FakeDynamoClient:
 
     def get_item(self, **request: Any) -> dict[str, Any]:
         self._check_table(request)
+        if request.get("TableName") == os.environ.get("AGENT_SELECTION_TABLE"):
+            if request.get("ConsistentRead") is not True or request.get("Key") != {"pk": {"S": "AGENT_SELECTION"}}:
+                raise AssertionError(f"adapter must strongly read only AGENT_SELECTION: {request}")
+            return {"Item": self.boundary.selection}
         item = self.boundary.runs.find(*self.boundary.runs._key(request["Key"]))
         return {} if item is None else {"Item": {key: _encode(value) for key, value in item.items()}}
 
@@ -588,6 +616,7 @@ def isolated_adapter(boundary: FakeAWSBoundary | None = None) -> Iterator[tuple[
         "AWS_REGION": "us-east-1", "AWS_DEFAULT_REGION": "us-east-1", "AWS_EC2_METADATA_DISABLED": "true",
         "AGENT_ALARM_ARN": ALARM_ARN, "AGENT_ACCOUNT_ID": "123456789012", "AGENT_REGION": "us-east-1",
         "AGENT_RUNTIME_ARN": "arn:aws:bedrock-agentcore:us-east-1:123456789012:runtime/IncidentTriageDemoAgent-test",
+        "AGENT_SELECTION_TABLE": "phase4-agent-controller",
         "AGENT_RUNTIME_VERSION": "1", "AGENT_ENDPOINT_NAME": "faulty",
         "AGENT_SOURCE_REVISION": "a" * 40, "AGENT_ARTIFACT_SHA256": ARTIFACT_SHA256,
     }

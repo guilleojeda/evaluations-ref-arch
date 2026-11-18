@@ -2,7 +2,9 @@ import { randomUUID } from "node:crypto";
 import { DynamoDBClient, GetItemCommand, TransactWriteItemsCommand, type TransactWriteItem } from "@aws-sdk/client-dynamodb";
 import { marshall, unmarshall } from "@aws-sdk/util-dynamodb";
 import { setTimeout as delay } from "node:timers/promises";
-import type { Action, Command, Counters, DashboardState, RunState, TrafficProfileSnapshot } from "./types";
+import { readCurrentAlarm } from "./alarm.js";
+import { readAgentSelection, sameAgentSelection } from "./agent-readiness.js";
+import type { Action, AgentSelection, Command, Counters, DashboardState, RunState, TrafficProfileSnapshot } from "./types";
 
 const dynamo = new DynamoDBClient({ maxAttempts: 1 });
 const runKey = "STATE";
@@ -120,7 +122,37 @@ export async function getDashboard(): Promise<DashboardState> {
   const run = await getRun();
   const currentAction = run.currentActionId && await getAction(run.currentActionId);
   const currentConfigurationAction = run.configurationActionId && await getAction(run.configurationActionId);
-  return { ...run, currentAction: currentAction || undefined, currentConfigurationAction: currentConfigurationAction || undefined, observedAt: timestamp() };
+  const observedAt = timestamp();
+  try {
+    const selected = await readAgentSelection();
+    return {
+      ...run,
+      selectedAgent: selected,
+      agentSelection: selected,
+      selectedAgentObservation: {
+        state: selected ? "selected" : "unconfigured",
+        observedAt,
+        ...(selected ? { selected } : {}),
+      },
+      currentAction: currentAction || undefined,
+      currentConfigurationAction: currentConfigurationAction || undefined,
+      observedAt,
+    };
+  } catch (error) {
+    return {
+      ...run,
+      agentSelection: run.selectedAgent,
+      selectedAgentObservation: {
+        state: "unavailable",
+        observedAt,
+        ...(run.selectedAgent ? { selected: run.selectedAgent } : {}),
+        error: error instanceof Error ? error.message : "The selected AgentCore publication could not be observed.",
+      },
+      currentAction: currentAction || undefined,
+      currentConfigurationAction: currentConfigurationAction || undefined,
+      observedAt,
+    };
+  }
 }
 
 function sameCommand(a: Command, b: Command): boolean {
@@ -144,6 +176,7 @@ function sameCommand(a: Command, b: Command): boolean {
   if (a.kind === "increase_capacity" && b.kind === "increase_capacity") {
     return a.function === b.function && a.reservedConcurrency === b.reservedConcurrency;
   }
+  if (a.kind === "select_agent" && b.kind === "select_agent") return a.candidateId === b.candidateId;
   return true;
 }
 
@@ -250,6 +283,10 @@ function canStart(run: RunState, action: Action | undefined, configuration: Acti
       throw new CommandError(409, "INVENTORY_DENIAL_UNRESOLVED", "Reconcile the recorded Inventory alias before changing capacity.");
     }
   }
+  if (command.kind === "select_agent") {
+    if (!run.baseline) throw new CommandError(409, "READINESS_REQUIRED", "Check readiness before selecting an AgentCore candidate.");
+    if (run.unresolved.length > 0) throw new CommandError(409, "UNRESOLVED_REQUESTS", "Settle unresolved checkout attempts before selecting an AgentCore candidate.");
+  }
 }
 
 function controlled(target: Action, command: Extract<Command, { targetActionId: string }>, now: number): Action {
@@ -316,12 +353,16 @@ export async function applyCommand(id: string, command: Command): Promise<{ acti
       action.finishedAt = action.createdAt;
     } else {
       canStart(run, current && visible(current.data, now), configuration && visible(configuration.data, now), command);
+      if (command.kind === "select_agent") {
+        const alarm = await readCurrentAlarm();
+        if (alarm.state !== "OK") throw new CommandError(409, "ALARM_NOT_OK", "The native application alarm must be OK before selecting an AgentCore candidate.");
+      }
       if (command.kind === "recover" && current?.data.kind === "traffic" && active.has(visible(current.data, now).status)) {
         writes.push(replace(current.pk, current, controlled(current.data,
           { kind: "stop", targetActionId: current.data.id }, now)));
       }
       if (command.kind === "reset" || command.kind === "restore_inventory_access" || command.kind === "increase_memory" ||
-          command.kind === "increase_capacity" || command.kind === "recover") {
+          command.kind === "increase_capacity" || command.kind === "recover" || command.kind === "select_agent") {
         nextRun = { ...nextRun, configurationActionId: id };
       } else if (command.kind === "readiness") {
         nextRun = { ...nextRun, currentActionId: id };
@@ -392,4 +433,93 @@ export async function changeAction(actionId: string, mutate: (run: RunState, act
     await delay(25 * (attempt + 1));
   }
   throw new Error("The controller action changed before it could be recorded");
+}
+
+function publicSelection(value: AgentSelection): Record<string, unknown> {
+  const { pk: _pk, status: _status, configurationVersionId: _configurationVersionId,
+    ...tuple } = value as AgentSelection & { status?: unknown; configurationVersionId?: unknown };
+  return tuple;
+}
+
+function sameSelection(a: AgentSelection | undefined, b: AgentSelection | undefined): boolean {
+  return sameAgentSelection(a, b);
+}
+
+async function readPlain<T>(pk: string): Promise<(T & { pk: string; revision: number }) | undefined> {
+  const result = await dynamo.send(new GetItemCommand({
+    TableName: table(), Key: { pk: { S: pk } }, ConsistentRead: true,
+  }), { abortSignal: AbortSignal.timeout(3_000) });
+  return result.Item ? unmarshall(result.Item) as T & { pk: string; revision: number } : undefined;
+}
+
+function selectionReplace(selection: AgentSelection, previous: (AgentSelection & { revision: number }) | undefined): TransactWriteItem {
+  return {
+    Put: {
+      TableName: table(),
+      Item: marshall({ ...selection, revision: (previous?.revision ?? 0) + 1 }, { removeUndefinedValues: true }),
+      ConditionExpression: previous ? "#revision = :previous" : "attribute_not_exists(pk)",
+      ...(previous ? {
+        ExpressionAttributeNames: { "#revision": "revision" },
+        ExpressionAttributeValues: { ":previous": { N: String(previous.revision) } },
+      } : {}),
+    },
+  };
+}
+
+/** Complete a verified AgentCore selection and reconcile uncertain DynamoDB acknowledgements. */
+export async function completeAgentSelection(
+  actionId: string,
+  selection: AgentSelection,
+  outcome: "applied" | "no_change",
+): Promise<{ run: RunState; action: Action }> {
+  let selectionCommitted = outcome === "no_change";
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const [runRow, actionRow, previous] = await Promise.all([
+      read<RunState>(runKey),
+      read<Action>(actionKey(actionId)),
+      readPlain<AgentSelection>("AGENT_SELECTION"),
+    ]);
+    if (!runRow || !actionRow || !active.has(actionRow.data.status) || runRow.data.configurationActionId !== actionId) {
+      throw new Error("The AgentCore selection action is no longer active.");
+    }
+    if (!selectionCommitted) {
+      let saved = false;
+      try {
+        saved = await commit([selectionReplace(selection, previous)]);
+      } catch {
+        const observed = await readAgentSelection();
+        if (sameSelection(observed, selection)) saved = true;
+        else throw new Error("The AgentCore selection write outcome is unknown.");
+      }
+      if (!saved) {
+        await delay(25 * (attempt + 1));
+        continue;
+      }
+      // This read must happen before the action is marked completed. If it is
+      // unavailable or mismatched, the action remains inspectable as unknown.
+      const observed = await readAgentSelection();
+      if (!sameSelection(observed, selection)) throw new Error("The AgentCore selection strong readback does not match the verified tuple.");
+      selectionCommitted = true;
+      continue;
+    }
+    const run = structuredClone(normalizeRun(runRow.data));
+    const action = structuredClone(actionRow.data);
+    action.status = "completed";
+    action.configurationOutcome = outcome;
+    action.agentSelection = publicSelection(selection) as AgentSelection;
+    action.finishedAt = timestamp();
+    action.updatedAt = action.finishedAt;
+    run.selectedAgent = selection;
+    const writes = [
+      replace(runKey, runRow, run),
+      replace(actionKey(actionId), actionRow, action),
+    ];
+    const committed = await commit(writes);
+    if (!committed) {
+      await delay(25 * (attempt + 1));
+      continue;
+    }
+    return { run, action };
+  }
+  throw new Error("The AgentCore selection changed before it could be recorded.");
 }

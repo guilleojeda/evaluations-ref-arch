@@ -426,7 +426,7 @@ class AlarmAdapterRuntimeAcceptanceTests(unittest.TestCase):
                         {"pk": SELECTION_PK},
                         stack[4].selection.reads[0]["Key"],
                     )
-                    self.assertEqual(SELECTED_ROW_FIELDS, set(stack[4].selection.row))
+                    self.assertEqual(set(_selection_tuple(candidate)), set(stack[4].selection.row))
                     deployment = self._request_deployment(stack[4])
                     self.assertEqual(DEPLOYMENT_FIELDS, deployment.keys())
                     self.assertEqual(RUNTIME_ARN, deployment["runtimeArn"])
@@ -504,9 +504,12 @@ class AlarmAdapterRuntimeAcceptanceTests(unittest.TestCase):
             self._stop(stack)
 
     def test_missing_or_malformed_selection_fails_closed_without_claim(self):
+        missing_repaired_review = _selection_tuple("repaired", version="20")
+        del missing_repaired_review["reviewManifestSha256"]
         malformed_rows = (
             None,
             {},
+            missing_repaired_review,
             {**_selection_tuple("repaired", version="20"), "candidateId": "faulty"},
             {**_selection_tuple("repaired", version="20"), "endpointName": "faulty"},
             {**_selection_tuple("repaired", version="20"), "runtimeVersion": "not-verified"},

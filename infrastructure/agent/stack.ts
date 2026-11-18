@@ -136,11 +136,15 @@ export class AgentStack extends DemoStack {
     // cutover.  Keep its stable ARN derivation for adapter/controller
     // bindings, but do not let ordinary CloudFormation releases create,
     // repin, or delete the native endpoint.
-    const endpointArn = `${runtime.attrAgentRuntimeArn}/runtime-endpoint/faulty`;
+    const endpointArns = [
+      `${runtime.attrAgentRuntimeArn}/runtime-endpoint/faulty`,
+      `${runtime.attrAgentRuntimeArn}/runtime-endpoint/repaired`,
+    ];
     const logGroup = new logs.LogGroup(this, "AdapterLogGroup", { logGroupName: `/aws/lambda/${ADAPTER_NAME}`, retention: logs.RetentionDays.TWO_WEEKS, removalPolicy: RemovalPolicy.RETAIN });
     const adapterRole = new iam.Role(this, "AdapterRole", { roleName: "IncidentTriageDemoAlarmAdapterRole", assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"), permissionsBoundary: iam.ManagedPolicy.fromManagedPolicyArn(this, "AdapterBoundary", `arn:aws:iam::${ACCOUNT}:policy/IncidentTriageDemoAlarmAdapterBoundary`) });
     logGroup.grantWrite(adapterRole);
-    adapterRole.addToPolicy(new iam.PolicyStatement({ actions: ["bedrock-agentcore:InvokeAgentRuntime"], resources: [runtime.attrAgentRuntimeArn, endpointArn] }));
+    adapterRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadSelectedPublication", actions: ["dynamodb:GetItem"], resources: [`arn:aws:dynamodb:${REGION}:${ACCOUNT}:table/IncidentTriageDemoControllerRun`], conditions: { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["AGENT_SELECTION"] } } }));
+    adapterRole.addToPolicy(new iam.PolicyStatement({ sid: "ForwardSelectedRuntime", actions: ["bedrock-agentcore:InvokeAgentRuntime"], resources: [runtime.attrAgentRuntimeArn, ...endpointArns] }));
     const adapter = new lambda.Function(this, "AlarmAdapter", {
       functionName: ADAPTER_NAME, runtime: lambda.Runtime.PYTHON_3_13, architecture: lambda.Architecture.ARM_64,
       code: lambda.Code.fromAsset(adapterZip), handler: "alarm_adapter.handler", role: adapterRole,
@@ -148,10 +152,9 @@ export class AgentStack extends DemoStack {
       // The publisher updates these parameters only after native endpoint and
       // adapter readback.  Ordinary Runtime releases carry them forward.
       environment: {
-        AGENT_RUNTIME_ARN: runtime.attrAgentRuntimeArn, AGENT_ENDPOINT_NAME: "faulty",
-        AGENT_RUNTIME_VERSION: publishedVersion.valueAsString, AGENT_ALARM_ARN: ALARM_ARN,
-        AGENT_SOURCE_REVISION: publishedCodeRevision.valueAsString,
-        AGENT_ARTIFACT_SHA256: publishedArtifactDigest.valueAsString,
+        AGENT_RUNTIME_ARN: runtime.attrAgentRuntimeArn,
+        AGENT_SELECTION_TABLE: "IncidentTriageDemoControllerRun",
+        AGENT_ALARM_ARN: ALARM_ARN,
       },
     });
     new lambda.EventInvokeConfig(this, "AlarmAdapterRetries", { function: adapter, maxEventAge: Duration.minutes(10), retryAttempts: 2 });
@@ -160,7 +163,7 @@ export class AgentStack extends DemoStack {
     new CfnOutput(this, "RuntimeId", { value: runtime.attrAgentRuntimeId });
     new CfnOutput(this, "RuntimeArn", { value: runtime.attrAgentRuntimeArn });
     new CfnOutput(this, "CloudFormationRuntimeVersion", { value: runtime.attrAgentRuntimeVersion, description: "Initial CloudFormation Runtime version; publisher-owned endpoint version is read back separately." });
-    new CfnOutput(this, "FaultyEndpointArn", { value: endpointArn });
+    new CfnOutput(this, "FaultyEndpointArn", { value: endpointArns[0] });
     new CfnOutput(this, "EndpointName", { value: "faulty" });
     new CfnOutput(this, "AlarmAdapterArn", { value: adapter.functionArn });
     new CfnOutput(this, "AlarmAdapterCodeSha256", { value: adapterArtifactSha256, description: "SHA-256 of the checked alarm adapter ZIP currently deployed by this stack." });

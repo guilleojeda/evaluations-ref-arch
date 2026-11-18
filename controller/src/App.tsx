@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   Action,
+  AgentCandidateId,
+  AgentSelection,
   AlarmResponse,
   AlarmState,
   Command,
@@ -355,6 +357,114 @@ function freshness(value: string | undefined): string {
   return Number.isFinite(elapsed) && elapsed < 10_000 ? "Fresh" : "Stale";
 }
 
+const agentCandidates: ReadonlyArray<{ id: AgentCandidateId; label: string; description: string }> = [
+  { id: "faulty", label: "Faulty", description: "Publisher-owned reference behavior" },
+  { id: "repaired", label: "Repaired", description: "Publisher-owned qualified behavior" },
+];
+
+function agentSelectionLabel(candidateId: AgentCandidateId | undefined): string {
+  return candidateId === "repaired" ? "Repaired" : candidateId === "faulty" ? "Faulty" : "No candidate selected";
+}
+
+function candidateId(value: unknown): value is AgentCandidateId {
+  return value === "faulty" || value === "repaired";
+}
+
+function verifiedSelection(value: unknown): value is AgentSelection {
+  return isRecord(value) && candidateId(value.candidateId) && typeof value.selectedAt === "string" &&
+    typeof value.endpointName === "string" && typeof value.endpointArn === "string" &&
+    typeof value.runtimeArn === "string" && typeof value.runtimeVersion === "string" &&
+    typeof value.artifactSha256 === "string" && typeof value.sourceRevision === "string" &&
+    typeof value.promptSha256 === "string" && typeof value.modelId === "string";
+}
+
+type AgentSelectionStatus = "verified" | "stale" | "unavailable" | "unconfigured" | "loading";
+
+/** A selection is display-trusted only when the native read agrees with every routing identity. */
+function verifiedAlarmSelection(value: AlarmResponse | undefined): AgentSelection | undefined {
+  const selection = value && verifiedSelection(value.selectedAgent) ? value.selectedAgent : undefined;
+  const endpoint = value?.agentEndpoint;
+  if (!selection || !endpoint || endpoint.state !== "ready" || endpoint.name !== selection.endpointName ||
+      endpoint.endpointArn !== selection.endpointArn || endpoint.runtimeArn !== selection.runtimeArn ||
+      endpoint.liveVersion !== selection.runtimeVersion) return undefined;
+  return selection;
+}
+
+function selectionDigest(value: AgentSelection | undefined, field: "artifactSha256" | "sourceRevision" | "promptSha256"): string {
+  return value?.[field] ?? "Not recorded";
+}
+
+function AgentSelectionPanel({
+  selection,
+  observedAt,
+  status,
+  action,
+  selectedChoice,
+  disabled,
+  disabledReason,
+  onChoice,
+  onSelect,
+}: {
+  selection?: AgentSelection;
+  observedAt?: string;
+  status: AgentSelectionStatus;
+  action?: Action;
+  selectedChoice: AgentCandidateId;
+  disabled: boolean;
+  disabledReason?: string;
+  onChoice: (candidate: AgentCandidateId) => void;
+  onSelect: () => void;
+}) {
+  const actionSelection = action?.kind === "select_agent" ? action.agentSelection : undefined;
+  const actionStatus = action?.kind === "select_agent" ? actionStatusLabel(action.status) : undefined;
+  const actionError = action?.kind === "select_agent" ? action.error : undefined;
+  const selectedFreshness = status === "verified" ? "Verified"
+    : status === "stale" ? "Stale · last verified read"
+      : status === "unavailable" ? "Unavailable · last verified read"
+        : status === "unconfigured" ? "Not configured" : "Loading";
+  const selectedObservationTime = observedAt ?? selection?.selectedAt;
+  const selectedReference = selection?.candidateId === "repaired"
+    ? selection.reviewRunId ? `Review ${selection.reviewRunId}` : "Qualified repaired publication"
+    : selection?.sourceManifestSha256 ? "Reviewed faulty reference" : "Faulty reference";
+
+  return <section className="agent-selection" aria-label="Prepared agent selection">
+    <div className="agent-selection-heading">
+      <div><p className="eyebrow">Alarm routing</p><h4>Prepared agent for the next alarm</h4></div>
+      <span className={`incident-badge ${status === "verified" ? "badge-neutral" : "badge-warning"}`}>{selectedFreshness}</span>
+    </div>
+    <p className="agent-selection-intro">Choose the verified publication that the alarm adapter will use for a future genuine ALARM. Selection sends no application traffic and does not invoke or repin an endpoint.</p>
+    <fieldset className="agent-candidate-picker" disabled={disabled}>
+      <legend>Candidate</legend>
+      <div className="agent-candidate-options">
+        {agentCandidates.map((candidate) => <label className={`agent-candidate-option${selectedChoice === candidate.id ? " is-selected" : ""}`} key={candidate.id}>
+          <input type="radio" name="agent-candidate" value={candidate.id} checked={selectedChoice === candidate.id}
+            onChange={() => onChoice(candidate.id)} />
+          <span><strong>{candidate.label}</strong><small>{candidate.description}</small></span>
+        </label>)}
+      </div>
+      <button className="button button-primary agent-select-button" type="button" onClick={onSelect} disabled={disabled}>
+        {action?.kind === "select_agent" && activeStatuses.has(action.status) ? "Verifying selection…" : `Use ${agentSelectionLabel(selectedChoice)} for next alarm`}
+      </button>
+    </fieldset>
+    {disabledReason && <p className="agent-selection-help" role="status">{disabledReason}</p>}
+    {actionStatus && <p className={`agent-selection-action agent-selection-action-${action?.status === "failed" ? "error" : action?.status === "completed" ? "success" : "pending"}`} role={action?.status === "failed" ? "alert" : "status"}>
+      Selection action {actionStatus.toLowerCase()}{actionSelection ? ` · ${agentSelectionLabel(actionSelection.candidateId)} verified` : ""}{actionError ? ` · ${actionError}` : ""}
+    </p>}
+    {selection && <dl className="agent-selection-facts">
+      <div><dt>Selected candidate</dt><dd><strong>{agentSelectionLabel(selection.candidateId)}</strong> · {selectedReference}</dd></div>
+      <div><dt>Endpoint / Runtime version</dt><dd className="mono">{selection.endpointName} · {selection.endpointArn} · v{selection.runtimeVersion}</dd></div>
+      <div><dt>Source revision</dt><dd className="mono">{selectionDigest(selection, "sourceRevision")}</dd></div>
+      <div><dt>Package SHA-256</dt><dd className="mono">{selectionDigest(selection, "artifactSha256")}</dd></div>
+      <div><dt>Prompt / model</dt><dd className="mono">{selectionDigest(selection, "promptSha256")} · {selection.modelId}</dd></div>
+      <div><dt>Last successful observation</dt><dd>{formatTime(selectedObservationTime)} · selected {formatTime(selection.selectedAt)}</dd></div>
+      {selection.candidateId === "repaired" && <div><dt>Qualification review</dt><dd>{selection.reviewEnvironment ?? "Qualified publication"} · run {display(selection.reviewRunId, "not recorded")} · reviewer {display(selection.reviewer, "not recorded")}</dd></div>}
+      {selection.candidateId === "faulty" && <div><dt>Reference identity</dt><dd className="mono">{display(selection.sourceManifestSha256, "Source manifest not recorded")}</dd></div>}
+    </dl>}
+    {!selection && status === "unconfigured" && <p className="agent-selection-empty" role="status">No selected publication is configured. Choose Faulty or Repaired after the healthy baseline and native alarm are ready.</p>}
+    {!selection && status === "unavailable" && <p className="agent-selection-empty" role="status">The selected publication could not be verified. Refresh before choosing a candidate.</p>}
+  </section>;
+}
+
 async function readDashboard(response: Response): Promise<DashboardState> {
   const data = await readJson(response);
   if (!isDashboard(data)) throw new Error("The controller returned an invalid dashboard");
@@ -610,6 +720,8 @@ export function App() {
   const [resetCheckoutClosedConfirmed, setResetCheckoutClosedConfirmed] = useState(false);
   const [inventoryMemorySelection, setInventoryMemorySelection] = useState<number>();
   const [inventoryCapacityTarget, setInventoryCapacityTarget] = useState("32");
+  const [agentSelectionChoice, setAgentSelectionChoice] = useState<AgentCandidateId>();
+  const [lastVerifiedAgentSelection, setLastVerifiedAgentSelection] = useState<{ selection: AgentSelection; observedAt: string }>();
   const [pendingCommand, setPendingCommand] = useState<PendingCommand>();
   const [pendingConfigurationCommand, setPendingConfigurationCommand] = useState<PendingCommand>();
   const [configurationSubmitting, setConfigurationSubmitting] = useState(false);
@@ -653,7 +765,12 @@ export function App() {
     try {
       const response = await fetch("/api/alarm", { headers: { Authorization: `Bearer ${bearer}`, Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(8_000) });
       const body = await readAlarm(response);
-      if (epoch === sessionEpoch.current) { setAlarm(body); setAlarmReadFailed(false); }
+      if (epoch === sessionEpoch.current) {
+        setAlarm(body);
+        const verified = verifiedAlarmSelection(body);
+        if (verified) setLastVerifiedAgentSelection({ selection: verified, observedAt: body.observedAt });
+        setAlarmReadFailed(false);
+      }
     } catch {
       if (epoch === sessionEpoch.current) setAlarmReadFailed(true);
     } finally {
@@ -842,7 +959,7 @@ export function App() {
     const epoch = sessionEpoch.current;
     const callNumber = requestEpoch.current + 1;
     requestEpoch.current = callNumber;
-    const isConfiguration = command.kind === "reset" || command.kind === "restore_inventory_access" || command.kind === "increase_memory" || command.kind === "increase_capacity" || command.kind === "recover";
+    const isConfiguration = command.kind === "reset" || command.kind === "restore_inventory_access" || command.kind === "increase_memory" || command.kind === "increase_capacity" || command.kind === "recover" || command.kind === "select_agent";
     const setPending = isConfiguration ? setPendingConfigurationCommand : setPendingCommand;
     if (isConfiguration) setConfigurationSubmitting(true);
     else setLoading(true);
@@ -858,7 +975,11 @@ export function App() {
         setState((previous) => previous && (isConfiguration ? { ...previous, currentConfigurationAction: action } : { ...previous, currentAction: action }));
       }
       if (epoch === sessionEpoch.current) {
-        setPending(undefined);
+        if (isConfiguration) setPendingConfigurationCommand(undefined);
+        else setPendingCommand(undefined);
+        if (command.kind === "select_agent" && action.status === "completed" && verifiedSelection(action.agentSelection)) {
+          setLastVerifiedAgentSelection({ selection: action.agentSelection, observedAt: action.agentSelection.selectedAt });
+        }
         if (command.kind === "readiness" || command.kind === "recover") setReadinessConfirmed(false);
         if (command.kind === "recover") setProtectiveRecoveryConfirmed(false);
         setNotice({ kind: "success", message: `${String(command.kind)} accepted` });
@@ -925,7 +1046,7 @@ export function App() {
       if (sessionEpoch.current === epoch) setNotice({ kind: "error", message: error instanceof Error ? error.message : "The presenter credential was rejected." });
     } finally { if (sessionEpoch.current === epoch) setLoading(false); }
   };
-  const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setInvestigations(undefined); setInvestigationReadFailedAt(undefined); setPendingCommand(undefined); setPendingConfigurationCommand(undefined); setConfigurationSubmitting(false); setInventoryMemorySelection(undefined); setInventoryCapacityTarget("32"); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setProtectiveRecoveryConfirmed(false); setResetConfirmationOpen(false); setResetQuietConfirmed(false); setResetDataConfirmed(false); setResetCheckoutClosedConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
+  const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setInvestigations(undefined); setInvestigationReadFailedAt(undefined); setPendingCommand(undefined); setPendingConfigurationCommand(undefined); setConfigurationSubmitting(false); setInventoryMemorySelection(undefined); setInventoryCapacityTarget("32"); setAgentSelectionChoice(undefined); setLastVerifiedAgentSelection(undefined); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setProtectiveRecoveryConfirmed(false); setResetConfirmationOpen(false); setResetQuietConfirmed(false); setResetDataConfirmed(false); setResetCheckoutClosedConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
   const runReadiness = () => { if (!resetRequired && readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "readiness", confirmQuiet: true }); };
   const runTraffic = () => { if (!resetRequired && !resetInProgress && trafficStartAllowed) void sendAction(crypto.randomUUID(), { kind: "traffic" }); };
   const runInventorySurge = () => {
@@ -949,6 +1070,10 @@ export function App() {
   const runCapacityIncrease = () => {
     if (capacitySelectionDisabled || !capacityInputValid) return;
     void sendAction(crypto.randomUUID(), { kind: "increase_capacity", function: "inventory", reservedConcurrency: proposedInventoryCapacity });
+  };
+  const runAgentSelection = () => {
+    const candidate = selectedAgentChoice;
+    if (candidate && !agentSelectionDisabled) void sendAction(crypto.randomUUID(), { kind: "select_agent", candidateId: candidate });
   };
   const openResetConfirmation = () => {
     if (resetDisabled) return;
@@ -980,6 +1105,38 @@ export function App() {
   const discardAction = () => { const target = currentAction?.status === "incomplete" ? currentAction : configurationAction?.status === "incomplete" ? configurationAction : undefined; if (target) void sendAction(crypto.randomUUID(), { kind: "discard", targetActionId: target.id }); };
   const retryPending = (pending: PendingCommand) => void sendAction(pending.id, pending.command);
   const actionLabel = currentAction ? `${currentAction.kind} · ${currentAction.status}` : resetAction ? `${resetAction.kind} · ${resetAction.status}` : "No action running";
+  // Only this locally retained value is display-trusted. Dashboard rows can
+  // carry a prior run's pointer, while the current alarm response can be HTTP
+  // 200 with an unavailable or mismatched native observation.
+  const selectedAgent = lastVerifiedAgentSelection?.selection;
+  const selectedAgentChoice = agentSelectionChoice ?? selectedAgent?.candidateId ?? "faulty";
+  const nativeAlarmSelection = verifiedAlarmSelection(alarm);
+  const nativeSelectionUnavailable = alarmReadFailed || Boolean(alarm?.agentEndpoint &&
+    alarm.agentEndpoint.state !== "ready" && alarm.agentEndpoint.state !== "unconfigured") ||
+    Boolean(alarm?.agentEndpoint?.state === "ready" && !nativeAlarmSelection);
+  const selectedAgentReadUnavailable = state?.selectedAgentObservation?.state === "unavailable";
+  const selectionStatus: AgentSelectionStatus = !lastVerifiedAgentSelection
+    ? alarm?.agentEndpoint?.state === "unconfigured" && !selectedAgentReadUnavailable ? "unconfigured"
+      : nativeSelectionUnavailable || selectedAgentReadUnavailable || Boolean(pollFailure) ? "unavailable" : "loading"
+    : Boolean(pollFailure) ? "stale"
+      : nativeSelectionUnavailable || selectedAgentReadUnavailable || alarm?.agentEndpoint?.state === "unconfigured" ? "unavailable"
+        : "verified";
+  const selectionAction = configurationAction?.kind === "select_agent" ? configurationAction : undefined;
+  const selectionBusy = Boolean(selectionAction && activeStatuses.has(selectionAction.status));
+  const selectionReadUnavailable = selectionStatus === "stale" || selectionStatus === "unavailable";
+  const agentSelectionDisabled = resetRequired || configurationBusy || actionBusy || selectionBusy || !baseline ||
+    Boolean(state?.unresolved.length) || !alarmObservation || selectionReadUnavailable || alarmObservation.state !== "OK" ||
+    freshness(alarmObservation.observedAt) === "Stale";
+  const agentSelectionDisabledReason = resetRequired ? "Reset is required before selecting an agent."
+    : !baseline ? "Check readiness before selecting a prepared agent."
+      : state?.unresolved.length ? "Settle unresolved checkout attempts before switching the selected agent."
+        : actionBusy || configurationBusy ? "Wait for current controller work to settle before switching candidates."
+          : selectionStatus === "stale" ? "The last verified selection is stale. Refresh before switching candidates."
+            : selectionStatus === "unavailable" ? "The selected publication could not be verified. Refresh before switching candidates."
+            : !alarmObservation ? "Waiting for a native alarm observation."
+              : alarmObservation.state !== "OK" ? `The native alarm is ${alarmObservation.state}; selection requires a fresh OK observation.`
+                : freshness(alarmObservation.observedAt) === "Stale" ? "The native alarm observation is stale; refresh before switching."
+                  : undefined;
 
   if (!bearer) return (
     <main className="controller-shell controller-sign-in"><section className="sign-in-card" aria-labelledby="sign-in-title">
@@ -1211,6 +1368,17 @@ export function App() {
           </dl>
           {alarm?.agentEndpoint?.failureReason && <p className="muted readiness-reason">{alarm.agentEndpoint.failureReason}</p>}
           {alarmReadFailed && <p className="muted" role="status">Alarm refresh failed. Showing the last observation if available.</p>}
+          <AgentSelectionPanel
+            selection={selectedAgent}
+            observedAt={lastVerifiedAgentSelection?.observedAt}
+            status={selectionStatus}
+            action={selectionAction}
+            selectedChoice={selectedAgentChoice}
+            disabled={agentSelectionDisabled}
+            disabledReason={agentSelectionDisabledReason}
+            onChoice={setAgentSelectionChoice}
+            onSelect={runAgentSelection}
+          />
           {retainedAlarm && <p className="retained-observation">
             Retained checkpoint alarm <strong>{retainedAlarm.state}</strong>
             {" · "}transition {formatTime(retainedAlarm.stateTransitionedAt)}

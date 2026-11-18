@@ -377,6 +377,15 @@ test('Phase 21 authenticated AgentCore candidate selection is a verified, fail-c
     assert.equal(body.agentEndpoint.endpointArn, context.fixture.endpoints.repaired.agentRuntimeEndpointArn);
     assert.equal(context.fixture.writes.length, writesBefore, 'alarm read must not mutate selected or publisher records');
     assert.equal(context.fixture.invocations.length, 1, 'alarm read must not invoke the agent');
+    context.fixture.endpoints.repaired.status = 'CREATING';
+    const notReady = await context.api.handler(event('GET', '/api/alarm'));
+    assert.equal(notReady.statusCode, 200, notReady.body);
+    assert.equal((await json(notReady)).agentEndpoint.state, 'not_ready', 'a native non-READY response is definitive, not an unavailable read');
+    context.fixture.endpoints.repaired.status = 'READY';
+    context.fixture.endpointMode = 'unavailable';
+    const unavailable = await context.api.handler(event('GET', '/api/alarm'));
+    assert.equal(unavailable.statusCode, 200, unavailable.body);
+    assert.equal((await json(unavailable)).agentEndpoint.state, 'unavailable', 'a failed native read remains unavailable');
     const adapterRead = context.fixture.calls.findLast(({ target }) => target.endsWith('GetFunctionConfiguration'));
     if (adapterRead) {
       assert.deepEqual(adapterRead.body, {

@@ -65,6 +65,10 @@ done
 previous_runtime="$(jq -r '.Stacks[0].Parameters[]? | select(.ParameterKey == "AgentRuntimeArn") | .ParameterValue' <<<"$stack_state")"
 previous_endpoint="$(jq -r '.Stacks[0].Parameters[]? | select(.ParameterKey == "AgentEndpointArn") | .ParameterValue' <<<"$stack_state")"
 previous_adapter="$(jq -r '.Stacks[0].Parameters[]? | select(.ParameterKey == "AgentAlarmAdapterArn") | .ParameterValue' <<<"$stack_state")"
+# AgentEndpointArn remains the stable, publisher-owned faulty endpoint
+# identity used to bind the configured Runtime. Runtime readiness now reads
+# both named qualifiers and the durable AGENT_SELECTION row; this parameter is
+# not the currently selected candidate.
 desired_runtime="${CONTROLLER_AGENT_RUNTIME_ARN:-$previous_runtime}"
 desired_endpoint="${CONTROLLER_AGENT_ENDPOINT_ARN:-$previous_endpoint}"
 desired_adapter="${CONTROLLER_AGENT_ALARM_ADAPTER_ARN:-$previous_adapter}"
