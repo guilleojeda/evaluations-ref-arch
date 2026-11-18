@@ -27,9 +27,12 @@ The private handoff must resolve:
 - `PHASE22_S3_BASELINE_ROOT`
 - `PHASE18_EVALUATOR`
 
-The reviewed denial pair has case identity
-`cb1480066a46f258ee8d9e27355d50b9bd05f171ee9ef84a169989f72af5e18d` and bundle
-SHA-256 `8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8`.
+The default stock denial case has identity
+`cb1480066a46f258ee8d9e27355d50b9bd05f171ee9ef84a169989f72af5e18d`; the
+optional carried audience-denial case has identity
+`e53d6af51b41ccc4c8056b101f879a19a1e06d5e580cd5658198ddf4cc187266`. Both
+use the reviewed bundle SHA-256
+`8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8`.
 The files remain private and their physical locations are selected by the
 index.
 
@@ -44,9 +47,10 @@ test -d "$asset_extract"
 printf 'Using verified Phase 22 asset %s\n' "$PHASE22_ASSET_SHA256"
 
 mkdir -p "$PHASE22_PRIVATE_ROOT/s3"
-export PHASE22_GATE_SELECTION="${PHASE22_GATE_SELECTION:-stock}" # stock|carried
+: "${PHASE22_SUITE:?maintained preparation must select stock or carried}"
+export PHASE22_GATE_SELECTION="$PHASE22_SUITE"
 gate_extract="$(mktemp -d "$PHASE22_PRIVATE_ROOT/s3/gate.XXXXXX")"
-case "$PHASE22_GATE_SELECTION" in
+case "$PHASE22_SUITE" in
   stock)
     gate_archive="$asset_extract/gate/stock-staging.tar.gz"
     case_rel=staging/cases/denial.frozen.json
@@ -66,7 +70,9 @@ export PHASE22_SOURCE_BUNDLE="$gate_extract/$bundle_rel"
 export PHASE18_EVALUATOR="$gate_extract/staging/evaluator.json"
 export PHASE22_S2_RUN="$asset_extract/s2/run/e3f934af-6af9-42aa-ac78-b315133e1571"
 export PHASE22_S2_CAPTURE_RECEIPT="$asset_extract/s2/capture-receipt.json"
-test -s "$PHASE22_REVIEWED_CASE" "$PHASE22_SOURCE_BUNDLE" "$PHASE18_EVALUATOR"
+test -s "$PHASE22_REVIEWED_CASE"
+test -s "$PHASE22_SOURCE_BUNDLE"
+test -s "$PHASE18_EVALUATOR"
 ```
 
 The archive's `s3/run/295cd070-07e8-4f69-b8ce-c588a74fab42` is an archived

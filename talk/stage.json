@@ -40,7 +40,7 @@
       "rootVariable": "asset_extract",
       "sha256Env": "PHASE22_ASSET_SHA256",
       "sessionId": "session-audience-full-final-s3",
-      "gateSelectionEnv": "PHASE22_GATE_SELECTION",
+      "gateSelectionEnv": "PHASE22_SUITE",
       "gateArchives": {
         "stock": "gate/stock-staging.tar.gz",
         "carried": "gate/staging.tar.gz"
@@ -53,6 +53,8 @@
     },
     "caseId": "phase14.denied-inventory-read.prepared",
     "caseSha256": "cb1480066a46f258ee8d9e27355d50b9bd05f171ee9ef84a169989f72af5e18d",
+    "carriedCaseId": "phase14.denied-inventory-read.session-draft",
+    "carriedCaseSha256": "e53d6af51b41ccc4c8056b101f879a19a1e06d5e580cd5658198ddf4cc187266",
     "bundleSha256": "8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8",
     "baselineExecutionId": "e3f934af-6af9-42aa-ac78-b315133e1571",
     "recordedRepairedExecutionId": "295cd070-07e8-4f69-b8ce-c588a74fab42",
