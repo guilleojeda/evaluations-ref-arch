@@ -45,7 +45,7 @@ gate_extract="$(mktemp -d "$PHASE22_PRIVATE_ROOT/s4/gate.XXXXXX")"
 case "$PHASE22_SUITE" in
   stock) gate_archive="$asset_extract/gate/stock-staging.tar.gz" ;;
   carried) gate_archive="$asset_extract/gate/staging.tar.gz" ;;
-  *) echo "PHASE22_GATE_SELECTION must be stock or carried" >&2; exit 2 ;;
+  *) echo "PHASE22_SUITE must be stock or carried" >&2; exit 2 ;;
 esac
 test -s "$gate_archive"
 tar -xzf "$gate_archive" -C "$gate_extract"
