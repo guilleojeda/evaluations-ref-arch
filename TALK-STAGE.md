@@ -22,6 +22,26 @@ SHA-256 `8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8`.
 The private index chooses physical locations; no session directory is assumed
 and files are never copied into this checkout.
 
+For the portable session-a archive, resolve the complete native roster and
+evaluator directly as follows. The repaired suite contains the three reviewed
+case IDs; the faulty suite in the same archive is the matching recorded
+baseline source if a saved fallback is needed:
+
+```sh
+export PHASE22_AUDIENCE_ARCHIVE="/private/path/phase22-session-a-audience-full.tar.gz"
+printf '%s  %s\n' \
+  87447304deb0f8617434d8dcd6c530e20e7425035024e8cefb7db9340402d032 \
+  "$PHASE22_AUDIENCE_ARCHIVE" | sha256sum -c -
+asset_extract="$(mktemp -d "$PHASE22_PRIVATE_ROOT/s4/archive.XXXXXX")"
+tar -xzf "$PHASE22_AUDIENCE_ARCHIVE" -C "$asset_extract"
+(cd "$asset_extract" && sha256sum -c SHA256SUMS)
+export PHASE18_SUITE="$asset_extract/s4/full-suite/repaired/ec704bf1-a3c6-4b04-8ad2-0b32ebefc20e/suite.json"
+export PHASE18_EVALUATOR="$asset_extract/s4/full-suite/repaired/ec704bf1-a3c6-4b04-8ad2-0b32ebefc20e/evaluator.json"
+export PHASE18_EXPERIMENTS="$PHASE22_PRIVATE_ROOT/s4/experiments"
+export PHASE18_BASELINE_EXPERIMENTS="$PHASE22_PRIVATE_ROOT/s4/baselines"
+export PHASE22_S3_RUN="$asset_extract/s3/run/295cd070-07e8-4f69-b8ce-c588a74fab42"
+```
+
 ```sh
 uv sync --project agent --locked
 uv sync --offline --project agent --locked
