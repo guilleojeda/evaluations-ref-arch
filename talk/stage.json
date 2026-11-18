@@ -51,7 +51,8 @@
     "run": "uv run --project agent --locked opentelemetry-instrument python agent/evaluate_case.py run --candidate repaired --case \"$PHASE22_REVIEWED_CASE\" --bundle \"$PHASE22_SOURCE_BUNDLE\" --output-root \"$PHASE22_S3_RUN_ROOT\"",
     "show": "uv run --offline --project agent --locked python agent/evaluate_case.py show --run \"$PHASE22_S3_RUN\"",
     "score": "uv run --project agent --locked python agent/evaluate_case.py score --run \"$PHASE22_S3_RUN\" --evaluator \"$PHASE18_EVALUATOR\" --rubric single --wait-seconds 300",
-    "compare": "uv run --offline --project agent --locked python agent/evaluate_case.py compare --baseline \"$PHASE22_S2_RUN\" --candidate \"$PHASE22_S3_RUN\"",
+    "faultyBaseline": "uv run --project agent --locked python talk/run-faulty-baseline.py --case \"$PHASE22_REVIEWED_CASE\" --bundle \"$PHASE22_SOURCE_BUNDLE\" --output-root \"$PHASE22_S3_BASELINE_ROOT\"",
+    "compare": "uv run --offline --project agent --locked python agent/evaluate_case.py compare --baseline \"$PHASE22_BASELINE_RUN\" --candidate \"$PHASE22_S3_RUN\"",
     "policy": "S3 is a fresh candidate execution and advisory feedback. A saved S3 result is not S5 exact-package qualification."
   }
 }
