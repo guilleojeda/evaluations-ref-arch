@@ -7,6 +7,7 @@
     "assetRoot": "asset_extract",
     "assetSha256": "PHASE22_ASSET_SHA256",
     "s2Run": "PHASE22_S2_RUN",
+    "s2CaptureReceipt": "PHASE22_S2_CAPTURE_RECEIPT",
     "s3RunRoot": "PHASE22_S3_RUN_ROOT",
     "reviewedCase": "PHASE22_REVIEWED_CASE",
     "sourceBundle": "PHASE22_SOURCE_BUNDLE",
