@@ -235,23 +235,66 @@ def _verify_exporter_setup() -> Any:
 
 
 @contextmanager
-def _snapshot_imports(agent_source: Path) -> Iterator[None]:
-    """Load runtime dependencies from the captured files, then restore callers."""
+def _snapshot_imports(
+    agent_source: Path,
+    *,
+    dependency_root: Path | None = None,
+    dependency_modules: Sequence[str] = (),
+) -> Iterator[None]:
+    """Load candidate code and, when selected, its packaged dependencies.
 
-    old_modules = {name: sys.modules.pop(name, None) for name in SNAPSHOT_MODULES}
-    sys.path.insert(0, str(agent_source))
+    The normal development path only snapshots the candidate source modules.
+    Package qualification additionally supplies the extracted Runtime root and
+    the top-level modules it contains.  Those modules are removed from the
+    ambient interpreter for the duration of the task so a trusted driver
+    installation cannot satisfy a missing candidate dependency.  All module
+    identities are restored before the evaluator continues.
+    """
+
+    names = set(SNAPSHOT_MODULES)
+    if dependency_root is not None:
+        for name in dependency_modules:
+            if isinstance(name, str) and name and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                names.add(name)
+    old_modules: dict[str, Any] = {}
+    for loaded_name in list(sys.modules):
+        if any(loaded_name == name or loaded_name.startswith(f"{name}.") for name in names):
+            old_modules[loaded_name] = sys.modules.pop(loaded_name)
+    if dependency_root is not None:
+        # Keep the trusted Strands Evals SDK object alive; the native driver
+        # already owns its Experiment class and the ZIP intentionally carries
+        # only serving dependencies.  Every other ambient site distribution
+        # is removed, including modules that are not present in the ZIP, so a
+        # missing candidate import cannot be rescued by the driver cache.
+        for loaded_name in list(sys.modules):
+            if loaded_name.startswith("strands_evals") or loaded_name in old_modules:
+                continue
+            module = sys.modules.get(loaded_name)
+            module_path = getattr(module, "__file__", None)
+            if isinstance(module_path, str) and ("site-packages" in module_path or "dist-packages" in module_path):
+                old_modules[loaded_name] = sys.modules.pop(loaded_name)
+    old_path = list(sys.path)
+    if dependency_root is None:
+        sys.path.insert(0, str(agent_source))
+    else:
+        # The extracted Runtime root must win over the staging copy for
+        # package qualification.  Remove ambient site-packages entirely: a
+        # missing ZIP dependency must fail import rather than being silently
+        # satisfied by the trusted driver's installation.  Standard-library
+        # paths remain available for the trusted captured support closure.
+        standard_library_paths = [
+            path for path in old_path
+            if "site-packages" not in path and "dist-packages" not in path
+        ]
+        sys.path[:] = [str(dependency_root), str(agent_source), *standard_library_paths]
     try:
         yield
     finally:
-        try:
-            sys.path.remove(str(agent_source))
-        except ValueError:
-            pass
-        for name in SNAPSHOT_MODULES:
-            sys.modules.pop(name, None)
-            old = old_modules[name]
-            if old is not None:
-                sys.modules[name] = old
+        sys.path[:] = old_path
+        for loaded_name in list(sys.modules):
+            if any(loaded_name == name or loaded_name.startswith(f"{name}.") for name in names):
+                sys.modules.pop(loaded_name, None)
+        sys.modules.update(old_modules)
 
 
 def _private_directory(path: Path) -> Path:
@@ -312,6 +355,9 @@ def run_captured_case(
     model_session: Any = None,
     candidate_id: str | None = None,
     source_directory: str | Path | None = None,
+    dependency_root: str | Path | None = None,
+    dependency_modules: Sequence[str] = (),
+    runtime_origin: Mapping[str, Any] | None = None,
     trusted_runner: bool = False,
     progress_callback: Any = None,
 ) -> Path:
@@ -331,6 +377,7 @@ def run_captured_case(
     case_bytes = _read_input(case_path, "frozen case")
     bundle_bytes = _read_input(bundle_path, "source bundle")
     source_files, dependency_files = _read_source_bytes(source_directory)
+    selected_dependency_root = Path(dependency_root).resolve() if dependency_root is not None else None
 
     with tempfile.TemporaryDirectory(prefix="incident-triage-captured-snapshot-") as temporary_name:
         staging = Path(temporary_name)
@@ -340,6 +387,20 @@ def run_captured_case(
         staged_bundle = staging / "bundle.json"
         _write_bytes(staged_case, case_bytes)
         _write_bytes(staged_bundle, bundle_bytes)
+
+        # Authenticate the copied, immutable inputs before any telemetry
+        # exporter preflight or model/client construction.  In particular,
+        # callers must see a frozen ``caseSha256`` mismatch even when the
+        # production ADOT environment is not configured.
+        from reviewed_cases import load_frozen_case
+
+        load_frozen_case(staged_case, staged_bundle)
+        if model_session is None:
+            # ``opentelemetry-instrument`` installs the trusted ADOT provider
+            # before this function starts. Validate it while its host modules
+            # are still available, then preserve that provider while the
+            # package dependency scope is swapped.
+            provider = _verify_exporter_setup()
 
         if trusted_runner:
             # The development driver itself is already executing an accepted
@@ -370,6 +431,9 @@ def run_captured_case(
             candidate_id=selected_candidate,
             strict_manifest=strict_manifest,
             progress_callback=progress_callback,
+            dependency_root=selected_dependency_root,
+            dependency_modules=dependency_modules,
+            runtime_origin=runtime_origin,
         ))
 
 
@@ -605,6 +669,43 @@ def _snapshot_manifest(
     }
 
 
+def _module_origins(
+    names: Sequence[str],
+    *,
+    dependency_root: Path,
+    agent_source: Path,
+) -> dict[str, dict[str, Any]]:
+    """Return stable source/content identities for modules used by the task."""
+
+    origins: dict[str, dict[str, Any]] = {}
+    package_root = dependency_root.resolve()
+    support_root = agent_source.resolve()
+    for name in names:
+        module = sys.modules.get(name)
+        path_value = getattr(module, "__file__", None) if module is not None else None
+        if not isinstance(path_value, str):
+            origins[name] = {"loaded": False}
+            continue
+        path = Path(path_value)
+        try:
+            resolved = path.resolve()
+            if resolved.is_relative_to(package_root):
+                relative = resolved.relative_to(package_root).as_posix()
+                origin = {"kind": "runtime_zip", "path": relative}
+            elif resolved.is_relative_to(support_root):
+                relative = resolved.relative_to(support_root).as_posix()
+                origin = {"kind": "trusted_support_snapshot", "path": relative}
+            else:
+                origin = {"kind": "ambient", "path": str(resolved)}
+            if resolved.is_file():
+                origin["sha256"] = _sha256(resolved.read_bytes())
+        except (OSError, ValueError):
+            origin = {"kind": "unavailable", "path": str(path)}
+        origin["loaded"] = True
+        origins[name] = origin
+    return origins
+
+
 def _persist_interrupted(
     run_dir: Path,
     record: dict[str, Any],
@@ -633,9 +734,16 @@ def _run_snapshot(
     candidate_id: str,
     strict_manifest: bool,
     progress_callback: Any,
+    dependency_root: Path | None,
+    dependency_modules: Sequence[str],
+    runtime_origin: Mapping[str, Any] | None,
 ) -> Path:
     agent_source = staging / "source" / "agent"
-    with _snapshot_imports(agent_source):
+    with _snapshot_imports(
+        agent_source,
+        dependency_root=dependency_root,
+        dependency_modules=dependency_modules,
+    ):
         from captured_evidence import CapturedEvidenceTools
         from deterministic_checks import check_captured_report, check_report
         from evaluation_telemetry import execution_content, interrupted_execution_content
@@ -655,12 +763,25 @@ def _run_snapshot(
         ):
             raise ValueError("packaged prompt digest does not match the source snapshot")
 
+        task_runtime_origin = dict(runtime_origin) if runtime_origin is not None else None
+        if dependency_root is not None:
+            # Import these distributions while the ambient site-packages paths
+            # are removed.  The captured task does not call Runtime ``main``,
+            # but boto3 remains part of the package's serving dependency set
+            # and is therefore included in the origin receipt.
+            for dependency_name in ("main", "strands", "boto3", "botocore", "pydantic", "opentelemetry"):
+                __import__(dependency_name)
+            if task_runtime_origin is not None:
+                task_runtime_origin["moduleOrigins"] = _module_origins(
+                    ("main", "investigation", "evidence", "prompt", "strands", "boto3", "botocore", "pydantic", "opentelemetry"),
+                    dependency_root=dependency_root,
+                    agent_source=agent_source,
+                )
+
         # Validate both inputs from the copied bytes before creating a run
         # directory or constructing a model/client.
         loaded_case = load_frozen_case(staged_case, staged_bundle)
         task = loaded_case["task"]
-        if model_session is None:
-            provider = _verify_exporter_setup()
         output_directory = _private_directory(output_root)
         execution_id = str(uuid.uuid4())
         session_id = f"incident-triage-eval-{execution_id}"
@@ -698,6 +819,8 @@ def _run_snapshot(
             "dependencySha256": dependency_sha256,
             "reportSha256": None,
         }
+        if task_runtime_origin is not None:
+            identity["runtimeOrigin"] = task_runtime_origin
         ledger: dict[str, Any] = {
             "agentSpanId": None,
             "modelCalls": [],
@@ -720,6 +843,8 @@ def _run_snapshot(
             "evidenceProviderCallCount": 0,
             "usage": {},
         }
+        if task_runtime_origin is not None:
+            record["runtimeOrigin"] = task_runtime_origin
         _write_json_atomic(run_dir / "execution.json", record)
         if callable(progress_callback):
             progress_callback(run_dir, record)
@@ -728,15 +853,28 @@ def _run_snapshot(
         cancel_signal = Event()
         observer: Any = None
         try:
-            if provider is None:
-                # Tests inject a fake session; production passes the provider
-                # already verified before the source snapshot was loaded.
-                from opentelemetry import trace
-                from opentelemetry.sdk.trace import TracerProvider
+            # Tests inject a fake session; production normally passes the
+            # provider already verified before the package snapshot loaded.
+            from opentelemetry import trace
+            from opentelemetry.sdk.trace import TracerProvider
 
+            if provider is None:
                 provider = trace.get_tracer_provider()
                 if not isinstance(provider, TracerProvider):
-                    raise ValueError("captured run has no installed ADOT tracer provider")
+                    if model_session is None:
+                        raise ValueError("captured run has no installed ADOT tracer provider")
+                    # Package tests intentionally load the candidate's OTel
+                    # distribution in isolation from the trusted driver. A
+                    # scripted transport does not need ADOT export, so give
+                    # that isolated SDK a local provider just as the normal
+                    # development harness does for its host SDK.
+                    provider = TracerProvider()
+                    trace.set_tracer_provider(provider)
+            elif model_session is None:
+                # A trusted launcher provider was captured before package
+                # imports replaced the host OTel modules. Keep candidate
+                # spans on that already-configured ADOT exporter.
+                trace.set_tracer_provider(provider)
             observer = _span_observer()
             provider.add_span_processor(observer)
             tool_budget = _ToolBudget()
@@ -1089,6 +1227,25 @@ def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any],
         raise ValueError("execution identity is incomplete")
     if identity.get("candidateId") not in VALID_CANDIDATE_IDS or identity.get("modelId") != MODEL_ID:
         raise ValueError("execution candidate or model identity is unsupported")
+    runtime_origin = identity.get("runtimeOrigin")
+    if runtime_origin is not None:
+        if not isinstance(runtime_origin, Mapping) or runtime_origin.get("kind") != "runtime_zip":
+            raise ValueError("execution Runtime package origin is malformed")
+        for key in ("zipSha256", "manifestSha256", "runtimeSourceSha256", "dependencySha256"):
+            if not isinstance(runtime_origin.get(key), str) or re.fullmatch(r"[0-9a-f]{64}", runtime_origin[key]) is None:
+                raise ValueError("execution Runtime package origin identity is malformed")
+        module_origins = runtime_origin.get("moduleOrigins")
+        if not isinstance(module_origins, Mapping):
+            raise ValueError("execution Runtime package module origins are missing")
+        for module_name in ("main", "investigation", "evidence", "prompt", "strands", "boto3"):
+            module_origin = module_origins.get(module_name)
+            if (
+                not isinstance(module_origin, Mapping)
+                or module_origin.get("kind") != "runtime_zip"
+                or module_origin.get("loaded") is not True
+                or not isinstance(module_origin.get("sha256"), str)
+            ):
+                raise ValueError(f"execution Runtime package module origin is invalid: {module_name}")
 
     manifest = record.get("manifest")
     if not isinstance(manifest, Mapping) or manifest.get("schemaVersion") != 1:
