@@ -272,6 +272,12 @@ test('quality gate and protected publication use isolated roles, dependencies, a
   requireMatch(gate, /actions\/download-artifact/, 'the gate must consume the checked artifact');
   requireMatch(gate, /(?:configure-aws-credentials|sts assume-role)/,
     'the gate must acquire an evaluation session');
+  const frozenInputReadback = steps(gate).find((block) => /Retrieve and verify the frozen private evaluation inputs/.test(block));
+  assert.ok(frozenInputReadback, 'the evaluation gate must verify the frozen evaluator descriptor');
+  requireMatch(frozenInputReadback, /client\(['"]bedrock-agentcore-control['"]\)\.get_evaluator/,
+    'evaluator descriptor readback must use the AgentCore control-plane client');
+  requireAbsent(frozenInputReadback, /client\(['"]bedrock-agentcore['"]\)\.get_evaluator/,
+    'evaluator descriptor readback must not use the inference client');
   const evaluationOidc = steps(gate).find((block) => /Verify the evaluation OIDC case/.test(block));
   assert.ok(evaluationOidc, 'the evaluation gate must exercise its native OIDC trust case');
   requireMatch(evaluationOidc, /PHASE0_OIDC_ROLE_ARN:\s*\$\{\{\s*env\.PHASE20_EVALUATION_ROLE_ARN\s*\}\}/,
