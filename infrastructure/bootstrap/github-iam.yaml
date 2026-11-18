@@ -673,7 +673,7 @@ Resources:
         - Key: GitHubWorkflow
           Value: .github/workflows/deploy.yml
         - Key: GitHubEnvironment
-          Value: demo-evaluation,repaired-publication
+          Value: demo-evaluation and repaired-publication
 
   GitHubRepairedPublisherRole:
     Type: AWS::IAM::Role
