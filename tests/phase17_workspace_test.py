@@ -83,6 +83,17 @@ class S3WorkspaceAcceptance(unittest.TestCase):
         self.frozen_case = self.root / "case.frozen.json"
         freeze_case(self.case_path, self.bundle, self.frozen_case)
         self.runs = self.root / "runs"
+        # The default captured runner loads the checkout's executable source,
+        # while package_runtime.py derives the prompt identity in its manifest.
+        # Use a disposable coherent copy so a repaired prompt commit does not
+        # make the default (faulty-labelled) interruption fixture fail before
+        # it can create its running record.
+        self.default_agent = self.root / "default-agent"
+        shutil.copytree(AGENT, self.default_agent, ignore=shutil.ignore_patterns(".venv", "__pycache__"))
+        self._sync_prompt_manifest(self.default_agent)
+        previous_agent_directory = captured_execution.AGENT_DIRECTORY
+        captured_execution.AGENT_DIRECTORY = self.default_agent
+        self.addCleanup(setattr, captured_execution, "AGENT_DIRECTORY", previous_agent_directory)
         self._set_tracer_provider()
 
     def tearDown(self) -> None:
@@ -134,6 +145,19 @@ class S3WorkspaceAcceptance(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes((AGENT / name).read_bytes())
         return editable
+
+    @staticmethod
+    def _sync_prompt_manifest(agent_directory: Path) -> None:
+        prompt = agent_directory / "prompt.py"
+        spec = importlib.util.spec_from_file_location("phase17_manifest_prompt", prompt)
+        if spec is None or spec.loader is None:
+            raise AssertionError("prompt fixture cannot be imported")
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        manifest_path = agent_directory / "agent-manifest.json"
+        manifest = json.loads(manifest_path.read_bytes())
+        manifest["promptSha256"] = module.PROMPT_SHA256
+        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     def _launch_repaired(self, agent_directory, bedrock):
         def with_scripted_bedrock(case_path, bundle_path, output_root, **kwargs):
@@ -223,6 +247,22 @@ class S3WorkspaceAcceptance(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(AGENT / name, target)
         subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+        # The patch is authored against the checked-in faulty source.  A
+        # Phase20 positive checkout contains the repaired source, so restore
+        # the faulty base in this disposable fixture before applying the patch
+        # forward; this does not alter the product checkout or acceptance.
+        base_check = subprocess.run(
+            ["git", "apply", "--check", str(patch_file)], cwd=checkout,
+            capture_output=True, text=True, check=False,
+        )
+        if base_check.returncode != 0:
+            reverse_check = subprocess.run(
+                ["git", "apply", "--check", "--reverse", str(patch_file)], cwd=checkout,
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(reverse_check.returncode, 0, reverse_check.stderr)
+            subprocess.run(["git", "apply", "--reverse", str(patch_file)], cwd=checkout, check=True)
+        faulty_prompt = (checkout / "agent/prompt.py").read_bytes()
         subprocess.run(["git", "add", "agent"], cwd=checkout, check=True)
         subprocess.run(
             ["git", "-c", "user.name=S3", "-c", "user.email=s3@example.invalid", "commit", "-qm", "base"],
@@ -238,7 +278,7 @@ class S3WorkspaceAcceptance(unittest.TestCase):
         )
         self.assertEqual(applied.returncode, 0, applied.stderr)
         repaired_prompt = (checkout / "agent/prompt.py").read_bytes()
-        self.assertNotEqual(repaired_prompt, (AGENT / "prompt.py").read_bytes())
+        self.assertNotEqual(repaired_prompt, faulty_prompt)
         prompt_spec = importlib.util.spec_from_file_location(
             "phase17_prepared_prompt", checkout / "agent/prompt.py"
         )

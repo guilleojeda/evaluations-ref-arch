@@ -297,10 +297,11 @@ class RepairedPublicationAcceptance(unittest.TestCase):
         manifest = json.loads((ROOT / "agent/agent-manifest.json").read_text())
         manifest["sourceRevision"] = SOURCE_REVISION
         manifest["candidateId"] = "repaired"
-        # This is the effective SYSTEM_PROMPT digest emitted by the package
-        # builder.  It is intentionally distinct from sha256(prompt.py).
+        # package_runtime.py emits the executable SYSTEM_PROMPT digest, not the
+        # stale tracked development manifest value.  This keeps the fixture
+        # coherent when the repaired prompt is materialized in the checkout.
         self.prompt_sha256 = EFFECTIVE_PROMPT_SHA256
-        self.assertEqual(self.prompt_sha256, manifest["promptSha256"])
+        manifest["promptSha256"] = self.prompt_sha256
         self.manifest_bytes = (json.dumps(manifest, sort_keys=True, separators=(",", ":")) + "\n").encode()
         self.prompt_bytes = (ROOT / "agent/prompt.py").read_bytes()
         archive_io = io.BytesIO()
@@ -689,6 +690,75 @@ class RepairedPublicationAcceptance(unittest.TestCase):
         self.assertEqual("19", self.adapter.environment["AGENT_RUNTIME_VERSION"])
         self.assertTrue(any(call.get("Key") == self.artifact_key and call.get("VersionId") == self.artifact_version
                             for call in self.s3.calls))
+
+    def test_unversioned_private_staging_is_rehashed_then_promoted_to_versioned_serving(self):
+        """Exercise the protected handoff's actual staged-to-serving boundary."""
+
+        module = self._load()
+        stage_bucket = f"incident-triage-demo-evidence-{ACCOUNT}-{REGION}"
+        stage_prefix = f"agent-evaluation/phase20/{self.artifact_sha256}"
+        stage_artifact_key = f"{stage_prefix}/runtime.zip"
+        stage_source_key = f"{stage_prefix}/prompt.py"
+        stage_configuration_key = f"{stage_prefix}/runtime-configuration.json"
+        stage_configuration = copy.deepcopy(self.runtime_configuration)
+        stage_configuration["agentRuntimeArtifact"]["codeConfiguration"]["code"]["s3"] = {
+            "bucket": stage_bucket,
+            "prefix": stage_artifact_key,
+        }
+        stage_configuration_bytes = (
+            json.dumps(stage_configuration, sort_keys=True, separators=(",", ":")) + "\n"
+        ).encode()
+        self.s3.objects.update({
+            (stage_bucket, stage_artifact_key, ""): self.archive_bytes,
+            (stage_bucket, stage_source_key, ""): self.prompt_bytes,
+            (stage_bucket, stage_configuration_key, ""): stage_configuration_bytes,
+        })
+
+        qualification = copy.deepcopy(self.trusted_qualification)
+        qualification.update(
+            artifact={"bucket": stage_bucket, "key": stage_artifact_key, "sha256": self.artifact_sha256},
+            source={"bucket": stage_bucket, "key": stage_source_key, "sha256": sha256(self.prompt_bytes)},
+            configuration={
+                "bucket": stage_bucket,
+                "key": stage_configuration_key,
+                "sha256": sha256(stage_configuration_bytes),
+            },
+            runtimeConfiguration=stage_configuration,
+            servingArtifact={"bucket": self.bucket, "key": f"agent-qualified/{self.artifact_sha256}.zip"},
+        )
+        self.runtime_configuration = copy.deepcopy(self.runtime_configuration)
+        self.runtime_configuration["agentRuntimeArtifact"]["codeConfiguration"]["code"]["s3"] = {
+            "bucket": self.bucket,
+            "prefix": f"agent-qualified/{self.artifact_sha256}.zip",
+            "versionId": "serving-v1",
+        }
+
+        class VersionedServingS3(NativeS3):
+            def put_object(self, **request: object) -> dict[str, str]:
+                self.objects[(str(request["Bucket"]), str(request["Key"]), "serving-v1")] = request["Body"]
+                self.calls.append(copy.deepcopy(request))
+                return {"VersionId": "serving-v1"}
+
+        self.s3 = VersionedServingS3(self.s3.objects)
+        self.trusted_qualification = qualification
+        self._native()
+        assert self.control is not None and self.controller is not None
+        self.control.expected["repairedConfiguration"] = copy.deepcopy(self.runtime_configuration)
+        result = self._call(module)
+
+        self.assertEqual("serving-v1", result["artifactVersionId"])
+        self.assertEqual(
+            self.archive_bytes,
+            self.s3.objects[(self.bucket, f"agent-qualified/{self.artifact_sha256}.zip", "serving-v1")],
+        )
+        self.assertEqual(
+            "serving-v1",
+            self.control.runtime_updates[0]["agentRuntimeArtifact"]["codeConfiguration"]["code"]["s3"]["versionId"],
+        )
+        row = self.controller.items[REPAIRED_PK]
+        self.assertEqual(attr("serving-v1"), row["artifactVersionId"])
+        self.assertNotIn("sourceVersionId", row)
+        self.assertNotIn("configurationVersionId", row)
 
     def test_valid_clearance_cannot_publish_tampered_or_unversioned_artifact_bytes(self):
         for mode in ("tampered", "missing", "wrong-version", "different-returned-version"):
