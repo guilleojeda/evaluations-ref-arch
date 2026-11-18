@@ -755,6 +755,7 @@ class RepairedPublicationAcceptance(unittest.TestCase):
                 self.put_calls = []
                 self.head_calls = []
                 self.list_calls = []
+                self.lost_put = True
 
             def get_object(self, **request):
                 # Native S3 returns the current VersionId when VersionId is
@@ -798,6 +799,9 @@ class RepairedPublicationAcceptance(unittest.TestCase):
                     )
                 self.objects[(str(request["Bucket"]), str(request["Key"]), "serving-v1")] = request["Body"]
                 self.calls.append(copy.deepcopy(request))
+                if self.lost_put:
+                    self.lost_put = False
+                    raise RuntimeError("serving PutObject response lost after commit")
                 return {"VersionId": "serving-v1"}
 
         self.s3 = VersionedServingS3(self.s3.objects)
@@ -829,6 +833,7 @@ class RepairedPublicationAcceptance(unittest.TestCase):
         second = self._call(module)
         self.assertEqual("serving-v1", second["artifactVersionId"])
         self.assertEqual(2, len(self.s3.put_calls))
+        self.assertTrue(all(call.get("IfNoneMatch") == "*" for call in self.s3.put_calls))
         self.assertEqual([], self.s3.head_calls)
         self.assertEqual([], self.s3.list_calls)
         self.assertEqual(

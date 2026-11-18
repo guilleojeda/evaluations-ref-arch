@@ -741,8 +741,15 @@ def _stage_versioned_asset(
         # Preserve a genuine PutObject/GetObject access error.
         try:
             recovered = _reconcile_serving_object(s3, artifact, staged_body)
-        except Exception:
+        except ClientError as reconcile_error:
+            if not _not_found(reconcile_error):
+                raise
             raise error
+        except Exception:
+            # A concrete existing object with altered bytes or no native
+            # VersionId is a stronger reconciliation failure than the 412
+            # that led us here; keep that diagnostic and fail closed.
+            raise
         if recovered:
             return _with_serving_version(qualification, recovered)
         raise
