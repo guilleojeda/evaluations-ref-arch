@@ -1,8 +1,8 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  Incident Triage Demo GitHub Actions OIDC provider and deployment role.
-  The role can only assume the CDK deploy and file-publishing roles created by
-  the dedicated evaltalk bootstrap stack.
+  Incident Triage Demo GitHub Actions OIDC provider and isolated workflow
+  roles. The infrastructure role retains the existing CDK deployment path;
+  evaluation and repaired publication use separate environment-bound roles.
 Metadata:
   cfn-lint:
     config:
@@ -354,6 +354,205 @@ Resources:
                 kms:EncryptionContext:aws:dynamodb:tableName: IncidentTriageDemoControllerRun
                 kms:EncryptionContext:aws:dynamodb:subscriberId: '027224425948'
 
+  # The evaluation job runs the checked ARM64 package and the approved
+  # evaluator, then stages only private evidence. It deliberately has no STS
+  # AssumeRole grant: in particular it cannot enter the legacy CDK/file role
+  # chain or the repaired publisher role.
+  GitHubEvaluationPermissions:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: IncidentTriageDemoGitHubEvaluation
+      Description: >-
+        Phase 20 evaluation-only access to the fixed evaluator, model, private
+        captured inputs, bounded telemetry and qualification evidence.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EvaluateReviewedSessions
+            Effect: Allow
+            Action:
+              - bedrock-agentcore:Evaluate
+              - bedrock-agentcore:GetEvaluator
+            Resource:
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:evaluator/IncidentTriageSemanticSingle_35bc9bb6f79d8f15b8-T0jdxk8nzC
+          - Sid: InvokeReviewedModels
+            Effect: Allow
+            Action:
+              - bedrock:InvokeModel
+              - bedrock:InvokeModelWithResponseStream
+            Resource:
+              - arn:aws:bedrock:us-east-1:027224425948:inference-profile/us.anthropic.claude-sonnet-4-6
+              - arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6
+              - arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-6
+              - arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6
+          - Sid: ReadEvaluationLogQueries
+            Effect: Allow
+            Action:
+              - logs:StartQuery
+              - logs:GetQueryResults
+              - logs:StopQuery
+            Resource:
+              - arn:aws:logs:us-east-1:027224425948:log-group:/aws/bedrock-agentcore/incident-triage-evaluation
+              - arn:aws:logs:us-east-1:027224425948:log-group:/aws/bedrock-agentcore/incident-triage-evaluation:*
+          - Sid: WriteEvaluationSpans
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: arn:aws:logs:us-east-1:027224425948:log-group:/aws/bedrock-agentcore/incident-triage-evaluation:log-stream:spans
+          - Sid: ExportEvaluationTraces
+            Effect: Allow
+            Action: xray:PutTraceSegments
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: us-east-1
+          - Sid: ReadReviewedEvaluationInputs
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+            Resource:
+              - arn:aws:s3:::incident-triage-demo-evidence-027224425948-us-east-1/reviewed-cases/phase14/*
+              - arn:aws:s3:::incident-triage-demo-evidence-027224425948-us-east-1/agent-evaluation/phase18/*
+              - arn:aws:s3:::incident-triage-demo-evidence-027224425948-us-east-1/agent-evaluation/phase20/*
+          - Sid: StageEvaluationEvidence
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+              - s3:PutObject
+            Resource: arn:aws:s3:::incident-triage-demo-evidence-027224425948-us-east-1/agent-evaluation/phase20/*
+          - Sid: IdentifyEvaluationCaller
+            Effect: Allow
+            Action: sts:GetCallerIdentity
+            Resource: '*'
+
+  # The protected publication job has direct, repaired-only serving authority.
+  # It never assumes the legacy deployment role and cannot write the faulty
+  # endpoint, adapter, app/controller stacks, or arbitrary controller rows.
+  GitHubRepairedPublisherPermissions:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: IncidentTriageDemoGitHubRepairedPublisher
+      Description: >-
+        Phase 20 protected publication of the exactly qualified repaired
+        Runtime tuple and repaired controller record only.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ReadAgentRuntime
+            Effect: Allow
+            Action: bedrock-agentcore:GetAgentRuntime
+            Resource: arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????
+          - Sid: UpdateQualifiedAgentRuntime
+            Effect: Allow
+            Action: bedrock-agentcore:UpdateAgentRuntime
+            Resource: arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????
+          - Sid: ListAgentRuntimeVersions
+            Effect: Allow
+            Action: bedrock-agentcore:ListAgentRuntimeVersions
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: us-east-1
+          - Sid: ReadFaultyAndRepairedEndpoints
+            Effect: Allow
+            Action: bedrock-agentcore:GetAgentRuntimeEndpoint
+            Resource:
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????/runtime-endpoint/faulty
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????/runtime-endpoint/repaired
+          - Sid: CreateRepairedEndpoint
+            Effect: Allow
+            Action: bedrock-agentcore:CreateAgentRuntimeEndpoint
+            Resource:
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-7VWTOWDIs4
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-7VWTOWDIs4/runtime-endpoint/*
+          - Sid: UpdateRepairedEndpoint
+            Effect: Allow
+            Action: bedrock-agentcore:UpdateAgentRuntimeEndpoint
+            Resource: arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????/runtime-endpoint/repaired
+          - Sid: PassAgentRuntimeRole
+            Effect: Allow
+            Action: iam:PassRole
+            Resource: arn:aws:iam::027224425948:role/IncidentTriageDemoAgentRuntimeRole
+            Condition:
+              StringEquals:
+                iam:PassedToService: bedrock-agentcore.amazonaws.com
+          - Sid: ReadAgentStackRuntimeIdentity
+            Effect: Allow
+            Action: cloudformation:DescribeStacks
+            Resource: arn:aws:cloudformation:us-east-1:027224425948:stack/IncidentTriageDemoAgent/*
+          - Sid: ReadPrivateQualification
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+            Resource:
+              - arn:aws:s3:::incident-triage-demo-evidence-027224425948-us-east-1/agent-evaluation/phase20/*
+              - arn:aws:s3:::incident-triage-demo-evidence-027224425948-us-east-1/reviewed-cases/phase14/*
+          - Sid: ReadQualifiedServingInputs
+            Effect: Allow
+            Action:
+              - s3:GetObject
+              - s3:GetObjectVersion
+            Resource: arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/agent-qualified/*
+          - Sid: PublishQualifiedRuntimeArtifact
+            Effect: Allow
+            Action: s3:PutObject
+            Resource: arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/agent-qualified/*.zip
+          - Sid: LocateQualifiedObjects
+            Effect: Allow
+            Action:
+              - s3:GetBucketLocation
+              - s3:ListBucket
+              - s3:ListBucketVersions
+            Resource: arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1
+            Condition:
+              StringLike:
+                s3:prefix: agent-qualified/*
+          - Sid: UseQualifiedAssetKey
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+              - kms:GenerateDataKey
+            Resource: arn:aws:kms:us-east-1:027224425948:key/b292b95c-709f-42c6-aa42-b934ba2c6f07
+            Condition:
+              StringEquals:
+                kms:ViaService: s3.us-east-1.amazonaws.com
+              StringLike:
+                kms:EncryptionContext:aws:s3:arn: arn:aws:s3:::cdk-evaltalk-assets-027224425948-us-east-1/agent-qualified/*
+          - Sid: ReadPublicationRows
+            Effect: Allow
+            Action: dynamodb:GetItem
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoControllerRun
+            Condition:
+              ForAllValues:StringEquals:
+                dynamodb:LeadingKeys:
+                  - AGENT_PUBLICATION#faulty
+                  - AGENT_PUBLICATION#repaired
+          - Sid: PublishRepairedRecord
+            Effect: Allow
+            Action: dynamodb:PutItem
+            Resource: arn:aws:dynamodb:us-east-1:027224425948:table/IncidentTriageDemoControllerRun
+            Condition:
+              ForAllValues:StringEquals:
+                dynamodb:LeadingKeys:
+                  - AGENT_PUBLICATION#repaired
+          - Sid: DecryptPublicationRecords
+            Effect: Allow
+            Action: kms:Decrypt
+            Resource: arn:aws:kms:us-east-1:027224425948:key/2a020640-e95b-4bec-8ae7-3f6d9fcb8e0d
+            Condition:
+              StringEquals:
+                kms:ViaService: dynamodb.us-east-1.amazonaws.com
+                kms:EncryptionContext:aws:dynamodb:tableName: IncidentTriageDemoControllerRun
+                kms:EncryptionContext:aws:dynamodb:subscriberId: '027224425948'
+          - Sid: IdentifyPublisherCaller
+            Effect: Allow
+            Action: sts:GetCallerIdentity
+            Resource: '*'
+
   GitHubOidcProvider:
     Condition: CreateGitHubOidcProvider
     Type: AWS::IAM::OIDCProvider
@@ -400,6 +599,7 @@ Resources:
                   '1411023195'
                 token.actions.githubusercontent.com:ref:
                   refs/heads/demo-deploy
+                token.actions.githubusercontent.com:environment: demo-infrastructure
       Policies:
         - PolicyName: AssumeCdkDeploymentRoles
           PolicyDocument:
@@ -425,6 +625,98 @@ Resources:
         - Key: GitHubWorkflow
           Value: .github/workflows/deploy.yml
 
+  GitHubEvaluationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: IncidentTriageDemoGitHubEvaluation
+      Description: >-
+        GitHub Actions identity for the isolated Phase 20 evaluation job. It
+        cannot assume deployment, file-publishing, or repaired-publisher roles.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ExactDemoEvaluationWorkflow
+            Effect: Allow
+            Principal:
+              Federated:
+                Fn::If:
+                  - CreateGitHubOidcProvider
+                  - Fn::GetAtt:
+                      - GitHubOidcProvider
+                      - Arn
+                  - Ref: GitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: repo:guilleojeda@18320860/evaluations-ref-arch@1411023195:workflow_ref:guilleojeda/evaluations-ref-arch/.github/workflows/deploy.yml@refs/heads/demo-deploy
+                token.actions.githubusercontent.com:repository_id:
+                  '1411023195'
+                token.actions.githubusercontent.com:ref:
+                  refs/heads/demo-deploy
+                token.actions.githubusercontent.com:environment:
+                  - demo-evaluation
+                  - repaired-publication
+      ManagedPolicyArns:
+        - Ref: GitHubEvaluationPermissions
+      Tags:
+        - Key: Project
+          Value: IncidentTriageDemo
+        - Key: ManagedBy
+          Value: IncidentTriageDemoGitHub
+        - Key: GitHubRepositoryId
+          Value: '1411023195'
+        - Key: GitHubWorkflow
+          Value: .github/workflows/deploy.yml
+        - Key: GitHubEnvironment
+          Value: demo-evaluation,repaired-publication
+
+  GitHubRepairedPublisherRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: IncidentTriageDemoGitHubRepairedPublisher
+      Description: >-
+        GitHub Actions identity for the protected Phase 20 repaired publisher.
+        It has no CDK, file-publishing, faulty-endpoint, or adapter authority.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ExactProtectedRepairedPublicationWorkflow
+            Effect: Allow
+            Principal:
+              Federated:
+                Fn::If:
+                  - CreateGitHubOidcProvider
+                  - Fn::GetAtt:
+                      - GitHubOidcProvider
+                      - Arn
+                  - Ref: GitHubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: repo:guilleojeda@18320860/evaluations-ref-arch@1411023195:workflow_ref:guilleojeda/evaluations-ref-arch/.github/workflows/deploy.yml@refs/heads/demo-deploy
+                token.actions.githubusercontent.com:repository_id:
+                  '1411023195'
+                token.actions.githubusercontent.com:ref:
+                  refs/heads/demo-deploy
+                token.actions.githubusercontent.com:environment: repaired-publication
+      ManagedPolicyArns:
+        - Ref: GitHubRepairedPublisherPermissions
+      Tags:
+        - Key: Project
+          Value: IncidentTriageDemo
+        - Key: ManagedBy
+          Value: IncidentTriageDemoGitHub
+        - Key: GitHubRepositoryId
+          Value: '1411023195'
+        - Key: GitHubWorkflow
+          Value: .github/workflows/deploy.yml
+        - Key: GitHubEnvironment
+          Value: repaired-publication
+
 Outputs:
   GitHubDeployRoleArn:
     Description: Role assumed by the pinned GitHub Actions workflow.
@@ -445,6 +737,18 @@ Outputs:
     Description: Exact immutable subject accepted by the role trust policy.
     Value:
       repo:guilleojeda@18320860/evaluations-ref-arch@1411023195:workflow_ref:guilleojeda/evaluations-ref-arch/.github/workflows/deploy.yml@refs/heads/demo-deploy
+  GitHubEvaluationRoleArn:
+    Description: Isolated evaluation/read-staging role accepted by the demo-evaluation and repaired-publication job environments.
+    Value:
+      Fn::GetAtt:
+        - GitHubEvaluationRole
+        - Arn
+  GitHubRepairedPublisherRoleArn:
+    Description: Protected repaired publication role accepted only by the repaired-publication environment.
+    Value:
+      Fn::GetAtt:
+        - GitHubRepairedPublisherRole
+        - Arn
   CdkDeployRoleArn:
     Description: Dedicated CDK deployment role the GitHub role may assume.
     Value:
