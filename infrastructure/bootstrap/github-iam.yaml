@@ -120,6 +120,7 @@ Resources:
             NotResource:
               - arn:aws:kms:us-east-1:027224425948:key/b292b95c-709f-42c6-aa42-b934ba2c6f07
               - arn:aws:kms:us-east-1:027224425948:key/9d894f12-dc33-4332-bb3e-df489928914b
+              - arn:aws:kms:us-east-1:027224425948:key/2a020640-e95b-4bec-8ae7-3f6d9fcb8e0d
           - Sid: DenyBootstrapKeyOutsideBootstrapTemplates
             Effect: Deny
             Action: kms:Decrypt
@@ -339,6 +340,19 @@ Resources:
               ForAllValues:StringEquals:
                 dynamodb:LeadingKeys:
                   - AGENT_PUBLICATION#faulty
+          # DynamoDB decrypts its table key on behalf of this caller. Keep
+          # this separate from the S3/Lambda KMS grants and bind it to the
+          # exact table encryption context observed in CloudTrail and the
+          # DynamoDB-managed KMS grant.
+          - Sid: DecryptFaultyControllerRecord
+            Effect: Allow
+            Action: kms:Decrypt
+            Resource: arn:aws:kms:us-east-1:027224425948:key/2a020640-e95b-4bec-8ae7-3f6d9fcb8e0d
+            Condition:
+              StringEquals:
+                kms:ViaService: dynamodb.us-east-1.amazonaws.com
+                kms:EncryptionContext:aws:dynamodb:tableName: IncidentTriageDemoControllerRun
+                kms:EncryptionContext:aws:dynamodb:subscriberId: '027224425948'
 
   GitHubOidcProvider:
     Condition: CreateGitHubOidcProvider

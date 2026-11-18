@@ -44,6 +44,33 @@ function deployStepContaining(pattern, description) {
   return match[0];
 }
 
+function expandedReferencePolicy() {
+  const setup = deployStepContaining(/scripts\/[A-Za-z0-9_-]*reference[A-Za-z0-9_-]*\.(?:py|mjs|sh)/i, 'reference setup');
+  const policyMarker = '            reference_policy="$(jq -cn';
+  const policyStart = setup.indexOf(policyMarker);
+  assert.notEqual(policyStart, -1, 'reference setup must construct a session policy');
+  const credentialsStart = setup.indexOf('\n            credentials="', policyStart);
+  assert.notEqual(credentialsStart, -1, 'reference setup must assume the role after constructing its session policy');
+  const definitionsStart = setup.indexOf('            stack_arn=');
+  assert.notEqual(definitionsStart, -1, 'reference setup must define its fixed policy resources');
+  const definitions = setup.slice(definitionsStart, policyStart).trim();
+  const assignment = setup.slice(policyStart, credentialsStart).trim();
+  const shell = [
+    'set -euo pipefail',
+    'AWS_REGION=us-east-1',
+    'AWS_ACCOUNT_ID=027224425948',
+    'PHASE0_AGENT_STACK=IncidentTriageDemoAgent',
+    'PHASE0_ASSET_BUCKET=cdk-evaltalk-assets-027224425948-us-east-1',
+    definitions,
+    assignment,
+    'printf \'%s\' "$reference_policy"',
+  ].join('\n');
+  const result = spawnSync('bash', ['-euo', 'pipefail', '-c', shell], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr || 'reference policy shell failed');
+  assert.equal(result.stderr, '', 'reference policy generation must not emit diagnostics');
+  return JSON.parse(result.stdout);
+}
+
 function template(path, name) {
   assert.ok(existsSync(path), `${name} synthesized template is missing; run the normal component build/synth first`);
   return JSON.parse(readFileSync(path, 'utf8'));
@@ -174,8 +201,16 @@ test('normal agent publication is structurally separate from the one-time refere
     'reference setup must scope endpoint creation to the designated Runtime endpoint collection');
   requireMatch(setup, /CreateAgentRuntimeEndpoint[\s\S]*Resource:\[\$runtime,\$endpoint\]/,
     'reference setup must retain the designated Runtime and concrete endpoint create scope required by the service');
-  requireMatch(setup, /GetAgentRuntimeEndpoint[\s\S]*UpdateAgentRuntimeEndpoint[\s\S]*Resource:\$endpoint/,
-    'reference setup must retain concrete faulty endpoint scope for read/update');
+  requireMatch(setup,
+    /Action:\["bedrock-agentcore:GetAgentRuntime\*","bedrock-agentcore:UpdateAgentRuntime\*","bedrock-agentcore:CreateAgentRuntimeEndpoint"\],Resource:\[\$runtime,\$endpoint\]/,
+    'reference setup must keep Runtime reads/updates on the Runtime and concrete faulty endpoint resources');
+  requireAbsent(setup, /DeleteAgentRuntimeEndpoint|delete_agent_runtime_endpoint/,
+    'reference setup must not grant or invoke endpoint deletion');
+  requireMatch(setup, /table_key_arn=.*2a020640-e95b-4bec-8ae7-3f6d9fcb8e0d/,
+    'reference setup must include the ControllerRun table CMK for the encrypted publication record');
+  requireMatch(setup,
+    /Action:\["kms:Encrypt","kms:Decrypt"\],Resource:\[\$lambda_key,\$bootstrap_key,\$table_key\]/,
+    'reference setup must retain the existing KMS grants while adding only the ControllerRun CMK');
   requireMatch(setup, /status\s*==\s*["']ready["'][\s\S]*status\s*==\s*["']partial["']|status\s*==\s*["']partial["'][\s\S]*status\s*==\s*["']ready["']/,
     'reference setup must accept a verified recoverable partial preflight for retirement to classify');
   requireAbsent(setup, /github\.sha|inputs\.(?:component|rotation_from_generation|rotation_to_generation)|rotation_(?:from|to)|--(?:candidate|endpoint|runtime|sha|uri)/i,
@@ -185,6 +220,88 @@ test('normal agent publication is structurally separate from the one-time refere
     'the ordinary deploy shell must never enter the reference path');
   requireAbsent(deployAgent, /(?:update|create|delete)_agent_runtime_endpoint/,
     'ordinary releases must never repin, create, or delete the fixed endpoint');
+});
+
+test('trusted reference session expands to the complete fixed permission set under the STS limit', () => {
+  const policy = expandedReferencePolicy();
+  const runtime = `arn:aws:bedrock-agentcore:${region}:${account}:runtime/IncidentTriageDemoAgent-??????????`;
+  const endpoint = `${runtime}/runtime-endpoint/faulty`;
+  const endpointCollection = `${runtime}/runtime-endpoint/*`;
+  const table = `arn:aws:dynamodb:${region}:${account}:table/IncidentTriageDemoControllerRun`;
+  const lambda = `arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoAlarmAdapter`;
+  const runtimeRole = `arn:aws:iam::${account}:role/IncidentTriageDemoAgentRuntimeRole`;
+  const lambdaKey = `arn:aws:kms:${region}:${account}:key/9d894f12-dc33-4332-bb3e-df489928914b`;
+  const bootstrapKey = `arn:aws:kms:${region}:${account}:key/b292b95c-709f-42c6-aa42-b934ba2c6f07`;
+  const tableKey = `arn:aws:kms:${region}:${account}:key/2a020640-e95b-4bec-8ae7-3f6d9fcb8e0d`;
+  const find = (predicate, message) => {
+    const matches = policy.Statement.filter(predicate);
+    assert.equal(matches.length, 1, message);
+    return matches[0];
+  };
+
+  assert.equal(policy.Version, '2012-10-17');
+  assert.equal(policy.Statement.length, 9);
+  assert.deepEqual(find((statement) => statement.Action.includes('cloudformation:ExecuteChangeSet'),
+    'reference policy must retain the complete change-set permission set'), {
+    Effect: 'Allow',
+    Action: ['cloudformation:DescribeStacks', 'cloudformation:ListStackResources', 'cloudformation:GetTemplate',
+      'cloudformation:DescribeChangeSet', 'cloudformation:CreateChangeSet', 'cloudformation:ExecuteChangeSet'],
+    Resource: [`arn:aws:cloudformation:${region}:${account}:stack/IncidentTriageDemoAgent/*`,
+      `arn:aws:cloudformation:${region}:${account}:changeSet/*/*`],
+  });
+  assert.deepEqual(find((statement) => statement.Action.includes('s3:GetObject'),
+    'reference policy must retain versioned reference-object reads'), {
+    Effect: 'Allow',
+    Action: ['s3:GetObject', 's3:GetObjectVersion'],
+    Resource: `arn:aws:s3:::cdk-evaltalk-assets-${account}-us-east-1/agent-reference/*`,
+  });
+  assert.deepEqual(find((statement) => statement.Action.includes('bedrock-agentcore:UpdateAgentRuntime*'),
+    'reference policy must retain Runtime and exact endpoint maintenance'), {
+    Effect: 'Allow',
+    Action: ['bedrock-agentcore:GetAgentRuntime*', 'bedrock-agentcore:UpdateAgentRuntime*',
+      'bedrock-agentcore:CreateAgentRuntimeEndpoint'],
+    Resource: [runtime, endpoint],
+  });
+  assert.deepEqual(find((statement) => statement.Resource === endpointCollection,
+    'reference policy must authorize endpoint creation against the service collection'), {
+    Effect: 'Allow',
+    Action: 'bedrock-agentcore:CreateAgentRuntimeEndpoint',
+    Resource: endpointCollection,
+  });
+  assert.deepEqual(find((statement) => statement.Action === 'bedrock-agentcore:ListAgentRuntimeVersions',
+    'reference policy must retain the required unscoped version-list read'), {
+    Effect: 'Allow',
+    Action: 'bedrock-agentcore:ListAgentRuntimeVersions',
+    Resource: '*',
+  });
+  assert.deepEqual(find((statement) => statement.Action.includes('lambda:UpdateFunctionConfiguration'),
+    'reference policy must retain adapter attestation updates'), {
+    Effect: 'Allow',
+    Action: ['lambda:GetFunctionConfiguration', 'lambda:UpdateFunctionConfiguration'],
+    Resource: lambda,
+  });
+  assert.deepEqual(find((statement) => statement.Action.includes('dynamodb:PutItem'),
+    'reference policy must retain the single publication record read/write'), {
+    Effect: 'Allow',
+    Action: ['dynamodb:GetItem', 'dynamodb:PutItem'],
+    Resource: table,
+  });
+  assert.deepEqual(find((statement) => statement.Action === 'iam:PassRole',
+    'reference policy must retain the exact Runtime role pass'), {
+    Effect: 'Allow',
+    Action: 'iam:PassRole',
+    Resource: runtimeRole,
+  });
+  assert.deepEqual(find((statement) => statement.Action.includes('kms:Decrypt'),
+    'reference policy must retain both existing KMS grants and the ControllerRun CMK'), {
+    Effect: 'Allow',
+    Action: ['kms:Encrypt', 'kms:Decrypt'],
+    Resource: [lambdaKey, bootstrapKey, tableKey],
+  });
+  assert.equal(policy.Statement.some((statement) => JSON.stringify(statement).includes('DeleteAgentRuntimeEndpoint')), false,
+    'reference policy must not include endpoint deletion');
+  assert.ok(Buffer.byteLength(JSON.stringify(policy), 'utf8') <= 2048,
+    'the fully expanded reference session policy must fit the STS 2048-byte limit');
 });
 
 test('synthesized agent CFN relinquishes endpoint ownership while preserving stable outputs and protected resources', () => {
