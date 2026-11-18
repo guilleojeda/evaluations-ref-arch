@@ -362,6 +362,16 @@ test('HTTP effective permissions read both publication/native bindings, avoid se
   'HTTP readiness must not read private qualification reports');
 });
 
+test('both controller functions receive the fixed Runtime ARN used by publication verification', () => {
+  const template = readJson(controllerTemplatePath, 'controller');
+  for (const name of ['IncidentTriageDemoControllerHttp', 'IncidentTriageDemoControllerWorker']) {
+    const [, fn] = findOne(resourcesOf(template.Resources, 'AWS::Lambda::Function'),
+      (resource) => resource.Properties.FunctionName === name, `missing ${name}`);
+    assert.deepEqual(fn.Properties.Environment.Variables.CONTROLLER_AGENT_RUNTIME_ARN,
+      { Ref: 'AgentRuntimeArn' }, `${name} must verify against the deployed Runtime parameter`);
+  }
+});
+
 test('action worker owns selection writes while retaining ordinary controller state and fresh native readiness reads', () => {
   const controller = readJson(controllerTemplatePath, 'controller');
   const bootstrap = readYaml(cfnExecutionPath);
