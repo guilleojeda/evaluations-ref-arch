@@ -5,7 +5,7 @@ import { pathToFileURL } from 'node:url';
 import { test } from 'node:test';
 import {
   appApi, appBearer, appFetch, appRevision, awsEnvironment, call, deniedVersion, fixture, getAction, getState,
-  httpEvent, newerRevision, ordersTable, releaseHeld, reset, root, row, startAwsServer, submit, table, withElapsed,
+  httpEvent, newerRevision, ordersTable, records, releaseHeld, reset, root, row, startAwsServer, submit, table, withElapsed,
 } from './support/phase3-inventory-controller-harness.mjs';
 
 const RESET_CONFIRMATION = Object.freeze({
@@ -172,6 +172,14 @@ test('Reset creates a verified new session while preserving old operational hist
     const oldPayload = { checkoutId: oldReceiptId, sku: 'demo-widget', quantity: 1, productVersion: oldVersion };
     const originalBaseline = structuredClone(row('STATE').data.originalBaseline);
     assert.ok(originalBaseline, 'a successful readiness action saves its original baseline');
+    // These rows have a separate lifetime from the presenter session. Reset
+    // must preserve their contents even as it replaces STATE and business data.
+    const agentRecords = [
+      { pk: 'AGENT_SELECTION', candidateId: 'repaired', runtimeVersion: '20' },
+      { pk: 'AGENT_PUBLICATION#repaired', candidateId: 'repaired', runtimeVersion: '20' },
+      { pk: 'AGENT_PUBLICATION#faulty', candidateId: 'faulty', runtimeVersion: '19' },
+    ];
+    for (const record of agentRecords) records.set(record.pk, structuredClone(record));
     const legacyExtra = { retainedByReset: true, source: 'phase8-acceptance' };
     row('STATE').data.legacyExtra = structuredClone(legacyExtra);
     const priorRun = await getState(api);
@@ -222,6 +230,7 @@ test('Reset creates a verified new session while preserving old operational hist
     assert.equal(beforeFirstMutation.archived.runId, oldRunId);
     assert.deepEqual(beforeFirstMutation.archived.originalBaseline, originalBaseline);
     assert.deepEqual(beforeFirstMutation.archived.legacyExtra, legacyExtra);
+    for (const record of agentRecords) assert.deepEqual(row(record.pk), record);
 
     const verificationRequests = fixture.appRequests.slice(requestsBeforeReset);
     assert.equal(requestCount(verificationRequests, 'GET', '/api/products'), 2);
