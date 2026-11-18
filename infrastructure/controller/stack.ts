@@ -34,6 +34,8 @@ const INVENTORY_DENIED_ROLE_ARN = `arn:aws:iam::${ACCOUNT}:role/IncidentTriageDe
 const INVENTORY_READ_DENY_POLICY_ARN = `arn:aws:iam::${ACCOUNT}:policy/IncidentTriageDemoInventoryReadDeny`;
 const INVENTORY_VARIANTS_MANIFEST_BUCKET = "cdk-evaltalk-assets-027224425948-us-east-1";
 const EVIDENCE_BUCKET_NAME = `incident-triage-demo-evidence-${ACCOUNT}-${REGION}`;
+const FAULTY_CONFIGURATION_OBJECT = `arn:aws:s3:::${INVENTORY_VARIANTS_MANIFEST_BUCKET}/agent-reference/7febe979fa1365360983d886f9d1dc78b55d9bde91a6fe7357e5f9fd97d2d7a7.json`;
+const REPAIRED_CONFIGURATION_OBJECT = `arn:aws:s3:::${EVIDENCE_BUCKET_NAME}/agent-evaluation/phase20/1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7/runtime-configuration.json`;
 const STAGE_ALARM_NAME = "IncidentTriageDemoAppStage5xx";
 const STAGE_ALARM_ARN = `arn:aws:cloudwatch:${REGION}:${ACCOUNT}:alarm:${STAGE_ALARM_NAME}`;
 
@@ -69,17 +71,30 @@ export class ControllerStack extends DemoStack {
 
     const httpRole = new iam.Role(this, "HttpRole", { roleName: HTTP_ROLE_NAME, assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"), permissionsBoundary: iam.ManagedPolicy.fromManagedPolicyArn(this, "HttpBoundary", HTTP_BOUNDARY_ARN), description: "HTTP API role for the Incident Triage controller." });
     httpLogGroup.grantWrite(httpRole);
-    httpRole.addToPolicy(new iam.PolicyStatement({ sid: "ControllerRunTable", actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"], resources: [runTable.tableArn] }));
+    // The HTTP handler reads the full controller table, but its journal writes
+    // are limited to the ordinary STATE/ACTION/RUN records.  The worker owns
+    // the separate AGENT_SELECTION write and publisher rows remain read-only.
+    const ordinaryControllerKeys = { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["STATE", "ACTION#*", "RUN#*"] } };
+    const workerControllerKeys = { "ForAllValues:StringLike": { "dynamodb:LeadingKeys": ["STATE", "ACTION#*", "RUN#*", "AGENT_SELECTION"] } };
+    httpRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadControllerRunTable", actions: ["dynamodb:GetItem"], resources: [runTable.tableArn] }));
+    httpRole.addToPolicy(new iam.PolicyStatement({ sid: "WriteControllerJournal", actions: ["dynamodb:PutItem", "dynamodb:UpdateItem"], resources: [runTable.tableArn], conditions: ordinaryControllerKeys }));
     httpRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadOperatorSecret", actions: ["secretsmanager:GetSecretValue"], resources: [operatorSecretArn.valueAsString] }));
     httpRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadStageAlarm", actions: ["cloudwatch:DescribeAlarms"], resources: [STAGE_ALARM_ARN] }));
     httpRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadNativeMetrics", actions: ["cloudwatch:GetMetricData"], resources: ["*"], conditions: { StringEquals: { "aws:RequestedRegion": REGION } } }));
     httpRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadAgentInvestigations", actions: ["dynamodb:GetItem", "dynamodb:Query"], resources: [`arn:aws:dynamodb:${REGION}:${ACCOUNT}:table/${agentRunTable.valueAsString}`] }));
     const agentConfigured = new CfnCondition(this, "AgentEndpointConfigured", { expression: Fn.conditionNot(Fn.conditionEquals(agentEndpointArn.valueAsString, "")) });
-    const agentReadinessPolicy = new iam.CfnPolicy(this, "AgentReadinessPolicy", { policyName: "ReadConfiguredAgentEndpoint", roles: [httpRole.roleName], policyDocument: { Version: "2012-10-17", Statement: [{ Effect: "Allow", Action: "bedrock-agentcore:GetAgentRuntimeEndpoint", Resource: [agentRuntimeArn.valueAsString, agentEndpointArn.valueAsString] }] } });
+    const repairedEndpointArn = Fn.join("", [agentRuntimeArn.valueAsString, "/runtime-endpoint/repaired"]);
+    const configuredEndpointArns = [agentEndpointArn.valueAsString, repairedEndpointArn];
+    const agentReadinessPolicy = new iam.CfnPolicy(this, "AgentReadinessPolicy", { policyName: "ReadConfiguredAgentRuntime", roles: [httpRole.roleName], policyDocument: { Version: "2012-10-17", Statement: [
+      { Effect: "Allow", Action: "bedrock-agentcore:GetAgentRuntime", Resource: agentRuntimeArn.valueAsString },
+      { Effect: "Allow", Action: "bedrock-agentcore:GetAgentRuntimeEndpoint", Resource: [agentRuntimeArn.valueAsString, ...configuredEndpointArns] },
+    ] } });
     agentReadinessPolicy.cfnOptions.condition = agentConfigured;
+    httpRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadAgentConfiguration", actions: ["s3:GetObject", "s3:GetObjectVersion"], resources: [FAULTY_CONFIGURATION_OBJECT, REPAIRED_CONFIGURATION_OBJECT] }));
     const workerRole = new iam.Role(this, "WorkerRole", { roleName: WORKER_ROLE_NAME, assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"), permissionsBoundary: iam.ManagedPolicy.fromManagedPolicyArn(this, "WorkerBoundary", WORKER_BOUNDARY_ARN), description: "Action worker role for the Incident Triage controller." });
     workerLogGroup.grantWrite(workerRole);
-    workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ControllerRunTable", actions: ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"], resources: [runTable.tableArn] }));
+    workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadControllerRunTable", actions: ["dynamodb:GetItem"], resources: [runTable.tableArn] }));
+    workerRole.addToPolicy(new iam.PolicyStatement({ sid: "WriteControllerJournalAndSelection", actions: ["dynamodb:PutItem", "dynamodb:UpdateItem"], resources: [runTable.tableArn], conditions: workerControllerKeys }));
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ControllerWorkerResetInventorySeed", actions: ["dynamodb:GetItem", "dynamodb:PutItem"], resources: [`arn:aws:dynamodb:${REGION}:${ACCOUNT}:table/${INVENTORY_TABLE_NAME}`], conditions: { "ForAllValues:StringEquals": { "dynamodb:LeadingKeys": [PRODUCT_SKU] } } }));
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ControllerWorkerResetOrdersCleanup", actions: ["dynamodb:Scan", "dynamodb:DeleteItem"], resources: [`arn:aws:dynamodb:${REGION}:${ACCOUNT}:table/${ORDERS_TABLE_NAME}`] }));
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadCheckoutSecret", actions: ["secretsmanager:GetSecretValue"], resources: [appSecretArn.valueAsString] }));
@@ -94,6 +109,12 @@ export class ControllerStack extends DemoStack {
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadInventoryVariantsManifest", actions: ["s3:GetObject"], resources: [`arn:aws:s3:::${INVENTORY_VARIANTS_MANIFEST_BUCKET}/releases/app/*/inventory-variants.json`] }));
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadStageAlarm", actions: ["cloudwatch:DescribeAlarms", "cloudwatch:DescribeAlarmHistory"], resources: [STAGE_ALARM_ARN] }));
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "WriteConfigurationCheckpoint", actions: ["s3:PutObject"], resources: [evidenceBucket.arnForObjects("configuration/*")] }));
+    workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadAgentConfiguration", actions: ["s3:GetObject", "s3:GetObjectVersion"], resources: [FAULTY_CONFIGURATION_OBJECT, REPAIRED_CONFIGURATION_OBJECT] }));
+    const workerReadinessPolicy = new iam.CfnPolicy(this, "WorkerAgentReadinessPolicy", { policyName: "ReadConfiguredAgentRuntime", roles: [workerRole.roleName], policyDocument: { Version: "2012-10-17", Statement: [
+      { Effect: "Allow", Action: "bedrock-agentcore:GetAgentRuntime", Resource: agentRuntimeArn.valueAsString },
+      { Effect: "Allow", Action: "bedrock-agentcore:GetAgentRuntimeEndpoint", Resource: [agentRuntimeArn.valueAsString, ...configuredEndpointArns] },
+    ] } });
+    workerReadinessPolicy.cfnOptions.condition = agentConfigured;
 
     const backendDirectory = resolve(process.cwd(), ".artifacts/controller/backend");
     for (const artifact of ["index.mjs", "worker.mjs"]) {

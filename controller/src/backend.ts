@@ -116,6 +116,10 @@ function command(value: unknown): Command | undefined {
     return { kind: "increase_memory", function: "inventory", memoryMb: input.memoryMb };
   }
   if (input.kind === "activate_inventory_denial" && keys.length === 1) return { kind: "activate_inventory_denial" };
+  if (input.kind === "select_agent" && keys.length === 2 && keys.includes("kind") && keys.includes("candidateId") &&
+      (input.candidateId === "faulty" || input.candidateId === "repaired")) {
+    return { kind: "select_agent", candidateId: input.candidateId };
+  }
   if (input.kind === "restore_inventory_access" && (keys.length === 1 || (keys.length === 2 && input.restoreWithoutEvidence === true))) {
     return input.restoreWithoutEvidence === true ? { kind: "restore_inventory_access", restoreWithoutEvidence: true } : { kind: "restore_inventory_access" };
   }
@@ -220,6 +224,9 @@ export async function handler(event: BackendEvent = {}): Promise<BackendResponse
       return action ? json(200, { action }) : json(404, { code: "ACTION_NOT_FOUND", message: "Action not found" });
     }
     if (method !== "PUT") return json(405, { code: "METHOD_NOT_ALLOWED", message: "Method not allowed" });
+    if (event.rawQueryString || Object.keys(event.queryStringParameters ?? {}).length > 0) {
+      return json(400, { code: "INVALID_QUERY", message: "Action commands do not accept query parameters" });
+    }
     const input = command(parsedBody(event));
     if (!input) return json(400, { code: "INVALID_COMMAND", message: "The action command is invalid" });
     const result = await applyCommand(id, input);

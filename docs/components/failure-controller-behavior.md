@@ -34,19 +34,31 @@ Bind the Recover baseline to the deployment generation and artifact identity kno
 Schedule independent app, agent, and controller releases outside demo operation. For
 the initial alarm path, deploy the checked agent Runtime/adapter, complete the
 one-time publisher migration and fixed `reference-setup`, bind the verified
-adapter, then deploy the controller. Confirm the publisher tuple before
+adapter, then deploy the controller. Confirm both publisher tuples before
 readiness; a stale, partial, or unknown release/reference blocks dependent
 operations. The [deployment runbook](../deployment.md#restore-the-reviewed-faulty-reference)
 owns the maintenance preflight and recovery steps.
 
 Adopt a fresh baseline only after matching the trusted expected settings and verifying a new order and its stock decrement. First adoption and adoption of a new generation require the release's original Inventory cap of **16**, healthy original memory, and the other expected release settings, with successful stack identity/time, immutable versions and artifact/configuration identities recorded. Same-generation readiness may validate a previously confirmed higher Inventory cap, such as 32, while preserving original cap 16 and the same release identity; it does not adopt an arbitrary observed cap or carry a raised cap into a new generation. Later higher-memory readiness likewise preserves the original restore target. Legacy records missing those facts require fresh readiness. An old-generation incident stays inspectable when explicit readiness adopts a new successful generation; same-generation denial still requires restoration. If the bounded readiness action cannot complete its request checks, show readiness as incomplete. Readiness adopts the baseline within the current session/run and preserves prior history. [Release operation](../deployment.md#deployment-and-controller-baseline)
 
-The controller reads the publisher-owned `faulty` tuple as a control-plane
-binding only. Runtime ARN/version, endpoint, source/artifact identity, adapter
-attestation, and the strongly read-back `AGENT_PUBLICATION#faulty` record must
-agree before a live witness. The controller cannot create, delete, repin, or
-select the endpoint; reference status is not a quality pass or repaired
-qualification.
+The controller reads either publisher-owned tuple as a control-plane binding
+only. Runtime ARN/version, endpoint, source/artifact identity, adapter
+attestation, and the strongly read-back `AGENT_PUBLICATION#faulty` or
+`AGENT_PUBLICATION#repaired` record must agree before a live witness. An
+authenticated `select_agent` action may write only the separate
+`AGENT_SELECTION` record after it verifies the chosen tuple, endpoint READY/live
+version, numbered Runtime configuration, and the native alarm `OK` precondition.
+It cannot create, delete, or repin an endpoint, invoke the Runtime, or write a
+publisher-owned record. Reference status is not a quality pass and repaired
+qualification is not inferred from endpoint readiness. A repeated identical
+verified tuple is a no-op; a changed row under the same label is verified again.
+
+The selected tuple is durable and is the adapter's sole routing input. Selection
+does not generate application requests or start an investigation. A failed or
+uncertain selection read/write stays failed or unknown and never falls back to
+an old environment/default route. Dashboard refresh and replacement-browser
+reconnect show the last successful tuple with its observation time, marked
+stale/unavailable when a read fails; they never reselect automatically.
 
 A session/run groups a recorded business/configuration baseline and its traffic, incident, remedy, and verification history. Before Reset changes business data, it archives the prior run and makes the Reset action UUID the new current run ID, linked to the previous run. That run remains unusable until verification completes. Run identity provides history and baseline isolation, not a cumulative request allowance or request credits. Each action has its own identity and applicable duration, rate, maximum attempts, in-flight limit, timeout, and deadline. Stop and drain control current work; they do not erase history or deduplication records.
 

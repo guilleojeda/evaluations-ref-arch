@@ -141,6 +141,11 @@ const server = http.createServer(async (request, response) => {
       return;
     }
     if (target.endsWith('Query') || target.endsWith('GetItem')) {
+      if (target.endsWith('GetItem') && keyValue(body.Key?.pk) === 'AGENT_SELECTION') {
+        response.writeHead(200, { 'content-type': 'application/x-amz-json-1.0' });
+        response.end('{}');
+        return;
+      }
       assert.equal(body.TableName, tableName, 'discovery must read the separate AgentCore run table');
       if (fixture.queryMode === 'unavailable') {
         response.writeHead(500, { 'content-type': 'application/x-amz-json-1.0', 'x-amzn-errortype': 'InternalServerErrorException' });
@@ -659,7 +664,7 @@ test('the discovery route has no manual trigger or action-execution method', asy
   assertNoInvocationOrWrites();
 });
 
-test('alarm readiness reports endpoint health and the exact adapter binding without invoking the agent', async (t) => {
+test('alarm readiness reports the native alarm and refuses legacy static AgentCore routing', async (t) => {
   await t.test('the deployed Runtime ARN shape and stable adapter action are observed', async () => {
     reset();
     assert.equal(endpointArn, `arn:aws:bedrock-agentcore:${region}:${account}:runtime/${runtimeId}/runtime-endpoint/faulty`);
@@ -667,14 +672,11 @@ test('alarm readiness reports endpoint health and the exact adapter binding with
     assert.equal(response.statusCode, 200, response.body);
     const body = responseBody(response);
     assert.equal(body.alarm?.state, 'OK');
-    assert.equal(body.agentEndpoint?.state, 'ready');
-    assert.equal(body.agentEndpoint?.runtimeArn, runtimeArn);
-    assert.equal(body.agentEndpoint?.endpointArn, endpointArn);
-    assert.equal(body.agentEndpoint?.liveVersion, '7');
+    assert.equal(body.agentEndpoint?.state, 'unconfigured');
+    assert.match(body.agentEndpoint?.failureReason ?? '', /selection/i);
     assert.equal(body.alarmBinding?.state, 'bound');
     const endpointRead = fixture.calls.find(({ method, url }) => method === 'GET' && url?.includes('/runtime-endpoints/faulty/'));
-    assert.ok(endpointRead, 'readiness must use the documented endpoint control-plane read');
-    assert.ok(endpointRead.url.includes(runtimeId));
+    assert.equal(endpointRead, undefined, 'missing AGENT_SELECTION must not fall back to the static endpoint environment');
     assertNoInvocationOrWrites();
   });
 
@@ -684,7 +686,7 @@ test('alarm readiness reports endpoint health and the exact adapter binding with
     assert.equal(response.statusCode, 200, response.body);
     const body = responseBody(response);
     assert.equal(body.alarm?.state, 'OK');
-    assert.equal(body.agentEndpoint?.state, 'unavailable');
+    assert.equal(body.agentEndpoint?.state, 'unconfigured');
     assert.equal(body.alarmBinding?.state, 'bound');
     assertNoInvocationOrWrites();
   });
@@ -694,8 +696,7 @@ test('alarm readiness reports endpoint health and the exact adapter binding with
     const response = await call('GET', '/api/alarm');
     assert.equal(response.statusCode, 200, response.body);
     const body = responseBody(response);
-    assert.equal(body.agentEndpoint?.state, 'not_ready');
-    assert.match(body.agentEndpoint?.failureReason ?? '', /identity did not match/i);
+    assert.equal(body.agentEndpoint?.state, 'unconfigured');
     assertNoInvocationOrWrites();
   });
 

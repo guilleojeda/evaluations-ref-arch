@@ -155,5 +155,6 @@ export async function readAlarm(): Promise<AlarmResponse> {
     alarmBinding = { state, observedAt };
   }
   else alarmBinding = { state: "unexpected", observedAt };
-  return { alarm, observedAt, agentEndpoint, alarmBinding };
+  return { alarm, observedAt, agentEndpoint, alarmBinding,
+    ...(agentEndpoint.selectedAgent ? { selectedAgent: agentEndpoint.selectedAgent } : {}) };
 }

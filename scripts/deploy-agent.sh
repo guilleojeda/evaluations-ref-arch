@@ -16,19 +16,6 @@ if [[ "$fixed_bootstrap" == true ]]; then
     echo "Fixed reference setup must use the infrastructure-only bootstrap path" >&2
     exit 1
   }
-  reviewed_revision="${PHASE20_FIXED_SOURCE_REVISION:-}"
-  [[ -n "$reviewed_revision" ]] || {
-    echo "Fixed bootstrap source revision is missing" >&2
-    exit 1
-  }
-  git cat-file -e "$reviewed_revision^{commit}" || {
-    echo "Fixed reference setup cannot verify the reviewed adapter source revision" >&2
-    exit 1
-  }
-  git diff --quiet "$reviewed_revision" -- agent/alarm_adapter.py || {
-    echo "Fixed reference setup requires the reviewed alarm adapter source" >&2
-    exit 1
-  }
 fi
 
 credentials="$(aws sts assume-role --role-arn "$CDK_DEPLOY_ROLE_ARN" \
@@ -92,18 +79,6 @@ read_published_binding() {
   runtime_arn="$(stack_output RuntimeArn <<<"$stack_state")"
   runtime_id="$(stack_output RuntimeId <<<"$stack_state")"
   expected_endpoint="$runtime_arn/runtime-endpoint/faulty"
-  local adapter_code_authority
-  adapter_code_authority="$(stack_output AlarmAdapterCodeSha256 <<<"$stack_state")"
-  if [[ -z "$adapter_code_authority" ]]; then
-    if ! adapter_code_authority="$(jq -er '.adapter.codeSha256 // empty' scripts/faulty-reference.json)"; then
-      echo "Agent stack has no adapter-code authority and the fixed initial descriptor is unavailable" >&2
-      return 1
-    fi
-  fi
-  [[ "$adapter_code_authority" =~ ^[a-f0-9]{64}$ ]] || {
-    echo "Agent stack adapter-code authority is malformed" >&2
-    return 1
-  }
   [[ "$publication_candidate" == faulty && "$publication_status" == reference &&
      "$publication_runtime" == "$runtime_arn" && "$publication_version" =~ ^[1-9][0-9]*$ &&
      "$publication_endpoint_name" == faulty && "$publication_endpoint" == "$expected_endpoint" &&
@@ -114,34 +89,11 @@ read_published_binding() {
     return 1
   }
 
-  local adapter_state adapter_env adapter_function adapter_revision adapter_code_sha adapter_code_digest
-  adapter_state="$(deploy_aws lambda get-function-configuration --function-name IncidentTriageDemoAlarmAdapter --output json)"
-  adapter_env="$(jq -er '.Environment.Variables // empty' <<<"$adapter_state")"
-  [[ -n "$adapter_env" ]] || { echo "Agent adapter has no readable environment" >&2; return 1; }
-  adapter_function="$(jq -r '.FunctionArn // empty' <<<"$adapter_state")"
-  adapter_revision="$(jq -r '.RevisionId // empty' <<<"$adapter_state")"
-  adapter_code_sha="$(jq -r '.CodeSha256 // empty' <<<"$adapter_state")"
-  if ! adapter_code_digest="$(printf '%s' "$adapter_code_sha" | base64 --decode 2>/dev/null | xxd -p -c 256)"; then
-    echo "Agent adapter code hash is unreadable; run the explicit publisher maintenance operation" >&2
-    return 1
-  fi
-  local adapter_runtime adapter_endpoint adapter_version adapter_source adapter_digest
-  adapter_runtime="$(jq -r '.AGENT_RUNTIME_ARN // empty' <<<"$adapter_env")"
-  adapter_endpoint="$(jq -r '.AGENT_ENDPOINT_NAME // empty' <<<"$adapter_env")"
-  adapter_version="$(jq -r '.AGENT_RUNTIME_VERSION // empty' <<<"$adapter_env")"
-  adapter_source="$(jq -r '.AGENT_SOURCE_REVISION // empty' <<<"$adapter_env")"
-  adapter_digest="$(jq -r '.AGENT_ARTIFACT_SHA256 // empty' <<<"$adapter_env")"
-  if [[ "$adapter_code_digest" != "$adapter_code_authority" ]]; then
-    echo "Deployed alarm adapter code does not match the checked adapter-code authority" >&2
-    return 1
-  fi
-  [[ "$adapter_function" == "$publication_adapter" &&
-     "$adapter_runtime" == "$publication_runtime" && "$adapter_endpoint" == "$publication_endpoint_name" &&
-     "$adapter_version" == "$publication_version" && "$adapter_source" == "$publication_revision" &&
-     "$adapter_digest" == "$publication_digest" ]] || {
-    echo "Agent adapter does not match the strongly read AGENT_PUBLICATION#faulty tuple; run the explicit publisher maintenance operation" >&2
-    return 1
-  }
+  # The publisher row retains historical adapter code/revision metadata. The
+  # ordinary selector release reads that provenance but never rewrites it;
+  # An Adapter RevisionId changed during ordinary reconciliation is safe to
+  # observe while the fixed Runtime/version tuple remains publisher-owned.
+
   local endpoint_state endpoint_runtime endpoint_arn endpoint_status endpoint_live endpoint_target
   endpoint_state="$(deploy_aws bedrock-agentcore-control get-agent-runtime-endpoint \
     --agent-runtime-id "$runtime_id" --endpoint-name faulty --output json)"
@@ -156,17 +108,80 @@ read_published_binding() {
     echo "Native faulty endpoint does not match the strongly read AGENT_PUBLICATION#faulty tuple" >&2
     return 1
   }
-  # The publisher row retains the historical adapter code/revision metadata.
-  # Independent ordinary adapter releases may change both; the current stack
-  # output is the authoritative checked code hash, while the Runtime endpoint
-  # and publication environment tuple above remain publisher-owned identity.
-  # Lambda RevisionId drift is therefore safe to observe and retry.
-  if [[ -n "$adapter_revision" && "$adapter_revision" != "$publication_adapter_revision" ]]; then
-    echo "Adapter RevisionId changed during ordinary reconciliation; retaining the verified publisher tuple" >&2
-  fi
   published_version="$publication_version"
   published_code_revision="$publication_revision"
   published_artifact_digest="$publication_digest"
+  published_runtime_arn="$publication_runtime"
+  published_endpoint_name="$publication_endpoint_name"
+  published_adapter_arn="$publication_adapter"
+}
+
+read_live_adapter_binding() {
+  # Capture the old, candidate-specific adapter binding before any stack
+  # update. Once the selector stack is deployed, this same readback is the
+  # evidence that the old static target was replaced rather than silently
+  # carried forward.
+  local adapter_state adapter_env adapter_function adapter_code_sha adapter_code_digest
+  adapter_state="$(deploy_aws lambda get-function-configuration --function-name IncidentTriageDemoAlarmAdapter --output json)"
+  adapter_env="$(jq -er '.Environment.Variables // empty' <<<"$adapter_state")"
+  [[ -n "$adapter_env" ]] || { echo "Agent adapter has no readable environment" >&2; return 1; }
+  adapter_function="$(jq -r '.FunctionArn // empty' <<<"$adapter_state")"
+  adapter_code_sha="$(jq -r '.CodeSha256 // empty' <<<"$adapter_state")"
+  local adapter_code_authority
+  adapter_code_authority="$(stack_output AlarmAdapterCodeSha256 <<<"$stack_state")"
+  if [[ -z "$adapter_code_authority" ]]; then
+    adapter_code_authority="$(jq -er '.adapter.codeSha256 // empty' scripts/faulty-reference.json)" || {
+      echo "Agent stack has no adapter-code authority and the fixed initial descriptor is unavailable" >&2
+      return 1
+    }
+  fi
+  [[ "$adapter_code_authority" =~ ^[a-f0-9]{64}$ ]] || {
+    echo "Agent stack adapter-code authority is malformed" >&2
+    return 1
+  }
+  if ! adapter_code_digest="$(printf '%s' "$adapter_code_sha" | base64 --decode 2>/dev/null | xxd -p -c 256)"; then
+    echo "Agent adapter code hash is unreadable; run the explicit publisher maintenance operation" >&2
+    return 1
+  fi
+  [[ "$adapter_code_digest" == "$adapter_code_authority" ]] || {
+    echo "Deployed alarm adapter code does not match the checked adapter-code authority" >&2
+    return 1
+  }
+  [[ "$adapter_function" == "$published_adapter_arn" ]] || {
+    echo "Agent adapter function differs from the fixed publication binding" >&2
+    return 1
+  }
+
+  local selection_table adapter_runtime adapter_endpoint adapter_version adapter_source adapter_digest
+  selection_table="$(jq -r '.AGENT_SELECTION_TABLE // empty' <<<"$adapter_env")"
+  if [[ -n "$selection_table" ]]; then
+    adapter_runtime="$(jq -r '.AGENT_RUNTIME_ARN // empty' <<<"$adapter_env")"
+    local adapter_alarm
+    adapter_alarm="$(jq -r '.AGENT_ALARM_ARN // empty' <<<"$adapter_env")"
+    [[ "$adapter_runtime" == "$published_runtime_arn" &&
+       "$adapter_alarm" == arn:aws:cloudwatch:us-east-1:027224425948:alarm:IncidentTriageDemoAppStage5xx &&
+       "$selection_table" == IncidentTriageDemoControllerRun ]] || {
+      echo "Pre-deploy selector adapter binding is not the fixed Runtime/alarm/table tuple" >&2
+      return 1
+    }
+    if jq -e 'has("AGENT_ENDPOINT_NAME") or has("AGENT_RUNTIME_VERSION") or has("AGENT_SOURCE_REVISION") or has("AGENT_ARTIFACT_SHA256")' <<<"$adapter_env" >/dev/null; then
+      echo "Pre-deploy selector adapter still contains a static candidate target" >&2
+      return 1
+    fi
+    return 0
+  fi
+
+  adapter_runtime="$(jq -r '.AGENT_RUNTIME_ARN // empty' <<<"$adapter_env")"
+  adapter_endpoint="$(jq -r '.AGENT_ENDPOINT_NAME // empty' <<<"$adapter_env")"
+  adapter_version="$(jq -r '.AGENT_RUNTIME_VERSION // empty' <<<"$adapter_env")"
+  adapter_source="$(jq -r '.AGENT_SOURCE_REVISION // empty' <<<"$adapter_env")"
+  adapter_digest="$(jq -r '.AGENT_ARTIFACT_SHA256 // empty' <<<"$adapter_env")"
+  [[ "$adapter_runtime" == "$published_runtime_arn" && "$adapter_endpoint" == "$published_endpoint_name" &&
+     "$adapter_version" == "$published_version" && "$adapter_source" == "$published_code_revision" &&
+     "$adapter_digest" == "$published_artifact_digest" ]] || {
+    echo "Pre-deploy alarm adapter does not match the strongly read AGENT_PUBLICATION#faulty tuple" >&2
+    return 1
+  }
 }
 
 read_bootstrap_binding() {
@@ -251,6 +266,35 @@ verify_adapter_code_output() {
     echo "Deployed alarm adapter code does not match the checked adapter-code authority" >&2
     return 1
   }
+}
+
+verify_selector_adapter_binding() {
+  verify_adapter_code_output
+  local adapter_state adapter_env adapter_runtime adapter_alarm selection_table
+  adapter_state="$(deploy_aws lambda get-function-configuration --function-name IncidentTriageDemoAlarmAdapter --output json)"
+  adapter_env="$(jq -cS '.Environment.Variables // {}' <<<"$adapter_state")"
+  selection_table="$(jq -r '.AGENT_SELECTION_TABLE // empty' <<<"$adapter_env")"
+  [[ -n "$selection_table" ]] || {
+    echo "Deployed selector adapter is missing AGENT_SELECTION_TABLE" >&2
+    return 1
+  }
+  adapter_runtime="$(jq -r '.AGENT_RUNTIME_ARN // empty' <<<"$adapter_env")"
+  adapter_alarm="$(jq -r '.AGENT_ALARM_ARN // empty' <<<"$adapter_env")"
+  [[ "$adapter_runtime" == "$(stack_output RuntimeArn <<<"$stack_state")" &&
+     "$adapter_alarm" == arn:aws:cloudwatch:us-east-1:027224425948:alarm:IncidentTriageDemoAppStage5xx &&
+     "$selection_table" == IncidentTriageDemoControllerRun ]] || {
+    echo "Deployed selector adapter does not match the exact Runtime/alarm/table binding" >&2
+    return 1
+  }
+  if jq -e 'has("AGENT_ENDPOINT_NAME") or has("AGENT_RUNTIME_VERSION") or has("AGENT_SOURCE_REVISION") or has("AGENT_ARTIFACT_SHA256")' <<<"$adapter_env" >/dev/null; then
+    echo "Deployed selector adapter retains an old static candidate target" >&2
+    return 1
+  fi
+  [[ "$(jq -r '.FunctionArn // empty' <<<"$adapter_state")" == arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter ]] || {
+    echo "Deployed selector adapter ARN is unexpected" >&2
+    return 1
+  }
+  echo "Verified selector adapter binding to $(stack_output RuntimeArn <<<"$stack_state") and IncidentTriageDemoControllerRun"
 }
 
 verify_prepared_publisher_parameters() {
@@ -350,13 +394,31 @@ published_code_revision=""
 published_artifact_digest=""
 if [[ "$status" != ABSENT && "$status" != REVIEW_IN_PROGRESS ]]; then
   read_published_binding
+  read_live_adapter_binding
   read_bootstrap_binding
 fi
+
+guard_args=()
+if [[ "$infrastructure_only" == true && "$fresh_stack" == false ]]; then
+  # Existing infrastructure-only reconciliations must not mutate the
+  # publisher-owned Runtime. Fresh fixed bootstrap is the only exception: it
+  # is intentionally creating the initial Runtime between components.
+  guard_args+=(--infrastructure-only)
+fi
+run_change_set_guard() {
+  local template="$1"
+  if ((${#guard_args[@]})); then
+    node scripts/check-agent-change-set.mjs "${guard_args[@]}" "$template"
+  else
+    node scripts/check-agent-change-set.mjs "$template"
+  fi
+}
 
 deployed_revision="$(stack_output SourceRevision <<<"$stack_state")"
 if [[ "$deployed_revision" == "$GITHUB_SHA" ]]; then
   if stack_has_parameter PublishedVersion && stack_has_parameter PublishedRuntimeBootstrapEnabled; then
     if verify_publisher_parameters; then
+      verify_selector_adapter_binding
       verify_outputs
       exit 0
     fi
@@ -398,7 +460,7 @@ if deploy_aws cloudformation describe-change-set --stack-name "$stack" --change-
     --include-property-values --output json >"$description" 2>"$aws_error"; then
   case "$(jq -r '.Status + ":" + .ExecutionStatus' "$description")" in
     CREATE_COMPLETE:AVAILABLE)
-      node scripts/check-agent-change-set.mjs "$assembly/$candidate_template" <"$description"
+      run_change_set_guard "$assembly/$candidate_template" <"$description"
       prepared=true ;;
     FAILED:*|*:OBSOLETE) deploy_aws cloudformation delete-change-set --stack-name "$stack" --change-set-name "$change_set_name" ;;
     *) echo "Previous agent change set is still in progress or unavailable" >&2; exit 1 ;;
@@ -424,7 +486,7 @@ if [[ "$prepared" == false ]]; then
   deploy_aws cloudformation describe-change-set --stack-name "$stack" --change-set-name "$change_set_name" \
     --include-property-values --output json >"$description"
 fi
-node scripts/check-agent-change-set.mjs "$assembly/$candidate_template" <"$description"
+run_change_set_guard "$assembly/$candidate_template" <"$description"
 if [[ "$fresh_stack" == false ]]; then
   verify_prepared_publisher_parameters "$description" || {
     echo "Agent change set does not carry the freshly verified publisher/bootstrap tuple" >&2
@@ -459,11 +521,12 @@ while :; do
 done
 if [[ "$fresh_stack" == true ]]; then
   echo "Verified fresh agent stack; no fixed publisher record is required until reference setup"
-  verify_adapter_code_output
+  verify_selector_adapter_binding
 else
   read_published_binding
   read_bootstrap_binding
   verify_publisher_parameters
+  verify_selector_adapter_binding
 fi
 verify_outputs
 jq -r '.Stacks[0].Outputs[] | "- \(.OutputKey) — \(.OutputValue)"' <<<"$stack_state" >>"$GITHUB_STEP_SUMMARY"

@@ -5,6 +5,7 @@ export type Command =
   | { kind: "increase_capacity"; function: "inventory"; reservedConcurrency: number }
   | { kind: "increase_memory"; function: "inventory"; memoryMb: number }
   | { kind: "activate_inventory_denial" }
+  | { kind: "select_agent"; candidateId: AgentCandidateId }
   | { kind: "restore_inventory_access"; restoreWithoutEvidence?: true }
   | { kind: "recover"; confirmQuiet: true; recoverWithoutEvidence?: true }
   | { kind: "stop" | "discard"; targetActionId: string };
@@ -18,6 +19,51 @@ export type ActionStatus =
   | "failed"
   | "incomplete"
   | "discarded";
+
+export type AgentCandidateId = "faulty" | "repaired";
+
+/** Publisher-owned identity for one immutable prepared AgentCore candidate. */
+export interface AgentPublication {
+  pk: string;
+  candidateId: AgentCandidateId;
+  status: "reference" | "published";
+  endpointName: AgentCandidateId;
+  endpointArn: string;
+  runtimeArn: string;
+  runtimeVersion: string;
+  artifactSha256: string;
+  artifactVersionId: string;
+  configurationVersionId?: string;
+  configurationSha256: string;
+  sourceRevision: string;
+  sourceSha256: string;
+  promptSha256: string;
+  modelId: string;
+  alarmArn: string;
+  adapterArn: string;
+  adapterCodeSha256: string;
+  sourceManifestSha256?: string;
+  caseSetSha256?: string;
+  reportIdentitiesSha256?: string;
+  experimentId?: string;
+  reviewEnvironment?: string;
+  reviewRunId?: string;
+  reviewManifestSha256?: string;
+  reviewer?: string;
+}
+
+/** Complete tuple consumed by the alarm adapter after controller verification. */
+export type AgentSelection = Omit<AgentPublication, "pk" | "status"> & {
+  pk: "AGENT_SELECTION";
+  selectedAt: string;
+};
+
+export interface AgentSelectionObservation {
+  state: "selected" | "unconfigured" | "unavailable";
+  observedAt: string;
+  selected?: AgentSelection;
+  error?: string;
+}
 export type ResetPhase = "stopping" | "draining" | "validating" | "capturing" | "restoring"
   | "seeding" | "deleting" | "verifying" | "verified";
 export type Profile = "catalog" | "checkout";
@@ -381,6 +427,7 @@ export interface Action {
   trafficApiId?: string;
   trafficWindow?: TrafficWindow;
   catalogObservation?: CatalogObservation;
+  agentSelection?: AgentSelection;
   previousSurgeActionId?: string;
   requests: RequestRecord[];
   baseline?: Baseline;
@@ -447,6 +494,7 @@ export interface RunState {
   unresolved: Array<CheckoutPayload & { startedAt: string; status: "unknown" }>;
   incident?: StoredIncidentState;
   incidentHistory?: StoredIncidentState[];
+  selectedAgent?: AgentSelection;
 }
 
 export type AlarmState = "OK" | "ALARM" | "INSUFFICIENT_DATA" | "UNKNOWN";
@@ -469,6 +517,8 @@ export interface AlarmResponse {
   observedAt: string;
   agentEndpoint?: AgentEndpointObservation;
   alarmBinding?: AlarmBindingObservation;
+  /** Strongly read AGENT_SELECTION identity used by the alarm adapter. */
+  selectedAgent?: AgentSelection;
 }
 
 export type AgentEndpointState = "ready" | "not_ready" | "unavailable" | "unconfigured";
@@ -482,6 +532,7 @@ export interface AgentEndpointObservation {
   targetVersion?: string;
   failureReason?: string;
   observedAt: string;
+  selectedAgent?: AgentSelection;
 }
 
 export type AlarmBindingState = "bound" | "disabled" | "missing" | "unexpected" | "unavailable" | "unconfigured";
@@ -562,4 +613,6 @@ export interface DashboardState extends RunState {
   currentAction?: Action;
   currentConfigurationAction?: Action;
   observedAt: string;
+  agentSelection?: AgentSelection;
+  selectedAgentObservation: AgentSelectionObservation;
 }
