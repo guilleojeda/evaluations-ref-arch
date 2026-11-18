@@ -154,10 +154,6 @@ export class AgentStack extends DemoStack {
       environment: {
         AGENT_RUNTIME_ARN: runtime.attrAgentRuntimeArn,
         AGENT_SELECTION_TABLE: "IncidentTriageDemoControllerRun",
-        AGENT_ENDPOINT_NAME: "faulty",
-        AGENT_RUNTIME_VERSION: publishedVersion.valueAsString,
-        AGENT_SOURCE_REVISION: publishedCodeRevision.valueAsString,
-        AGENT_ARTIFACT_SHA256: publishedArtifactDigest.valueAsString,
         AGENT_ALARM_ARN: ALARM_ARN,
       },
     });
