@@ -421,7 +421,7 @@ original identity.
 | Stage | Entry and required evidence |
 | --- | --- |
 | S0 | Open/edit the faulty source. Use the hosted controller and [S0 operating instructions](demo-script.md) for a genuine alarm; retain the actual report, trace, and sanitized capture. Source editing does not change the served publication. |
-| S1 | From the `agent/` workspace, verify the private archive and run `reviewed_cases.py validate`, then `freeze` and `candidate-input` against the matching captured bundle. Review produces no score. See [agent README](../agent/README.md#review-and-freeze-a-case-s1). |
+| S1 | From the S1 worktree root, copy the portable `audience/denial-session-draft.json` to the session edit directory. Review it against `prepared/denial.json`, then run `validate`, `freeze` and `candidate-input`. Review produces no score. See [agent README](../agent/README.md#review-and-freeze-a-case-s1). |
 | S2 | Open the identified saved run with `evaluate_case.py show`, then score only that matching execution with the pinned evaluator. Keep the original execution identity and advisory result. See [agent README](../agent/README.md#run-and-score-the-captured-baseline-s2). |
 | S3 | Edit only the prompt in the S3 worktree. Run `evaluate_case.py run --candidate repaired`, inspect with `show`, score with the same evaluator, and compare with the matching S2 baseline. See [agent README](../agent/README.md#run-score-and-compare-the-repaired-candidate-s3). |
 | S4 | Run `development_experiment.py run` with the prepared suite/evaluator, optionally using an explicitly selected immutable `--source-run`; inspect with `show` and compare offline. A focused run cannot qualify a release. See [agent README](../agent/README.md#run-the-native-strands-development-experiment-s4). |

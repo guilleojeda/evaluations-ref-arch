@@ -15,6 +15,7 @@ import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { GetObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import type { AgentSelection } from "../controller/src/types.js";
 
@@ -24,6 +25,7 @@ const DEFAULT_REGION = "us-east-1";
 const DEFAULT_TABLE = "IncidentTriageDemoControllerRun";
 const DEFAULT_BRANCH = "demo-deploy";
 const DEFAULT_POINTER_PATH = "agent/qualification-input.json";
+const QUALIFICATION_SCRIPT = fileURLToPath(new URL("./qualify-repaired.py", import.meta.url));
 
 export class TalkPublicationVerificationError extends Error {
   constructor(message: string) {
@@ -228,6 +230,40 @@ function run(command: string, args: string[], label: string): string {
   }
 }
 
+function runWithInput(command: string, args: string[], input: Uint8Array, label: string): string {
+  try {
+    return execFileSync(command, args, { input, encoding: "utf8", stdio: ["pipe", "pipe", "pipe"] }).trim();
+  } catch (error) {
+    const detail = error && typeof error === "object" && "stderr" in error && typeof error.stderr === "string"
+      ? error.stderr.trim() : "";
+    throw new TalkPublicationVerificationError(`${label}${detail ? `: ${detail}` : "."}`);
+  }
+}
+
+/**
+ * Reuse the protected Phase 20 canonical identity verifier.  The operator
+ * path only needs the exact content-addressed index object, so it invokes the existing
+ * `verify-manifest` CLI rather than copying its canonical JSON rules into
+ * TypeScript.
+ */
+export function verifyCanonicalManifest(indexBytes: Uint8Array, expectedManifestSha256: string): void {
+  const expected = digest(expectedManifestSha256, "expected review manifest");
+  const output = runWithInput(
+    "python3",
+    [QUALIFICATION_SCRIPT, "verify-manifest", "--expected-manifest", expected],
+    indexBytes,
+    "canonical review manifest verification failed",
+  );
+  try {
+    const result = JSON.parse(output) as JsonObject;
+    assertEqual(result.status, "verified", "canonical review manifest verification did not complete");
+    assertEqual(result.manifestSha256, expected, "canonical review manifest digest differs");
+  } catch (error) {
+    if (error instanceof TalkPublicationVerificationError) throw error;
+    throw new TalkPublicationVerificationError("canonical review manifest verifier returned invalid JSON.");
+  }
+}
+
 function parseRemoteRepository(remote: string): string | undefined {
   const match = remote.match(/github\.com[/:]([^/]+\/[^/]+?)(?:\.git)?$/i);
   return match?.[1];
@@ -235,8 +271,8 @@ function parseRemoteRepository(remote: string): string | undefined {
 
 export function parsePointer(value: unknown, expectedBucket?: string): QualificationPointer {
   const row = object(value, "qualification pointer");
-  if (row.schemaVersion !== 1 || row.purpose !== "Phase 20 reviewed private evaluation input handoff") {
-    throw new TalkPublicationVerificationError("qualification pointer is not the maintained Phase 20 handoff.");
+  if (row.schemaVersion !== 1) {
+    throw new TalkPublicationVerificationError("qualification pointer schemaVersion must be 1.");
   }
   const pointer: QualificationPointer = {
     schemaVersion: 1,
@@ -257,6 +293,7 @@ export function parsePointer(value: unknown, expectedBucket?: string): Qualifica
   if (pointer.s3Key.split("/")[3] !== pointer.sha256) {
     throw new TalkPublicationVerificationError("qualification pointer archive key differs from its digest.");
   }
+  validateStringRoster(pointer.caseIds, pointer.caseIds, "qualification pointer");
   return pointer;
 }
 
@@ -672,6 +709,7 @@ async function verify(args: ParsedArgs): Promise<SessionBinding> {
   const manifestKey = string(s3Review.manifestKey, "qualification review manifest key");
   validateReviewLocator(receipt, receiptKey, manifestKey, allKeys, evidenceBucket);
   const manifestObject = await getObject(client, evidenceBucket, manifestKey);
+  verifyCanonicalManifest(manifestObject.bytes, digest(publication.reviewManifestSha256, "publication reviewManifestSha256"));
   const manifest = parseJson(manifestObject.bytes, "review manifest") as unknown as QualificationManifest;
   const remote: RemoteEvidence = {
     repository,

@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import {
   TalkPublicationVerificationError,
@@ -7,6 +9,7 @@ import {
   selectApproval,
   selectQualificationKey,
   validateReviewLocator,
+  verifyCanonicalManifest,
 } from '../scripts/verify-talk-publication.ts';
 
 const sourceRevision = 'a'.repeat(40);
@@ -20,10 +23,10 @@ const evaluatorSha256 = '2'.repeat(64);
 const reportSha256 = '3'.repeat(64);
 const caseId = 'phase14.denied-inventory-read.prepared';
 
-function pointer({ suite = suiteSha256, evaluator = evaluatorSha256, cases = [caseId] } = {}) {
+function pointer({ purpose = 'Phase 20 reviewed private evaluation input handoff', suite = suiteSha256, evaluator = evaluatorSha256, cases = [caseId] } = {}) {
   return parsePointer({
     schemaVersion: 1,
-    purpose: 'Phase 20 reviewed private evaluation input handoff',
+    purpose,
     bucket: 'incident-triage-demo-evidence-027224425948-us-east-1',
     s3Key: `agent-evaluation/phase18/inputs/${'4'.repeat(64)}/staging.tar.gz`,
     sha256: '4'.repeat(64),
@@ -118,6 +121,58 @@ test('selects exactly one immutable qualification receipt', () => {
     () => selectQualificationKey([key, key.replace('/owner/', '/other/')], artifactSha256, manifestSha256),
     TalkPublicationVerificationError,
   );
+});
+
+test('accepts both stock and carried pointer labels through parsePointer', () => {
+  const stock = JSON.parse(readFileSync(new URL('../agent/qualification-input.json', import.meta.url), 'utf8'));
+  assert.equal(parsePointer(stock).purpose, 'Phase 20 reviewed private evaluation input handoff');
+  assert.equal(
+    parsePointer({ ...stock, purpose: 'Phase 22 audience-reviewed private evaluation input handoff' }).purpose,
+    'Phase 22 audience-reviewed private evaluation input handoff',
+  );
+  assert.throws(() => parsePointer({ ...stock, purpose: '   ' }), /purpose/);
+});
+
+test('reuses the protected canonical manifest identity for numeric and Unicode fields', () => {
+  const identity = {
+    schemaVersion: 1,
+    candidateId: 'repaired',
+    artifactSha256: 'a'.repeat(64),
+    promptFileSha256: 'b'.repeat(64),
+    packageManifest: {
+      schemaVersion: 2,
+      sourceRevision: 'c'.repeat(40),
+      promptSha256: 'd'.repeat(64),
+      displayName: 'Diagnóstico 東京',
+      model: { temperature: 0.0, maxTokens: 2000 },
+    },
+    suiteSha256: 'e'.repeat(64),
+    caseIdentities: [{ caseId: 'case-é', caseSha256: 'f'.repeat(64), bundleSha256: '1'.repeat(64), referenceTime: '2026-11-18T00:00:00.000Z' }],
+    evaluatorSha256: '2'.repeat(64),
+    experimentId: 'exp-✓',
+    reportIdentities: [{ caseId: 'case-é', executionId: 'run-1', reportSha256: '3'.repeat(64) }],
+    runtimeConfigurationSha256: '4'.repeat(64),
+    sourceOrigin: { kind: 'runtime_zip', zipSha256: 'a'.repeat(64) },
+    runtimeOrigin: { kind: 'runtime_zip', zipSha256: 'a'.repeat(64), retryCount: 1.0 },
+    runtime: { sourceSha256: '5'.repeat(64), dependencySha256: '6'.repeat(64), memoryMb: 512 },
+    tooling: { sourceSha256: '7'.repeat(64), dependencySha256: '8'.repeat(64) },
+    snapshot: { sourceSha256: '9'.repeat(64), dependencySha256: 'a'.repeat(64), toolingSha256: 'b'.repeat(64), toolingDependencySha256: 'c'.repeat(64) },
+    canonicalRecordSha256: 'd'.repeat(64),
+    showExperimentSha256: 'e'.repeat(64),
+    policy: { module: 'release_gate.py', note: 'review ✓' },
+    github: { headSha: 'c'.repeat(40), workflow: 'Phase 20 — revisión' },
+    contentFiles: { 'inputs/é.json': 'f'.repeat(64) },
+  };
+  const digest = execFileSync('python3', ['-c', [
+    'import json, sys',
+    'sys.path.insert(0, "agent")',
+    'from release_gate import sha256_json',
+    'print(sha256_json(json.loads(sys.argv[1])))',
+  ].join('\n'), JSON.stringify(identity)], { encoding: 'utf8' }).trim();
+  const raw = Buffer.from(`${JSON.stringify({ ...identity, manifestSha256: digest }, null, 2)}\n`, 'utf8');
+  assert.doesNotThrow(() => verifyCanonicalManifest(raw, digest));
+  const tampered = Buffer.from(`${JSON.stringify({ ...identity, policy: { ...identity.policy, note: 'tampered' }, manifestSha256: digest }, null, 2)}\n`, 'utf8');
+  assert.throws(() => verifyCanonicalManifest(tampered, digest), /canonical|manifest/i);
 });
 
 test('selects the exact protected approval and rejects a bare digest', () => {
@@ -289,7 +344,7 @@ test('parses the real qualified v20 receipt, manifest, approval, and historical 
     environment: 'repaired-publication', environmentId: 27678290254,
     comment: `approve ${actualManifest}`, state: 'approved', headSha: actualSource,
   };
-  const actualPointer = pointer({ suite: actualSuite, evaluator: actualEvaluator, cases: pointerCases });
+  const actualPointer = pointer({ purpose: 'Phase 22 audience-reviewed private evaluation input handoff', suite: actualSuite, evaluator: actualEvaluator, cases: pointerCases });
   validateReviewLocator(fixture.receipt, receiptKey, manifestKey, [receiptKey, manifestKey], evidenceBucket);
   const binding = buildSessionBinding({
     ...fixture, pointer: actualPointer, receiptSha256: '05086e41e57af8906d648cf7535cd1570e963f6efe55420becba5d4a3a59f8c1',

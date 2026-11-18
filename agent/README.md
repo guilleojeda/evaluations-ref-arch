@@ -112,27 +112,22 @@ can leave a conclusion uncertain.
 
 ## Review and freeze a case (S1)
 
-Use the private S1 archive from the verified S3 manifest. Compare its SHA-256
-with the recorded archive digest before extraction, then verify every imported
-file against `SHA256SUMS`. In the browser IDE terminal, from the repository root:
+From the repository root in the S1 worktree, use the verified portable inputs
+downloaded during [talk preparation](../docs/preparation.md). Keep a separate
+editable draft for this performance.
 
 ```sh
 umask 077
-review_root="${PRIVATE_REVIEW_ROOT:?set a directory outside the editable checkout}"
-archive="${PHASE14_IMPORT_ARCHIVE:?set the verified private archive path}"
+review_root="${PRIVATE_REVIEW_ROOT:?set a private directory outside the checkout}"
+asset_extract="${asset_extract:?set the extracted portable inputs directory from preparation}"
 mkdir -p "$review_root"
 session="$(mktemp -d "$review_root/s1.XXXXXX")"
-mkdir "$session/import" "$session/edit" "$session/frozen"
-sha256sum "$archive" # Compare with the recorded archive SHA-256.
-tar -xzf "$archive" -C "$session/import"
-(cd "$session/import" && sha256sum -c SHA256SUMS)
-
+mkdir "$session/edit" "$session/frozen"
 case_file="$session/edit/denial.reviewed.json"
-bundle="$session/import/denial.json"
+bundle="$asset_extract/prepared/denial.json"
 frozen="$session/frozen/denial.frozen.json"
 candidate="$session/denial.candidate-task.json"
-cp "$session/import/denial-session-draft.json" "$case_file"
-code -r "$session/import/denial-trace-pointer.json" "$case_file"
+cp "$asset_extract/audience/denial-session-draft.json" "$case_file"
 ```
 
 The draft starts with an empty `admissibleRecommendations` list. Run
@@ -182,10 +177,9 @@ source bytes, trace references, and the review coverage justification in the
 private incident record; never replace a missing or mismatched asset with live
 state.
 
-For independent entry, use the prepared case and bundle pair from the verified
-manifest. Review coverage using the corresponding `*-prepared.json` file.
-For the candidate task, pass the matching `*-prepared.frozen.json` envelope
-directly to `candidate-input`.
+For prepared entry, open `prepared/validation.json` from the portable inputs.
+The denial pair is `prepared/denial.frozen.json` and `prepared/denial.json`.
+Pass the frozen envelope and its matching bundle directly to `candidate-input`.
 
 ## Check an investigation deterministically
 

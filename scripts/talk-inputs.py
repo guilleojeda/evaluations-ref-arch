@@ -326,6 +326,13 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
     identities = {}
     for stage in requested:
         paths = selected_paths(root, roster, stage, suite)
+        if stage in {"S1", "S3"}:
+            if "prepared/denial.json" not in paths:
+                raise InputError(f"{stage} requires the reviewed denial bundle in its declared inputs")
+            requested_bundle_sha = digest(root / "prepared/denial.json")
+            expected_bundle_sha = audience.get("bundleSha256") if stage == "S1" or suite == "carried" else rows["phase14.denied-inventory-read.prepared"].get("bundleSha256")
+            if requested_bundle_sha != expected_bundle_sha:
+                raise InputError(f"{stage} requested bundle digest differs from the reviewed case identity")
         # S0/S1 are preparation-only and must not be made dependent on the
         # evaluator or gate bytes used by later stages.
         stage_gate = gate if stage in {"S2", "S3", "S4", "S5"} else {"archiveSha256": None, "suiteSha256": None, "fixedDenialCaseId": gate.get("fixedDenialCaseId")}

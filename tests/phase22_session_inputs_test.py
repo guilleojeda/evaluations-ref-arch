@@ -50,7 +50,9 @@ class SessionInputFixture:
             case_id: chr(ord("d") + index) * 64
             for index, case_id in enumerate(FIXED_CASE_IDS)
         }
-        self.audience_bundle_sha = "8" * 64
+        bundle_value = {"schemaVersion": 1, "bundle": "fixture-denial"}
+        self.audience_bundle_sha = hashlib.sha256((json.dumps(bundle_value, sort_keys=True) + "\n").encode("utf-8")).hexdigest()
+        self.fixed_bundle_sha[FIXED_CASE_IDS[1]] = self.audience_bundle_sha
         self.audience_case = {
             "caseId": AUDIENCE_CASE_ID,
             "task": {"referenceTime": "2026-11-16T03:02:30.000Z"},
@@ -80,6 +82,7 @@ class SessionInputFixture:
                 "case": self.audience_case,
             },
         )
+        self._write("prepared/denial.json", bundle_value)
         self._write("prepared/denial.frozen.json", {"schemaVersion": 1, "prepared": True})
         self._write("prepared/validation.json", {"schemaVersion": 1, "valid": True})
         self._write("s2/evaluator.json", {"evaluatorId": "fixture-evaluator"})
@@ -192,7 +195,7 @@ class SessionInputFixture:
     def _write_roster(self) -> None:
         stage_inputs = {
             "S0": ["s2/capture-receipt.json"],
-            "S1": ["audience/denial-session.frozen.json"],
+            "S1": ["audience/denial-session.frozen.json", "prepared/denial.json"],
             "S2": [
                 "gate/qualification-input.json",
                 "gate/staging.tar.gz",
@@ -202,6 +205,7 @@ class SessionInputFixture:
             "S3": [
                 "gate/staging.tar.gz",
                 "audience/denial-session.frozen.json",
+                "prepared/denial.json",
                 "s3/offline-comparison.json",
             ],
             "S4": ["gate/staging.tar.gz", "s4/comparison.json"],
@@ -437,6 +441,21 @@ class SessionInputCommandTests(unittest.TestCase):
         self.assertEqual(identity["bundleSha256s"], [self.fixture.audience_bundle_sha])
         self.assertIsNone(identity["gateArchiveSha256"])
 
+    def test_s1_rejects_missing_declared_bundle(self) -> None:
+        (self.fixture.root / "prepared/denial.json").unlink()
+        result = self.run_cli(stage="S1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("prepared/denial.json", result.stderr)
+
+    def test_s1_rejects_declared_bundle_that_does_not_match_frozen_case(self) -> None:
+        bundle = self.fixture.root / "prepared/denial.json"
+        bundle.write_text('{"schemaVersion":1,"bundle":"tampered"}\n', encoding="utf-8")
+        self.fixture.roster["selectedDigests"]["prepared/denial.json"] = sha256(bundle)  # type: ignore[index]
+        self.fixture.roster_path.write_text(json.dumps(self.fixture.roster, indent=2) + "\n", encoding="utf-8")
+        result = self.run_cli(stage="S1")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("requested bundle digest differs", result.stderr)
+
     def test_carried_and_stock_use_their_matching_roster_and_manifest_fields(self) -> None:
         carried = self.run_cli(stage="S3", suite="carried")
         stock = self.run_cli(stage="S3", suite="stock")
@@ -536,11 +555,11 @@ class SessionInputCommandTests(unittest.TestCase):
         matrix = {
             ("S0", "carried"): {"audience", "gate", "prepared", "s3", "s4"},
             ("S0", "stock"): {"audience", "gate", "prepared", "s3", "s4"},
-            ("S1", "carried"): {"gate", "prepared", "s2", "s3", "s4"},
-            ("S1", "stock"): {"gate", "prepared", "s2", "s3", "s4"},
+            ("S1", "carried"): {"gate", "s2", "s3", "s4"},
+            ("S1", "stock"): {"gate", "s2", "s3", "s4"},
             ("S2", "carried"): {"audience", "s3", "s4"},
             ("S2", "stock"): {"audience", "s3", "s4"},
-            ("S3", "carried"): {"prepared", "s2", "s4"},
+            ("S3", "carried"): {"s2", "s4"},
             ("S3", "stock"): {"audience", "s2", "s4"},
             ("S4", "carried"): {"audience", "prepared", "s2", "s3"},
             ("S4", "stock"): {"audience", "prepared", "s2", "s3"},
