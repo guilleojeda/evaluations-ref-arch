@@ -179,6 +179,79 @@ test('agent infrastructure-only changes retain stack reconciliation without cand
   }
 });
 
+test('qualification summary exposes only allowlisted criterion and verified private evidence for rejection', () => {
+  const evaluate = jobs()['evaluate-agent'];
+  const summaryStep = steps(evaluate).find((block) => /Publish only the safe qualification handoff/.test(block));
+  assert.ok(summaryStep, 'evaluation must have a safe summary step');
+  const match = summaryStep.match(/\n        run: \|\n([\s\S]*)$/);
+  assert.ok(match, 'safe summary step must execute a shell script');
+  const bucket = 'incident-triage-demo-evidence-027224425948-us-east-1';
+  const artifact = 'a'.repeat(64);
+  const manifest = 'b'.repeat(64);
+  const prefix = `agent-evaluation/phase20/${artifact}/guilleojeda/12345/1/${manifest}`;
+  const consoleUrl = `https://s3.console.aws.amazon.com/s3/buckets/${bucket}?region=us-east-1&prefix=${prefix}/`;
+  const script = match[1]
+    .replace(/^ {10}/gm, '')
+    .replaceAll('${{ steps.artifact.outputs.artifact_sha256 }}', artifact)
+    .replaceAll('${{ env.PHASE20_EVIDENCE_BUCKET }}', bucket);
+  const directory = mkdtempSync(join(tmpdir(), 'phase20-summary-'));
+  try {
+    const run = (status, verdict, reason) => {
+      const qualification = join(directory, `${status}.json`);
+      const output = join(directory, `${status}.output`);
+      const summary = join(directory, `${status}.summary`);
+      writeFileSync(qualification, JSON.stringify({
+        status,
+        verdict,
+        reason,
+        artifact: { sha256: artifact },
+        reviewManifestSha256: manifest,
+        privateReview: {
+          s3: {
+            bucket,
+            prefix,
+            qualificationKey: `${prefix}/qualification.json`,
+            consoleUrl,
+          },
+        },
+      }));
+      const result = spawnSync('bash', ['-euo', 'pipefail', '-c', script], {
+        cwd: new URL('..', import.meta.url).pathname,
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          QUALIFICATION_PATH: qualification,
+          GITHUB_OUTPUT: output,
+          GITHUB_STEP_SUMMARY: summary,
+          AWS_REGION: 'us-east-1',
+        },
+      });
+      assert.equal(result.status, 0, result.stderr);
+      return readFileSync(summary, 'utf8');
+    };
+
+    const rejected = run('rejected', 'reject', 'private.case.s5: deterministic check failed: action');
+    assert.match(rejected, /Safe failed criterion: Required deterministic criterion failed: action/);
+    assert.match(rejected, /Artifact SHA-256: a{64}/);
+    assert.match(rejected, /Review manifest SHA-256: b{64}/);
+    assert.match(rejected, /authenticated AWS Console.*s3\.console\.aws\.amazon\.com/);
+    assert.doesNotMatch(rejected, /private\.case\.s5|deterministic check failed: action/);
+
+    const privacyCounterexample = run('hostile_status', 'private-verdict', 'private.case.s5: deterministic check failed: secret');
+    assert.match(privacyCounterexample, /Machine qualification did not produce an eligible review handoff/);
+    assert.match(privacyCounterexample, /Status: unknown/);
+    assert.match(privacyCounterexample, /Machine verdict: unavailable/);
+    assert.doesNotMatch(privacyCounterexample, /private\.case\.s5|secret/);
+
+    const pending = run('review_required', 'review_required', 'deterministic checks and advisory results are complete');
+    assert.match(pending, /eligible, pending protected review/);
+    assert.match(pending, /authenticated AWS Console.*s3\.console\.aws\.amazon\.com/);
+    assert.doesNotMatch(pending, /deterministic checks and advisory results are complete/);
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 test('quality gate and protected publication use isolated roles, dependencies, and the pending artifact', () => {
   const [buildName, build] = buildJob();
   const [gateName, gate] = gateJob(buildName);
@@ -214,6 +287,8 @@ test('quality gate and protected publication use isolated roles, dependencies, a
   requireMatch(diagnostics, /s3api put-object/, 'qualification diagnostics must be retained in private S3');
   requireAbsent(diagnostics, /actions\/upload-artifact|cat\s+.*qualification\.(?:stderr|summary)/i,
     'qualification diagnostics must not be published as a public artifact or echoed raw');
+  requireMatch(gate, /id:\s*review_readback[\s\S]*Publish only the safe qualification handoff[\s\S]*steps\.review_readback\.outcome\s*==\s*['"]success['"]/,
+    'public qualification summary must require a successful private manifest readback');
   assert.ok(runStepIndex(gate, /(?:sha256sum|sha256|artifactSha256)/i) >= 0,
     'the gate must record package identity in an executed check');
   requireAbsent(gate, /continue-on-error:\s*true/i, 'machine rejection/incompleteness must fail the gate');
