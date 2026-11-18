@@ -17,6 +17,7 @@ from botocore.session import get_session
 
 from phase14_reviewed_cases_test import make_case, write_bundle
 from phase15_deterministic_checks_test import recommendation, report_for
+from support.prompt_fixture import materialize_faulty_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -116,6 +117,15 @@ class RecordingEvaluate:
 
 
 class StructuredOutputFallbackAcceptance(unittest.TestCase):
+    def setUp(self):
+        self.source_temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.source_temp.cleanup)
+        self.agent_source = materialize_faulty_source(
+            ROOT / "agent",
+            Path(self.source_temp.name),
+            ROOT / "tests/fixtures/phase20_faulty_prompt.py",
+        )
+
     def test_rejected_forced_report_is_retained_and_native_report_reaches_evaluate(self):
         from opentelemetry import trace
         from opentelemetry.sdk.trace import TracerProvider
@@ -154,6 +164,7 @@ class StructuredOutputFallbackAcceptance(unittest.TestCase):
                     bundle_path,
                     root / "runs",
                     model_session=model_session,
+                    source_directory=self.agent_source,
                 )
                 record, loaded_case, native_spans = load_execution(run_dir)
 

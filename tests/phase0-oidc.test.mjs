@@ -16,10 +16,16 @@ const probeTagRef = 'refs/tags/phase12-oidc-proof';
 const deployWorkflow = '.github/workflows/deploy.yml';
 const negativeWorkflow = '.github/workflows/oidc-negative.yml';
 const deployRoleArn = `arn:aws:iam::${targetAccount}:role/IncidentTriageDemoGitHubDeploy`;
+const evaluationRoleArn = `arn:aws:iam::${targetAccount}:role/IncidentTriageDemoGitHubEvaluation`;
 const immutableRepository = `repo:guilleojeda@18320860/evaluations-ref-arch@${targetRepositoryId}:workflow_ref:`;
 const expectedSubject = `${immutableRepository}${targetRepository}/${deployWorkflow}@${releaseRef}`;
 const negativeRefs = { 'wrong-branch': mainRef, 'wrong-tag': probeTagRef };
 const probe = process.env.PHASE0_OIDC_CASE;
+
+function expectedRoleForEnvironment(environment) {
+  if (environment === 'demo-evaluation') return evaluationRoleArn;
+  return deployRoleArn;
+}
 
 function input(name) {
   const value = process.env[name];
@@ -28,12 +34,15 @@ function input(name) {
 }
 
 function validateRunnerIdentity(context, env) {
-  const { probe, repository, repositoryId, account, region, roleArn, ref, workflowRef, subject } = context;
+  const { probe, repository, repositoryId, account, region, roleArn, environment, ref, workflowRef, subject } = context;
   assert.equal(repository, targetRepository, `OIDC probe must target ${targetRepository}`);
   assert.equal(repositoryId, targetRepositoryId, `OIDC probe must target repository ID ${targetRepositoryId}`);
   assert.equal(account, targetAccount, `OIDC probe must target AWS account ${targetAccount}`);
   assert.equal(region, targetRegion, `OIDC probe must target ${targetRegion}`);
-  assert.equal(roleArn, deployRoleArn, 'OIDC proof must target the exact publishing role');
+  assert.equal(roleArn, expectedRoleForEnvironment(environment),
+    'OIDC proof must target the role trusted by this fixed GitHub environment');
+  assert.ok(['demo-infrastructure', 'demo-evaluation'].includes(environment),
+    'OIDC proof must target a fixed workflow environment');
   assert.equal(subject, expectedSubject, 'Expected subject must refer to the exact publishing workflow');
   assert.equal(ref, negativeRefs[probe] ?? releaseRef);
   assert.equal(workflowRef, `${repository}/${probe === 'wrong-workflow' ? negativeWorkflow : deployWorkflow}@${ref}`);
@@ -41,17 +50,19 @@ function validateRunnerIdentity(context, env) {
   assert.equal(env.GITHUB_REPOSITORY, repository);
   assert.equal(env.GITHUB_REF, ref);
   assert.equal(env.GITHUB_WORKFLOW_REF, workflowRef);
+  assert.equal(env.PHASE0_OIDC_ENVIRONMENT, environment);
   const eventName = env.GITHUB_EVENT_NAME;
   assert.ok(['push', 'workflow_dispatch'].includes(eventName), 'OIDC deployment probe requires push or workflow_dispatch');
   return eventName;
 }
 
 function validateTokenIdentity(context, claims) {
-  const { probe, repository, repositoryId, subject, ref, workflowRef, eventName } = context;
+  const { probe, repository, repositoryId, subject, environment, ref, workflowRef, eventName } = context;
   assert.equal(claims.iss, 'https://token.actions.githubusercontent.com');
   assert.equal(claims.aud, audience);
   assert.equal(claims.repository, repository);
   assert.equal(String(claims.repository_id), repositoryId);
+  assert.equal(claims.environment, environment, 'OIDC token must carry the role-bound GitHub environment');
   assert.equal(claims.ref, ref);
   assert.equal(claims.workflow_ref, workflowRef);
   assert.equal(claims.event_name, eventName, 'Token event_name must match the verified runner event');
@@ -70,7 +81,7 @@ function validateTokenIdentity(context, claims) {
   }
 }
 
-function identityFixture(eventName = 'push', probe = 'allowed') {
+function identityFixture(eventName = 'push', probe = 'allowed', roleArn = deployRoleArn, environment = 'demo-infrastructure') {
   const ref = negativeRefs[probe] ?? releaseRef;
   const workflow = probe === 'wrong-workflow' ? negativeWorkflow : deployWorkflow;
   const workflowRef = `${targetRepository}/${workflow}@${ref}`;
@@ -78,18 +89,19 @@ function identityFixture(eventName = 'push', probe = 'allowed') {
     context: {
       probe, repository: targetRepository, repositoryId: targetRepositoryId,
       account: targetAccount, region: targetRegion,
-      roleArn: deployRoleArn,
+      roleArn, environment,
       subject: expectedSubject,
       ref, workflowRef, eventName,
     },
     env: {
       GITHUB_ACTIONS: 'true', GITHUB_REPOSITORY: targetRepository,
       GITHUB_REF: ref, GITHUB_WORKFLOW_REF: workflowRef, GITHUB_EVENT_NAME: eventName,
+      PHASE0_OIDC_ENVIRONMENT: environment,
     },
     claims: {
       iss: 'https://token.actions.githubusercontent.com', aud: audience,
       repository: targetRepository, repository_id: targetRepositoryId,
-      ref, workflow_ref: workflowRef, event_name: eventName,
+      environment, ref, workflow_ref: workflowRef, event_name: eventName,
       sub: `${immutableRepository}${workflowRef}`,
     },
   };
@@ -102,6 +114,16 @@ for (const eventName of ['push', 'workflow_dispatch']) {
     validateTokenIdentity(context, claims);
   });
 }
+
+test('offline OIDC validation accepts the isolated evaluation environment role', () => {
+  const { context, env, claims } = identityFixture(
+    'workflow_dispatch', 'allowed', evaluationRoleArn, 'demo-evaluation',
+  );
+  assert.equal(validateRunnerIdentity(context, env), 'workflow_dispatch');
+  validateTokenIdentity(context, claims);
+  assert.equal(context.roleArn, evaluationRoleArn);
+  assert.equal(context.environment, 'demo-evaluation');
+});
 
 test('offline OIDC validation rejects other runner events and mismatched token events', () => {
   const { context, env, claims } = identityFixture('workflow_dispatch');
@@ -158,13 +180,14 @@ test('GitHub issues the expected identity and STS enforces the deployment bounda
   const repositoryId = input('PHASE0_GITHUB_REPOSITORY_ID');
   const account = input('PHASE0_AWS_ACCOUNT_ID');
   const region = input('PHASE0_AWS_REGION');
-  const roleArn = input('PHASE0_DEPLOY_ROLE_ARN');
+  const roleArn = input('PHASE0_OIDC_ROLE_ARN');
+  const environment = input('PHASE0_OIDC_ENVIRONMENT');
   const subject = input('PHASE0_EXPECTED_OIDC_SUBJECT');
   const ref = negativeRefs[probe] ?? releaseRef;
   const workflow = probe === 'wrong-workflow' ? negativeWorkflow : deployWorkflow;
   const workflowRef = `${repository}/${workflow}@${ref}`;
 
-  const context = { probe, repository, repositoryId, account, region, roleArn, subject, ref, workflowRef };
+  const context = { probe, repository, repositoryId, account, region, roleArn, environment, subject, ref, workflowRef };
   const eventName = validateRunnerIdentity(context, process.env);
 
   const issuerRequest = new URL(input('ACTIONS_ID_TOKEN_REQUEST_URL'));
@@ -192,20 +215,22 @@ test('GitHub issues the expected identity and STS enforces the deployment bounda
   try {
     const tokenFile = join(directory, 'identity');
     writeFileSync(tokenFile, token, { mode: 0o600, flag: 'wx' });
-    const result = spawnSync('aws', [
+    const stsArguments = (targetRoleArn, targetSessionName) => [
       'sts', 'assume-role-with-web-identity', '--no-sign-request',
       '--region', targetRegion, '--endpoint-url', `https://sts.${targetRegion}.amazonaws.com`,
-      '--role-arn', roleArn, '--role-session-name', sessionName,
+      '--role-arn', targetRoleArn, '--role-session-name', targetSessionName,
       '--web-identity-token', `file://${tokenFile}`,
       // The verification session has no permissions even if a denial check unexpectedly succeeds.
       '--duration-seconds', '900',
       '--policy', '{"Version":"2012-10-17","Statement":[{"Effect":"Deny","Action":"*","Resource":"*"}]}',
       '--query', 'AssumedRoleUser.Arn', '--output', 'text',
-    ], {
+    ];
+    const runSts = (targetRoleArn, targetSessionName) => spawnSync('aws', stsArguments(targetRoleArn, targetSessionName), {
       encoding: 'utf8',
       env: { ...process.env, AWS_PAGER: '', AWS_MAX_ATTEMPTS: '1' },
       timeout: 20_000,
     });
+    const result = runSts(roleArn, sessionName);
     assert.ok(!result.error && result.status !== null, 'AWS CLI did not return an STS result');
     if (probe === 'allowed') {
       assert.equal(result.status, 0, 'The designated workflow must be able to assume the deployment role');
@@ -216,6 +241,18 @@ test('GitHub issues the expected identity and STS enforces the deployment bounda
       assert.ok(result.status > 0, 'This identity must not be able to assume the deployment role');
       assert.ok(/\(AccessDenied\).*AssumeRoleWithWebIdentity/.test(result.stderr),
         'Expected STS AccessDenied for AssumeRoleWithWebIdentity, rather than a token, CLI, or network error');
+    }
+    if (probe === 'allowed' && environment === 'demo-evaluation') {
+      const deniedRoleArns = input('PHASE0_DENIED_OIDC_ROLE_ARNS').split(',').filter(Boolean);
+      const repairedPublisherRoleArn = `arn:aws:iam::${targetAccount}:role/IncidentTriageDemoGitHubRepairedPublisher`;
+      assert.deepEqual(deniedRoleArns.sort(), [deployRoleArn, repairedPublisherRoleArn].sort(),
+        'Evaluation OIDC denial probes must target only the legacy and repaired publisher roles');
+      for (const deniedRoleArn of deniedRoleArns) {
+        const denied = runSts(deniedRoleArn, `${sessionName}-denied`);
+        assert.ok(denied.status > 0, `Evaluation WebIdentity must not assume ${deniedRoleArn}`);
+        assert.ok(/\(AccessDenied\).*AssumeRoleWithWebIdentity/.test(denied.stderr),
+          'Expected AccessDenied for the evaluation WebIdentity denial probe');
+      }
     }
     console.log(`Verified ${probe} STS outcome for ${workflowRef} in run ${process.env.GITHUB_RUN_ID}`);
   } finally {
