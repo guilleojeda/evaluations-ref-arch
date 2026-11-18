@@ -1,33 +1,49 @@
-# S0 — Investigate the faulty candidate
+# S1 — Review and freeze a case
 
-This workspace is the Phase 22 S0 checkpoint. Its default candidate is the
-historical faulty prompt, not the repaired prompt and not a live endpoint
-selection. The semantic prompt identity is `faulty-phase19`; the descriptor
-records source revision `bd6f77d`, runtime artifact
-`e5ac2ee20d8f3947eb95ceb74094e882a3d8a4a010f2a8e7bf96700dd5906b33`, and lock
-`887c9bcf91ec028fe3b0939aac00a7d4c3dfbc68b2287e4469a15f3798651831`.
+This workspace is the Phase 22 S1 checkpoint. It keeps the faulty candidate
+unchanged and adds reviewed-case validation, freezing, and a public candidate
+projection. The default candidate remains `faulty`; S1 does not run S0, trigger
+an alarm, invoke a model, or score a case. The imported Phase 14 manifest has
+SHA-256 `222c63de2a2acc30060a7807a2d1cf17e6bfa0b921eebe4410a9557b12739ae1`.
 
 Set `PHASE22_PRIVATE_ROOT` outside this checkout and export
-`PHASE22_INPUT_INDEX` to the private session index. Opening this workspace is
-metadata-only: it must not start a model, send application traffic, switch a
-live target, publish, or reset the controller.
+`PHASE22_INPUT_INDEX` to the private session index. Set
+`PHASE14_IMPORT_ARCHIVE` to the archive whose digest is recorded in that index,
+then import it into a new S1 directory. Private case/trace bytes stay outside
+the editable worktree.
 
 ```sh
 uv sync --project agent --locked
 uv sync --offline --project agent --locked
+mkdir -p "$PHASE22_PRIVATE_ROOT/s1/import" "$PHASE22_PRIVATE_ROOT/s1/edit" "$PHASE22_PRIVATE_ROOT/s1/frozen"
+tar -xzf "$PHASE14_IMPORT_ARCHIVE" -C "$PHASE22_PRIVATE_ROOT/s1/import"
+(cd "$PHASE22_PRIVATE_ROOT/s1/import" && sha256sum -c SHA256SUMS)
+cp "$PHASE22_PRIVATE_ROOT/s1/import/denial-session-draft.json" \
+  "$PHASE22_PRIVATE_ROOT/s1/edit/denial.reviewed.json"
+export PHASE22_REVIEWED_CASE="$PHASE22_PRIVATE_ROOT/s1/edit/denial.reviewed.json"
+export PHASE22_SOURCE_BUNDLE="$PHASE22_PRIVATE_ROOT/s1/import/denial.json"
 uv run --offline --project agent --locked python -m py_compile \
-  agent/prompt.py agent/main.py agent/investigation.py
-uv run --offline --project agent --locked python agent/package_runtime.py
+  agent/reviewed_cases.py agent/captured_evidence.py
 python -m json.tool talk/stage.json >/dev/null
 ```
 
-For the live demonstration, establish native alarm **OK** and the healthy
-business baseline, select and verify `faulty`, trigger one genuine denied
-Inventory request, and match its new alarm to the actual Runtime run, report,
-trace, and source capture. Show the faulty memory recommendation, apply the
-prepared higher-memory choice through the normal operator path, prove a fresh
-request still fails, then restore access and verify a fresh success and native
-**OK**. If the live path is unavailable, reopen only a matching saved
-investigation and label it **recorded**; it is not fresh execution.
+Open the imported trace pointer and case draft in the browser editor. Complete
+the expected action, target, value, and unit from matched captured evidence;
+do not copy evaluator-only fields into the candidate projection. Validate the
+edited review against the same bundle and freeze it to a new private path:
 
-S0 has no reviewed case, scorer, evaluator, or release gate.
+```sh
+uv run --offline --project agent --locked python agent/reviewed_cases.py validate \
+  --case "$PHASE22_REVIEWED_CASE" --bundle "$PHASE22_SOURCE_BUNDLE"
+uv run --offline --project agent --locked python agent/reviewed_cases.py freeze \
+  --case "$PHASE22_REVIEWED_CASE" --bundle "$PHASE22_SOURCE_BUNDLE" \
+  --output "$PHASE22_PRIVATE_ROOT/s1/frozen/denial.frozen.json"
+uv run --offline --project agent --locked python agent/reviewed_cases.py candidate-input \
+  --case "$PHASE22_PRIVATE_ROOT/s1/frozen/denial.frozen.json" \
+  --bundle "$PHASE22_SOURCE_BUNDLE" > \
+  "$PHASE22_PRIVATE_ROOT/s1/denial.candidate-task.json"
+```
+
+Inspect the public projection and its identity against the saved edits. S1
+review produces no score and no agent execution. A missing or mismatched
+archive remains incomplete; do not substitute a live query or another case.
