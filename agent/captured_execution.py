@@ -234,6 +234,54 @@ def _verify_exporter_setup() -> Any:
     return provider
 
 
+def _configure_packaged_exporter(launcher_provider: Any) -> Any:
+    """Install the signed ADOT exporter using the Runtime ZIP's OTel modules.
+
+    The ``opentelemetry-instrument`` launcher necessarily initializes a
+    trusted driver provider before the package ZIP is loaded.  Reusing that
+    provider after the package dependency scope is installed is unsafe: its
+    exporter encoder keys the driver's ``SpanKind`` enum, while candidate
+    spans carry the packaged enum.  The resulting ``KeyError`` drops every
+    span before CloudWatch/X-Ray sees it.  Keep the launcher preflight as the
+    authentication boundary, then construct the same AWS OTLP exporter from
+    the package's own OTel modules so encoder and span types are identical.
+    """
+
+    # These imports intentionally resolve inside _snapshot_imports, where the
+    # extracted Runtime ZIP is first on sys.path and ambient site-packages have
+    # been removed.  Never use the launcher's driver OTel classes here.
+    from amazon.opentelemetry.distro.aws_opentelemetry_configurator import AwsOpenTelemetryConfigurator
+
+    # Use the signed package configurator rather than reconstructing ADOT's
+    # exporter/resource/sampler settings. This keeps AWS auth, endpoint,
+    # headers, resource detectors and BatchSpanProcessor behavior identical to
+    # the production ``opentelemetry-instrument`` path, but with package-owned
+    # OTel classes. The launcher provider is only the already-authenticated
+    # preflight boundary; it is never mutated or shut down here.
+    try:
+        AwsOpenTelemetryConfigurator().configure()
+        return _verify_exporter_setup()
+    except BaseException:
+        # The ADOT configurator may install a provider before a later
+        # validation/import fails. Close only that package-owned provider;
+        # the authenticated launcher provider belongs to the outer process.
+        try:
+            from opentelemetry import trace
+
+            partial_provider = trace.get_tracer_provider()
+            if partial_provider is not launcher_provider:
+                try:
+                    partial_provider.force_flush(timeout_millis=30_000)
+                except Exception:
+                    pass
+                try:
+                    partial_provider.shutdown()
+                except Exception:
+                    pass
+        finally:
+            raise
+
+
 @contextmanager
 def _snapshot_imports(
     agent_source: Path,
@@ -852,13 +900,21 @@ def _run_snapshot(
         timer: Timer | None = None
         cancel_signal = Event()
         observer: Any = None
+        packaged_provider = False
         try:
             # Tests inject a fake session; production normally passes the
             # provider already verified before the package snapshot loaded.
             from opentelemetry import trace
             from opentelemetry.sdk.trace import TracerProvider
 
-            if provider is None:
+            if provider is not None and model_session is None and dependency_root is not None:
+                # The launcher provider was authenticated before package
+                # imports. Rebuild its exporter with the package's own OTel
+                # classes to keep SpanKind/resource/encoder identities
+                # consistent across the genuine Runtime dependency scope.
+                provider = _configure_packaged_exporter(provider)
+                packaged_provider = True
+            elif provider is None:
                 provider = trace.get_tracer_provider()
                 if not isinstance(provider, TracerProvider):
                     if model_session is None:
@@ -870,11 +926,6 @@ def _run_snapshot(
                     # development harness does for its host SDK.
                     provider = TracerProvider()
                     trace.set_tracer_provider(provider)
-            elif model_session is None:
-                # A trusted launcher provider was captured before package
-                # imports replaced the host OTel modules. Keep candidate
-                # spans on that already-configured ADOT exporter.
-                trace.set_tracer_provider(provider)
             observer = _span_observer()
             provider.add_span_processor(observer)
             tool_budget = _ToolBudget()
@@ -1056,6 +1107,19 @@ def _run_snapshot(
         finally:
             if timer is not None:
                 timer.cancel()
+            if packaged_provider:
+                # The package provider owns package OTel modules and must be
+                # drained and closed before _snapshot_imports restores the
+                # trusted driver modules. Never flush or shut down the shared
+                # launcher provider here.
+                try:
+                    provider.force_flush(timeout_millis=30_000)
+                except Exception:
+                    pass
+                try:
+                    provider.shutdown()
+                except Exception:
+                    pass
             if observer is not None:
                 observer.shutdown()
             release_operation_lock(operation_lock)
