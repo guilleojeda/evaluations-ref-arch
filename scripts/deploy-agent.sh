@@ -330,7 +330,7 @@ fi
 
 prepared=false
 if deploy_aws cloudformation describe-change-set --stack-name "$stack" --change-set-name "$change_set_name" \
-    --output json >"$description" 2>"$aws_error"; then
+    --include-property-values --output json >"$description" 2>"$aws_error"; then
   case "$(jq -r '.Status + ":" + .ExecutionStatus' "$description")" in
     CREATE_COMPLETE:AVAILABLE)
       node scripts/check-agent-change-set.mjs "$assembly/$candidate_template" <"$description"
@@ -357,7 +357,7 @@ if [[ "$prepared" == false ]]; then
     --import-existing-resources --method prepare-change-set --change-set-name "$change_set_name" --require-approval never \
     --previous-parameters "${parameter_args[@]}"
   deploy_aws cloudformation describe-change-set --stack-name "$stack" --change-set-name "$change_set_name" \
-    --output json >"$description"
+    --include-property-values --output json >"$description"
 fi
 node scripts/check-agent-change-set.mjs "$assembly/$candidate_template" <"$description"
 if [[ "$fresh_stack" == false ]]; then
