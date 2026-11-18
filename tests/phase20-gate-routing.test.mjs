@@ -71,7 +71,11 @@ function makeRepository() {
     cwd: directory,
     encoding: 'utf8',
   }));
-  return { directory, commit, affected };
+  const agentInfrastructureOnly = (base, candidate) => execFileSync(process.execPath, [selector, base, candidate, '--agent-infrastructure-only'], {
+    cwd: directory,
+    encoding: 'utf8',
+  }).trim();
+  return { directory, commit, affected, agentInfrastructureOnly };
 }
 
 function needs(jobBody) {
@@ -156,6 +160,20 @@ test('documentation-only changes stay outside consumed runtime and evaluation in
   }
 });
 
+test('agent infrastructure-only changes retain stack reconciliation without candidate qualification', () => {
+  const repository = makeRepository();
+  try {
+    const previous = repository.commit('README.md');
+    const infrastructure = repository.commit('infrastructure/agent/stack.ts');
+    assert.deepEqual(repository.affected(previous, infrastructure), ['agent']);
+    assert.equal(repository.agentInfrastructureOnly(previous, infrastructure), 'true');
+    const candidate = repository.commit('agent/prompt.py');
+    assert.equal(repository.agentInfrastructureOnly(infrastructure, candidate), 'false');
+  } finally {
+    rmSync(repository.directory, { recursive: true, force: true });
+  }
+});
+
 test('quality gate and protected publication use isolated roles, dependencies, and the pending artifact', () => {
   const [buildName, build] = buildJob();
   const [gateName, gate] = gateJob(buildName);
@@ -176,8 +194,11 @@ test('quality gate and protected publication use isolated roles, dependencies, a
   const publicationRoles = roleTargets(publication);
   assert.ok(gateRoles.length > 0, 'the gate must identify its AWS role');
   assert.ok(publicationRoles.length > 0, 'the publisher must identify its AWS role');
-  assert.ok(gateRoles.every((target) => !publicationRoles.includes(target)),
-    'the evaluation session must not reuse the publishing role');
+  // The protected job may use the isolated evaluation role for its private
+  // S3 readback before approval verification. It must never acquire the
+  // publisher role until that precredential gate has completed.
+  assert.ok(gateRoles.every((target) => !/PHASE20_PUBLISHER_ROLE_ARN|IncidentTriageDemoGitHubRepairedPublisher/.test(target)),
+    'the evaluation gate must not acquire the publishing role');
   requireAbsent(gate, /PHASE0_DEPLOY_ROLE_ARN|CDK_DEPLOY_ROLE_ARN|CDK_FILE_PUBLISHING_ROLE_ARN/,
     'the evaluation session must not assume the existing broad deployment roles');
 
@@ -185,10 +206,15 @@ test('quality gate and protected publication use isolated roles, dependencies, a
     'publication must use the native protected environment');
   requireMatch(publication, /actions\/download-artifact/, 'publication must consume the same-run artifact');
   requireAbsent(publication, /actions\/upload-artifact/, 'publication must not produce a replacement artifact');
+  requireAbsent(workflow, /phase20-qualification-\$\{\{ github\.sha \}\}/,
+    'private qualification evidence must not cross jobs as a public Actions artifact');
   const downloadPosition = stepIndex(publication, /actions\/download-artifact/);
   const digestPosition = runStepIndex(publication, /(?:sha256sum|sha256|artifactSha256)/i);
-  const credentialPosition = stepIndex(publication, /(?:configure-aws-credentials|sts assume-role)/);
-  assert.ok(downloadPosition >= 0 && downloadPosition < digestPosition && digestPosition < credentialPosition,
+  const privateReadPosition = stepIndex(publication, /PHASE20_EVALUATION_ROLE_ARN/);
+  const publisherCredentialPosition = stepIndex(publication, /role-to-assume:\s*\$\{\{\s*env\.PHASE20_PUBLISHER_ROLE_ARN/);
+  requireMatch(publication, /scripts\/qualify-repaired\.py verify-private/,
+    'publication must run the full private review verifier');
+  assert.ok(downloadPosition >= 0 && downloadPosition < digestPosition && privateReadPosition < publisherCredentialPosition && digestPosition < publisherCredentialPosition,
     'publication must download and verify the pending artifact before publishing credentials');
   if (/always\(\)/.test(publication)) {
     requireMatch(publication, new RegExp(`needs\\.${gateName}\\.result\\s*==\\s*['"]success['"]`),

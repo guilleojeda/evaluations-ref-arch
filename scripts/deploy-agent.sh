@@ -6,6 +6,7 @@ assembly=.artifacts/agent/cdk
 change_set_name="phase4-agent-${GITHUB_SHA}"
 description="$RUNNER_TEMP/agent-change-set.json"
 aws_error="$RUNNER_TEMP/agent-deploy.error"
+infrastructure_only="${PHASE20_AGENT_INFRASTRUCTURE_ONLY:-false}"
 test -s "$assembly/manifest.json"
 candidate_template="$(jq -er --arg stack "$stack" '.artifacts[$stack].properties.templateFile' "$assembly/manifest.json")"
 
@@ -268,6 +269,30 @@ while :; do
 done
 if [[ "$status" == ABSENT || "$status" == REVIEW_IN_PROGRESS ]]; then
   fresh_stack=true
+fi
+
+if [[ "$infrastructure_only" == true ]]; then
+  # Infrastructure-only reconciliation may carry the existing published
+  # Runtime/bootstrap tuple, but it cannot create a fresh stack or package a
+  # new unchecked Runtime ZIP. The explicit fixed reference setup owns the
+  # first stack and initial Runtime asset.
+  [[ "$fresh_stack" == false ]] || {
+    echo "Agent infrastructure-only release requires the fixed reference setup on a fresh stack" >&2
+    exit 1
+  }
+  [[ "$(stack_parameter PublishedRuntimeBootstrapEnabled <<<"$stack_state")" == true ]] || {
+    echo "Agent infrastructure-only release requires a publisher-owned Runtime bootstrap tuple" >&2
+    exit 1
+  }
+  infra_assembly="$RUNNER_TEMP/agent-infrastructure-cdk"
+  cp -R "$assembly" "$infra_assembly"
+  assets_manifest="$infra_assembly/${stack}.assets.json"
+  runtime_asset_id="$(jq -er '.files | to_entries[] | select(.value.displayName == "RuntimeZip") | .key' "$assets_manifest")"
+  jq --arg asset_id "$runtime_asset_id" 'del(.files[$asset_id])' "$assets_manifest" > "$assets_manifest.tmp"
+  mv "$assets_manifest.tmp" "$assets_manifest"
+  assembly="$infra_assembly"
+  candidate_template="$(jq -er --arg stack "$stack" '.artifacts[$stack].properties.templateFile' "$assembly/manifest.json")"
+  echo "Prepared infrastructure-only agent assembly; the existing published Runtime asset remains the sole bootstrap source"
 fi
 
 # The first ordinary post-cutover source push must not execute the endpoint

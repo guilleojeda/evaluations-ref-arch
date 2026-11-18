@@ -134,6 +134,16 @@ class NativePackageExperiment(unittest.TestCase):
         fixture = s4.Phase18StrandsExperimentAcceptance("runTest")
         fixture.setUp()
         self.addCleanup(fixture.tearDown)
+        # This acceptance case injects the scripted Bedrock transport, so it
+        # deliberately does not start the production ADOT launcher.  Match
+        # the Phase 18 fake-transport setup with a local SDK provider; the
+        # real package/ADOT path remains exercised by the native production
+        # runner and smoke checks.
+        from opentelemetry import trace
+        from opentelemetry.sdk.trace import TracerProvider
+
+        if not isinstance(trace.get_tracer_provider(), TracerProvider):
+            trace.set_tracer_provider(TracerProvider())
         runtime_zip = Path(__file__).resolve().parents[1] / ".artifacts/agent/runtime.zip"
         with zipfile.ZipFile(runtime_zip) as package:
             manifest = json.loads(package.read("agent-manifest.json"))

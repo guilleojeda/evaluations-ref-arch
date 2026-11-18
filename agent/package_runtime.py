@@ -17,6 +17,7 @@ import tempfile
 import zipfile
 import json
 import os
+import hashlib
 from pathlib import Path
 
 
@@ -99,6 +100,15 @@ def write_otel_launcher(staging: Path) -> None:
         launcher.chmod(0o755)
 
 
+def sha256(raw: bytes) -> str:
+    return hashlib.sha256(raw).hexdigest()
+
+
+def named_digest(files: dict[str, bytes]) -> str:
+    value = {name: sha256(raw) for name, raw in sorted(files.items())}
+    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8"))
+
+
 def main() -> None:
     if sys.version_info < (3, 13) or sys.version_info >= (3, 14):
         raise SystemExit(
@@ -117,9 +127,39 @@ def main() -> None:
         install_locked_dependencies(runtime_staging, runtime_requirements, adapter=False)
         for module in RUNTIME_MODULES:
             shutil.copy2(PROJECT / module, runtime_staging / module)
+        # Keep the exact lock and project metadata beside the installed wheels.
+        # The Phase 20 package runner authenticates these bytes and refuses to
+        # satisfy a missing dependency from its trusted driver environment.
+        shutil.copy2(PROJECT / "pyproject.toml", runtime_staging / "pyproject.toml")
+        shutil.copy2(PROJECT / "uv.lock", runtime_staging / "uv.lock")
         write_otel_launcher(runtime_staging)
+        runtime_sources = {
+            module: (runtime_staging / module).read_bytes()
+            for module in RUNTIME_MODULES
+        }
+        runtime_dependencies = {
+            name: (runtime_staging / name).read_bytes()
+            for name in ("pyproject.toml", "uv.lock")
+        }
         (runtime_staging / "agent-manifest.json").write_text(
-            json.dumps({"sourceRevision": revision, "promptSha256": PROMPT_SHA256}, sort_keys=True, separators=(",", ":")) + "\n",
+            json.dumps(
+                {
+                    "schemaVersion": 2,
+                    "sourceRevision": revision,
+                    "promptSha256": PROMPT_SHA256,
+                    "runtimeSourceFiles": {
+                        name: sha256((runtime_staging / name).read_bytes())
+                        for name in RUNTIME_MODULES
+                    },
+                    "dependencyFiles": {
+                        name: sha256(raw) for name, raw in sorted(runtime_dependencies.items())
+                    },
+                    "runtimeSourceSha256": named_digest({f"agent/{name}": raw for name, raw in runtime_sources.items()}),
+                    "dependencySha256": named_digest({f"agent/{name}": raw for name, raw in runtime_dependencies.items()}),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ) + "\n",
             encoding="utf-8",
         )
         write_zip(runtime_staging, OUTPUT)

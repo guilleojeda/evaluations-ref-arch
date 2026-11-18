@@ -30,7 +30,9 @@ on:
 
 env:
   AWS_REGION: us-east-1
+  AWS_DEFAULT_REGION: us-east-1
   AWS_ACCOUNT_ID: '027224425948'
+  AWS_PAGER: ''
   PHASE0_GITHUB_REPOSITORY: guilleojeda/evaluations-ref-arch
   PHASE0_GITHUB_REPOSITORY_ID: '1411023195'
   PHASE0_AWS_ACCOUNT_ID: '027224425948'
@@ -46,6 +48,16 @@ env:
   CDK_DEPLOY_ROLE_ARN: arn:aws:iam::027224425948:role/cdk-evaltalk-deploy-role-027224425948-us-east-1
   CDK_FILE_PUBLISHING_ROLE_ARN: arn:aws:iam::027224425948:role/cdk-evaltalk-file-publishing-role-027224425948-us-east-1
   PHASE0_ASSET_BUCKET: cdk-evaltalk-assets-027224425948-us-east-1
+  # Phase 20 uses separate identities for evaluation and serving publication.
+  # These values are deliberately fixed workflow inputs; they are not caller-
+  # selectable dispatch parameters.
+  PHASE20_EVALUATION_ROLE_ARN: arn:aws:iam::027224425948:role/IncidentTriageDemoGitHubEvaluation
+  PHASE20_PUBLISHER_ROLE_ARN: arn:aws:iam::027224425948:role/IncidentTriageDemoGitHubRepairedPublisher
+  PHASE20_EVIDENCE_BUCKET: incident-triage-demo-evidence-027224425948-us-east-1
+  PHASE20_ALARM_ARN: arn:aws:cloudwatch:us-east-1:027224425948:alarm:IncidentTriageDemoAppStage5xx
+  PHASE20_REVIEWER_ID: '18320860'
+  PHASE20_REVIEWER_LOGIN: guilleojeda
+  PHASE20_ENVIRONMENT_ID: '27678290254'
 
 permissions:
   contents: read
@@ -56,6 +68,11 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       components: ${{ steps.select.outputs.components }}
+      check_components: ${{ steps.select.outputs.check_components }}
+      agent_components: ${{ steps.select.outputs.agent_components }}
+      deploy_components: ${{ steps.select.outputs.deploy_components }}
+      agent_infrastructure_only: ${{ steps.select.outputs.agent_infrastructure_only }}
+      qualification_required: ${{ steps.select.outputs.qualification_required }}
       operation: ${{ steps.select.outputs.operation }}
       reference_setup: ${{ steps.select.outputs.reference_setup }}
       rotation_from_generation: ${{ steps.select.outputs.rotation_from_generation }}
@@ -88,6 +105,11 @@ jobs:
                 exit 1
               }
               echo 'components=["agent"]' >> "$GITHUB_OUTPUT"
+              echo 'check_components=[]' >> "$GITHUB_OUTPUT"
+              echo 'agent_components=["agent"]' >> "$GITHUB_OUTPUT"
+              echo 'deploy_components=["agent"]' >> "$GITHUB_OUTPUT"
+              echo 'agent_infrastructure_only=false' >> "$GITHUB_OUTPUT"
+              echo 'qualification_required=false' >> "$GITHUB_OUTPUT"
               echo 'operation=reference-setup' >> "$GITHUB_OUTPUT"
               echo 'reference_setup=true' >> "$GITHUB_OUTPUT"
               echo 'rotation_from_generation=' >> "$GITHUB_OUTPUT"
@@ -114,6 +136,19 @@ jobs:
                 ;;
             esac
             echo "components=$(node -p 'JSON.stringify([process.argv[1]])' "$component")" >> "$GITHUB_OUTPUT"
+            if [[ "$component" == agent ]]; then
+              echo 'deploy_components=[]' >> "$GITHUB_OUTPUT"
+              echo 'check_components=[]' >> "$GITHUB_OUTPUT"
+              echo 'agent_components=["agent"]' >> "$GITHUB_OUTPUT"
+              echo 'agent_infrastructure_only=false' >> "$GITHUB_OUTPUT"
+              echo 'qualification_required=true' >> "$GITHUB_OUTPUT"
+            else
+              echo "deploy_components=$(node -p 'JSON.stringify([process.argv[1]])' "$component")" >> "$GITHUB_OUTPUT"
+              echo "check_components=$(node -p 'JSON.stringify([process.argv[1]])' "$component")" >> "$GITHUB_OUTPUT"
+              echo 'agent_components=[]' >> "$GITHUB_OUTPUT"
+              echo 'agent_infrastructure_only=false' >> "$GITHUB_OUTPUT"
+              echo 'qualification_required=false' >> "$GITHUB_OUTPUT"
+            fi
             echo 'operation=normal' >> "$GITHUB_OUTPUT"
             echo 'reference_setup=false' >> "$GITHUB_OUTPUT"
             case "$rotation_from$rotation_to" in
@@ -127,6 +162,11 @@ jobs:
           fi
           echo 'operation=normal' >> "$GITHUB_OUTPUT"
           echo 'reference_setup=false' >> "$GITHUB_OUTPUT"
+          echo 'deploy_components=[]' >> "$GITHUB_OUTPUT"
+          echo 'check_components=[]' >> "$GITHUB_OUTPUT"
+          echo 'agent_components=[]' >> "$GITHUB_OUTPUT"
+          echo 'agent_infrastructure_only=false' >> "$GITHUB_OUTPUT"
+          echo 'qualification_required=false' >> "$GITHUB_OUTPUT"
           echo 'rotation_from_generation=' >> "$GITHUB_OUTPUT"
           echo 'rotation_to_generation=' >> "$GITHUB_OUTPUT"
           if [[ "${{ github.event_name }}" == "pull_request" ]]; then
@@ -140,23 +180,39 @@ jobs:
               base="$(git rev-list --max-parents=0 "$candidate" | tail -n 1)"
             fi
           fi
-          echo "components=$(node scripts/affected-stacks.mjs "$base" "$candidate")" >> "$GITHUB_OUTPUT"
+          components="$(node scripts/affected-stacks.mjs "$base" "$candidate")"
+          echo "components=$components" >> "$GITHUB_OUTPUT"
+          check_components="$(node -p 'JSON.stringify(JSON.parse(process.argv[1]).filter((component) => component !== "agent"))' "$components")"
+          agent_components="$(node -p 'JSON.stringify(JSON.parse(process.argv[1]).filter((component) => component === "agent"))' "$components")"
+          echo "check_components=$check_components" >> "$GITHUB_OUTPUT"
+          echo "agent_components=$agent_components" >> "$GITHUB_OUTPUT"
+          agent_infrastructure_only="$(node scripts/affected-stacks.mjs "$base" "$candidate" --agent-infrastructure-only)"
+          if [[ "$agent_infrastructure_only" == true && "$components" == *'"agent"'* ]]; then
+            deploy_components='["agent"]'
+            echo 'qualification_required=false' >> "$GITHUB_OUTPUT"
+          else
+            deploy_components="$(node -p 'JSON.stringify(JSON.parse(process.argv[1]).filter((component) => component !== "agent"))' "$components")"
+            qualification_required="$(node -p 'JSON.stringify(JSON.parse(process.argv[1]).includes("agent"))' "$components")"
+            echo "qualification_required=$qualification_required" >> "$GITHUB_OUTPUT"
+          fi
+          echo "deploy_components=$deploy_components" >> "$GITHUB_OUTPUT"
+          echo "agent_infrastructure_only=$agent_infrastructure_only" >> "$GITHUB_OUTPUT"
 
   check:
     name: Check ${{ matrix.component }}
     needs: route
     if: >-
-      needs.route.outputs.components != '[]' &&
+      needs.route.outputs.check_components != '[]' &&
       (github.event_name == 'pull_request' ||
       ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/demo-deploy')))
-    runs-on: ${{ matrix.component == 'agent' && 'ubuntu-24.04-arm' || 'ubuntu-24.04' }}
+    runs-on: ubuntu-24.04
     permissions:
       contents: read
     strategy:
       fail-fast: false
       matrix:
-        component: ${{ fromJSON(needs.route.outputs.components) }}
+        component: ${{ fromJSON(needs.route.outputs.check_components) }}
     steps:
       - name: Check out source
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
@@ -169,29 +225,13 @@ jobs:
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.13'
-      - name: Set up uv
-        if: matrix.component == 'agent'
-        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
-        with:
-          version: '0.13.6'
-          enable-cache: true
-          cache-dependency-glob: agent/uv.lock
       - name: Install locked dependencies
         run: |
           npm ci
-          if [[ "${{ matrix.component }}" == agent ]]; then
-            uv sync --project agent --locked
-          fi
       - name: Run the selected check
         run: npm run check -- ${{ matrix.component }}
       - name: Verify component routing
         run: node --test tests/phase0-routing.test.mjs tests/phase12-demo-deploy-routing.test.mjs
-      - name: Run Phase 19 reference routing checks
-        if: matrix.component == 'agent'
-        run: |
-          # The alarm route spans the app alarm and the agent's adapter permission.
-          npm run check -- app
-          node --test tests/phase19-reference-routing.test.mjs
       - name: Run app release acceptance checks
         if: matrix.component == 'app'
         run: |
@@ -213,8 +253,59 @@ jobs:
           node --test tests/phase4-agent-controller.test.mjs
           node --test --test-name-pattern="^controller can read" tests/phase4-agent-infrastructure.test.mjs
           python -m unittest discover -s tests -p 'phase4_release_bindings_test.py' -k controller
+      - name: Save the checked assembly for the serialized preflight
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/demo-deploy'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: phase0-${{ matrix.component }}-${{ github.sha }}
+          path: .artifacts/${{ matrix.component }}
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 14
+          compression-level: 0
+
+  check-agent:
+    name: Check agent (ARM64)
+    needs: route
+    if: >-
+      needs.route.outputs.agent_components != '[]' &&
+      (github.event_name == 'pull_request' ||
+      ((github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/demo-deploy')))
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Node.js
+        uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444 # v5
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: '0.13.6'
+          enable-cache: true
+          cache-dependency-glob: agent/uv.lock
+      - name: Install locked dependencies
+        run: |
+          npm ci
+          uv sync --project agent --locked
+      - name: Run the selected check
+        run: npm run check -- agent
+      - name: Verify component routing
+        run: node --test tests/phase0-routing.test.mjs tests/phase12-demo-deploy-routing.test.mjs
+      - name: Run Phase 19 reference routing checks
+        run: |
+          npm run check -- app
+          node --test tests/phase19-reference-routing.test.mjs
       - name: Run agent runtime and release acceptance checks
-        if: matrix.component == 'agent'
         run: |
           uv run --project agent --locked python -m unittest discover -s tests -p 'phase4_*_test.py'
           uv run --project agent --locked python -m unittest discover -s tests -p 'phase10_agent_capacity_evidence_test.py'
@@ -229,21 +320,21 @@ jobs:
           node --test --test-name-pattern="^(agent stack|adapter only)" tests/phase4-agent-infrastructure.test.mjs
           node --test tests/phase4-agent-release.test.mjs
           node --test tests/phase19-agent-migration.test.mjs
+          uv run --offline --project agent --locked python -m unittest discover -s tests -p 'phase20_*_test.py'
       - name: Run the locked native ARM64 smoke command
-        if: matrix.component == 'agent'
         run: uv run --project agent --locked python agent/native_smoke.py .artifacts/agent/runtime.zip
-      - name: Save the checked assembly for the serialized preflight
+      - name: Save the checked agent assembly for the serialized preflight
         if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/demo-deploy'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: phase0-${{ matrix.component }}-${{ github.sha }}
-          path: .artifacts/${{ matrix.component }}
+          name: phase0-agent-${{ github.sha }}
+          path: .artifacts/agent
           if-no-files-found: error
           include-hidden-files: true
-          retention-days: 1
+          retention-days: 14
           compression-level: 0
       - name: Save the checked agent ZIP for credential-free archive review
-        if: matrix.component == 'agent' && (github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agent-runtime-${{ github.sha }}
@@ -255,19 +346,22 @@ jobs:
 
   deploy:
     name: Deploy ${{ matrix.component }}
-    needs: [route, check]
+    needs: [route, check, check-agent]
     if: >-
       always() && !cancelled() && needs.route.result == 'success' &&
+      ((needs.route.outputs.deploy_components == '["agent"]' && needs.check-agent.result == 'success') ||
+      (needs.route.outputs.deploy_components != '["agent"]' && needs.check.result == 'success')) &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/demo-deploy' &&
-      needs.route.outputs.components != '[]'
+      needs.route.outputs.deploy_components != '[]'
     runs-on: ubuntu-24.04
+    environment: demo-infrastructure
     permissions:
       contents: read
       id-token: write
     strategy:
       fail-fast: false
       matrix:
-        component: ${{ fromJSON(needs.route.outputs.components) }}
+        component: ${{ fromJSON(needs.route.outputs.deploy_components) }}
     concurrency:
       group: incident-triage-demo-${{ matrix.component }}
       cancel-in-progress: false
@@ -294,7 +388,7 @@ jobs:
       - name: Install the pinned deploy CLI
         run: npm ci --ignore-scripts
       - name: Resolve the checked agent file asset
-        if: matrix.component == 'agent' && needs.route.outputs.operation != 'reference-setup'
+        if: matrix.component == 'agent' && needs.route.outputs.operation != 'reference-setup' && needs.route.outputs.agent_infrastructure_only != 'true'
         id: asset
         shell: bash
         env:
@@ -356,7 +450,7 @@ jobs:
             echo "Verified bootstrap identity: $caller; stack=$PHASE0_CDK_BOOTSTRAP_STACK status=$status version=$version"
           )
       - name: Check agent publisher ownership before candidate asset publication
-        if: matrix.component == 'agent' && needs.route.outputs.operation != 'reference-setup'
+        if: matrix.component == 'agent' && needs.route.outputs.operation != 'reference-setup' && needs.route.outputs.agent_infrastructure_only != 'true'
         id: agent_ownership
         shell: bash
         env:
@@ -401,7 +495,7 @@ jobs:
             fi
           )
       - name: Publish and verify the checked agent file asset
-        if: matrix.component == 'agent' && needs.route.outputs.operation != 'reference-setup' && steps.agent_ownership.outputs.deferred != 'true'
+        if: matrix.component == 'agent' && needs.route.outputs.operation != 'reference-setup' && needs.route.outputs.agent_infrastructure_only != 'true' && steps.agent_ownership.outputs.deferred != 'true'
         shell: bash
         env:
           ASSET_BUCKET: ${{ steps.asset.outputs.bucket }}
@@ -495,6 +589,8 @@ jobs:
         run: uv sync --project agent --locked
       - name: Deploy and finalize the checked agent assembly
         if: matrix.component == 'agent' && needs.route.outputs.operation != 'reference-setup'
+        env:
+          PHASE20_AGENT_INFRASTRUCTURE_ONLY: ${{ needs.route.outputs.agent_infrastructure_only }}
         run: bash scripts/deploy-agent.sh
       - name: Set up the fixed faulty reference
         if: matrix.component == 'agent' && needs.route.outputs.operation == 'reference-setup' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/demo-deploy'
@@ -581,3 +677,502 @@ jobs:
             esac
             uv run --offline --project agent --locked python scripts/setup-faulty-reference.py
           )
+
+  evaluate-agent:
+    name: Qualify checked repaired agent
+    needs: [route, check-agent]
+    outputs:
+      qualification_sha256: ${{ steps.receipt.outputs.qualification_sha256 }}
+      artifact_sha256: ${{ steps.artifact.outputs.artifact_sha256 }}
+      qualification_key: ${{ steps.receipt.outputs.qualification_key }}
+      review_manifest_sha256: ${{ steps.receipt.outputs.review_manifest_sha256 }}
+    if: >-
+      needs.route.result == 'success' && needs.check-agent.result == 'success' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/demo-deploy' &&
+      needs.route.outputs.operation == 'normal' &&
+      needs.route.outputs.qualification_required == 'true'
+    runs-on: ubuntu-24.04
+    environment: demo-evaluation
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: incident-triage-demo-agent-qualification
+      cancel-in-progress: false
+    steps:
+      - name: Check out evaluation driver
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - name: Download the checked agent assembly
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: phase0-agent-${{ github.sha }}
+          path: .artifacts/agent
+      - name: Verify the checked ZIP before evaluation credentials
+        id: artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s .artifacts/agent/runtime.zip
+          unzip -tq .artifacts/agent/runtime.zip
+          artifact_sha256="$(sha256sum .artifacts/agent/runtime.zip | awk '{print $1}')"
+          test "${#artifact_sha256}" -eq 64
+          echo "artifact_sha256=$artifact_sha256" >> "$GITHUB_OUTPUT"
+          echo "Checked ARM64 Runtime ZIP: sha256=$artifact_sha256"
+      - name: Set up Python and uv
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Set up locked uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: '0.13.6'
+          enable-cache: true
+          cache-dependency-glob: agent/uv.lock
+      - name: Install the locked evaluation driver
+        run: uv sync --project agent --locked
+      - name: Verify the evaluation OIDC case
+        env:
+          PHASE0_OIDC_CASE: allowed
+        run: node --test tests/phase0-oidc.test.mjs
+      - name: Assume the scoped evaluation role
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.PHASE20_EVALUATION_ROLE_ARN }}
+          role-session-name: phase20-evaluation-${{ github.run_id }}
+          role-duration-seconds: 3600
+      - name: Verify the scoped evaluation identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          caller="$(aws sts get-caller-identity --query Arn --output text)"
+          case "$caller" in
+            arn:aws:sts::027224425948:assumed-role/IncidentTriageDemoGitHubEvaluation/*) ;;
+            *) echo "Unexpected evaluation caller: $caller" >&2; exit 1 ;;
+          esac
+          echo "Verified evaluation identity: $caller"
+      - name: Retrieve and verify the frozen private evaluation inputs
+        id: inputs
+        shell: bash
+        env:
+          INPUT_BUCKET: ${{ env.PHASE20_EVIDENCE_BUCKET }}
+          INPUT_POINTER: ${{ github.workspace }}/agent/qualification-input.json
+        run: |
+          set -euo pipefail
+          input_root="$RUNNER_TEMP/phase20-inputs"
+          mkdir -p "$input_root"
+          test -s "$INPUT_POINTER"
+          pointer_bucket="$(jq -er '.bucket' "$INPUT_POINTER")"
+          [[ "$pointer_bucket" == "$INPUT_BUCKET" ]] || { echo "qualification pointer bucket is outside the fixed evidence bucket" >&2; exit 1; }
+          INPUT_KEY="$(jq -er '.s3Key' "$INPUT_POINTER")"
+          INPUT_SHA256="$(jq -er '.sha256' "$INPUT_POINTER")"
+          EXPECTED_SUITE_SHA256="$(jq -er '.suiteSha256' "$INPUT_POINTER")"
+          EXPECTED_EVALUATOR_SHA256="$(jq -er '.evaluatorSha256' "$INPUT_POINTER")"
+          [[ "$INPUT_KEY" =~ ^agent-evaluation/phase[0-9]+/inputs/[0-9a-f]{64}/staging\.tar\.gz$ ]]
+          [[ "$INPUT_SHA256" =~ ^[0-9a-f]{64}$ && "$EXPECTED_SUITE_SHA256" =~ ^[0-9a-f]{64}$ && "$EXPECTED_EVALUATOR_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          aws s3api get-object --bucket "$INPUT_BUCKET" --key "$INPUT_KEY" --checksum-mode ENABLED "$input_root/staging.tar.gz" > "$input_root/get-object.json"
+          printf '%s  %s\n' "$INPUT_SHA256" "$input_root/staging.tar.gz" | sha256sum -c -
+          tar -xzf "$input_root/staging.tar.gz" -C "$input_root"
+          test -s "$input_root/staging/suite.json"
+          test -s "$input_root/staging/evaluator.json"
+          printf '%s  %s\n' "$EXPECTED_SUITE_SHA256" "$input_root/staging/suite.json" | sha256sum -c -
+          printf '%s  %s\n' "$EXPECTED_EVALUATOR_SHA256" "$input_root/staging/evaluator.json" | sha256sum -c -
+          evaluator_id="$(jq -er '.evaluatorId' "$input_root/staging/evaluator.json")"
+          EVALUATOR_ID="$evaluator_id" EVALUATOR_DESCRIPTOR="$input_root/staging/evaluator.json" \
+            PYTHONPATH=agent uv run --offline --project agent --locked python - <<'PY'
+          import json
+          import os
+          import boto3
+
+          descriptor = json.loads(open(os.environ["EVALUATOR_DESCRIPTOR"], encoding="utf-8").read())
+          response = boto3.Session(region_name="us-east-1").client("bedrock-agentcore").get_evaluator(
+              evaluatorId=os.environ["EVALUATOR_ID"], includedData="ALL_DATA"
+          )
+          evaluator = response.get("evaluator", response)
+          if evaluator.get("evaluatorId") != descriptor.get("evaluatorId") or evaluator.get("status") != "ACTIVE":
+              raise SystemExit("remote evaluator authorization/readback is not the reviewed active evaluator")
+          PY
+          echo "suite=$input_root/staging/suite.json" >> "$GITHUB_OUTPUT"
+          echo "evaluator=$input_root/staging/evaluator.json" >> "$GITHUB_OUTPUT"
+          echo "input_sha256=$INPUT_SHA256" >> "$GITHUB_OUTPUT"
+      - name: Stage immutable package and serving descriptors
+        id: serving_inputs
+        shell: bash
+        env:
+          INPUT_BUCKET: ${{ env.PHASE20_EVIDENCE_BUCKET }}
+          ARTIFACT_SHA256: ${{ steps.artifact.outputs.artifact_sha256 }}
+          ALARM_ARN: ${{ env.PHASE20_ALARM_ARN }}
+        run: |
+          set -euo pipefail
+          stage_prefix="agent-evaluation/phase20/$ARTIFACT_SHA256"
+          stage_root="$RUNNER_TEMP/phase20-serving-inputs"
+          mkdir -p "$stage_root"
+
+          put_immutable() {
+            local key="$1" body="$2" response version
+            if response="$(aws s3api put-object --bucket "$INPUT_BUCKET" --key "$key" --body "$body" --if-none-match '*' --server-side-encryption AES256 2>"$stage_root/put-error")"; then
+              version="$(jq -r '.VersionId // empty' <<<"$response")"
+            elif grep -Eqi 'Precondition|412|already exists|ConditionalRequest' "$stage_root/put-error"; then
+              version="$(aws s3api head-object --bucket "$INPUT_BUCKET" --key "$key" --query VersionId --output text)"
+              case "$version" in None|null|'') version='' ;; esac
+            else
+              cat "$stage_root/put-error" >&2
+              return 1
+            fi
+            readback="$stage_root/$(basename "$key").readback"
+            if [[ -n "$version" ]]; then
+              aws s3api get-object --bucket "$INPUT_BUCKET" --key "$key" --version-id "$version" "$readback" >/dev/null
+            else
+              aws s3api get-object --bucket "$INPUT_BUCKET" --key "$key" "$readback" >/dev/null
+            fi
+            expected_sha256="$(sha256sum "$body" | awk '{print $1}')"
+            actual_sha256="$(sha256sum "$readback" | awk '{print $1}')"
+            [[ "$actual_sha256" == "$expected_sha256" ]] || {
+              echo "staged object bytes differ from the checked input: s3://$INPUT_BUCKET/$key" >&2
+              return 1
+            }
+            printf '%s' "$version"
+          }
+
+          artifact_key="$stage_prefix/runtime.zip"
+          artifact_version="$(put_immutable "$artifact_key" .artifacts/agent/runtime.zip)"
+          unzip -p .artifacts/agent/runtime.zip prompt.py > "$stage_root/prompt.py"
+          prompt_sha256="$(sha256sum "$stage_root/prompt.py" | awk '{print $1}')"
+          source_key="$stage_prefix/prompt.py"
+          source_version="$(put_immutable "$source_key" "$stage_root/prompt.py")"
+
+          # The fixed serving configuration and adapter identity are reviewed
+          # repository inputs. The evaluation role has no stack/Lambda/Runtime
+          # mutation or discovery authority; the protected publisher performs
+          # authoritative native readbacks before serving writes.
+          jq -e '.runtimeConfiguration and .adapter and .controller' scripts/faulty-reference.json >/dev/null
+          jq --arg bucket "$INPUT_BUCKET" --arg key "$artifact_key" --arg version "$artifact_version" \
+             --arg revision "$GITHUB_SHA" --arg digest "$ARTIFACT_SHA256" \
+            '{agentRuntimeArtifact,roleArn,environmentVariables,networkConfiguration,protocolConfiguration,lifecycleConfiguration,metadataConfiguration} |
+             .agentRuntimeArtifact.codeConfiguration.code.s3 = ({bucket:$bucket,prefix:$key} + (if $version == "" then {} else {versionId:$version} end)) |
+             .environmentVariables.AGENT_CANDIDATE_ID = "repaired" |
+             .environmentVariables.AGENT_ENDPOINT_NAME = "repaired" |
+             .environmentVariables.AGENT_SOURCE_REVISION = $revision |
+             .environmentVariables.AGENT_ARTIFACT_SHA256 = $digest' \
+            <(jq '.runtimeConfiguration' scripts/faulty-reference.json) > "$stage_root/runtime-configuration.json"
+          configuration_sha256="$(sha256sum "$stage_root/runtime-configuration.json" | awk '{print $1}')"
+          configuration_key="$stage_prefix/runtime-configuration.json"
+          configuration_version="$(put_immutable "$configuration_key" "$stage_root/runtime-configuration.json")"
+
+          jq '.adapter | {functionArn,codeSha256,tracingMode}' scripts/faulty-reference.json > "$stage_root/adapter.json"
+          jq '.controller | .pk="AGENT_PUBLICATION#repaired"' scripts/faulty-reference.json > "$stage_root/controller.json"
+
+          artifact_spec="$(jq -cn --arg bucket "$INPUT_BUCKET" --arg key "$artifact_key" --arg version "$artifact_version" --arg digest "$ARTIFACT_SHA256" '{bucket:$bucket,key:$key,sha256:$digest} | if $version == "" then . else .versionId=$version end')"
+          source_spec="$(jq -cn --arg bucket "$INPUT_BUCKET" --arg key "$source_key" --arg version "$source_version" --arg digest "$prompt_sha256" '{bucket:$bucket,key:$key,sha256:$digest} | if $version == "" then . else .versionId=$version end')"
+          configuration_spec="$(jq -cn --arg bucket "$INPUT_BUCKET" --arg key "$configuration_key" --arg version "$configuration_version" --arg digest "$configuration_sha256" '{bucket:$bucket,key:$key,sha256:$digest} | if $version == "" then . else .versionId=$version end')"
+          printf '%s\n' "$artifact_spec" > "$stage_root/artifact-spec.json"
+          printf '%s\n' "$source_spec" > "$stage_root/source-spec.json"
+          printf '%s\n' "$configuration_spec" > "$stage_root/configuration-spec.json"
+          echo "artifact_spec=$stage_root/artifact-spec.json" >> "$GITHUB_OUTPUT"
+          echo "source_spec=$stage_root/source-spec.json" >> "$GITHUB_OUTPUT"
+          echo "configuration_spec=$stage_root/configuration-spec.json" >> "$GITHUB_OUTPUT"
+          echo "runtime_configuration=$stage_root/runtime-configuration.json" >> "$GITHUB_OUTPUT"
+          echo "adapter=$stage_root/adapter.json" >> "$GITHUB_OUTPUT"
+          echo "controller=$stage_root/controller.json" >> "$GITHUB_OUTPUT"
+          echo "artifact_key=$artifact_key" >> "$GITHUB_OUTPUT"
+          echo "artifact_version=$artifact_version" >> "$GITHUB_OUTPUT"
+      - name: Run the checked package qualification
+        id: qualification
+        shell: bash
+        env:
+          SUITE_PATH: ${{ steps.inputs.outputs.suite }}
+          EVALUATOR_PATH: ${{ steps.inputs.outputs.evaluator }}
+          RUNTIME_ZIP: ${{ github.workspace }}/.artifacts/agent/runtime.zip
+          QUALIFICATION_ROOT: ${{ runner.temp }}/phase20-qualification
+          RUNTIME_CONFIGURATION: ${{ steps.serving_inputs.outputs.runtime_configuration }}
+          ARTIFACT_SPEC: ${{ steps.serving_inputs.outputs.artifact_spec }}
+          SOURCE_SPEC: ${{ steps.serving_inputs.outputs.source_spec }}
+          CONFIGURATION_SPEC: ${{ steps.serving_inputs.outputs.configuration_spec }}
+          ADAPTER_SPEC: ${{ steps.serving_inputs.outputs.adapter }}
+          CONTROLLER_SPEC: ${{ steps.serving_inputs.outputs.controller }}
+          EVIDENCE_BUCKET: ${{ env.PHASE20_EVIDENCE_BUCKET }}
+          EVIDENCE_PREFIX: agent-evaluation/phase20/${{ steps.artifact.outputs.artifact_sha256 }}/review
+          ALARM_ARN: ${{ env.PHASE20_ALARM_ARN }}
+          AGENT_OBSERVABILITY_ENABLED: 'true'
+          AWS_GENAI_CONTENT_EXTRACTION_OPT_OUT: 'true'
+          OTEL_TRACES_EXPORTER: otlp
+          OTEL_TRACES_SAMPLER: always_on
+          OTEL_PYTHON_DISTRO: aws_distro
+          OTEL_PYTHON_CONFIGURATOR: aws_configurator
+          OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+          OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: http/protobuf
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: https://xray.us-east-1.amazonaws.com/v1/traces
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS: x-aws-log-group=/aws/bedrock-agentcore/incident-triage-evaluation,x-aws-log-stream=spans
+          OTEL_RESOURCE_ATTRIBUTES: service.name=IncidentTriageDemoPhase20Qualification,aws.log.group.names=/aws/bedrock-agentcore/incident-triage-evaluation
+          OTEL_LOGS_EXPORTER: none
+          OTEL_METRICS_EXPORTER: none
+          OTEL_SERVICE_NAME: IncidentTriageDemoPhase20Qualification
+        run: |
+          set -euo pipefail
+          mkdir -p "$QUALIFICATION_ROOT"
+          # qualify-repaired is the only evaluation entry point. It owns
+          # package-only imports, the frozen roster, private evidence upload,
+          # native evaluator mapping, and the safe handoff receipt.
+          set +e
+          PYTHONPATH=agent uv run --offline --project agent --locked \
+            opentelemetry-instrument python scripts/qualify-repaired.py \
+            --runtime-zip "$RUNTIME_ZIP" --suite "$SUITE_PATH" --evaluator "$EVALUATOR_PATH" \
+            --output-root "$QUALIFICATION_ROOT" --runtime-configuration "$RUNTIME_CONFIGURATION" \
+            --artifact-spec "$ARTIFACT_SPEC" --source-spec "$SOURCE_SPEC" \
+            --configuration-spec "$CONFIGURATION_SPEC" --adapter "$ADAPTER_SPEC" \
+            --controller "$CONTROLLER_SPEC" \
+            --source-revision "$GITHUB_SHA" --alarm-arn "$ALARM_ARN" \
+            --bucket "$EVIDENCE_BUCKET" --prefix "$EVIDENCE_PREFIX" \
+            > "$QUALIFICATION_ROOT/summary.json" 2> "$QUALIFICATION_ROOT/qualification.stderr.log"
+          qualify_status=$?
+          set -e
+          receipt_path="$QUALIFICATION_ROOT/repaired-qualification.json"
+          test -s "$receipt_path"
+          jq -e '.artifact.sha256 and .source.sha256 and .configuration.sha256 and .reviewManifestSha256' "$receipt_path" >/dev/null
+          echo "qualification=$receipt_path" >> "$GITHUB_OUTPUT"
+          echo "exit_status=$qualify_status" >> "$GITHUB_OUTPUT"
+      - name: Verify the private review manifest readback
+        if: always() && steps.qualification.outputs.qualification != ''
+        shell: bash
+        env:
+          QUALIFICATION_PATH: ${{ steps.qualification.outputs.qualification }}
+        run: |
+          set -euo pipefail
+          review_bucket="$(jq -er '.privateReview.s3.bucket' "$QUALIFICATION_PATH")"
+          review_key="$(jq -er '.privateReview.s3.manifestKey' "$QUALIFICATION_PATH")"
+          manifest_sha256="$(jq -er '.reviewManifestSha256' "$QUALIFICATION_PATH")"
+          review_path="$RUNNER_TEMP/phase20-private-review.json"
+          aws s3api get-object --bucket "$review_bucket" --key "$review_key" "$review_path" >/dev/null
+          jq -e --arg digest "$manifest_sha256" \
+            '.manifestSha256 == $digest and (.caseIdentities | length) == 3 and (.reportIdentities | length) == 3' \
+            "$review_path" >/dev/null
+      - name: Publish only the safe qualification handoff
+        id: receipt
+        if: always() && steps.qualification.outputs.qualification != ''
+        shell: bash
+        env:
+          QUALIFICATION_PATH: ${{ steps.qualification.outputs.qualification }}
+        run: |
+          set -euo pipefail
+          # Only safe identities cross the job boundary. The protected job
+          # re-reads the receipt and complete review tree from private S3.
+          test -s "$QUALIFICATION_PATH"
+          qualification_sha256="$(sha256sum "$QUALIFICATION_PATH" | awk '{print $1}')"
+          review_manifest_sha256="$(jq -er '.reviewManifestSha256' "$QUALIFICATION_PATH")"
+          qualification_key="$(jq -er '.privateReview.s3.qualificationKey' "$QUALIFICATION_PATH")"
+          [[ "$qualification_sha256" =~ ^[0-9a-f]{64}$ && "$review_manifest_sha256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$qualification_key" =~ ^agent-evaluation/phase20/[0-9a-f]{64}/review/qualification\.json$ ]]
+          echo "qualification_sha256=$qualification_sha256" >> "$GITHUB_OUTPUT"
+          echo "review_manifest_sha256=$review_manifest_sha256" >> "$GITHUB_OUTPUT"
+          echo "qualification_key=$qualification_key" >> "$GITHUB_OUTPUT"
+      - name: Fail closed on rejected or incomplete qualification
+        if: always() && steps.qualification.outputs.exit_status != '0'
+        shell: bash
+        env:
+          QUALIFY_STATUS: ${{ steps.qualification.outputs.exit_status }}
+        run: |
+          set -euo pipefail
+          echo "Package qualification did not produce an eligible candidate (exit=$QUALIFY_STATUS)" >&2
+          exit "${QUALIFY_STATUS:-2}"
+
+  publish-repaired:
+    name: Publish repaired agent (protected review)
+    needs: [route, evaluate-agent]
+    if: >-
+      needs.route.result == 'success' && needs.evaluate-agent.result == 'success' &&
+      needs.route.outputs.operation == 'normal' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/demo-deploy' &&
+      contains(needs.route.outputs.components, '"agent"')
+    runs-on: ubuntu-24.04
+    environment: repaired-publication
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    concurrency:
+      group: incident-triage-demo-agent
+      cancel-in-progress: false
+    steps:
+      - name: Check out the publisher
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          fetch-depth: 0
+      - name: Download the same checked agent assembly
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: phase0-agent-${{ github.sha }}
+          path: .artifacts/agent
+      - name: Set up Python and uv for private verification
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Set up locked uv for private verification
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: '0.13.6'
+      - name: Install locked publisher tooling for private verification
+        run: uv sync --project agent --locked
+      - name: Assume the scoped evaluation role for private review readback
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.PHASE20_EVALUATION_ROLE_ARN }}
+          role-session-name: phase20-private-review-${{ github.run_id }}
+          role-duration-seconds: 3600
+      - name: Fetch the private qualification and complete review tree
+        env:
+          REVIEW_BUCKET: ${{ env.PHASE20_EVIDENCE_BUCKET }}
+          QUALIFICATION_KEY: ${{ needs.evaluate-agent.outputs.qualification_key }}
+          EXPECTED_QUALIFICATION_SHA256: ${{ needs.evaluate-agent.outputs.qualification_sha256 }}
+          EXPECTED_REVIEW_MANIFEST_SHA256: ${{ needs.evaluate-agent.outputs.review_manifest_sha256 }}
+          EXPECTED_ARTIFACT_SHA256: ${{ needs.evaluate-agent.outputs.artifact_sha256 }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$QUALIFICATION_KEY" =~ ^agent-evaluation/phase20/[0-9a-f]{64}/review/qualification\.json$ ]]
+          [[ "$EXPECTED_QUALIFICATION_SHA256" =~ ^[0-9a-f]{64}$ && "$EXPECTED_REVIEW_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ && "$EXPECTED_ARTIFACT_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${QUALIFICATION_KEY#agent-evaluation/phase20/}" == "$EXPECTED_ARTIFACT_SHA256/review/qualification.json" ]]
+          private_root="$RUNNER_TEMP/phase20-private-review"
+          review_root="$private_root/review"
+          mkdir -p "$review_root"
+          aws s3api get-object --bucket "$REVIEW_BUCKET" --key "$QUALIFICATION_KEY" "$private_root/qualification.json" >/dev/null
+          qualification_sha256="$(sha256sum "$private_root/qualification.json" | awk '{print $1}')"
+          [[ "$qualification_sha256" == "$EXPECTED_QUALIFICATION_SHA256" ]] || {
+            echo "private qualification digest differs from evaluated receipt" >&2
+            exit 1
+          }
+          jq -e --arg bucket "$REVIEW_BUCKET" --arg key "$QUALIFICATION_KEY" \
+            '.privateReview.s3.bucket == $bucket and .privateReview.s3.qualificationKey == $key' \
+            "$private_root/qualification.json" >/dev/null
+          review_prefix="${QUALIFICATION_KEY%/qualification.json}"
+          aws s3 cp "s3://$REVIEW_BUCKET/$review_prefix/" "$review_root/" --recursive --exclude 'qualification.json' --only-show-errors
+          test -s "$review_root/index.json"
+          index_manifest_sha256="$(jq -er '.manifestSha256' "$review_root/index.json")"
+          [[ "$index_manifest_sha256" == "$EXPECTED_REVIEW_MANIFEST_SHA256" ]] || {
+            echo "private review manifest differs from evaluated receipt" >&2
+            exit 1
+          }
+      - name: Verify ZIP, qualification, branch head, and protected review before publisher credentials
+        id: clearance
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_HEAD: ${{ github.sha }}
+          EXPECTED_QUALIFICATION_SHA256: ${{ needs.evaluate-agent.outputs.qualification_sha256 }}
+          ZIP_PATH: ${{ github.workspace }}/.artifacts/agent/runtime.zip
+          REQUIRED_REVIEWER: ${{ env.PHASE20_REVIEWER_LOGIN }}
+          REQUIRED_REVIEWER_ID: ${{ env.PHASE20_REVIEWER_ID }}
+          EXPECTED_ENVIRONMENT_ID: ${{ env.PHASE20_ENVIRONMENT_ID }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          caller="$(aws sts get-caller-identity --query Arn --output text)"
+          case "$caller" in
+            arn:aws:sts::027224425948:assumed-role/IncidentTriageDemoGitHubEvaluation/*) ;;
+            *) echo "Unexpected private-review caller: $caller" >&2; exit 1 ;;
+          esac
+          test -s "$ZIP_PATH"
+          QUALIFICATION="$RUNNER_TEMP/phase20-private-review/qualification.json"
+          test -s "$QUALIFICATION"
+          qualification_sha256="$(sha256sum "$QUALIFICATION" | awk '{print $1}')"
+          [[ "$qualification_sha256" == "$EXPECTED_QUALIFICATION_SHA256" ]] || {
+            echo "qualification handoff digest differs from the evaluated receipt" >&2
+            exit 1
+          }
+          PRIVATE_REVIEW_ROOT="$RUNNER_TEMP/phase20-private-review/review"
+          PRIVATE_REVIEW_INDEX="$PRIVATE_REVIEW_ROOT/index.json"
+          test -s "$PRIVATE_REVIEW_INDEX"
+          receipt_manifest_sha256="$(jq -er '.reviewManifestSha256' "$QUALIFICATION")"
+          index_manifest_sha256="$(jq -er '.manifestSha256' "$PRIVATE_REVIEW_INDEX")"
+          [[ "$index_manifest_sha256" == "$receipt_manifest_sha256" ]] || {
+            echo "private review manifest differs from the protected receipt" >&2
+            exit 1
+          }
+          PYTHONPATH=agent uv run --offline --project agent --locked python scripts/qualify-repaired.py verify-private \
+            --review-root "$PRIVATE_REVIEW_ROOT" --qualification "$QUALIFICATION" \
+            --current-head "$EXPECTED_HEAD" --expected-manifest "$receipt_manifest_sha256" \
+            --clearance-output "$RUNNER_TEMP/phase20-private-clearance.json" >/dev/null
+          artifact_sha256="$(sha256sum "$ZIP_PATH" | awk '{print $1}')"
+          receipt_sha256="$(jq -er '.artifact.sha256 // .artifactSha256' "$QUALIFICATION")"
+          [[ "$artifact_sha256" == "$receipt_sha256" ]] || {
+            echo "checked ZIP differs from the qualified artifact" >&2
+            exit 1
+          }
+          jq -e --arg sha "$EXPECTED_HEAD" '.sourceRevision == $sha or .headSha == $sha' "$QUALIFICATION" >/dev/null
+          jq -e '.status == "eligible"' "$QUALIFICATION" >/dev/null
+
+          current_head="$(gh api "repos/$GITHUB_REPOSITORY/commits/demo-deploy" --jq .sha)"
+          [[ "$current_head" == "$EXPECTED_HEAD" ]] || {
+            echo "demo-deploy advanced while this candidate awaited review" >&2
+            exit 1
+          }
+          environment_id="$(gh api "repos/$GITHUB_REPOSITORY/environments/repaired-publication" --jq .id)"
+          [[ "$environment_id" == "$EXPECTED_ENVIRONMENT_ID" ]] || {
+            echo "repaired-publication environment identity changed" >&2
+            exit 1
+          }
+          approvals="$RUNNER_TEMP/phase20-approvals.json"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/approvals" > "$approvals"
+          manifest_sha256="$(jq -er '.reviewManifestSha256 // .manifestSha256' "$QUALIFICATION")"
+          test "${#manifest_sha256}" -eq 64
+          REVIEW_RUN_ID="$GITHUB_RUN_ID" REVIEW_ENVIRONMENT_ID="$environment_id" REVIEWER_ID="$REQUIRED_REVIEWER_ID" REVIEW_MANIFEST_SHA256="$manifest_sha256" APPROVALS_PATH="$approvals" \
+            PYTHONPATH=agent uv run --offline --project agent --locked python - <<'PY'
+          import json
+          import os
+          from release_gate import has_matching_approval
+
+          history = json.loads(open(os.environ["APPROVALS_PATH"], encoding="utf-8").read())
+          if not has_matching_approval(
+              read_history=lambda _run_id: history,
+              run_id=int(os.environ["REVIEW_RUN_ID"]),
+              environment_id=int(os.environ["REVIEW_ENVIRONMENT_ID"]),
+              reviewer_id=int(os.environ["REVIEWER_ID"]),
+              manifest_sha256=os.environ["REVIEW_MANIFEST_SHA256"],
+          ):
+              raise SystemExit("no matching protected review approval")
+          PY
+          reviewer_login="$REQUIRED_REVIEWER"
+          verified_head="$(gh api "repos/$GITHUB_REPOSITORY/commits/demo-deploy" --jq .sha)"
+          [[ "$verified_head" == "$EXPECTED_HEAD" ]] || {
+            echo "demo-deploy advanced after protected review verification" >&2
+            exit 1
+          }
+          approved="$RUNNER_TEMP/approved-qualification.json"
+          jq --arg reviewer "$reviewer_login" --arg run "$GITHUB_RUN_ID" --arg head "$EXPECTED_HEAD" --arg digest "$manifest_sha256" \
+            '.status = "eligible" | .humanReview = {status:"approved", environment:"repaired-publication", reviewer:$reviewer, runId:$run, headSha:$head, reviewManifestSha256:$digest} | .reviewManifestSha256 = $digest' \
+            "$QUALIFICATION" > "$approved"
+          echo "qualification=$approved" >> "$GITHUB_OUTPUT"
+          echo "artifact_sha256=$artifact_sha256" >> "$GITHUB_OUTPUT"
+          echo "review_manifest_sha256=$manifest_sha256" >> "$GITHUB_OUTPUT"
+          echo "verified_head=$verified_head" >> "$GITHUB_OUTPUT"
+          echo "Protected review verified for manifest $manifest_sha256 by $reviewer_login"
+      - name: Assume the protected publisher role
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.PHASE20_PUBLISHER_ROLE_ARN }}
+          role-session-name: phase20-publisher-${{ github.run_id }}
+          role-duration-seconds: 3600
+      - name: Verify the protected publisher identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          caller="$(aws sts get-caller-identity --query Arn --output text)"
+          case "$caller" in
+            arn:aws:sts::027224425948:assumed-role/IncidentTriageDemoGitHubRepairedPublisher/*) ;;
+            *) echo "Unexpected publisher caller: $caller" >&2; exit 1 ;;
+          esac
+          echo "Verified publisher identity: $caller"
+      - name: Publish the reviewed repaired candidate
+        env:
+          PHASE20_QUALIFICATION_PATH: ${{ steps.clearance.outputs.qualification }}
+          PHASE20_ARTIFACT_PATH: ${{ github.workspace }}/.artifacts/agent/runtime.zip
+          PHASE20_SOURCE_REVISION: ${{ github.sha }}
+          PHASE20_CURRENT_HEAD: ${{ steps.clearance.outputs.verified_head }}
+          PHASE20_VERIFIED_HEAD: ${{ steps.clearance.outputs.verified_head }}
+          PHASE20_ARTIFACT_SHA256: ${{ steps.clearance.outputs.artifact_sha256 }}
+          PHASE20_REVIEW_MANIFEST_SHA256: ${{ steps.clearance.outputs.review_manifest_sha256 }}
+        run: uv run --offline --project agent --locked python scripts/publish-repaired.py

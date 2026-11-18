@@ -16,7 +16,7 @@ import hashlib
 from importlib.metadata import PackageNotFoundError, version as installed_version
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 import re
 import shutil
 import subprocess
@@ -24,6 +24,7 @@ import sys
 import tempfile
 import threading
 import uuid
+import zipfile
 from typing import Any, Mapping, Sequence
 
 from strands_evals import Case, Experiment
@@ -53,6 +54,8 @@ TOOLING_FILES = (
 )
 SOURCE_FILES = tuple(captured_execution.SOURCE_FILES)
 DEPENDENCY_FILES = tuple(captured_execution.DEPENDENCY_FILES)
+PACKAGE_SOURCE_FILES = frozenset(("main.py", "investigation.py", "evidence.py", "prompt.py"))
+PACKAGE_REQUIRED_FILES = PACKAGE_SOURCE_FILES | frozenset(("agent-manifest.json", "pyproject.toml", "uv.lock"))
 OBSERVABILITY_ENV = "AGENT_OBSERVABILITY_ENABLED"
 FINDINGS = (
     "report_structure",
@@ -129,6 +132,137 @@ def _private_directory(path: Path) -> Path:
         raise ValueError("experiment output root must be a private directory")
     path.chmod(0o700)
     return path
+
+
+def _zip_member_destination(root: Path, member: zipfile.ZipInfo) -> Path:
+    """Return a safe extraction target for one Runtime ZIP member."""
+
+    name = member.filename
+    if not name or "\x00" in name:
+        raise ValueError("Runtime ZIP contains an invalid member name")
+    relative = Path(name)
+    windows_relative = PureWindowsPath(name)
+    if (
+        relative.is_absolute()
+        or windows_relative.is_absolute()
+        or windows_relative.drive
+        or "." in relative.parts
+        or ".." in relative.parts
+        or "." in windows_relative.parts
+        or ".." in windows_relative.parts
+    ):
+        raise ValueError("Runtime ZIP contains an unsafe member path")
+    target = root / relative
+    try:
+        target.resolve().relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError("Runtime ZIP member escapes its extraction root") from exc
+    mode = (member.external_attr >> 16) & 0o170000
+    if mode == 0o120000:
+        raise ValueError("Runtime ZIP symlinks are not accepted")
+    return target
+
+
+def _prompt_digest(path: Path) -> str:
+    module_name = f"_phase20_package_prompt_{uuid.uuid4().hex}"
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ValueError("packaged prompt cannot be loaded")
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+        value = module.SYSTEM_PROMPT
+    except (AttributeError, OSError, TypeError, ValueError) as exc:
+        raise ValueError("packaged prompt cannot be authenticated") from exc
+    if not isinstance(value, str):
+        raise ValueError("packaged prompt is not text")
+    return _bytes_digest(value.encode("utf-8"))
+
+
+@contextmanager
+def _extract_runtime_package(runtime_zip: str | Path) -> Any:
+    """Extract and authenticate one immutable Runtime ZIP for qualification."""
+
+    archive_input = Path(runtime_zip)
+    if archive_input.is_symlink():
+        raise ValueError("Runtime ZIP symlinks are not accepted")
+    archive_path = archive_input.resolve()
+    if not archive_path.is_file():
+        raise ValueError("Runtime ZIP is unavailable")
+    try:
+        archive_bytes = archive_path.read_bytes()
+    except OSError as exc:
+        raise ValueError("Runtime ZIP is unreadable") from exc
+    archive_sha256 = _bytes_digest(archive_bytes)
+    with tempfile.TemporaryDirectory(prefix="phase20-runtime-package-") as temporary_name:
+        root = Path(temporary_name) / "runtime"
+        root.mkdir(mode=0o700)
+        try:
+            archive = zipfile.ZipFile(archive_path)
+        except (OSError, zipfile.BadZipFile) as exc:
+            raise ValueError("Runtime ZIP is invalid") from exc
+        with archive:
+            seen: set[str] = set()
+            for member in archive.infolist():
+                target = _zip_member_destination(root, member)
+                if member.filename in seen:
+                    raise ValueError("Runtime ZIP contains duplicate members")
+                seen.add(member.filename)
+                if member.is_dir():
+                    target.mkdir(parents=True, exist_ok=True, mode=0o700)
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                raw = archive.read(member)
+                target.write_bytes(raw)
+                target.chmod(0o755 if ((member.external_attr >> 16) & 0o111) else 0o644)
+
+        missing = sorted(name for name in PACKAGE_REQUIRED_FILES if not (root / name).is_file())
+        if missing:
+            raise ValueError("Runtime ZIP is missing required package files: " + ", ".join(missing))
+        try:
+            manifest = _read_json(root / "agent-manifest.json", "packaged agent manifest")
+        except ValueError as exc:
+            raise ValueError("packaged agent manifest is invalid") from exc
+        if not isinstance(manifest, Mapping) or manifest.get("schemaVersion") != 2:
+            raise ValueError("packaged agent manifest schema is unsupported")
+        source_entries = manifest.get("runtimeSourceFiles")
+        dependency_entries = manifest.get("dependencyFiles")
+        expected_source = {name: _bytes_digest((root / name).read_bytes()) for name in PACKAGE_SOURCE_FILES}
+        expected_dependency = {name: _bytes_digest((root / name).read_bytes()) for name in ("pyproject.toml", "uv.lock")}
+        if source_entries != expected_source or dependency_entries != expected_dependency:
+            raise ValueError("packaged source or dependency manifest does not match ZIP contents")
+        source_sha256 = _named_digest({f"agent/{name}": (root / name).read_bytes() for name in PACKAGE_SOURCE_FILES})
+        dependency_sha256 = _named_digest({f"agent/{name}": (root / name).read_bytes() for name in ("pyproject.toml", "uv.lock")})
+        if manifest.get("runtimeSourceSha256") != source_sha256 or manifest.get("dependencySha256") != dependency_sha256:
+            raise ValueError("packaged source or dependency identity is invalid")
+        actual_prompt_sha256 = _prompt_digest(root / "prompt.py")
+        if manifest.get("promptSha256") != actual_prompt_sha256:
+            raise ValueError("packaged prompt digest does not match the ZIP source")
+        package_origin = {
+            "kind": "runtime_zip",
+            "zipSha256": archive_sha256,
+            "zipBytes": len(archive_bytes),
+            "archivePath": str(archive_path),
+            "manifestSha256": _bytes_digest((root / "agent-manifest.json").read_bytes()),
+            "sourceRevision": manifest.get("sourceRevision"),
+            "promptSha256": actual_prompt_sha256,
+            "runtimeSourceSha256": source_sha256,
+            "dependencySha256": dependency_sha256,
+            "sourceFiles": expected_source,
+            "dependencyFiles": expected_dependency,
+        }
+        module_names: set[str] = set()
+        for path in root.iterdir():
+            if path.is_dir() and path.name not in {"bin", "__pycache__"}:
+                name = path.name
+            elif path.is_file() and path.suffix in {".py", ".so", ".pyd"}:
+                name = path.name.split(".", 1)[0]
+            else:
+                continue
+            if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                module_names.add(name)
+        dependency_modules = tuple(sorted(module_names))
+        yield root, package_origin, dependency_modules
 
 
 def _copy_file(path: Path, destination: Path) -> bytes:
@@ -542,6 +676,7 @@ def _snapshot_experiment(
     candidate_id: str,
     source_directory: Path | None,
     source_run: Path | None,
+    runtime_origin: Mapping[str, Any] | None,
 ) -> tuple[_ExperimentState, Path, Path, Path, dict[str, Any]]:
     root = _private_directory(output_root)
     experiment_dir = root / str(uuid.uuid4())
@@ -551,6 +686,13 @@ def _snapshot_experiment(
     try:
         source, dependencies = _source_bytes(source_directory or AGENT_DIRECTORY)
         source_origin: dict[str, Any] = {"kind": "workspace", "directory": str(source_directory or AGENT_DIRECTORY)}
+        if runtime_origin is not None:
+            source_origin = {
+                "kind": runtime_origin.get("kind", "runtime_zip"),
+                "zipSha256": runtime_origin.get("zipSha256"),
+                "runtimeSourceSha256": runtime_origin.get("runtimeSourceSha256"),
+                "dependencySha256": runtime_origin.get("dependencySha256"),
+            }
         if source_run is not None:
             source, dependencies, source_origin = _source_run_snapshot(source_run)
         tooling: dict[str, bytes] = {}
@@ -589,7 +731,9 @@ def _snapshot_experiment(
             "startedAt": _now(),
             "suiteSha256": _bytes_digest(suite_raw),
             "evaluatorSha256": _bytes_digest(evaluator_raw),
+            "sourceOrigin": source_origin,
             "sourceRun": source_origin if source_run is not None else None,
+            "runtimeOrigin": dict(runtime_origin) if runtime_origin is not None else None,
             "runtime": {
                 "sourceSha256": source_sha,
                 "dependencySha256": dependency_sha,
@@ -680,6 +824,28 @@ def _authenticated_rows(directory: Path, record: Mapping[str, Any]) -> tuple[lis
         if identity.get("executionId") != execution_id or identity.get("caseSha256") != row.get("caseSha256"):
             errors.append(f"case {row.get('caseId')} execution identity differs")
         snapshot = record.get("snapshot") if isinstance(record.get("snapshot"), Mapping) else {}
+        experiment_origin = record.get("runtimeOrigin")
+        execution_origin = identity.get("runtimeOrigin")
+        if experiment_origin is not None:
+            if not isinstance(experiment_origin, Mapping) or not isinstance(execution_origin, Mapping):
+                errors.append(f"case {row.get('caseId')} package origin is missing")
+            else:
+                for origin_key in ("zipSha256", "manifestSha256", "runtimeSourceSha256", "dependencySha256"):
+                    if execution_origin.get(origin_key) != experiment_origin.get(origin_key):
+                        errors.append(f"case {row.get('caseId')} package origin differs")
+                        break
+                module_origins = execution_origin.get("moduleOrigins")
+                if not isinstance(module_origins, Mapping):
+                    errors.append(f"case {row.get('caseId')} package module origins are missing")
+                else:
+                    for module_name in ("investigation", "evidence", "prompt", "strands", "boto3"):
+                        module_origin = module_origins.get(module_name)
+                        if (
+                            not isinstance(module_origin, Mapping)
+                            or module_origin.get("kind") != "runtime_zip"
+                            or module_origin.get("loaded") is not True
+                        ):
+                            errors.append(f"case {row.get('caseId')} package module origin is invalid: {module_name}")
         if (
             identity.get("sourceSha256") != snapshot.get("sourceSha256")
             or identity.get("dependencySha256") != snapshot.get("dependencySha256")
@@ -689,6 +855,10 @@ def _authenticated_rows(directory: Path, record: Mapping[str, Any]) -> tuple[lis
         row["report"] = execution.get("report")
         row["deterministic"] = execution.get("deterministic")
         row["usage"] = execution.get("usage")
+        row["execution"] = {
+            key: execution.get(key)
+            for key in ("status", "identity", "deterministic", "usage", "runtimeOrigin")
+        }
         score = None
         attempt_id = row.get("scoringAttemptId")
         if isinstance(attempt_id, str) and attempt_id:
@@ -934,6 +1104,9 @@ def run_experiment(
     source_run: str | Path | None = None,
     model_session: Any = None,
     source_directory: str | Path | None = None,
+    _dependency_root: str | Path | None = None,
+    _dependency_modules: Sequence[str] = (),
+    _runtime_origin: Mapping[str, Any] | None = None,
     _snapshot_bundle: Mapping[str, Any] | None = None,
 ) -> Path:
     if candidate_id not in captured_execution.VALID_CANDIDATE_IDS:
@@ -962,7 +1135,14 @@ def run_experiment(
         source_run_path = Path(source_run).resolve() if source_run is not None else None
         source_directory_path = Path(source_directory).resolve() if source_directory is not None else None
         state, candidate_source, inputs_root, operation_lock, source_origin = _snapshot_experiment(
-            suite, selected, evaluator, Path(output_root), candidate_id, source_directory_path, source_run_path
+            suite,
+            selected,
+            evaluator,
+            Path(output_root),
+            candidate_id,
+            source_directory_path,
+            source_run_path,
+            _runtime_origin,
         )
         del evaluator_raw
     else:
@@ -971,6 +1151,9 @@ def run_experiment(
         inputs_root = Path(_snapshot_bundle["inputsRoot"])
         operation_lock = None
         source_origin = _snapshot_bundle.get("sourceOrigin")
+        _dependency_root = _snapshot_bundle.get("dependencyRoot")
+        _dependency_modules = tuple(_snapshot_bundle.get("dependencyModules") or ())
+        _runtime_origin = _snapshot_bundle.get("runtimeOrigin")
         selected = list(_snapshot_bundle["selected"])
 
     if _snapshot_bundle is None:
@@ -980,6 +1163,9 @@ def run_experiment(
             "candidateSource": str(candidate_source),
             "inputsRoot": str(inputs_root),
             "sourceOrigin": source_origin,
+            "dependencyRoot": str(Path(_dependency_root).resolve()) if _dependency_root is not None else None,
+            "dependencyModules": list(_dependency_modules),
+            "runtimeOrigin": dict(_runtime_origin) if _runtime_origin is not None else None,
             "selected": [
                 {"caseId": item["caseId"], "loaded": item["loaded"]}
                 for item in selected
@@ -997,6 +1183,9 @@ def run_experiment(
                     source_run=None,
                     model_session=model_session,
                     source_directory=candidate_source,
+                    _dependency_root=_dependency_root,
+                    _dependency_modules=_dependency_modules,
+                    _runtime_origin=_runtime_origin,
                     _snapshot_bundle=bundle,
                 )
         finally:
@@ -1122,6 +1311,9 @@ def run_experiment(
                         model_session=runner_session,
                         candidate_id=candidate_id,
                         source_directory=candidate_source,
+                        dependency_root=_dependency_root,
+                        dependency_modules=_dependency_modules,
+                        runtime_origin=_runtime_origin,
                         trusted_runner=True,
                         progress_callback=execution_started,
                     )
@@ -1211,6 +1403,78 @@ def run_experiment(
         captured_execution.release_operation_lock(operation_lock)
 
 
+def _assemble_package_candidate(package_root: Path, destination: Path) -> Path:
+    """Combine ZIP serving code with the trusted offline support closure."""
+
+    destination.mkdir(mode=0o700, parents=True, exist_ok=False)
+    for name in SOURCE_FILES:
+        source = package_root / name if name in PACKAGE_SOURCE_FILES or name == "agent-manifest.json" else AGENT_DIRECTORY / name
+        if source.is_symlink() or not source.is_file():
+            raise ValueError(f"package experiment source is unavailable: {name}")
+        target = destination / name
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        _write_bytes(target, source.read_bytes())
+    for name in DEPENDENCY_FILES:
+        source = package_root / name
+        if source.is_symlink() or not source.is_file():
+            raise ValueError(f"package experiment dependency is unavailable: {name}")
+        _write_bytes(destination / name, source.read_bytes())
+    return destination
+
+
+def run_package_experiment(
+    *,
+    runtime_zip: str | Path,
+    suite_path: str | Path,
+    evaluator_path: str | Path,
+    output_root: str | Path,
+    model_session: Any = None,
+    wait_seconds: int = 300,
+    candidate_id: str = "repaired",
+    selected_cases: Sequence[str] | None = None,
+) -> Path:
+    """Run the S4 experiment using only one authenticated Runtime ZIP.
+
+    The package supplies serving modules and all runtime distributions.  The
+    checkout contributes only the trusted captured-provider/evaluator support
+    closure and is recorded separately by the experiment snapshot.  The
+    returned directory has the same ``experiment.json`` and ``show_experiment``
+    contract as :func:`run_experiment`.
+    """
+
+    if candidate_id not in captured_execution.VALID_CANDIDATE_IDS:
+        raise ValueError(f"unsupported candidate ID: {candidate_id!r}")
+    with _extract_runtime_package(runtime_zip) as (package_root, package_origin, dependency_modules):
+        with tempfile.TemporaryDirectory(prefix="phase20-package-candidate-") as candidate_name:
+            candidate_source = _assemble_package_candidate(package_root, Path(candidate_name) / "agent")
+            driver_files: dict[str, bytes] = {}
+            for name in TOOLING_FILES:
+                path = AGENT_DIRECTORY / name
+                if path.is_file():
+                    driver_files[f"agent/{name}"] = path.read_bytes()
+            package_origin = {
+                **package_origin,
+                "driver": {
+                    "kind": "trusted_tooling_workspace",
+                    "directory": str(AGENT_DIRECTORY),
+                    "toolingSha256": _named_digest(driver_files),
+                },
+            }
+            return run_experiment(
+                suite_path=suite_path,
+                output_root=output_root,
+                candidate_id=candidate_id,
+                evaluator_path=evaluator_path,
+                wait_seconds=wait_seconds,
+                selected_cases=selected_cases,
+                model_session=model_session,
+                source_directory=candidate_source,
+                _dependency_root=package_root,
+                _dependency_modules=dependency_modules,
+                _runtime_origin=package_origin,
+            )
+
+
 def show_experiment(directory: str | Path) -> dict[str, Any]:
     path = Path(directory)
     record = _read_json(path / "experiment.json", "experiment record")
@@ -1237,6 +1501,15 @@ def _verify_snapshot(path: Path, record: Mapping[str, Any]) -> str | None:
     snapshot = record.get("snapshot")
     if not isinstance(snapshot, Mapping):
         return "experiment snapshot metadata is missing"
+    runtime_origin = record.get("runtimeOrigin")
+    if runtime_origin is not None:
+        if not isinstance(runtime_origin, Mapping) or runtime_origin.get("kind") != "runtime_zip":
+            return "experiment Runtime package origin is malformed"
+        for key in ("zipSha256", "manifestSha256", "runtimeSourceSha256", "dependencySha256"):
+            if not isinstance(runtime_origin.get(key), str) or re.fullmatch(r"[0-9a-f]{64}", runtime_origin[key]) is None:
+                return "experiment Runtime package origin identity is malformed"
+        if runtime_origin.get("dependencySha256") != snapshot.get("dependencySha256"):
+            return "experiment Runtime package dependency identity differs"
     for directory_key, files_key, digest_key, relative in (
         ("tooling", "toolingFiles", "toolingSha256", "tooling"),
         ("candidate", "sourceFiles", "sourceSha256", "candidate/source"),
