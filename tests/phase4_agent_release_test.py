@@ -92,6 +92,9 @@ class ReleaseTests(unittest.TestCase):
             elif service == "cloudformation" and operation == "list-stack-resources":
                 out({"StackResourceSummaries": []})
             elif service == "cloudformation" and operation == "describe-change-set":
+                if "--include-property-values" in args:
+                    state["include_property_values_calls"] = state.get("include_property_values_calls", 0) + 1
+                    save()
                 if state.get("change_set") is None:
                     print("ChangeSet does not exist", file=sys.stderr)
                     raise SystemExit(255)
@@ -208,7 +211,8 @@ class ReleaseTests(unittest.TestCase):
                     stack = {"StackStatus": "UPDATE_COMPLETE", "StackId": "stack-id", "Parameters": parameters, "Outputs": outputs}
                 state = {"stack": stack, "outputs": outputs, "publication": None if kind == "fresh" else publication, "adapter": adapter,
                          "endpoint": {"agentRuntimeArn": runtime_arn, "agentRuntimeEndpointArn": endpoint_arn, "status": "READY", "liveVersion": "19", "targetVersion": "19"},
-                         "change_set": None, "cdk_calls": 0, "delete_calls": 0, "execute_calls": 0, "ddb_calls": 0}
+                         "change_set": None, "cdk_calls": 0, "delete_calls": 0, "execute_calls": 0, "ddb_calls": 0,
+                         "include_property_values_calls": 0}
                 if stale_change_set:
                     state["change_set"] = {"ChangeSetId": "arn:aws:cloudformation:us-east-1:027224425948:changeSet/stale/11111111-1111-4111-8111-111111111111", "StackId": "stack-id", "StackName": "IncidentTriageDemoAgent", "Status": "CREATE_COMPLETE", "ExecutionStatus": "AVAILABLE", "Parameters": [{"ParameterKey": "PublishedVersion", "ParameterValue": "18"}]}
                 state_path = fixture / "state.json"
@@ -228,12 +232,14 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(1, fresh_state["cdk_calls"])
         self.assertEqual(1, fresh_state["execute_calls"])
         self.assertEqual(0, fresh_state["ddb_calls"])
+        self.assertGreaterEqual(fresh_state["include_property_values_calls"], 1)
 
         stale_result, stale_state = run_fixture("same_revision_stale", stale_change_set=True)
         self.assertEqual(0, stale_result.returncode, stale_result.stdout + stale_result.stderr)
         self.assertEqual(1, stale_state["cdk_calls"], stale_result.stdout + stale_result.stderr)
         self.assertEqual(1, stale_state["delete_calls"])
         self.assertEqual(1, stale_state["execute_calls"])
+        self.assertGreaterEqual(stale_state["include_property_values_calls"], 2)
         self.assertIn("stale", stale_result.stderr)
 
         mismatch_result, mismatch_state = run_fixture("existing", adapter_mismatch=True)
