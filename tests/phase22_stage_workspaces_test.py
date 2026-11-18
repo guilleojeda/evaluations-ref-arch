@@ -30,6 +30,7 @@ from __future__ import annotations
 import copy
 import json
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -275,11 +276,16 @@ class StageWorkspaceAcceptance(unittest.TestCase):
         )
         return completed
 
-    def _status(self, stage: str) -> dict[str, object]:
+    def _status(
+        self,
+        stage: str,
+        *,
+        destination: Path | None = None,
+    ) -> dict[str, object]:
         completed = self._run(
             "status",
             "--directory",
-            str(self.fixture.destination),
+            str(destination or self.fixture.destination),
             "--stage",
             stage,
         )
@@ -394,6 +400,8 @@ class StageWorkspaceAcceptance(unittest.TestCase):
             if stage == "S5":
                 self.assertEqual(base["kind"], "branch")
                 self.assertEqual(base["name"], "demo-deploy")
+                self.assertEqual(base["frozenTag"], self.fixture.tags["S5"])
+                self.assertEqual(base["frozenCommit"], self.fixture.commits["S5"])
                 self.assertEqual(self.fixture._git_at(workspace, "branch", "--show-current").strip(), "demo-deploy")
 
         index_path = self.fixture.destination / "session-index.json"
@@ -487,6 +495,56 @@ class StageWorkspaceAcceptance(unittest.TestCase):
         )
         self.assertEqual(before_refs, self.fixture.ref_state(extra_refs=(generation_ref,)))
 
+    def test_s5_status_keeps_frozen_anchor_and_reports_a_committed_branch_advance(self):
+        self._prepare()
+        s5_workspace = self.fixture.destination / "S5"
+        (s5_workspace / "participant-regression.txt").write_text(
+            "prepared regression\n", encoding="utf-8"
+        )
+        self.fixture._git_at(s5_workspace, "add", "--", "participant-regression.txt")
+        self.fixture._git_at(s5_workspace, "commit", "-q", "-m", "participant regression")
+
+        status = self._status("S5")
+        self.assertEqual(status["base"]["commit"], self.fixture.demo_deploy_commit)
+        self.assertEqual(status["base"]["frozenTag"], self.fixture.tags["S5"])
+        self.assertEqual(status["base"]["frozenCommit"], self.fixture.commits["S5"])
+        self.assertNotEqual(status["currentCommit"], status["base"]["commit"])
+        self.assertFalse(status["baseMatchesCurrent"])
+        self.assertFalse(status["dirty"])
+
+    def test_status_resolves_replacement_root_instead_of_archived_absolute_stage_path(self):
+        self._prepare()
+        replacement = self.fixture.root / "replacement-session"
+        replacement.mkdir()
+        shutil.copy2(
+            self.fixture.destination / "session-index.json",
+            replacement / "session-index.json",
+        )
+        self.fixture._git(
+            "worktree",
+            "add",
+            "--quiet",
+            str(replacement / "S3"),
+            f"refs/tags/{self.fixture.tags['S3']}",
+        )
+        try:
+            # The original A path is dirty; the replacement S3 path is clean.
+            # A status implementation that trusts the archived absolute path
+            # reports the wrong directory and dirty state.
+            (self.fixture.destination / "S3" / "checkpoint.txt").write_text(
+                "old session edit\n", encoding="utf-8"
+            )
+            status = self._status("S3", destination=replacement)
+            self.assertEqual(
+                Path(status["directory"]).resolve(), (replacement / "S3").resolve()
+            )
+            self.assertFalse(status["dirty"])
+            self.assertEqual(
+                self.fixture._git_at(replacement / "S3", "status", "--porcelain"), ""
+            )
+        finally:
+            self.fixture._git("worktree", "remove", "--force", str(replacement / "S3"))
+
     def test_status_reports_dirty_stage_and_retry_does_not_replace_saved_or_inflight_state(self):
         self._prepare()
         edited = self.fixture.destination / "S2" / "checkpoint.txt"
@@ -550,12 +608,11 @@ class StageWorkspaceAcceptance(unittest.TestCase):
                     mapping["checkpoints"]["S2"]["tag"] = wrong_tag
                 mapping_path = self._write_json(self.fixture.root / f"checkpoints-{variant}.json", mapping)
                 destination = self.fixture.root / f"retry-{variant}"
-                before_refs = self.fixture.ref_state(
-                    extra_refs=(f"refs/tags/{wrong_tag}",) if variant == "wrong" else ()
-                )
+                tracked_extra = (f"refs/tags/{wrong_tag}",) if variant == "wrong" else ()
+                before_refs = self.fixture.ref_state(extra_refs=tracked_extra)
                 rejected = self._prepare_rejected(checkpoints=mapping_path, destination=destination)
                 self.assertRegex(rejected.stderr + rejected.stdout, r"(?i)S2|checkpoint|tag")
-                self.assertEqual(before_refs, self.fixture.ref_state())
+                self.assertEqual(before_refs, self.fixture.ref_state(extra_refs=tracked_extra))
 
                 # A failed preparation must not make the same destination
                 # unusable after the operator fixes the selected input.
@@ -566,7 +623,39 @@ class StageWorkspaceAcceptance(unittest.TestCase):
                     if path.parent == destination.resolve()
                 }
                 self.assertEqual(stage_worktrees, set(STAGES))
-                self.assertEqual(before_refs, self.fixture.ref_state())
+                self.assertEqual(before_refs, self.fixture.ref_state(extra_refs=tracked_extra))
+                for stage in STAGES:
+                    self.fixture._git("worktree", "remove", "--force", str(destination / stage))
+
+    def test_full_s5_requires_its_frozen_tag_while_s3_direct_entry_stays_independent(self):
+        for variant in ("missing", "retargeted"):
+            with self.subTest(variant=variant):
+                mapping = json.loads(self.fixture.checkpoints.read_text(encoding="utf-8"))
+                tracked_extra: tuple[str, ...] = ()
+                if variant == "missing":
+                    mapping["checkpoints"]["S5"]["tag"] = "demo-s5-missing"
+                else:
+                    wrong_tag = "demo-s5-retargeted"
+                    self.fixture._git(
+                        "tag", "-a", wrong_tag, "-m", "retargeted S5", self.fixture.commits["S4"]
+                    )
+                    mapping["checkpoints"]["S5"]["tag"] = wrong_tag
+                    tracked_extra = (f"refs/tags/{wrong_tag}",)
+                mapping_path = self._write_json(
+                    self.fixture.root / f"checkpoints-{variant}-s5.json", mapping
+                )
+                before_refs = self.fixture.ref_state(extra_refs=tracked_extra)
+                rejected = self._prepare_rejected(checkpoints=mapping_path)
+                self.assertRegex(rejected.stderr + rejected.stdout, r"(?i)S5|checkpoint|tag|missing|peeled|commit")
+                self.assertEqual(before_refs, self.fixture.ref_state(extra_refs=tracked_extra))
+
+        s3_mapping, s3_session = self._s3_direct_inputs()
+        self._prepare(
+            checkpoints=s3_mapping,
+            session=s3_session,
+            destination=self.fixture.root / "independent-s3",
+            stage="S3",
+        )
 
     def test_wrong_or_foreign_s5_branch_or_candidate_rejects_without_ref_changes(self):
         for variant in ("branch", "candidate"):
