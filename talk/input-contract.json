@@ -9,6 +9,7 @@
     "s2Run": "PHASE22_S2_RUN",
     "s2CaptureReceipt": "PHASE22_S2_CAPTURE_RECEIPT",
     "s3RunRoot": "PHASE22_S3_RUN_ROOT",
+    "s3BaselineRoot": "PHASE22_S3_BASELINE_ROOT",
     "reviewedCase": "PHASE22_REVIEWED_CASE",
     "sourceBundle": "PHASE22_SOURCE_BUNDLE",
     "reviewedSuite": "PHASE18_SUITE",
