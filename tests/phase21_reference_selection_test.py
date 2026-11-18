@@ -268,6 +268,53 @@ class StaticSelectorReferenceAcceptance(unittest.TestCase):
             "restore must not change AGENT_SELECTION",
         )
 
+    def test_preflight_reports_healthy_selector_and_faulty_binding_without_mutation(self):
+        """Selector mode is ready from native endpoint/Runtime readback, not a repair gap."""
+
+        control, adapter, controller = self._prepare_selected_repaired()
+        module = self._load()
+        self.cloudformation = phase19.NativePreflightCloudFormation()
+        session = self._session(control, adapter, controller)
+        session.clients["sts"] = phase19.NativeSTS()
+        before_selection = copy.deepcopy(controller.items[SELECTION_PK])
+        before_repaired = copy.deepcopy(controller.items[REPAIRED_PK])
+        before_faulty_endpoint = copy.deepcopy(control.endpoints["faulty"])
+
+        result = module.preflight_faulty_reference(session)
+
+        self.assertEqual("ready", result["status"])
+        self.assertIsNone(result["partialBinding"])
+        self.assertFalse(result["trustedRollback"]["eligible"])
+        self.assertTrue(result["endpoint"]["present"])
+        self.assertEqual("7", result["endpoint"]["version"])
+        self.assertEqual("descriptor", result["adapter"]["expectedCodeSource"])
+        self.assertEqual(before_selection, controller.items[SELECTION_PK])
+        self.assertEqual(before_repaired, controller.items[REPAIRED_PK])
+        self.assertEqual(before_faulty_endpoint, control.endpoints["faulty"])
+        self.assertEqual([], adapter.updates)
+        self.assertEqual([], control.runtime_updates)
+        self.assertEqual([], control.endpoint_updates)
+
+    def test_incomplete_historical_adapter_provenance_fails_without_rewriting_selection_or_router(self):
+        """A missing old adapter digest is not repairable reference evidence."""
+
+        control, adapter, controller = self._prepare_selected_repaired()
+        module = self._load()
+        before_selection = copy.deepcopy(controller.items[SELECTION_PK])
+        before_repaired = copy.deepcopy(controller.items[REPAIRED_PK])
+        del controller.items[PUBLICATION_PK]["adapterCodeSha256"]
+        before_faulty = copy.deepcopy(controller.items[PUBLICATION_PK])
+
+        with self.assertRaisesRegex(RuntimeError, "adapter code provenance"):
+            self._call_setup(module, control, adapter, controller)
+
+        self.assertEqual(before_selection, controller.items[SELECTION_PK])
+        self.assertEqual(before_repaired, controller.items[REPAIRED_PK])
+        self.assertEqual(before_faulty, controller.items[PUBLICATION_PK])
+        self.assertEqual([], adapter.updates)
+        self.assertEqual([], control.runtime_updates)
+        self.assertEqual([], control.endpoint_updates)
+
     def test_missing_faulty_endpoint_and_row_rebuild_only_faulty_history_while_repaired_stays_selected(self):
         """The exact archive can recreate both missing faulty native pieces."""
 

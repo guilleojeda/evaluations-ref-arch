@@ -771,6 +771,41 @@ def _record_matches(item: Mapping[str, Any], expected: Mapping[str, Any]) -> boo
     return all(item.get(key) == value for key, value in expected.items())
 
 
+def _validate_historical_adapter_provenance(
+    existing: Mapping[str, Any],
+    expected: Mapping[str, Any],
+) -> None:
+    """Reject an incomplete historical row instead of silently repairing it.
+
+    Selector-mode maintenance may preserve adapter digest/revision values that
+    differ from the current shared router, but the values must still identify
+    a complete, fixed adapter provenance tuple. A missing digest or revision is
+    not evidence that can be rewritten by reference maintenance.
+    """
+
+    def string_attribute(name: str) -> str | None:
+        value = existing.get(name)
+        if not isinstance(value, Mapping):
+            return None
+        string_value = value.get("S")
+        return string_value if isinstance(string_value, str) else None
+
+    adapter_arn = string_attribute("adapterArn")
+    adapter_code = string_attribute("adapterCodeSha256")
+    adapter_revision = string_attribute("adapterRevisionId")
+    expected_adapter = expected.get("adapterArn")
+    expected_adapter_arn = (
+        expected_adapter.get("S")
+        if isinstance(expected_adapter, Mapping) and isinstance(expected_adapter.get("S"), str)
+        else None
+    )
+    if adapter_arn != expected_adapter_arn:
+        raise RuntimeError("existing fixed publication adapter ARN provenance is missing or invalid")
+    if adapter_code is None or not re.fullmatch(r"[0-9a-f]{64}", adapter_code):
+        raise RuntimeError("existing fixed publication adapter code provenance is missing or invalid")
+    if adapter_revision is None or not adapter_revision.strip():
+        raise RuntimeError("existing fixed publication adapter revision provenance is missing or invalid")
+
 def _ensure_record(
     controller: Any,
     descriptor: Mapping[str, Any],
@@ -784,6 +819,8 @@ def _ensure_record(
     existing = existing_response.get("Item") or {}
     if existing and existing.get("candidateId") not in (None, item["candidateId"]):
         raise RuntimeError("fixed publication record belongs to a different candidate")
+    if existing:
+        _validate_historical_adapter_provenance(existing, item)
     expected_readback = item
     if existing and preserve_existing:
         # Adapter revision/digest are historical provenance. They can differ
@@ -976,7 +1013,10 @@ def preflight_faulty_reference(session: Any, *, require_rollback: bool = False) 
         raise RuntimeError("alarm adapter preflight is bound outside the fixed Runtime endpoint")
     adapter_version = environment.get("AGENT_RUNTIME_VERSION")
     adapter_runtime = None
-    adapter_version_matches = live_version is None or (not selector_mode and adapter_version == live_version)
+    # Selector-mode adapters intentionally do not attest a candidate version;
+    # the native endpoint and its immutable Runtime readback are the binding.
+    # Legacy adapters still require their static version to match exactly.
+    adapter_version_matches = live_version is None or selector_mode or adapter_version == live_version
     if live_version is not None and not adapter_version_matches:
         # After a successful endpoint create/update, the adapter may still
         # attest the prior valid immutable version because its configuration
@@ -994,8 +1034,12 @@ def preflight_faulty_reference(session: Any, *, require_rollback: bool = False) 
                 raise RuntimeError("alarm adapter prior Runtime binding is not a READY immutable version")
         if require_rollback:
             raise RuntimeError("alarm adapter preflight has no legacy version for trusted rollback")
+    selector_binding_ready = bool(selector_mode and existing_endpoint is not None and serving_runtime is not None)
+    trusted_rollback_eligible = bool(
+        not selector_mode and existing_endpoint is not None and serving_runtime is not None and adapter_version_matches
+    )
     trusted_rollback = {
-        "eligible": bool(existing_endpoint is not None and serving_runtime is not None and adapter_version_matches),
+        "eligible": trusted_rollback_eligible,
         "runtimeId": runtime_id,
         "runtimeArn": runtime_arn,
         "endpointArn": existing_endpoint.get("agentRuntimeEndpointArn") if existing_endpoint else None,
@@ -1013,6 +1057,8 @@ def preflight_faulty_reference(session: Any, *, require_rollback: bool = False) 
             "adapterRuntimeStatus": adapter_runtime.get("status") if adapter_runtime else None,
             "needsAdapterUpdate": True,
         }
+    if require_rollback and selector_mode:
+        raise RuntimeError("selector router has no legacy version for trusted rollback")
     if require_rollback and not trusted_rollback["eligible"]:
         raise RuntimeError("trusted rollback preflight is incomplete")
     rollback_runtime = serving_runtime or current
@@ -1030,7 +1076,7 @@ def preflight_faulty_reference(session: Any, *, require_rollback: bool = False) 
         if key in rollback_runtime
     }
     return {
-        "status": "ready" if trusted_rollback["eligible"] else ("partial" if partial_binding else "already_detached"),
+        "status": "ready" if (trusted_rollback["eligible"] or selector_binding_ready) else ("partial" if partial_binding else "already_detached"),
         "account": identity.get("Account"),
         "region": REGION,
         "stack": stack,
