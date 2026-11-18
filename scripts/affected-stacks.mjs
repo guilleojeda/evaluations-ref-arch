@@ -96,7 +96,9 @@ for (const path of changed) {
 if (mode === '--agent-infrastructure-only') {
   const consumed = changed.filter((path) => !documentationPath(path));
   const agentInfrastructureOnly = consumed.length > 0
-    && consumed.every((path) => path === 'infrastructure/agent' || path.startsWith('infrastructure/agent/'));
+    && consumed.every((path) => path === 'agent/alarm_adapter.py'
+      || path === 'infrastructure/agent'
+      || path.startsWith('infrastructure/agent/'));
   console.log(agentInfrastructureOnly ? 'true' : 'false');
 } else {
   console.log(JSON.stringify(['app', 'controller', 'agent'].filter((component) => components.has(component))));

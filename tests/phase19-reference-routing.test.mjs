@@ -171,8 +171,9 @@ test('the route shell accepts only the fixed reference-setup operation on truste
 
 test('normal agent publication is structurally separate from the one-time reference setup', () => {
   const deploy = job('deploy');
-  const normal = deployStepContaining(/bash scripts\/deploy-agent\.sh/, 'ordinary agent publication');
+  const normal = deployStepContaining(/operation != ['"]reference-setup['"][\s\S]*?bash scripts\/deploy-agent\.sh/, 'ordinary agent publication');
   const setup = deployStepContaining(/scripts\/[A-Za-z0-9_-]*reference[A-Za-z0-9_-]*\.(?:py|mjs|sh)/i, 'reference setup');
+  const fixedBootstrap = deployStepContaining(/PHASE20_FIXED_BOOTSTRAP/, 'fixed reference stack bootstrap');
 
   requireMatch(normal, /if:[\s\S]*?matrix\.component\s*==\s*['"]agent['"]/,
     'normal agent publication retains its component guard');
@@ -182,6 +183,13 @@ test('normal agent publication is structurally separate from the one-time refere
   requireAbsent(normal, /scripts\/[A-Za-z0-9_-]*reference[A-Za-z0-9_-]*\.(?:py|mjs|sh)|--(?:candidate|endpoint|runtime|sha|uri)|\$\{\{\s*inputs\./i,
     'normal publication must not invoke the reference setup implementation');
   requireMatch(normal, /bash scripts\/deploy-agent\.sh/, 'normal agent publication must use the checked release shell');
+
+  requireMatch(fixedBootstrap, /if:[\s\S]*?operation\s*==\s*['"]reference-setup['"]/, 'fixed reference bootstrap must be reference-setup guarded');
+  requireMatch(fixedBootstrap, /PHASE20_AGENT_INFRASTRUCTURE_ONLY=true/, 'fixed reference bootstrap must use the no-candidate asset path');
+  for (const name of ['PHASE20_FIXED_RUNTIME_BUCKET', 'PHASE20_FIXED_RUNTIME_KEY', 'PHASE20_FIXED_RUNTIME_REVISION', 'PHASE20_FIXED_RUNTIME_SHA256']) {
+    requireMatch(fixedBootstrap, new RegExp(`${name}=`), `fixed reference bootstrap must pass the reviewed ${name} tuple`);
+  }
+  requireMatch(fixedBootstrap, /bash scripts\/deploy-agent\.sh/, 'fixed reference bootstrap must use the shared stack initializer');
 
   requireMatch(setup, /if:[\s\S]*?matrix\.component\s*==\s*['"]agent['"]/,
     'reference setup must retain its agent component guard');

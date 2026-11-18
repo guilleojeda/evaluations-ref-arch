@@ -119,9 +119,37 @@ test('manual deployment routing selects exactly the requested independent compon
     });
     assert.equal(result.status, reject ? 1 : 0, result.stderr);
     if (!reject) {
-      const expected = [`components=["${component}"]`, 'operation=normal', 'reference_setup=false'];
-      if (from) expected.push(`rotation_from_generation=${from}`, `rotation_to_generation=${to}`);
-      assert.deepEqual(readFileSync(output, 'utf8').trim().split('\n'), expected);
+      const lines = readFileSync(output, 'utf8').trim().split('\n');
+      const values = Object.fromEntries(lines.map((line) => {
+        const split = line.indexOf('=');
+        return [line.slice(0, split), line.slice(split + 1)];
+      }));
+      const expected = {
+        components: `["${component}"]`,
+        operation: 'normal',
+        reference_setup: 'false',
+      };
+      if (from) {
+        expected.rotation_from_generation = from;
+        expected.rotation_to_generation = to;
+      }
+      for (const [key, value] of Object.entries(expected)) assert.equal(values[key], value, key);
+      // New routing outputs are asserted by meaning without making this
+      // legacy dispatch contract depend on their ordering or exact line set.
+      if (component === 'agent') {
+        assert.equal(values.deploy_components, '[]');
+        assert.equal(values.check_components, '[]');
+        assert.equal(values.agent_components, '["agent"]');
+        assert.equal(values.qualification_required, 'true');
+        assert.equal(values.reconcile_after_gate, 'true');
+      } else {
+        assert.equal(values.deploy_components, `["${component}"]`);
+        assert.equal(values.check_components, `["${component}"]`);
+        assert.equal(values.agent_components, '[]');
+        assert.equal(values.qualification_required, 'false');
+        assert.equal(values.reconcile_after_gate, 'false');
+      }
+      assert.equal(values.agent_infrastructure_only, 'false');
     }
   }
 });

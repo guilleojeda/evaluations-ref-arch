@@ -113,6 +113,7 @@ function buildJob() {
 function gateJob(buildName) {
   const matches = Object.entries(jobs()).filter(([name, body]) =>
     name !== buildName
+    && /environment:\s*demo-evaluation/.test(body)
     && !/environment:\s*repaired-publication/.test(body)
     && !/matrix\.component/.test(body)
     && /actions\/download-artifact/.test(body)
@@ -135,6 +136,8 @@ test('normal agent dispatch and changed-file routing remain observable', () => {
   requireMatch(dispatch.outputText, /components=\["agent"\]/, 'agent dispatch must select only the agent component');
   requireMatch(dispatch.outputText, /operation=normal/, 'agent dispatch must select the normal operation');
   requireMatch(dispatch.outputText, /reference_setup=false/, 'agent dispatch must not select maintenance');
+  requireMatch(dispatch.outputText, /qualification_required=true/, 'normal agent dispatch must enter qualification');
+  requireMatch(dispatch.outputText, /reconcile_after_gate=true/, 'normal agent dispatch must reconcile the existing stack after publication');
   requireMatch(routeScript(), /affected-stacks\.mjs/, 'pushes must use the changed-file selector');
 });
 
@@ -167,8 +170,10 @@ test('agent infrastructure-only changes retain stack reconciliation without cand
     const infrastructure = repository.commit('infrastructure/agent/stack.ts');
     assert.deepEqual(repository.affected(previous, infrastructure), ['agent']);
     assert.equal(repository.agentInfrastructureOnly(previous, infrastructure), 'true');
+    const adapter = repository.commit('agent/alarm_adapter.py');
+    assert.equal(repository.agentInfrastructureOnly(infrastructure, adapter), 'true');
     const candidate = repository.commit('agent/prompt.py');
-    assert.equal(repository.agentInfrastructureOnly(infrastructure, candidate), 'false');
+    assert.equal(repository.agentInfrastructureOnly(adapter, candidate), 'false');
   } finally {
     rmSync(repository.directory, { recursive: true, force: true });
   }
@@ -178,6 +183,13 @@ test('quality gate and protected publication use isolated roles, dependencies, a
   const [buildName, build] = buildJob();
   const [gateName, gate] = gateJob(buildName);
   const [publicationName, publication] = publicationJob(gateName);
+  const reconciliation = jobs()['reconcile-agent'];
+  assert.ok(reconciliation, 'mixed agent changes must retain a post-publication stack reconciliation job');
+  requireMatch(reconciliation, /needs:\s*\[route, check-agent, publish-repaired\]/,
+    'agent reconciliation must wait for the protected publisher while remaining separate from app/controller deployment');
+  requireMatch(reconciliation, /PHASE20_AGENT_INFRASTRUCTURE_ONLY:\s*['"]true['"]/,
+    'agent reconciliation must prune the ungated Runtime asset path');
+  requireMatch(reconciliation, /bash scripts\/deploy-agent\.sh/, 'agent reconciliation must use the existing stack/adapter release shell');
 
   requireMatch(build, /runtime\.zip/, 'the ARM64 build must produce the Runtime ZIP');
   requireMatch(build, /actions\/upload-artifact/, 'the build must retain its checked artifact');
@@ -199,8 +211,8 @@ test('quality gate and protected publication use isolated roles, dependencies, a
   // publisher role until that precredential gate has completed.
   assert.ok(gateRoles.every((target) => !/PHASE20_PUBLISHER_ROLE_ARN|IncidentTriageDemoGitHubRepairedPublisher/.test(target)),
     'the evaluation gate must not acquire the publishing role');
-  requireAbsent(gate, /PHASE0_DEPLOY_ROLE_ARN|CDK_DEPLOY_ROLE_ARN|CDK_FILE_PUBLISHING_ROLE_ARN/,
-    'the evaluation session must not assume the existing broad deployment roles');
+  requireAbsent(gate, /(?:role-to-assume|--role-arn)[^\n]*(?:PHASE0_DEPLOY_ROLE_ARN|CDK_DEPLOY_ROLE_ARN|CDK_FILE_PUBLISHING_ROLE_ARN)/,
+    'the evaluation session must not acquire the existing broad deployment roles');
 
   requireMatch(publication, /^    environment:\s*repaired-publication\s*$/m,
     'publication must use the native protected environment');

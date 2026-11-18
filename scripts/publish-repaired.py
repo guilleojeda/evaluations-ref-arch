@@ -104,7 +104,7 @@ def _validate_spec(spec: Any, context: str, *, require_version: bool) -> Mapping
     _required_sha(spec, "sha256", context)
     if require_version or "versionId" in spec:
         version = _required_string(spec, "versionId", context)
-        if require_version and version in {"null", "None", "pending"}:
+        if version.lower() in {"null", "none"}:
             raise ValueError(f"{context}.versionId is not a concrete S3 VersionId")
     return spec
 
@@ -127,6 +127,8 @@ def _validate_qualification(
         raise ValueError("protected qualification must identify endpoint repaired")
     if qualification.get("runtimeName") != STACK_NAME:
         raise ValueError("qualification runtimeName must identify the agent stack")
+    if "stagedArtifact" in qualification:
+        raise ValueError("qualification.stagedArtifact is not a supported publication input")
     source_revision = _required_string(qualification, "sourceRevision", "qualification")
     if not REVISION_RE.fullmatch(source_revision):
         raise ValueError("qualification sourceRevision must be a Git commit identity")
@@ -261,7 +263,7 @@ def _read_body(response: Mapping[str, Any], label: str) -> bytes:
 def _download_object(s3: Any, spec: Mapping[str, Any], *, required_version: bool, label: str) -> tuple[bytes, str]:
     request: dict[str, Any] = {"Bucket": spec["bucket"], "Key": spec["key"]}
     expected_version = spec.get("versionId")
-    if expected_version not in (None, "pending"):
+    if expected_version is not None:
         request["VersionId"] = expected_version
     response = s3.get_object(**request)
     value = _read_body(response, label)
@@ -269,9 +271,9 @@ def _download_object(s3: Any, spec: Mapping[str, Any], *, required_version: bool
     if _sha256(value) != expected_digest:
         raise ValueError(f"{label} digest differs from the protected receipt")
     observed_version = str(response.get("VersionId", ""))
-    if expected_version not in (None, "pending") and observed_version != expected_version:
+    if expected_version is not None and observed_version != expected_version:
         raise ValueError(f"{label} VersionId differs from the protected receipt")
-    if required_version and not expected_version:
+    if required_version and not observed_version:
         raise ValueError(f"{label} has no required VersionId")
     return value, observed_version
 
@@ -296,19 +298,30 @@ def _validate_archive(archive_bytes: bytes, qualification: Mapping[str, Any], so
         raise ValueError("qualified Runtime prompt differs from the protected source object")
 
 
-def _verified_inputs(session: Any, qualification: Mapping[str, Any]) -> dict[str, Any]:
+def _verified_inputs(
+    session: Any,
+    qualification: Mapping[str, Any],
+    *,
+    pre_stage: bool = False,
+    staged_sources: bool = False,
+) -> dict[str, Any]:
     s3 = session.client("s3")
-    staged = isinstance(qualification.get("stagedArtifact"), Mapping)
     artifact_bytes, artifact_version = _download_object(
-        s3, qualification["artifact"], required_version=True, label="qualified Runtime ZIP",
+        s3,
+        qualification["artifact"],
+        required_version=not pre_stage,
+        label="private staged Runtime ZIP" if pre_stage else "qualified Runtime ZIP",
     )
     source_bytes, source_version = _download_object(
-        s3, qualification["source"], required_version=not staged, label="qualified prompt source",
+        s3,
+        qualification["source"],
+        required_version=not (pre_stage or staged_sources),
+        label="qualified prompt source",
     )
     configuration_bytes, configuration_version = _download_object(
         s3,
         qualification["configuration"],
-        required_version=not staged,
+        required_version=not (pre_stage or staged_sources),
         label="qualified Runtime configuration",
     )
     try:
@@ -640,129 +653,130 @@ def _ensure_record(
     return dict(readback)
 
 
-def _stage_versioned_asset_if_requested(s3: Any, qualification: Mapping[str, Any]) -> Mapping[str, Any]:
-    """Upload an explicitly supplied private staging object after clearance.
+def _with_serving_version(qualification: Mapping[str, Any], version_id: str) -> dict[str, Any]:
+    """Return the qualification with one native serving VersionId everywhere."""
 
-    The normal gate already records the content-addressed serving object and
-    its S3 VersionId in ``artifact``.  A deployment may instead include a
-    separate, private ``stagedArtifact`` input.  In that case the upload is
-    still bound to the reviewed bytes and either the reviewed VersionId or the
-    protected publisher's returned VersionId; no public or caller-selected
-    path is accepted.
-    """
+    if not version_id or version_id.lower() in {"null", "none"}:
+        raise RuntimeError("versioned serving object has no concrete S3 VersionId")
+    updated = copy.deepcopy(dict(qualification))
+    artifact = dict(updated["artifact"])
+    artifact["versionId"] = version_id
+    updated["artifact"] = artifact
+    updated["runtimeConfiguration"]["agentRuntimeArtifact"]["codeConfiguration"]["code"]["s3"][
+        "versionId"
+    ] = version_id
+    return updated
 
-    staged = qualification.get("stagedArtifact")
-    if staged is None:
-        return qualification
-    staged = _validate_spec(staged, "stagedArtifact", require_version=False)
-    artifact = qualification["artifact"]
-    body, _ = _download_object(s3, staged, required_version=False, label="private staged Runtime ZIP")
-    if _sha256(body) != artifact["sha256"]:
-        raise ValueError("private staged Runtime ZIP differs from the reviewed artifact")
-    # A previous invocation may have committed the object before losing its
-    # response.  Reconcile that exact VersionId before attempting another put.
-    pending_version = artifact.get("versionId") == "pending"
-    if not pending_version:
+
+def _reconcile_serving_object(s3: Any, target: Mapping[str, Any], expected_body: bytes) -> str | None:
+    """Find and verify a committed version after a prior serving write."""
+
+    versions: list[str] = []
+    head = getattr(s3, "head_object", None)
+    if callable(head):
         try:
-            existing, existing_version = _download_object(
-                s3, artifact, required_version=True, label="versioned serving Runtime ZIP",
-            )
+            response = head(Bucket=target["bucket"], Key=target["key"])
         except ClientError as error:
             if not _not_found(error):
                 raise
         else:
-            if existing != body or existing_version != artifact["versionId"]:
-                raise RuntimeError("existing versioned serving object differs from the staged ZIP")
-            return qualification
+            value = response.get("VersionId") if isinstance(response, Mapping) else None
+            if isinstance(value, str) and value:
+                versions.append(value)
+    list_versions = getattr(s3, "list_object_versions", None)
+    if callable(list_versions):
+        try:
+            response = list_versions(Bucket=target["bucket"], Prefix=target["key"])
+        except ClientError as error:
+            if not _not_found(error):
+                raise
+        else:
+            rows = response.get("Versions", []) if isinstance(response, Mapping) else []
+            for row in rows:
+                if (
+                    isinstance(row, Mapping)
+                    and row.get("Key") == target["key"]
+                    and row.get("IsLatest")
+                    and isinstance(row.get("VersionId"), str)
+                ):
+                    versions.append(row["VersionId"])
+    for version_id in dict.fromkeys(versions):
+        candidate = dict(target)
+        candidate["versionId"] = version_id
+        body, observed = _download_object(
+            s3, candidate, required_version=True, label="versioned serving Runtime ZIP",
+        )
+        if body != expected_body:
+            raise RuntimeError("existing versioned serving object differs from the staged ZIP")
+        return observed
+
+    # Some native-shaped transports expose only the current object read.  It
+    # still carries the VersionId required to reconcile a lost PutObject ACK.
+    try:
+        response = s3.get_object(Bucket=target["bucket"], Key=target["key"])
+    except ClientError as error:
+        if _not_found(error):
+            return None
+        raise
+    body = _read_body(response, "versioned serving Runtime ZIP")
+    version_id = str(response.get("VersionId", ""))
+    if body != expected_body:
+        raise RuntimeError("existing versioned serving object differs from the staged ZIP")
+    if not version_id:
+        raise RuntimeError("existing serving object has no native S3 VersionId")
+    if _sha256(body) != target["sha256"]:
+        raise ValueError("versioned serving Runtime ZIP digest differs from the protected receipt")
+    return version_id
+
+
+def _stage_versioned_asset(
+    s3: Any,
+    qualification: Mapping[str, Any],
+    staging_specs: Mapping[str, Mapping[str, Any]],
+    staged_body: bytes,
+) -> Mapping[str, Any]:
+    """Promote one protected private-stage ZIP to the fixed versioned asset."""
+
+    artifact = qualification["artifact"]
+    staged = staging_specs["artifact"]
+    if _sha256(staged_body) != staged["sha256"] or staged["sha256"] != artifact["sha256"]:
+        raise ValueError("private staged Runtime ZIP differs from the reviewed artifact")
+    existing_version = _reconcile_serving_object(s3, artifact, staged_body)
+    if existing_version:
+        return _with_serving_version(qualification, existing_version)
     try:
         put = s3.put_object(
             Bucket=artifact["bucket"],
             Key=artifact["key"],
-            Body=body,
+            Body=staged_body,
             IfNoneMatch="*",
             ExpectedBucketOwner=ACCOUNT,
         )
-    except Exception as error:
-        if pending_version:
-            # The target key is content-addressed. A latest HEAD/version read
-            # can reconcile a lost PutObject acknowledgement without another
-            # put. HEAD is preferred because it needs only GetObject access;
-            # version listing is a substitute for native test transports.
-            try:
-                version_id = None
-                head = getattr(s3, "head_object", None)
-                if callable(head):
-                    try:
-                        head_response = head(Bucket=artifact["bucket"], Key=artifact["key"])
-                        value = head_response.get("VersionId") if isinstance(head_response, Mapping) else None
-                        if isinstance(value, str) and value:
-                            version_id = value
-                    except ClientError:
-                        pass
-                if not version_id:
-                    versions = s3.list_object_versions(Bucket=artifact["bucket"], Prefix=artifact["key"])
-                    rows = versions.get("Versions", []) if isinstance(versions, Mapping) else []
-                    matching = [
-                        row for row in rows
-                        if isinstance(row, Mapping) and row.get("Key") == artifact["key"] and row.get("IsLatest")
-                    ]
-                    if len(matching) == 1 and isinstance(matching[0].get("VersionId"), str):
-                        version_id = matching[0]["VersionId"]
-                if version_id:
-                    candidate = dict(artifact)
-                    candidate["versionId"] = version_id
-                    existing, existing_version = _download_object(
-                        s3, candidate, required_version=True, label="versioned serving Runtime ZIP",
-                    )
-                    if existing == body and existing_version == candidate["versionId"]:
-                        updated = copy.deepcopy(dict(qualification))
-                        updated["artifact"] = candidate
-                        updated["runtimeConfiguration"]["agentRuntimeArtifact"]["codeConfiguration"]["code"]["s3"][
-                            "versionId"
-                        ] = candidate["versionId"]
-                        return updated
-            except RuntimeError:
-                raise
-            except (ClientError, KeyError, TypeError, ValueError):
-                pass
-        try:
-            existing, existing_version = _download_object(
-                s3, artifact, required_version=True, label="versioned serving Runtime ZIP",
-            )
-        except ClientError as read_error:
-            if _not_found(read_error):
-                raise
-            raise
-        if pending_version and existing == body and existing_version:
-            updated = copy.deepcopy(dict(qualification))
-            updated_artifact = dict(artifact)
-            updated_artifact["versionId"] = existing_version
-            updated["artifact"] = updated_artifact
-            updated["runtimeConfiguration"]["agentRuntimeArtifact"]["codeConfiguration"]["code"]["s3"][
-                "versionId"
-            ] = existing_version
-            return updated
-        if existing == body and existing_version == artifact["versionId"]:
-            return qualification
+    except Exception:
+        # The write may have committed before its response was lost.  A strong
+        # native read is authoritative; if it is absent, preserve the original
+        # error and let the next invocation retry/reconcile.
+        recovered = _reconcile_serving_object(s3, artifact, staged_body)
+        if recovered:
+            return _with_serving_version(qualification, recovered)
         raise
-    observed_version = str(put.get("VersionId", ""))
-    if pending_version:
-        if not observed_version or observed_version in {"null", "None", "pending"}:
-            raise RuntimeError("private staged upload returned no S3 VersionId")
-        updated = copy.deepcopy(dict(qualification))
-        updated_artifact = dict(artifact)
-        updated_artifact["versionId"] = observed_version
-        updated["artifact"] = updated_artifact
-        updated["runtimeConfiguration"]["agentRuntimeArtifact"]["codeConfiguration"]["code"]["s3"][
-            "versionId"
-        ] = observed_version
-        return updated
-    if observed_version != artifact["versionId"]:
-        raise RuntimeError("private staged upload did not return the reviewed S3 VersionId")
-    return qualification
+    observed_version = put.get("VersionId") if isinstance(put, Mapping) else None
+    if not isinstance(observed_version, str) or not observed_version or observed_version.lower() in {"null", "none"}:
+        raise RuntimeError("private staged upload returned no S3 VersionId")
+    updated = _with_serving_version(qualification, observed_version)
+    # The response is not the final proof: read the exact returned version and
+    # hash it before allowing native Runtime publication to proceed.
+    body, observed = _download_object(
+        s3, updated["artifact"], required_version=True, label="versioned serving Runtime ZIP",
+    )
+    if body != staged_body or observed != observed_version:
+        raise RuntimeError("versioned serving object does not match the staged ZIP")
+    return updated
 
 
-def _normalise_staged_qualification(qualification: Mapping[str, Any]) -> dict[str, Any]:
+def _normalise_staged_qualification(
+    qualification: Mapping[str, Any],
+) -> tuple[dict[str, Any], dict[str, Mapping[str, Any]]]:
     """Bind private staging objects to the fixed content-addressed prefix.
 
     The evidence bucket is intentionally not treated as the serving bucket and
@@ -829,7 +843,20 @@ def _normalise_staged_qualification(qualification: Mapping[str, Any]) -> dict[st
     code["codeConfiguration"] = code_configuration
     runtime_configuration["agentRuntimeArtifact"] = code
     result["runtimeConfiguration"] = runtime_configuration
-    return result
+    staging_specs = {
+        name: copy.deepcopy(result[name]) for name in ("artifact", "source", "configuration")
+    }
+    return result, staging_specs
+
+
+def _validate_session_scope(session: Any) -> None:
+    """Reject an AWS session outside the fixed native publication account."""
+
+    if getattr(session, "region_name", None) != REGION:
+        raise RuntimeError("AWS session Region is outside the fixed publisher scope")
+    identity = session.client("sts").get_caller_identity()
+    if not isinstance(identity, Mapping) or identity.get("Account") != ACCOUNT:
+        raise RuntimeError("AWS session account is outside the fixed publisher scope")
 
 
 def publish_repaired(
@@ -843,8 +870,9 @@ def publish_repaired(
     if not isinstance(current_demo_revision, str) or not REVISION_RE.fullmatch(current_demo_revision):
         raise ValueError("current_demo_revision must be a Git commit identity")
     staged_mode = qualification.get("servingArtifact") is not None
+    staging_specs: dict[str, Mapping[str, Any]] | None = None
     if staged_mode:
-        qualification = _normalise_staged_qualification(qualification)
+        qualification, staging_specs = _normalise_staged_qualification(qualification)
     qualification = _validate_qualification(
         qualification,
         current_demo_revision,
@@ -864,22 +892,27 @@ def publish_repaired(
         expected_key = f"agent-qualified/{staged_digest}.zip"
         if serving["bucket"] != expected_bucket or serving["key"] != expected_key:
             raise ValueError("qualification servingArtifact is outside the fixed repaired asset destination")
+        if staging_specs is None:
+            raise RuntimeError("staged serving publication has no private staging objects")
+        _validate_session_scope(session)
+        # Read and hash every staged input before any serving write.  The
+        # configuration bytes here intentionally describe the private-stage
+        # S3 location; the serving VersionId is resolved only after promotion.
+        staged_verified = _verified_inputs(session, qualification, pre_stage=True)
+        staged_body = staged_verified["artifactBytes"]
         qualification = copy.deepcopy(dict(qualification))
         staged = qualification["artifact"]
         qualification["stagedRuntimeConfiguration"] = copy.deepcopy(qualification["runtimeConfiguration"])
         target = {
             "bucket": serving["bucket"],
             "key": serving["key"],
-            "versionId": "pending",
             "sha256": staged["sha256"],
         }
-        qualification["stagedArtifact"] = copy.deepcopy(staged)
         qualification["artifact"] = target
         configuration = qualification["runtimeConfiguration"]
         configuration["agentRuntimeArtifact"]["codeConfiguration"]["code"]["s3"] = {
             "bucket": target["bucket"],
             "prefix": target["key"],
-            "versionId": target["versionId"],
         }
         qualification.pop("servingArtifact", None)
         qualification = _validate_qualification(
@@ -887,24 +920,23 @@ def publish_repaired(
             current_demo_revision,
             allow_unversioned_staging=True,
         )
-    if getattr(session, "region_name", REGION) not in (None, REGION):
-        raise RuntimeError("AWS session Region is outside the fixed publisher scope")
+    if not staged_mode:
+        _validate_session_scope(session)
 
     # The receipt and exact bytes are cleared before any serving mutation. A
     # protected workflow may retain the checked ZIP in private staging until
     # the GitHub environment approval; upload those exact bytes only after the
     # clearance checks above, then verify the returned VersionId.
     s3 = session.client("s3")
-    qualification = _stage_versioned_asset_if_requested(s3, qualification)
-    verified = _verified_inputs(session, qualification)
-    if qualification.get("stagedArtifact") is not None:
-        # Read back the exact returned version after the optional upload.  This
-        # ensures subsequent Runtime configuration still points at these bytes.
-        body, version = _download_object(
-            verified["s3"], qualification["artifact"], required_version=True, label="versioned serving Runtime ZIP",
+    if staged_mode:
+        assert staging_specs is not None
+        qualification = _stage_versioned_asset(s3, qualification, staging_specs, staged_body)
+        qualification = _validate_qualification(
+            qualification,
+            current_demo_revision,
+            allow_unversioned_staging=True,
         )
-        if _sha256(body) != _sha256(verified["artifactBytes"]) or version != qualification["artifact"]["versionId"]:
-            raise RuntimeError("versioned serving object does not match the reviewed ZIP")
+    verified = _verified_inputs(session, qualification, staged_sources=staged_mode)
 
     cloudformation = session.client("cloudformation")
     runtime_id = _stack_outputs(cloudformation, qualification["runtimeName"])["RuntimeId"]
@@ -951,37 +983,16 @@ def publish_repaired(
 def _load_protected_qualification() -> Mapping[str, Any]:
     """Read the protected workflow handoff, never a checkout-side receipt."""
 
-    path_value = (
-        os.environ.get("PHASE20_QUALIFICATION_PATH")
-        or os.environ.get("PHASE20_QUALIFICATION_FILE")
-        or os.environ.get("REPAIRED_PUBLICATION_RECEIPT")
-    )
-    json_value = os.environ.get("PHASE20_QUALIFICATION_JSON")
-    if path_value and json_value:
-        raise RuntimeError("set only one protected qualification input")
+    path_value = os.environ.get("PHASE20_QUALIFICATION_PATH")
     try:
         if path_value:
             qualification = json.loads(Path(path_value).read_text())
-        elif json_value:
-            qualification = json.loads(json_value)
         else:
             raise RuntimeError("protected qualification handoff is missing")
     except (OSError, json.JSONDecodeError) as error:
         raise RuntimeError("protected qualification handoff is unreadable") from error
     if not isinstance(qualification, Mapping):
         raise RuntimeError("protected qualification handoff is malformed")
-    # Evaluation stages an immutable, versioned copy under the private
-    # evidence bucket.  The serving destination is a fixed publisher-owned
-    # prefix and is intentionally added from workflow configuration rather
-    # than from candidate-controlled receipt contents.
-    serving_bucket = os.environ.get("PHASE0_ASSET_BUCKET")
-    artifact = qualification.get("artifact")
-    if serving_bucket and isinstance(artifact, Mapping) and isinstance(artifact.get("sha256"), str):
-        qualification = copy.deepcopy(dict(qualification))
-        qualification["servingArtifact"] = {
-            "bucket": serving_bucket,
-            "key": f"agent-qualified/{artifact['sha256']}.zip",
-        }
     return qualification
 
 

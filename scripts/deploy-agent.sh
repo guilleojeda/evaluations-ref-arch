@@ -7,8 +7,29 @@ change_set_name="phase4-agent-${GITHUB_SHA}"
 description="$RUNNER_TEMP/agent-change-set.json"
 aws_error="$RUNNER_TEMP/agent-deploy.error"
 infrastructure_only="${PHASE20_AGENT_INFRASTRUCTURE_ONLY:-false}"
+fixed_bootstrap="${PHASE20_FIXED_BOOTSTRAP:-false}"
 test -s "$assembly/manifest.json"
 candidate_template="$(jq -er --arg stack "$stack" '.artifacts[$stack].properties.templateFile' "$assembly/manifest.json")"
+
+if [[ "$fixed_bootstrap" == true ]]; then
+  [[ "$infrastructure_only" == true ]] || {
+    echo "Fixed reference setup must use the infrastructure-only bootstrap path" >&2
+    exit 1
+  }
+  reviewed_revision="${PHASE20_FIXED_SOURCE_REVISION:-}"
+  [[ -n "$reviewed_revision" ]] || {
+    echo "Fixed bootstrap source revision is missing" >&2
+    exit 1
+  }
+  git cat-file -e "$reviewed_revision^{commit}" || {
+    echo "Fixed reference setup cannot verify the reviewed adapter source revision" >&2
+    exit 1
+  }
+  git diff --quiet "$reviewed_revision" -- agent/alarm_adapter.py || {
+    echo "Fixed reference setup requires the reviewed alarm adapter source" >&2
+    exit 1
+  }
+fi
 
 credentials="$(aws sts assume-role --role-arn "$CDK_DEPLOY_ROLE_ARN" \
   --role-session-name "phase4-agent-${GITHUB_RUN_ID}" --duration-seconds 3300 --query Credentials --output json)"
@@ -271,28 +292,9 @@ if [[ "$status" == ABSENT || "$status" == REVIEW_IN_PROGRESS ]]; then
   fresh_stack=true
 fi
 
-if [[ "$infrastructure_only" == true ]]; then
-  # Infrastructure-only reconciliation may carry the existing published
-  # Runtime/bootstrap tuple, but it cannot create a fresh stack or package a
-  # new unchecked Runtime ZIP. The explicit fixed reference setup owns the
-  # first stack and initial Runtime asset.
-  [[ "$fresh_stack" == false ]] || {
-    echo "Agent infrastructure-only release requires the fixed reference setup on a fresh stack" >&2
-    exit 1
-  }
-  [[ "$(stack_parameter PublishedRuntimeBootstrapEnabled <<<"$stack_state")" == true ]] || {
-    echo "Agent infrastructure-only release requires a publisher-owned Runtime bootstrap tuple" >&2
-    exit 1
-  }
-  infra_assembly="$RUNNER_TEMP/agent-infrastructure-cdk"
-  cp -R "$assembly" "$infra_assembly"
-  assets_manifest="$infra_assembly/${stack}.assets.json"
-  runtime_asset_id="$(jq -er '.files | to_entries[] | select(.value.displayName == "RuntimeZip") | .key' "$assets_manifest")"
-  jq --arg asset_id "$runtime_asset_id" 'del(.files[$asset_id])' "$assets_manifest" > "$assets_manifest.tmp"
-  mv "$assets_manifest.tmp" "$assets_manifest"
-  assembly="$infra_assembly"
-  candidate_template="$(jq -er --arg stack "$stack" '.artifacts[$stack].properties.templateFile' "$assembly/manifest.json")"
-  echo "Prepared infrastructure-only agent assembly; the existing published Runtime asset remains the sole bootstrap source"
+if [[ "$fixed_bootstrap" == true && "$fresh_stack" == false ]]; then
+  echo "Fixed reference stack already exists; native reference maintenance owns its verified Runtime/endpoint reconciliation"
+  exit 0
 fi
 
 # The first ordinary post-cutover source push must not execute the endpoint
@@ -311,6 +313,33 @@ if [[ "$status" != ABSENT && "$status" != REVIEW_IN_PROGRESS ]]; then
       '{status:"deferred",reason:"legacy_endpoint_managed",stack:$stack,logicalResourceId:"FaultyEndpoint",physicalResourceId:$physicalId}'
     exit 0
   fi
+fi
+
+if [[ "$infrastructure_only" == true ]]; then
+  # Stack/adapter-only reconciliation may carry the existing published
+  # Runtime/bootstrap tuple, but it cannot create a fresh stack or package a
+  # new unchecked Runtime ZIP. The explicit fixed reference setup owns the
+  # first stack and initial Runtime asset. Legacy endpoint ownership is
+  # handled by the deferred branch above, preserving its fixed setup order.
+  [[ "$fresh_stack" == false || "$fixed_bootstrap" == true ]] || {
+    echo "Agent infrastructure-only release requires the fixed reference setup on a fresh stack" >&2
+    exit 1
+  }
+  if [[ "$fresh_stack" == false ]]; then
+    [[ "$(stack_parameter PublishedRuntimeBootstrapEnabled <<<"$stack_state")" == true ]] || {
+    echo "Agent infrastructure-only release requires a publisher-owned Runtime bootstrap tuple" >&2
+    exit 1
+    }
+  fi
+  infra_assembly="$RUNNER_TEMP/agent-infrastructure-cdk"
+  cp -R "$assembly" "$infra_assembly"
+  assets_manifest="$infra_assembly/${stack}.assets.json"
+  runtime_asset_id="$(jq -er '.files | to_entries[] | select(.value.displayName == "RuntimeZip") | .key' "$assets_manifest")"
+  jq --arg asset_id "$runtime_asset_id" 'del(.files[$asset_id])' "$assets_manifest" > "$assets_manifest.tmp"
+  mv "$assets_manifest.tmp" "$assets_manifest"
+  assembly="$infra_assembly"
+  candidate_template="$(jq -er --arg stack "$stack" '.artifacts[$stack].properties.templateFile' "$assembly/manifest.json")"
+  echo "Prepared infrastructure-only agent assembly; the existing published Runtime asset remains the sole bootstrap source"
 fi
 
 app_state="$(deploy_aws cloudformation describe-stacks --stack-name "$PHASE0_APP_STACK" --output json)"
@@ -336,6 +365,17 @@ if [[ "$deployed_revision" == "$GITHUB_SHA" ]]; then
 fi
 
 parameter_args=(--parameters "$stack:SourceRevision=$GITHUB_SHA" --parameters "$stack:AppHttpApiId=$app_api_id")
+if [[ "$fixed_bootstrap" == true ]]; then
+  fixed_bucket="${PHASE20_FIXED_RUNTIME_BUCKET:?}"
+  fixed_key="${PHASE20_FIXED_RUNTIME_KEY:?}"
+  fixed_revision="${PHASE20_FIXED_RUNTIME_REVISION:?}"
+  fixed_digest="${PHASE20_FIXED_RUNTIME_SHA256:?}"
+  parameter_args+=(--parameters "$stack:PublishedRuntimeAssetBucket=$fixed_bucket"
+    --parameters "$stack:PublishedRuntimeAssetKey=$fixed_key"
+    --parameters "$stack:PublishedRuntimeCodeRevision=$fixed_revision"
+    --parameters "$stack:PublishedRuntimeArtifactDigest=$fixed_digest"
+    --parameters "$stack:PublishedRuntimeBootstrapEnabled=true")
+fi
 if [[ "$status" != ABSENT && "$status" != REVIEW_IN_PROGRESS ]]; then
   parameter_args+=(--parameters "$stack:PublishedVersion=$published_version"
     --parameters "$stack:PublishedCodeRevision=$published_code_revision"

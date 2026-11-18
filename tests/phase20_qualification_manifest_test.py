@@ -61,12 +61,17 @@ class QualificationManifestTests(unittest.TestCase):
             "configSha256": "a" * 64,
         }), encoding="utf-8")
         self.runtime_zip = self.root / "runtime.zip"
+        self.prompt_bytes = b"SYSTEM_PROMPT = 'synthetic effective prompt'\n"
+        self.prompt_file_sha = hashlib.sha256(self.prompt_bytes).hexdigest()
+        self.effective_prompt_sha = "b" * 64
         with zipfile.ZipFile(self.runtime_zip, "w") as archive:
             archive.writestr("agent-manifest.json", json.dumps({
                 "schemaVersion": 2,
                 "sourceRevision": "a" * 40,
-                "promptSha256": "b" * 64,
+                "promptSha256": self.effective_prompt_sha,
+                "runtimeSourceFiles": {"prompt.py": self.prompt_file_sha},
             }))
+            archive.writestr("prompt.py", self.prompt_bytes)
         roster, _descriptor, _suite_sha = self.qualify._load_roster(self.suite)
         self.row = {
             "caseId": roster[0][0],
@@ -75,6 +80,7 @@ class QualificationManifestTests(unittest.TestCase):
             "executionId": "execution-1",
             "sessionId": "session-1",
             "traceId": "trace-1",
+            "promptSha256": self.effective_prompt_sha,
             "status": "complete",
             "scoringAttemptId": "score-1",
             "report": {"assessment": "ongoing", "evidence": [{"resource": "inventory", "observedAt": "2026-11-13T10:02:30Z"}]},
@@ -160,7 +166,11 @@ class QualificationManifestTests(unittest.TestCase):
     def test_complete_manifest_rejects_each_changed_persisted_input(self):
         receipt_path, receipt = self._build()
         review = self.root / "qualification" / "review"
-        self.assertEqual("eligible", receipt["status"])
+        self.assertEqual("review_required", receipt["status"])
+        self.assertEqual(self.prompt_file_sha, receipt["source"]["sha256"])
+        self.assertEqual(self.effective_prompt_sha, receipt["promptSha256"])
+        self.assertNotEqual(receipt["source"]["sha256"], receipt["promptSha256"])
+        self.assertEqual(self.prompt_file_sha, json.loads((review / "index.json").read_text())["promptFileSha256"])
         self.assertEqual(receipt["reviewManifestSha256"], self.qualify.verify_private_review(review)["manifestSha256"])
         candidates = [
             review / "cases" / "phase20.synthetic.case" / "index.json",
@@ -213,6 +223,44 @@ class QualificationManifestTests(unittest.TestCase):
         self.assertEqual(receipt["reviewManifestSha256"], clearance["manifestSha256"])
         self.assertEqual(0o600, clearance_path.stat().st_mode & 0o777)
 
+    def test_clearance_rejects_effective_prompt_digest_as_source_file_digest(self):
+        receipt_path, receipt = self._build()
+        receipt["source"]["sha256"] = receipt["promptSha256"]
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        with self.assertRaises(ValueError):
+            self.qualify.verify_private_clearance(
+                review_root=self.root / "qualification" / "review",
+                qualification_path=receipt_path,
+                current_head="a" * 40,
+                clearance_output=self.root / "clearance-bad.json",
+            )
+
+    def test_final_browser_index_uses_final_manifest_and_case_links(self):
+        receipt_path, receipt = self._build()
+        html = (self.root / "qualification" / "review" / "index.html").read_text()
+        self.assertIn(receipt["reviewManifestSha256"], html)
+        self.assertIn("cases/phase20.synthetic.case/index.json", html)
+
+        index = json.loads((self.root / "qualification" / "review" / "index.json").read_text())
+        self.qualify._render_browser_index(
+            self.root / "qualification" / "review",
+            index,
+            bucket="private-evidence",
+            prefix="agent-evaluation/phase20/acme/42/3/" + receipt["reviewManifestSha256"],
+            region="us-east-1",
+        )
+        absolute_html = (self.root / "qualification" / "review" / "index.html").read_text()
+        self.assertIn("https://s3.console.aws.amazon.com/s3/object/private-evidence", absolute_html)
+        self.assertNotIn('href="cases/', absolute_html)
+
+    def test_retry_prefix_is_scoped_to_owner_run_attempt_and_manifest(self):
+        prefix = self.qualify._review_s3_prefix(
+            "agent-evaluation/phase20",
+            manifest_sha256="c" * 64,
+            github={"repositoryOwner": "acme", "runId": "42", "runAttempt": "3"},
+        )
+        self.assertEqual("agent-evaluation/phase20/acme/42/3/" + "c" * 64, prefix)
+
     def test_full_qualification_and_protected_verify_cli(self):
         config_path = self.root / "runtime-config.json"
         config_path.write_text(json.dumps(self.configuration), encoding="utf-8")
@@ -224,7 +272,8 @@ class QualificationManifestTests(unittest.TestCase):
         source_spec_path = self.root / "source-spec.json"
         source_spec_path.write_text(json.dumps({
             "bucket": "private-evidence", "key": "agent-evaluation/phase20/prompt.py",
-            "sha256": "b" * 64,
+            "sha256": self.prompt_file_sha,
+            "effectivePromptSha256": self.effective_prompt_sha,
         }), encoding="utf-8")
         configuration_spec_path = self.root / "configuration-spec.json"
         configuration_spec_path.write_text(json.dumps({

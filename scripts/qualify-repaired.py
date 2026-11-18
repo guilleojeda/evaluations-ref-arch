@@ -20,7 +20,7 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 import hashlib
 import html
-import inspect
+import io
 import json
 import os
 from pathlib import Path
@@ -29,6 +29,7 @@ import shutil
 import stat
 import sys
 from typing import Any
+import zipfile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -195,9 +196,14 @@ def _load_roster(suite_path: Path) -> tuple[list[tuple[str, str, str]], dict[str
     return roster, {"schemaVersion": suite.get("schemaVersion"), "cases": entries}, suite_digest
 
 
-def _load_manifest_from_zip(runtime_zip: Path) -> tuple[dict[str, Any], str]:
-    import io
-    import zipfile
+def _load_manifest_from_zip(runtime_zip: Path) -> tuple[dict[str, Any], str, str]:
+    """Read the schema-v2 manifest and the packaged prompt.py identity.
+
+    ``promptSha256`` in the manifest is the effective ``SYSTEM_PROMPT``
+    digest.  It is intentionally different from the digest of the packaged
+    ``prompt.py`` source file, which is the object the publisher later reads
+    from S3.  Keep both identities at the qualification boundary.
+    """
 
     raw = _read_file(runtime_zip, "Runtime ZIP")
     try:
@@ -206,6 +212,7 @@ def _load_manifest_from_zip(runtime_zip: Path) -> tuple[dict[str, Any], str]:
             if len(names) != len(set(names)):
                 raise ValueError("Runtime ZIP contains duplicate paths")
             manifest = json.loads(archive.read("agent-manifest.json").decode("utf-8"))
+            prompt_file = archive.read("prompt.py")
     except (zipfile.BadZipFile, KeyError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("Runtime ZIP is not a valid package with agent-manifest.json") from exc
     if not isinstance(manifest, dict):
@@ -218,7 +225,11 @@ def _load_manifest_from_zip(runtime_zip: Path) -> tuple[dict[str, Any], str]:
         raise ValueError("Runtime ZIP manifest promptSha256 is invalid")
     if not isinstance(revision, str) or not REVISION_RE.fullmatch(revision):
         raise ValueError("Runtime ZIP manifest sourceRevision is invalid")
-    return manifest, sha256_bytes(raw)
+    prompt_file_sha256 = sha256_bytes(prompt_file)
+    runtime_sources = manifest.get("runtimeSourceFiles")
+    if not isinstance(runtime_sources, Mapping) or runtime_sources.get("prompt.py") != prompt_file_sha256:
+        raise ValueError("Runtime ZIP manifest prompt.py source digest differs")
+    return manifest, sha256_bytes(raw), prompt_file_sha256
 
 
 def _row_identity(row: Mapping[str, Any]) -> dict[str, Any]:
@@ -335,6 +346,7 @@ def _experiment_attestation(
     shown: Mapping[str, Any],
     *,
     artifact_sha256: str,
+    effective_prompt_sha256: str,
 ) -> dict[str, Any]:
     """Authenticate ``show_experiment`` against the durable native record.
 
@@ -359,6 +371,8 @@ def _experiment_attestation(
         raise ValueError("native show_experiment roster differs from experiment.json")
     for case_id, canonical in canonical_by_id.items():
         shown_row = shown_by_id[case_id]
+        if canonical.get("promptSha256") != effective_prompt_sha256 or shown_row.get("promptSha256") != effective_prompt_sha256:
+            raise ValueError(f"native prompt identity differs from the schema-v2 package manifest for {case_id}")
         for key in (
             "caseSha256", "bundleSha256", "executionId", "sessionId", "traceId",
             "scoringAttemptId", "promptSha256",
@@ -425,6 +439,54 @@ def _console_url(bucket: str, prefix: str, region: str) -> str:
     return f"https://s3.console.aws.amazon.com/s3/buckets/{quote(bucket, safe='')}?region={quote(region, safe='')}&prefix={encoded}"
 
 
+def _console_object_url(bucket: str, key: str, region: str) -> str:
+    from urllib.parse import quote
+
+    return (
+        f"https://s3.console.aws.amazon.com/s3/object/{quote(bucket, safe='')}"
+        f"?region={quote(region, safe='')}&prefix={quote(key.strip('/'), safe='/')}"
+    )
+
+
+def _safe_prefix_component(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", value):
+        raise ValueError(f"{label} is missing or unsafe for a private S3 prefix")
+    return value
+
+
+def _review_s3_prefix(
+    base_prefix: str | None,
+    *,
+    manifest_sha256: str,
+    github: Mapping[str, Any],
+) -> str:
+    """Return a retry-isolated private prefix.
+
+    A GitHub retry must never reuse the previous attempt's browser pages or
+    receipt.  The owner/run/attempt components are therefore part of the key,
+    with the manifest digest retaining content identity within that attempt.
+    Local runs use an explicit ``local`` component and remain deterministic.
+    """
+
+    root = (base_prefix or DEFAULT_PREFIX).strip("/")
+    if not root:
+        raise ValueError("private S3 prefix must not be empty")
+    run_id = github.get("runId")
+    run_attempt = github.get("runAttempt")
+    if (run_id is None) != (run_attempt is None):
+        raise ValueError("GitHub run ID and run attempt must be supplied together")
+    if run_id is not None and run_attempt is not None:
+        owner = github.get("repositoryOwner")
+        if owner is None:
+            repository = github.get("repository")
+            owner = repository.split("/", 1)[0] if isinstance(repository, str) and "/" in repository else None
+        owner = _safe_prefix_component(owner, "GitHub repository owner")
+        run_id = _safe_prefix_component(str(run_id), "GitHub run ID")
+        run_attempt = _safe_prefix_component(str(run_attempt), "GitHub run attempt")
+        return f"{root}/{owner}/{run_id}/{run_attempt}/{manifest_sha256}"
+    return f"{root}/local/{manifest_sha256}"
+
+
 def _private_browser_bundle(
     output_root: Path,
     *,
@@ -436,6 +498,7 @@ def _private_browser_bundle(
     runtime_zip: Path,
     artifact_sha256: str,
     package_manifest: Mapping[str, Any],
+    prompt_file_sha256: str,
     runtime_configuration_sha256: str,
     experiment_dir: Path,
     experiment_record: Mapping[str, Any],
@@ -474,6 +537,7 @@ def _private_browser_bundle(
         "schemaVersion": SCHEMA_VERSION,
         "candidateId": CANDIDATE_ID,
         "artifactSha256": artifact_sha256,
+        "promptFileSha256": prompt_file_sha256,
         "packageManifest": dict(package_manifest),
         "suiteSha256": suite_sha256,
         "caseIdentities": [
@@ -496,20 +560,53 @@ def _private_browser_bundle(
         "createdAt": _now(),
     }
     _write_private(root / "index.json", json.dumps(index, ensure_ascii=False, sort_keys=True, indent=2).encode() + b"\n")
-    browser_lines = [
-        "<!doctype html><meta charset=utf-8><title>Repaired agent private review</title>",
-        "<h1>Repaired agent private review</h1>",
-        f"<p>Manifest <code>{html.escape(manifest_sha256)}</code></p>",
-        "<ul>",
-    ]
-    for entry in cases_index:
-        browser_lines.append(f'<li><a href="{html.escape(entry["path"])}">{html.escape(entry["caseId"])}</a></li>')
-    browser_lines.append("</ul>")
-    _write_private(root / "index.html", "\n".join(browser_lines).encode() + b"\n")
     return root, index, manifest_sha256
 
 
-def _upload_private_bundle(root: Path, *, bucket: str, prefix: str, region: str) -> dict[str, str]:
+def _render_browser_index(
+    root: Path,
+    index: Mapping[str, Any],
+    *,
+    bucket: str | None,
+    prefix: str | None,
+    region: str,
+) -> None:
+    """Render the final browser view after the manifest is immutable.
+
+    ``index.html`` is intentionally excluded from ``contentFiles``.  It is a
+    derived view, so it can contain the final manifest digest and stable S3
+    console object links without introducing a circular tree hash.  When an
+    S3 destination is known, every link is absolute; a downloaded HTML file
+    does not depend on a relative working directory or a checkout path.
+    """
+
+    if bucket and prefix:
+        index_href = _console_object_url(bucket, f"{prefix.strip('/')}/index.json", region)
+        case_href = lambda path: _console_object_url(bucket, f"{prefix.strip('/')}/{path}", region)
+    else:
+        index_href = "index.json"
+        case_href = lambda path: path
+    browser_lines = [
+        "<!doctype html><meta charset=utf-8><title>Repaired agent private review</title>",
+        "<h1>Repaired agent private review</h1>",
+        f'<p>Manifest <code>{html.escape(str(index.get("manifestSha256", "")))}</code> '
+        f'<a href="{html.escape(index_href, quote=True)}">authenticated index</a></p>',
+        "<ul>",
+    ]
+    cases = index.get("cases")
+    if isinstance(cases, list):
+        for entry in cases:
+            if not isinstance(entry, Mapping) or not isinstance(entry.get("path"), str):
+                continue
+            href = case_href(entry["path"])
+            browser_lines.append(
+                f'<li><a href="{html.escape(href, quote=True)}">{html.escape(str(entry.get("caseId", "case")))}</a></li>'
+            )
+    browser_lines.append("</ul>")
+    _write_private(root / "index.html", "\n".join(browser_lines).encode("utf-8") + b"\n")
+
+
+def _upload_private_bundle(root: Path, *, bucket: str, prefix: str, region: str) -> dict[str, Any]:
     try:
         import boto3
     except ImportError as exc:
@@ -563,12 +660,23 @@ def _upload_private_bundle(root: Path, *, bucket: str, prefix: str, region: str)
         if existing_body is None or not hasattr(existing_body, "read") or sha256_bytes(existing_body.read()) != digest:
             raise RuntimeError(f"private S3 object content readback differs: {key}")
         uploaded.append(key)
+    case_urls: dict[str, str] = {}
+    index_data = _read_json(root / "index.json", "private review index") if (root / "index.json").is_file() else None
+    if isinstance(index_data, Mapping) and isinstance(index_data.get("cases"), list):
+        for entry in index_data["cases"]:
+            if isinstance(entry, Mapping) and isinstance(entry.get("caseId"), str) and isinstance(entry.get("path"), str):
+                case_urls[entry["caseId"]] = _console_object_url(
+                    bucket, f"{prefix.strip('/')}/{entry['path']}", region,
+                )
     return {
         "bucket": bucket,
         "prefix": prefix.strip("/"),
         "indexKey": f"{prefix.strip('/')}/index.html",
         "manifestKey": f"{prefix.strip('/')}/index.json",
         "consoleUrl": _console_url(bucket, prefix, region),
+        "indexConsoleUrl": _console_object_url(bucket, f"{prefix.strip('/')}/index.html", region),
+        "manifestConsoleUrl": _console_object_url(bucket, f"{prefix.strip('/')}/index.json", region),
+        "caseConsoleUrls": case_urls,
         "objectCount": str(len(uploaded)),
     }
 
@@ -644,7 +752,7 @@ def _finalize_private_review(
     identity = {
         key: initial_index.get(key)
         for key in (
-            "schemaVersion", "candidateId", "artifactSha256", "packageManifest",
+            "schemaVersion", "candidateId", "artifactSha256", "promptFileSha256", "packageManifest",
             "suiteSha256", "caseIdentities", "evaluatorSha256", "experimentId", "reportIdentities",
         )
     }
@@ -699,7 +807,7 @@ def verify_private_review(review_root: str | Path, *, manifest_sha256: str | Non
     if not isinstance(index, Mapping):
         raise ValueError("private review index is malformed")
     expected_keys = (
-        "schemaVersion", "candidateId", "artifactSha256", "packageManifest",
+        "schemaVersion", "candidateId", "artifactSha256", "promptFileSha256", "packageManifest",
         "suiteSha256", "caseIdentities", "evaluatorSha256", "experimentId", "reportIdentities",
         "runtimeConfigurationSha256", "sourceOrigin", "runtimeOrigin", "runtime", "tooling", "snapshot",
         "canonicalRecordSha256", "showExperimentSha256", "policy", "github", "contentFiles",
@@ -719,6 +827,9 @@ def verify_private_review(review_root: str | Path, *, manifest_sha256: str | Non
         raise ValueError("private review GitHub/package identity is missing")
     if github.get("headSha") != package_manifest.get("sourceRevision"):
         raise ValueError("private review GitHub head differs from package revision")
+    prompt_file_sha256 = index.get("promptFileSha256")
+    if not isinstance(prompt_file_sha256, str) or not SHA256_RE.fullmatch(prompt_file_sha256):
+        raise ValueError("private review packaged prompt.py identity is missing")
     for key in ("runId", "runAttempt"):
         if github.get(key) is not None and (not str(github[key]).isdigit() or int(github[key]) <= 0):
             raise ValueError(f"private review GitHub {key} is malformed")
@@ -744,6 +855,17 @@ def verify_private_review(review_root: str | Path, *, manifest_sha256: str | Non
         raw = _read_file(root / "inputs" / name, f"private {name}")
         if not isinstance(expected, str) or sha256_bytes(raw) != expected:
             raise ValueError(f"private {name} digest differs")
+    package_manifest_from_zip, package_sha256, prompt_file_sha256_from_zip = _load_manifest_from_zip(root / "inputs" / "runtime.zip")
+    if package_sha256 != index.get("artifactSha256") or package_manifest_from_zip != package_manifest:
+        raise ValueError("private Runtime ZIP manifest differs")
+    if prompt_file_sha256_from_zip != prompt_file_sha256:
+        raise ValueError("private packaged prompt.py digest differs")
+    prompt_bytes = _read_file(root / "inputs" / "prompt.py", "private packaged prompt.py")
+    if sha256_bytes(prompt_bytes) != prompt_file_sha256:
+        raise ValueError("private packaged prompt.py content differs")
+    runtime_sources = package_manifest.get("runtimeSourceFiles")
+    if not isinstance(runtime_sources, Mapping) or runtime_sources.get("prompt.py") != prompt_file_sha256:
+        raise ValueError("private Runtime manifest prompt.py identity differs")
     native_record = _read_json(root / "native" / "experiment-record.json", "native experiment record")
     native_show = _read_json(root / "native" / "show-experiment.json", "native show output")
     native_attestation = _read_json(root / "native" / "attestation.json", "native package attestation")
@@ -758,6 +880,7 @@ def verify_private_review(review_root: str | Path, *, manifest_sha256: str | Non
         native_record,
         native_show,
         artifact_sha256=str(index.get("artifactSha256")),
+        effective_prompt_sha256=str(package_manifest.get("promptSha256")),
     )
     if sha256_json(index.get("policy")) != sha256_json(_read_json(root / "native" / "policy.json", "release policy")):
         raise ValueError("private release policy identity differs")
@@ -805,8 +928,6 @@ def build_qualification(
     candidate_id: str = CANDIDATE_ID,
     wait_seconds: int = 300,
     model_session: Any = None,
-    source_run: str | Path | None = None,
-    source_directory: str | Path | None = None,
     runtime_configuration: Mapping[str, Any] | None = None,
     source_revision: str | None = None,
     runtime_name: str = "IncidentTriageDemoAgent",
@@ -830,7 +951,7 @@ def build_qualification(
     suite = Path(suite_path).resolve()
     evaluator = Path(evaluator_path).resolve()
     private = _private_root(Path(output_root).resolve())
-    package_manifest, artifact_sha256 = _load_manifest_from_zip(zip_path)
+    package_manifest, artifact_sha256, prompt_file_sha256 = _load_manifest_from_zip(zip_path)
     roster, suite_descriptor, suite_sha256 = _load_roster(suite)
     evaluator_raw = _read_file(evaluator, "evaluator descriptor")
     evaluator_sha256 = sha256_bytes(evaluator_raw)
@@ -869,14 +990,6 @@ def build_qualification(
         "model_session": model_session,
         "wait_seconds": wait_seconds,
     }
-    # Keep the handoff compatible with the native package runner while it is
-    # being delivered alongside this gate: optional source handoff controls
-    # are passed only when that runner exposes them.
-    parameters = inspect.signature(run_package).parameters
-    if source_run is not None and "source_run" in parameters:
-        run_kwargs["source_run"] = source_run
-    if source_directory is not None and "source_directory" in parameters:
-        run_kwargs["source_directory"] = source_directory
     experiment_dir = Path(run_package(**run_kwargs)).resolve()
     show = getattr(development_experiment, "show_experiment", None)
     if not callable(show):
@@ -890,6 +1003,7 @@ def build_qualification(
         canonical_record,
         shown,
         artifact_sha256=artifact_sha256,
+        effective_prompt_sha256=package_manifest["promptSha256"],
     )
     rows = shown.get("cases")
     if not isinstance(rows, Sequence) or isinstance(rows, (str, bytes, bytearray)):
@@ -914,6 +1028,7 @@ def build_qualification(
         runtime_zip=zip_path,
         artifact_sha256=artifact_sha256,
         package_manifest=package_manifest,
+        prompt_file_sha256=prompt_file_sha256,
         runtime_configuration_sha256=sha256_json(configuration),
         experiment_dir=experiment_dir,
         experiment_record=canonical_record,
@@ -924,6 +1039,11 @@ def build_qualification(
     # make offline tamper/replay checks independent of the checkout.
     inputs_dir = review_root / "inputs"
     _copy_private(zip_path, inputs_dir / "runtime.zip", "Runtime ZIP")
+    with zipfile.ZipFile(io.BytesIO(_read_file(zip_path, "Runtime ZIP"))) as archive:
+        packaged_prompt = archive.read("prompt.py")
+    if sha256_bytes(packaged_prompt) != prompt_file_sha256:
+        raise ValueError("Runtime ZIP prompt.py digest changed during qualification")
+    _write_private(inputs_dir / "prompt.py", packaged_prompt)
     _copy_private(suite, inputs_dir / "suite.json", "reviewed suite")
     _copy_private(evaluator, inputs_dir / "evaluator.json", "evaluator descriptor")
     # The native experiment is already private, but retaining it under the
@@ -946,6 +1066,8 @@ def build_qualification(
         "runId": os.environ.get("GITHUB_RUN_ID"),
         "runAttempt": os.environ.get("GITHUB_RUN_ATTEMPT"),
         "headSha": os.environ.get("GITHUB_SHA") or package_manifest.get("sourceRevision"),
+        "repositoryOwner": os.environ.get("GITHUB_REPOSITORY_OWNER"),
+        "repository": os.environ.get("GITHUB_REPOSITORY"),
         "workflow": os.environ.get("GITHUB_WORKFLOW"),
         "ref": os.environ.get("GITHUB_REF"),
     }
@@ -992,7 +1114,20 @@ def build_qualification(
     )
     if artifact_value.get("sha256") != artifact_sha256:
         raise ValueError("serving artifact descriptor digest differs from the checked ZIP")
-    source_value = dict(source_spec) if isinstance(source_spec, Mapping) else {"sha256": package_manifest.get("promptSha256"), "path": "inputs/prompt.py"}
+    source_value = dict(source_spec) if isinstance(source_spec, Mapping) else {}
+    declared_source_sha = source_value.get("sha256")
+    if declared_source_sha is not None and declared_source_sha != prompt_file_sha256:
+        raise ValueError("source descriptor sha256 must identify the packaged prompt.py bytes")
+    declared_effective_sha = source_value.get("effectivePromptSha256")
+    if declared_effective_sha is not None and declared_effective_sha != package_manifest.get("promptSha256"):
+        raise ValueError("source descriptor effectivePromptSha256 differs from the schema-v2 package manifest")
+    source_value.update(
+        {
+            "sha256": prompt_file_sha256,
+            "effectivePromptSha256": package_manifest["promptSha256"],
+            "path": source_value.get("path", "inputs/prompt.py"),
+        }
+    )
     configuration_value = dict(configuration_spec) if isinstance(configuration_spec, Mapping) else {
         "sha256": sha256_json(configuration),
         "path": "inputs/runtime-configuration.json",
@@ -1000,7 +1135,7 @@ def build_qualification(
     receipt: dict[str, Any] = {
         "schemaVersion": SCHEMA_VERSION,
         "status": {
-            "review_required": "eligible",
+            "review_required": "review_required",
             "reject": "rejected",
             "incomplete": "incomplete",
         }.get(decision.get("verdict"), "incomplete"),
@@ -1011,6 +1146,7 @@ def build_qualification(
         "runtimeName": runtime_name,
         "sourceRevision": package_manifest["sourceRevision"],
         "promptSha256": package_manifest["promptSha256"],
+        "promptFileSha256": prompt_file_sha256,
         "modelId": evaluator_descriptor.get("judgeModelId"),
         "alarmArn": alarm_value,
         "artifact": artifact_value,
@@ -1048,9 +1184,20 @@ def build_qualification(
         "privateReview": {"path": str(review_root), "index": "index.html", "manifest": "index.json"},
         "createdAt": _now(),
     }
+    if artifact_spec is not None:
+        # The serving key is known before human review. Only the protected
+        # publisher can write it and obtain its immutable S3 VersionId.
+        receipt["servingArtifact"] = {
+            "bucket": "cdk-evaltalk-assets-027224425948-us-east-1",
+            "key": f"agent-qualified/{artifact_sha256}.zip",
+        }
+    remote_prefix = None
     if bucket:
-        remote_prefix = prefix or f"{DEFAULT_PREFIX}/{manifest_sha256}"
+        remote_prefix = _review_s3_prefix(prefix, manifest_sha256=manifest_sha256, github=github)
+        _render_browser_index(review_root, review_index, bucket=bucket, prefix=remote_prefix, region=region)
         receipt["privateReview"]["s3"] = _upload_private_bundle(review_root, bucket=bucket, prefix=remote_prefix, region=region)
+    else:
+        _render_browser_index(review_root, review_index, bucket=None, prefix=None, region=region)
     receipt_path = private / "repaired-qualification.json"
     summary_path = private / "qualification-summary.json"
     receipt["safeSummaryPath"] = str(summary_path)
@@ -1068,6 +1215,8 @@ def build_qualification(
         "verdict": receipt.get("verdict"),
         "candidateId": CANDIDATE_ID,
         "sourceRevision": receipt.get("sourceRevision"),
+        "promptSha256": receipt.get("promptSha256"),
+        "promptFileSha256": receipt.get("promptFileSha256"),
         "artifactSha256": artifact_sha256,
         "suiteSha256": suite_sha256,
         "evaluatorSha256": evaluator_sha256,
@@ -1086,7 +1235,7 @@ def build_qualification(
         )
     # A receipt is itself an authenticated input to the publisher.  Reopen it
     # and check its digest before returning, so a partial local write cannot be
-    # reported as an eligible handoff.
+    # reported as a successful machine review.
     reopened = _read_json(receipt_path, "qualification receipt")
     if not isinstance(reopened, Mapping) or reopened.get("reviewManifestSha256") != manifest_sha256:
         raise RuntimeError("qualification receipt readback does not match the review manifest")
@@ -1139,8 +1288,8 @@ def verify_private_clearance(
         qualification = _read_json(Path(qualification_path), "qualification receipt")
         if not isinstance(qualification, Mapping):
             raise ValueError("qualification receipt is malformed")
-        if qualification.get("status") != "eligible":
-            raise ValueError("qualification is not eligible")
+        if qualification.get("status") not in {"review_required", "eligible"}:
+            raise ValueError("qualification is not a successful machine review")
         if qualification.get("reviewManifestSha256") != manifest:
             raise ValueError("qualification manifest differs from private review")
         artifact = qualification.get("artifact")
@@ -1152,8 +1301,14 @@ def verify_private_clearance(
         if not isinstance(suite, Mapping) or suite.get("sha256") != index.get("suiteSha256"):
             raise ValueError("qualification suite differs from private review")
         package_manifest = index.get("packageManifest")
-        if not isinstance(source, Mapping) or not isinstance(package_manifest, Mapping) or source.get("sha256") != package_manifest.get("promptSha256"):
-            raise ValueError("qualification source differs from private package identity")
+        if not isinstance(source, Mapping) or not isinstance(package_manifest, Mapping):
+            raise ValueError("qualification source or private package identity is missing")
+        if source.get("sha256") != index.get("promptFileSha256"):
+            raise ValueError("qualification source does not identify the packaged prompt.py bytes")
+        if source.get("effectivePromptSha256") != package_manifest.get("promptSha256"):
+            raise ValueError("qualification source effective prompt digest differs from the schema-v2 package manifest")
+        if qualification.get("promptSha256") != package_manifest.get("promptSha256"):
+            raise ValueError("qualification effective prompt digest differs from the private package identity")
         if not isinstance(evaluator, Mapping) or evaluator.get("sha256") != index.get("evaluatorSha256"):
             raise ValueError("qualification evaluator differs from private review")
         case_ids = index.get("caseIdentities")
@@ -1214,8 +1369,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--configuration-spec", type=Path)
     parser.add_argument("--adapter", type=Path)
     parser.add_argument("--controller", type=Path)
-    parser.add_argument("--source-run", type=Path)
-    parser.add_argument("--source-directory", type=Path)
     parser.add_argument("--source-revision")
     parser.add_argument("--runtime-name", default="IncidentTriageDemoAgent")
     parser.add_argument("--alarm-arn", default=os.environ.get("PHASE20_ALARM_ARN"))
@@ -1264,8 +1417,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             evaluator_path=args.evaluator,
             output_root=args.output_root,
             wait_seconds=args.wait_seconds,
-            source_run=args.source_run,
-            source_directory=args.source_directory,
             runtime_configuration=configuration,
             artifact_spec=artifact_spec,
             source_spec=source_spec,
@@ -1286,6 +1437,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "verdict": receipt.get("verdict"),
             "candidateId": receipt.get("candidateId"),
             "sourceRevision": receipt.get("sourceRevision"),
+            "promptSha256": receipt.get("promptSha256"),
+            "promptFileSha256": receipt.get("promptFileSha256"),
             "artifactSha256": receipt.get("artifact", {}).get("sha256"),
             "suiteSha256": receipt.get("suite", {}).get("sha256"),
             "evaluatorSha256": receipt.get("evaluator", {}).get("sha256"),
@@ -1294,7 +1447,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             "privateReview": receipt.get("privateReview", {}).get("s3", {}),
         }
         print(json.dumps(safe, sort_keys=True))
-        return 0 if receipt.get("status") == "eligible" else 1 if receipt.get("status") == "rejected" else 2
+        return 0 if receipt.get("status") in {"review_required", "eligible"} else 1 if receipt.get("status") == "rejected" else 2
     except (OSError, ValueError, TypeError, RuntimeError) as exc:
         print(json.dumps({"status": "error", "reason": f"{type(exc).__name__}: {exc}"}, sort_keys=True))
         return 2
