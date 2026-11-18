@@ -390,6 +390,12 @@ function verifiedAlarmSelection(value: AlarmResponse | undefined): AgentSelectio
   return selection;
 }
 
+function sameSelectionIdentity(left: AgentSelection | undefined, right: AgentSelection | undefined): boolean {
+  return Boolean(left && right && left.candidateId === right.candidateId && left.endpointName === right.endpointName &&
+    left.endpointArn === right.endpointArn && left.runtimeArn === right.runtimeArn && left.runtimeVersion === right.runtimeVersion &&
+    left.artifactSha256 === right.artifactSha256 && left.sourceRevision === right.sourceRevision && left.promptSha256 === right.promptSha256);
+}
+
 function selectionDigest(value: AgentSelection | undefined, field: "artifactSha256" | "sourceRevision" | "promptSha256"): string {
   return value?.[field] ?? "Not recorded";
 }
@@ -727,6 +733,7 @@ export function App() {
   const [configurationSubmitting, setConfigurationSubmitting] = useState(false);
   const polling = useRef<number | undefined>(undefined);
   const alarmPolling = useRef<number | undefined>(undefined);
+  const alarmReadSequence = useRef(0);
   const investigationPolling = useRef<number | undefined>(undefined);
   const resetPanelHeading = useRef<HTMLHeadingElement>(null);
   const resetStatusHeading = useRef<HTMLHeadingElement>(null);
@@ -761,18 +768,20 @@ export function App() {
   const loadAlarm = useCallback(async () => {
     const epoch = sessionEpoch.current;
     if (!bearer || alarmPolling.current === epoch) return;
+    const readSequence = alarmReadSequence.current + 1;
+    alarmReadSequence.current = readSequence;
     alarmPolling.current = epoch;
     try {
       const response = await fetch("/api/alarm", { headers: { Authorization: `Bearer ${bearer}`, Accept: "application/json" }, cache: "no-store", signal: AbortSignal.timeout(8_000) });
       const body = await readAlarm(response);
-      if (epoch === sessionEpoch.current) {
+      if (epoch === sessionEpoch.current && readSequence === alarmReadSequence.current) {
         setAlarm(body);
         const verified = verifiedAlarmSelection(body);
         if (verified) setLastVerifiedAgentSelection({ selection: verified, observedAt: body.observedAt });
         setAlarmReadFailed(false);
       }
     } catch {
-      if (epoch === sessionEpoch.current) setAlarmReadFailed(true);
+      if (epoch === sessionEpoch.current && readSequence === alarmReadSequence.current) setAlarmReadFailed(true);
     } finally {
       if (alarmPolling.current === epoch) alarmPolling.current = undefined;
     }
@@ -978,6 +987,7 @@ export function App() {
         if (isConfiguration) setPendingConfigurationCommand(undefined);
         else setPendingCommand(undefined);
         if (command.kind === "select_agent" && action.status === "completed" && verifiedSelection(action.agentSelection)) {
+          alarmReadSequence.current += 1;
           setLastVerifiedAgentSelection({ selection: action.agentSelection, observedAt: action.agentSelection.selectedAt });
         }
         if (command.kind === "readiness" || command.kind === "recover") setReadinessConfirmed(false);
@@ -1046,7 +1056,7 @@ export function App() {
       if (sessionEpoch.current === epoch) setNotice({ kind: "error", message: error instanceof Error ? error.message : "The presenter credential was rejected." });
     } finally { if (sessionEpoch.current === epoch) setLoading(false); }
   };
-  const signOut = () => { sessionEpoch.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setInvestigations(undefined); setInvestigationReadFailedAt(undefined); setPendingCommand(undefined); setPendingConfigurationCommand(undefined); setConfigurationSubmitting(false); setInventoryMemorySelection(undefined); setInventoryCapacityTarget("32"); setAgentSelectionChoice(undefined); setLastVerifiedAgentSelection(undefined); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setProtectiveRecoveryConfirmed(false); setResetConfirmationOpen(false); setResetQuietConfirmed(false); setResetDataConfirmed(false); setResetCheckoutClosedConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
+  const signOut = () => { sessionEpoch.current += 1; alarmReadSequence.current += 1; setBearer(""); setState(undefined); setAlarm(undefined); setAlarmReadFailed(false); setInvestigations(undefined); setInvestigationReadFailedAt(undefined); setPendingCommand(undefined); setPendingConfigurationCommand(undefined); setConfigurationSubmitting(false); setInventoryMemorySelection(undefined); setInventoryCapacityTarget("32"); setAgentSelectionChoice(undefined); setLastVerifiedAgentSelection(undefined); setReadinessConfirmed(false); setProtectiveRestoreConfirmed(false); setProtectiveRecoveryConfirmed(false); setResetConfirmationOpen(false); setResetQuietConfirmed(false); setResetDataConfirmed(false); setResetCheckoutClosedConfirmed(false); setLastObservedAt(undefined); setPollFailure(undefined); setNotice(undefined); setLoading(false); };
   const runReadiness = () => { if (!resetRequired && readinessConfirmed) void sendAction(crypto.randomUUID(), { kind: "readiness", confirmQuiet: true }); };
   const runTraffic = () => { if (!resetRequired && !resetInProgress && trafficStartAllowed) void sendAction(crypto.randomUUID(), { kind: "traffic" }); };
   const runInventorySurge = () => {
@@ -1113,7 +1123,8 @@ export function App() {
   const nativeAlarmSelection = verifiedAlarmSelection(alarm);
   const nativeSelectionUnavailable = alarmReadFailed || Boolean(alarm?.agentEndpoint &&
     alarm.agentEndpoint.state !== "ready" && alarm.agentEndpoint.state !== "unconfigured") ||
-    Boolean(alarm?.agentEndpoint?.state === "ready" && !nativeAlarmSelection);
+    Boolean(alarm?.agentEndpoint?.state === "ready" && (!nativeAlarmSelection ||
+      (lastVerifiedAgentSelection && !sameSelectionIdentity(nativeAlarmSelection, lastVerifiedAgentSelection.selection))));
   const selectedAgentReadUnavailable = state?.selectedAgentObservation?.state === "unavailable";
   const selectionStatus: AgentSelectionStatus = !lastVerifiedAgentSelection
     ? alarm?.agentEndpoint?.state === "unconfigured" && !selectedAgentReadUnavailable ? "unconfigured"
@@ -1123,7 +1134,13 @@ export function App() {
         : "verified";
   const selectionAction = configurationAction?.kind === "select_agent" ? configurationAction : undefined;
   const selectionBusy = Boolean(selectionAction && activeStatuses.has(selectionAction.status));
-  const selectionReadUnavailable = selectionStatus === "stale" || selectionStatus === "unavailable";
+  // A stale/unready endpoint is not a reason to trap the presenter: an
+  // explicit candidate selection can repair that binding, and the worker will
+  // verify the requested target before writing AGENT_SELECTION. Other stale
+  // controller reads still block mutation because settled state is unknown.
+  const canRepairNativeSelection = !alarmReadFailed && alarmObservation?.state === "OK" && Boolean(alarm?.agentEndpoint) &&
+    (alarm?.agentEndpoint?.state !== "ready" || Boolean(alarm?.agentEndpoint?.state === "ready" && !nativeAlarmSelection));
+  const selectionReadUnavailable = selectionStatus === "stale" || (selectionStatus === "unavailable" && !canRepairNativeSelection);
   const agentSelectionDisabled = resetRequired || configurationBusy || actionBusy || selectionBusy || !baseline ||
     Boolean(state?.unresolved.length) || !alarmObservation || selectionReadUnavailable || alarmObservation.state !== "OK" ||
     freshness(alarmObservation.observedAt) === "Stale";
