@@ -8,6 +8,8 @@
     "assetSha256": "PHASE22_ASSET_SHA256",
     "s2Run": "PHASE22_S2_RUN",
     "s2CaptureReceipt": "PHASE22_S2_CAPTURE_RECEIPT",
+    "gateSelection": "PHASE22_GATE_SELECTION",
+    "gateArchive": "selected gate archive under assetRoot; extracted to a private temporary directory",
     "s3RunRoot": "PHASE22_S3_RUN_ROOT",
     "s3BaselineRoot": "PHASE22_S3_BASELINE_ROOT",
     "reviewedCase": "PHASE22_REVIEWED_CASE",

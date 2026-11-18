@@ -33,22 +33,48 @@ SHA-256 `8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8`.
 The files remain private and their physical locations are selected by the
 index.
 
-For the portable session-a archive, the same values can be resolved directly
-without an internal session-directory assumption:
+The maintained Phase 22 preparation exports `asset_extract` for the verified
+portable session-a asset and `PHASE22_ASSET_SHA256` from its receipt. Do not
+re-extract an archive inside this stage or substitute an older archive:
 
 ```sh
-export PHASE22_AUDIENCE_ARCHIVE="/private/path/phase22-session-a-audience-full.tar.gz"
-printf '%s  %s\n' \
-  87447304deb0f8617434d8dcd6c530e20e7425035024e8cefb7db9340402d032 \
-  "$PHASE22_AUDIENCE_ARCHIVE" | sha256sum -c -
-asset_extract="$(mktemp -d "$PHASE22_PRIVATE_ROOT/s3/archive.XXXXXX")"
-tar -xzf "$PHASE22_AUDIENCE_ARCHIVE" -C "$asset_extract"
-(cd "$asset_extract" && sha256sum -c SHA256SUMS)
+: "${asset_extract:?run maintained Phase 22 asset preparation first}"
+: "${PHASE22_ASSET_SHA256:?read from session-audience-full-final-s3-receipt.json}"
+test -d "$asset_extract"
+printf 'Using verified Phase 22 asset %s\n' "$PHASE22_ASSET_SHA256"
+
+mkdir -p "$PHASE22_PRIVATE_ROOT/s3"
+export PHASE22_GATE_SELECTION="${PHASE22_GATE_SELECTION:-stock}" # stock|carried
+gate_extract="$(mktemp -d "$PHASE22_PRIVATE_ROOT/s3/gate.XXXXXX")"
+case "$PHASE22_GATE_SELECTION" in
+  stock)
+    gate_archive="$asset_extract/gate/stock-staging.tar.gz"
+    case_rel=staging/cases/denial.frozen.json
+    bundle_rel=staging/bundles/denial.json
+    ;;
+  carried)
+    gate_archive="$asset_extract/gate/staging.tar.gz"
+    case_rel=staging/cases/audience-denial.frozen.json
+    bundle_rel=staging/bundles/audience-denial.json
+    ;;
+  *) echo "PHASE22_GATE_SELECTION must be stock or carried" >&2; exit 2 ;;
+esac
+test -s "$gate_archive"
+tar -xzf "$gate_archive" -C "$gate_extract"
+export PHASE22_REVIEWED_CASE="$gate_extract/$case_rel"
+export PHASE22_SOURCE_BUNDLE="$gate_extract/$bundle_rel"
+export PHASE18_EVALUATOR="$gate_extract/staging/evaluator.json"
 export PHASE22_S2_RUN="$asset_extract/s2/run/e3f934af-6af9-42aa-ac78-b315133e1571"
-export PHASE22_REVIEWED_CASE="$asset_extract/prepared/denial.frozen.json"
-export PHASE22_SOURCE_BUNDLE="$asset_extract/prepared/denial.json"
-export PHASE18_EVALUATOR="$asset_extract/s2/evaluator.json"
+export PHASE22_S2_CAPTURE_RECEIPT="$asset_extract/s2/capture-receipt.json"
+test -s "$PHASE22_REVIEWED_CASE" "$PHASE22_SOURCE_BUNDLE" "$PHASE18_EVALUATOR"
 ```
+
+The archive's `s3/run/295cd070-07e8-4f69-b8ce-c588a74fab42` is an archived
+offline-show result only. It is never a source run for a fresh S3 execution;
+record the new directory printed by the command below as `PHASE22_S3_RUN`.
+The carried option means the carried four-case gate is selected; the stock
+option is the default three-case gate. Keep the selected case, bundle, and
+evaluator together.
 
 ## Install and verify
 
@@ -126,6 +152,11 @@ uv run --project agent --locked python agent/evaluate_case.py score \
 uv run --offline --project agent --locked python agent/evaluate_case.py compare \
   --baseline "$PHASE22_BASELINE_RUN" --candidate "$PHASE22_S3_RUN"
 ```
+
+For the baseline helper, use the same selected case, bundle, evaluator, lock,
+model, and capture policy as the repaired run. A changed gate selection is a
+new candidate and requires a new baseline; do not pair a stock result with a
+carried baseline.
 
 The semantic verdict is advisory feedback. A changed lock, replay clock, case,
 model, evaluator, or policy creates a distinct candidate and cannot be bridged

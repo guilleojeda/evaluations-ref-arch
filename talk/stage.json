@@ -36,6 +36,21 @@
   "inputs": {
     "kind": "fresh-repaired-candidate-against-matching-reviewed-case",
     "privateIndexEnv": "PHASE22_INPUT_INDEX",
+    "asset": {
+      "rootVariable": "asset_extract",
+      "sha256Env": "PHASE22_ASSET_SHA256",
+      "sessionId": "session-audience-full-final-s3",
+      "gateSelectionEnv": "PHASE22_GATE_SELECTION",
+      "gateArchives": {
+        "stock": "gate/stock-staging.tar.gz",
+        "carried": "gate/staging.tar.gz"
+      },
+      "selectedPaths": {
+        "case": "staging/cases/{denial.frozen.json|audience-denial.frozen.json}",
+        "bundle": "staging/bundles/{denial.json|audience-denial.json}",
+        "evaluator": "staging/evaluator.json"
+      }
+    },
     "caseId": "phase14.denied-inventory-read.prepared",
     "caseSha256": "cb1480066a46f258ee8d9e27355d50b9bd05f171ee9ef84a169989f72af5e18d",
     "bundleSha256": "8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8",
