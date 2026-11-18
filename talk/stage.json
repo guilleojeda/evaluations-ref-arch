@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "stage": "S1",
+  "stage": "S2",
   "candidateId": "faulty",
   "candidateDefault": "faulty",
   "prompt": {
@@ -10,8 +10,15 @@
     "promptSha256": "161aa4357b908cffe9691349d01da284411cd5d4689235717525d79e1073fffc"
   },
   "capabilityAnchor": {
-    "revision": "f15548aed8278ee15fd079dc6992bb957d60fd99",
-    "description": "Phase 14 reviewed-case validation, freezing, and public candidate projection"
+    "revision": "57150505eb76eea60d92cf3ac32e4e1b8fbd6cb6",
+    "description": "Phase 16 AgentCore scorer with cutoff-aware evidence and advisory single verdict"
+  },
+  "scorerAnchor": {
+    "revision": "3505ffb39504c07ac333501ec9b81e7ca98c018c",
+    "sourceRevision": "f91055235552c9b2c9cc6a853a016843ccfcfb84",
+    "model": "us.anthropic.claude-sonnet-4-6",
+    "rubric": "single",
+    "verdict": "advisory"
   },
   "runtime": {
     "descriptor": "scripts/faulty-reference.json",
@@ -21,23 +28,31 @@
     "promptSourceSha256": "3d21155b9f9465a0ac11eb9fcaf761bfd19549cf6454ae3ac20c20044d57a9eb"
   },
   "inputs": {
-    "kind": "prepared-private-review-archive",
+    "kind": "saved-faulty-execution-and-matching-review",
     "privateIndexEnv": "PHASE22_INPUT_INDEX",
-    "asset": {
-      "rootVariable": "asset_extract",
-      "sha256Env": "PHASE22_ASSET_SHA256",
-      "sessionId": "phase22-session-a-audience-full-final",
-      "requiredFiles": ["audience/denial-session-draft.json", "prepared/denial.json", "prepared/denial.frozen.json"]
+    "portableArchive": {
+      "env": "PHASE22_AUDIENCE_ARCHIVE",
+      "archiveSha256": "87447304deb0f8617434d8dcd6c530e20e7425035024e8cefb7db9340402d032",
+      "run": "s2/run/e3f934af-6af9-42aa-ac78-b315133e1571",
+      "case": "prepared/denial.frozen.json",
+      "bundle": "prepared/denial.json",
+      "captureReceipt": "s2/capture-receipt.json",
+      "evaluator": "s2/evaluator.json"
     },
-    "caseId": "phase14.denied-inventory-read.session-draft",
-    "caseSha256": "e53d6af51b41ccc4c8056b101f879a19a1e06d5e580cd5658198ddf4cc187266",
+    "caseId": "phase14.denied-inventory-read.prepared",
+    "caseSha256": "cb1480066a46f258ee8d9e27355d50b9bd05f171ee9ef84a169989f72af5e18d",
     "bundleSha256": "8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8",
-    "forbidden": ["new alarm", "model execution", "score", "release gate"]
+    "executionId": "e3f934af-6af9-42aa-ac78-b315133e1571",
+    "scoreAuthorizationSha256": "35bc9bb6f79d8f15b870e8629f686cb388e1400675d0a2416bec3212ac44912c",
+    "scoreAttemptId": "ce3e3a4a-ac3d-42a5-bcad-e7125a21127d",
+    "requires": ["matching case/bundle", "saved report and native trace", "pinned evaluator descriptor", "matching cutoff"],
+    "forbidden": ["agent rerun", "case substitution", "release publication"]
   },
   "entry": {
-    "offlineSmoke": "uv run --offline --project agent --locked python -m py_compile agent/reviewed_cases.py agent/captured_evidence.py",
-    "validate": "uv run --offline --project agent --locked python agent/reviewed_cases.py validate --case \"$PHASE22_REVIEWED_CASE\" --bundle \"$PHASE22_SOURCE_BUNDLE\"",
-    "freeze": "uv run --offline --project agent --locked python agent/reviewed_cases.py freeze --case \"$PHASE22_REVIEWED_CASE\" --bundle \"$PHASE22_SOURCE_BUNDLE\" --output \"$PHASE22_PRIVATE_ROOT/s1/frozen/denial.frozen.json\"",
-    "candidateInput": "uv run --offline --project agent --locked python agent/reviewed_cases.py candidate-input --case \"$PHASE22_PRIVATE_ROOT/s1/frozen/denial.frozen.json\" --bundle \"$PHASE22_SOURCE_BUNDLE\" > \"$PHASE22_PRIVATE_ROOT/s1/denial.candidate-task.json\""
+    "offlineSmoke": "uv run --offline --project agent --locked python -m py_compile agent/evaluate_case.py agent/deterministic_checks.py agent/agentcore_evaluation.py",
+    "show": "uv run --offline --project agent --locked python agent/evaluate_case.py show --run \"$PHASE22_S2_RUN\"",
+    "deterministic": "evaluate_case.py show reopens the saved execution through captured_execution.load_execution, which authenticates native spans and recomputes deterministic findings offline; no tarball is passed to this command",
+    "score": "uv run --project agent --locked python agent/evaluate_case.py score --run \"$PHASE22_S2_RUN\" --evaluator \"$PHASE18_EVALUATOR\" --rubric single --wait-seconds 300",
+    "policy": "show is offline and does not rerun the agent; score is an explicit native advisory scoring attempt and never a release gate."
   }
 }
