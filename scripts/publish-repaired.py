@@ -79,6 +79,8 @@ def _not_found(error: BaseException) -> bool:
         "ResourceNotFoundException",
         "ResourceNotFound",
         "NotFound",
+        "NoSuchKey",
+        "404",
     }
 
 
@@ -375,8 +377,10 @@ def _wait_read(
     *,
     label: str,
     accept: Callable[[Mapping[str, Any]], bool] | None = None,
-    attempts_limit: int = 12,
+    timeout: float = 600.0,
+    attempts_limit: int = 120,
 ) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
     for attempt in range(attempts_limit):
         try:
             value = dict(read())
@@ -389,7 +393,7 @@ def _wait_read(
         status = value.get("status")
         if status is not None and any(token in str(status).upper() for token in ("FAILED", "ERROR")):
             raise RuntimeError(f"{label} failed with status {status}")
-        if attempt + 1 < attempts_limit:
+        if attempt + 1 < attempts_limit and time.monotonic() < deadline:
             time.sleep(5)
     raise RuntimeError(f"timed out or mismatched readback for {label}")
 
@@ -544,11 +548,18 @@ def _ensure_endpoint(
         endpoint = _wait_read(
             lambda: control.get_agent_runtime_endpoint(agentRuntimeId=runtime_id, endpointName=endpoint_name),
             label="repaired AgentCore endpoint",
+            accept=lambda value: _endpoint_matches(value, runtime_arn, expected_arn, version),
         )
     elif endpoint.get("status") != "READY":
         endpoint = _wait_read(
             lambda: control.get_agent_runtime_endpoint(agentRuntimeId=runtime_id, endpointName=endpoint_name),
             label="repaired AgentCore endpoint",
+            accept=lambda value: (
+                value.get("agentRuntimeArn") == runtime_arn
+                and value.get("agentRuntimeEndpointArn") == expected_arn
+                and value.get("status") == "READY"
+                and value.get("targetVersion", value.get("liveVersion")) == value.get("liveVersion")
+            ),
         )
     endpoint = dict(endpoint)
     if endpoint.get("agentRuntimeArn") != runtime_arn or endpoint.get("agentRuntimeEndpointArn") != expected_arn:
@@ -669,64 +680,38 @@ def _with_serving_version(qualification: Mapping[str, Any], version_id: str) -> 
 
 
 def _reconcile_serving_object(s3: Any, target: Mapping[str, Any], expected_body: bytes) -> str | None:
-    """Find and verify a committed version after a prior serving write."""
+    """Find and verify a committed version after a prior serving write.
 
-    versions: list[str] = []
-    head = getattr(s3, "head_object", None)
-    if callable(head):
-        try:
-            response = head(Bucket=target["bucket"], Key=target["key"])
-        except ClientError as error:
-            if not _not_found(error):
-                raise
-        else:
-            value = response.get("VersionId") if isinstance(response, Mapping) else None
-            if isinstance(value, str) and value:
-                versions.append(value)
-    list_versions = getattr(s3, "list_object_versions", None)
-    if callable(list_versions):
-        try:
-            response = list_versions(Bucket=target["bucket"], Prefix=target["key"])
-        except ClientError as error:
-            if not _not_found(error):
-                raise
-        else:
-            rows = response.get("Versions", []) if isinstance(response, Mapping) else []
-            for row in rows:
-                if (
-                    isinstance(row, Mapping)
-                    and row.get("Key") == target["key"]
-                    and row.get("IsLatest")
-                    and isinstance(row.get("VersionId"), str)
-                ):
-                    versions.append(row["VersionId"])
-    for version_id in dict.fromkeys(versions):
-        candidate = dict(target)
-        candidate["versionId"] = version_id
-        body, observed = _download_object(
-            s3, candidate, required_version=True, label="versioned serving Runtime ZIP",
-        )
-        if body != expected_body:
-            raise RuntimeError("existing versioned serving object differs from the staged ZIP")
-        return observed
+    This is called only after a conditional PutObject acknowledgement is lost
+    or reports that the content-addressed key already exists. A preflight
+    HeadObject/ListObjectVersions is deliberately avoided: an absent object
+    can be represented by native S3 as 403/404 under a prefix-conditioned
+    policy, while the conditional write itself is the authoritative first
+    operation.
+    """
 
-    # Some native-shaped transports expose only the current object read.  It
-    # still carries the VersionId required to reconcile a lost PutObject ACK.
+    # A current unversioned GET returns the native VersionId for a versioned
+    # bucket. Fetch that concrete version again so the serving pin and bytes
+    # are independently verified rather than trusting the current response.
     try:
         response = s3.get_object(Bucket=target["bucket"], Key=target["key"])
     except ClientError as error:
         if _not_found(error):
             return None
         raise
-    body = _read_body(response, "versioned serving Runtime ZIP")
-    version_id = str(response.get("VersionId", ""))
+    version_id = response.get("VersionId") if isinstance(response, Mapping) else None
+    if not isinstance(version_id, str) or not version_id:
+        raise RuntimeError("existing serving object has no native S3 VersionId")
+    candidate = dict(target)
+    candidate["versionId"] = version_id
+    body, observed = _download_object(
+        s3, candidate, required_version=True, label="versioned serving Runtime ZIP",
+    )
     if body != expected_body:
         raise RuntimeError("existing versioned serving object differs from the staged ZIP")
-    if not version_id:
-        raise RuntimeError("existing serving object has no native S3 VersionId")
-    if _sha256(body) != target["sha256"]:
-        raise ValueError("versioned serving Runtime ZIP digest differs from the protected receipt")
-    return version_id
+    if observed != version_id:
+        raise RuntimeError("existing serving object VersionId changed during reconciliation")
+    return observed
 
 
 def _stage_versioned_asset(
@@ -741,9 +726,6 @@ def _stage_versioned_asset(
     staged = staging_specs["artifact"]
     if _sha256(staged_body) != staged["sha256"] or staged["sha256"] != artifact["sha256"]:
         raise ValueError("private staged Runtime ZIP differs from the reviewed artifact")
-    existing_version = _reconcile_serving_object(s3, artifact, staged_body)
-    if existing_version:
-        return _with_serving_version(qualification, existing_version)
     try:
         put = s3.put_object(
             Bucket=artifact["bucket"],
@@ -752,11 +734,15 @@ def _stage_versioned_asset(
             IfNoneMatch="*",
             ExpectedBucketOwner=ACCOUNT,
         )
-    except Exception:
+    except Exception as error:
         # The write may have committed before its response was lost.  A strong
-        # native read is authoritative; if it is absent, preserve the original
-        # error and let the next invocation retry/reconcile.
-        recovered = _reconcile_serving_object(s3, artifact, staged_body)
+        # native read is authoritative. It also handles S3's conditional
+        # conflict when another invocation already published this exact key.
+        # Preserve a genuine PutObject/GetObject access error.
+        try:
+            recovered = _reconcile_serving_object(s3, artifact, staged_body)
+        except Exception:
+            raise error
         if recovered:
             return _with_serving_version(qualification, recovered)
         raise

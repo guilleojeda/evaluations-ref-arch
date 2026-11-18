@@ -611,54 +611,15 @@ def _upload_private_bundle(root: Path, *, bucket: str, prefix: str, region: str)
         import boto3
     except ImportError as exc:
         raise RuntimeError("boto3 is required for private evidence upload") from exc
-    from botocore.exceptions import ClientError
 
     client = boto3.Session(region_name=region).client("s3")
-    uploaded: list[str] = []
+    uploaded = []
     for path in sorted(root.rglob("*")):
         if not path.is_file() or path.is_symlink():
             continue
         key = f"{prefix.strip('/')}/{path.relative_to(root).as_posix()}"
-        body = path.read_bytes()
-        digest = sha256_bytes(body)
-        try:
-            client.head_object(Bucket=bucket, Key=key)
-        except ClientError as error:
-            code = str(error.response.get("Error", {}).get("Code", ""))
-            if code not in {"404", "NoSuchKey", "NotFound"}:
-                raise
-            try:
-                client.put_object(
-                    Bucket=bucket,
-                    Key=key,
-                    Body=body,
-                    ServerSideEncryption="AES256",
-                    Metadata={"sha256": digest},
-                    ContentType="text/html" if path.suffix == ".html" else "application/json",
-                    IfNoneMatch="*",
-                )
-            except ClientError as race:
-                race_code = str(race.response.get("Error", {}).get("Code", ""))
-                if race_code not in {"412", "PreconditionFailed"}:
-                    raise
-        else:
-            # This bucket is intentionally unversioned.  Content identity is
-            # the key plus a fresh read/hash, so an existing object is reused
-            # only when its bytes are exactly the requested bytes.
-            existing = client.get_object(Bucket=bucket, Key=key)
-            existing_body = existing.get("Body")
-            if existing_body is None or not hasattr(existing_body, "read") or sha256_bytes(existing_body.read()) != digest:
-                raise RuntimeError(f"private S3 object differs from the requested content: {key}")
-            uploaded.append(key)
-            continue
-        head = client.head_object(Bucket=bucket, Key=key)
-        metadata = {str(k).lower(): str(v) for k, v in (head.get("Metadata") or {}).items()}
-        if metadata.get("sha256") not in {None, digest}:
-            raise RuntimeError(f"private S3 object digest readback differs: {key}")
-        existing = client.get_object(Bucket=bucket, Key=key)
-        existing_body = existing.get("Body")
-        if existing_body is None or not hasattr(existing_body, "read") or sha256_bytes(existing_body.read()) != digest:
-            raise RuntimeError(f"private S3 object content readback differs: {key}")
+        mime = {".html": "text/html", ".json": "application/json"}.get(path.suffix, "application/octet-stream")
+        _put_verified_object(client, bucket, key, path.read_bytes(), mime)
         uploaded.append(key)
     case_urls: dict[str, str] = {}
     index_data = _read_json(root / "index.json", "private review index") if (root / "index.json").is_file() else None
@@ -684,36 +645,27 @@ def _upload_private_bundle(root: Path, *, bucket: str, prefix: str, region: str)
 def _upload_private_object(*, bucket: str, key: str, body: bytes, region: str, content_type: str = "application/json") -> None:
     """Conditionally create one private unversioned S3 object and rehash it."""
 
-    try:
-        import boto3
-        from botocore.exceptions import ClientError
-    except ImportError as exc:
-        raise RuntimeError("boto3 is required for private evidence upload") from exc
+    import boto3
+
     client = boto3.Session(region_name=region).client("s3")
+    _put_verified_object(client, bucket, key, body, content_type)
+
+
+def _put_verified_object(client, bucket: str, key: str, body: bytes, content_type: str) -> None:
+    """Create immutable evidence, or verify the bytes a previous attempt retained."""
+    from botocore.exceptions import ClientError
+
     digest = sha256_bytes(body)
     try:
-        client.head_object(Bucket=bucket, Key=key)
+        client.put_object(
+            Bucket=bucket, Key=key, Body=body, ContentType=content_type,
+            Metadata={"sha256": digest}, ServerSideEncryption="AES256", IfNoneMatch="*",
+        )
     except ClientError as error:
-        code = str(error.response.get("Error", {}).get("Code", ""))
-        if code not in {"404", "NoSuchKey", "NotFound"}:
+        if str(error.response.get("Error", {}).get("Code")) not in {"412", "PreconditionFailed"}:
             raise
-        try:
-            client.put_object(
-                Bucket=bucket,
-                Key=key,
-                Body=body,
-                ServerSideEncryption="AES256",
-                Metadata={"sha256": digest},
-                ContentType=content_type,
-                IfNoneMatch="*",
-            )
-        except ClientError as race:
-            race_code = str(race.response.get("Error", {}).get("Code", ""))
-            if race_code not in {"412", "PreconditionFailed"}:
-                raise
     existing = client.get_object(Bucket=bucket, Key=key)
-    existing_body = existing.get("Body")
-    if existing_body is None or not hasattr(existing_body, "read") or sha256_bytes(existing_body.read()) != digest:
+    if sha256_bytes(existing["Body"].read()) != digest:
         raise RuntimeError(f"private S3 object content readback differs: {key}")
 
 
@@ -791,6 +743,47 @@ def _finalize_private_review(
     return index, manifest_sha256
 
 
+def _verify_manifest_identity(index: Mapping, manifest_sha256: str | None) -> str:
+    expected_keys = (
+        "schemaVersion", "candidateId", "artifactSha256", "promptFileSha256", "packageManifest",
+        "suiteSha256", "caseIdentities", "evaluatorSha256", "experimentId", "reportIdentities",
+        "runtimeConfigurationSha256", "sourceOrigin", "runtimeOrigin", "runtime", "tooling", "snapshot",
+        "canonicalRecordSha256", "showExperimentSha256", "policy", "github", "contentFiles",
+    )
+    identity = {key: index.get(key) for key in expected_keys}
+    actual_manifest = sha256_json(identity)
+    expected_manifest = index.get("manifestSha256")
+    if not isinstance(expected_manifest, str) or actual_manifest != expected_manifest:
+        raise ValueError("private review manifest digest differs")
+    if manifest_sha256 is not None and manifest_sha256 != expected_manifest:
+        raise ValueError("private review manifest is not the expected qualification")
+    return expected_manifest
+
+
+def fetch_private_review(client, bucket: str, prefix: str, root: Path, expected_manifest: str) -> None:
+    """Read exactly the approved keys, without bucket enumeration."""
+    if not SHA256_RE.fullmatch(expected_manifest):
+        raise ValueError("a valid expected manifest is required")
+    _private_root(root)
+    key_root = prefix.rstrip("/") + "/"
+
+    def read(name: str) -> bytes:
+        return client.get_object(Bucket=bucket, Key=key_root + name)["Body"].read()
+
+    raw_index = read("index.json")
+    index = json.loads(raw_index)
+    _verify_manifest_identity(index, expected_manifest)
+    _write_private(root / "index.json", raw_index)
+    for name, digest in index["contentFiles"].items():
+        path = Path(name)
+        if path.is_absolute() or ".." in path.parts or path.as_posix() != name:
+            raise ValueError("private review contains an invalid path")
+        body = read(name)
+        if sha256_bytes(body) != digest:
+            raise ValueError("downloaded private review content differs")
+        _write_private(root / path, body)
+
+
 def verify_private_review(review_root: str | Path, *, manifest_sha256: str | None = None) -> dict[str, Any]:
     """Reverify a persisted browser bundle without model or AWS access.
 
@@ -806,19 +799,7 @@ def verify_private_review(review_root: str | Path, *, manifest_sha256: str | Non
     index = _read_json(root / "index.json", "private review index")
     if not isinstance(index, Mapping):
         raise ValueError("private review index is malformed")
-    expected_keys = (
-        "schemaVersion", "candidateId", "artifactSha256", "promptFileSha256", "packageManifest",
-        "suiteSha256", "caseIdentities", "evaluatorSha256", "experimentId", "reportIdentities",
-        "runtimeConfigurationSha256", "sourceOrigin", "runtimeOrigin", "runtime", "tooling", "snapshot",
-        "canonicalRecordSha256", "showExperimentSha256", "policy", "github", "contentFiles",
-    )
-    identity = {key: index.get(key) for key in expected_keys}
-    actual_manifest = sha256_json(identity)
-    expected_manifest = index.get("manifestSha256")
-    if not isinstance(expected_manifest, str) or actual_manifest != expected_manifest:
-        raise ValueError("private review manifest digest differs")
-    if manifest_sha256 is not None and manifest_sha256 != expected_manifest:
-        raise ValueError("private review manifest is not the expected qualification")
+    expected_manifest = _verify_manifest_identity(index, manifest_sha256)
     if index.get("candidateId") != CANDIDATE_ID:
         raise ValueError("private review candidate is not repaired")
     github = index.get("github")
@@ -1358,7 +1339,7 @@ def verify_private_clearance(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", nargs="?", choices=("qualify", "verify-private"), default="qualify")
+    parser.add_argument("command", nargs="?", choices=("qualify", "fetch-private", "verify-private"), default="qualify")
     parser.add_argument("--runtime-zip", type=Path)
     parser.add_argument("--suite", type=Path)
     parser.add_argument("--evaluator", type=Path)
@@ -1387,6 +1368,13 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.command == "fetch-private":
+            import boto3
+            if not all((args.bucket, args.prefix, args.review_root, args.expected_manifest)):
+                raise ValueError("fetch-private requires bucket, prefix, review root and manifest")
+            s3 = boto3.Session(region_name=args.region).client("s3")
+            fetch_private_review(s3, args.bucket, args.prefix, args.review_root, args.expected_manifest)
+            return 0
         if args.command == "verify-private":
             if args.review_root is None or args.clearance_output is None:
                 raise ValueError("verify-private requires --review-root and --clearance-output")

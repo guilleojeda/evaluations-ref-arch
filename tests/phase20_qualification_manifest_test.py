@@ -6,6 +6,7 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -39,6 +40,12 @@ def load_qualifier():
 
 class QualificationManifestTests(unittest.TestCase):
     def setUp(self) -> None:
+        # The synthetic ZIP and simulated workflow run are created together.
+        # A surrounding PR check has a different real GitHub head.
+        self.enterContext(patch.dict(os.environ, {
+            "GITHUB_SHA": "a" * 40, "GITHUB_RUN_ID": "101", "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_REPOSITORY_OWNER": "example", "GITHUB_REPOSITORY": "example/demo",
+        }))
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.qualify = load_qualifier()
@@ -336,17 +343,15 @@ class QualificationManifestTests(unittest.TestCase):
                 self.objects = {}
                 self.puts = []
 
-            def head_object(self, **request):
-                if (request["Bucket"], request["Key"]) not in self.objects:
-                    raise ClientError({"Error": {"Code": "404"}}, "HeadObject")
-                return {"Metadata": {"sha256": hashlib.sha256(self.objects[(request["Bucket"], request["Key"])]).hexdigest()}}
-
             def get_object(self, **request):
                 return {"Body": Body(self.objects[(request["Bucket"], request["Key"])])}
 
             def put_object(self, **request):
+                key = (request["Bucket"], request["Key"])
+                if request.get("IfNoneMatch") == "*" and key in self.objects:
+                    raise ClientError({"Error": {"Code": "PreconditionFailed"}}, "PutObject")
                 self.puts.append(request)
-                self.objects[(request["Bucket"], request["Key"])] = request["Body"]
+                self.objects[key] = request["Body"]
                 return {}
 
         fake_s3 = S3()

@@ -103,6 +103,7 @@ class NativeControl:
     ):
         self.expected = expected
         self.calls: list[tuple[str, dict[str, object]]] = []
+        self.endpoint_read_statuses: list[str] = []
         self.runtime_updates: list[dict[str, object]] = []
         self.runtime_creates: list[dict[str, object]] = []
         self.endpoint_creates: list[dict[str, object]] = []
@@ -113,6 +114,8 @@ class NativeControl:
         self.corrupt_runtime_after_update = corrupt_runtime_after_update
         self.endpoint_live_override = endpoint_live_override
         self.endpoint_target_override = endpoint_target_override
+        self.endpoint_create_pending_reads = 0
+        self.endpoint_transition_pending_reads = 0
         self.next_version = "22"
         self.runtimes: dict[str, dict[str, object]] = {
             "19": self._runtime("19", "faulty", expected["faultyConfiguration"]),
@@ -199,9 +202,17 @@ class NativeControl:
         self.calls.append(("get_agent_runtime_endpoint", copy.deepcopy(request)))
         name = str(request.get("endpointName", request.get("name")))
         try:
-            return copy.deepcopy(self.endpoints[name])
+            value = copy.deepcopy(self.endpoints[name])
         except KeyError as error:
             raise not_found("GetAgentRuntimeEndpoint") from error
+        if name == "repaired" and self.endpoint_create_pending_reads:
+            self.endpoint_create_pending_reads -= 1
+            value["status"] = "CREATING"
+        elif name == "repaired" and self.endpoint_transition_pending_reads:
+            self.endpoint_transition_pending_reads -= 1
+            value["status"] = "UPDATING"
+        self.endpoint_read_statuses.append(str(value.get("status", "")))
+        return value
 
     def create_agent_runtime_endpoint(self, **request: object) -> dict[str, object]:
         model = get_session().get_service_model("bedrock-agentcore-control")
@@ -645,6 +656,8 @@ class RepairedPublicationAcceptance(unittest.TestCase):
     def test_qualified_exact_bytes_publish_repaired_and_strongly_read_back_row(self):
         module = self._load()
         self._native()
+        assert self.control is not None
+        self.control.endpoint_create_pending_reads = 1
         result = self._call(module)
         assert self.control is not None and self.adapter is not None and self.controller is not None
         self.assertEqual("repaired", result["candidateId"])
@@ -655,6 +668,7 @@ class RepairedPublicationAcceptance(unittest.TestCase):
         self.assertEqual(1, len(self.control.endpoint_creates))
         self.assertEqual([], self.control.runtime_creates)
         self.assertEqual([], self.control.endpoint_updates)
+        self.assertEqual(["CREATING", "READY", "READY"], self.control.endpoint_read_statuses)
         with zipfile.ZipFile(io.BytesIO(self.archive_bytes)) as archive:
             manifest = json.loads(archive.read("agent-manifest.json"))
         self.assertEqual(self.prompt_sha256, manifest["promptSha256"])
@@ -732,9 +746,56 @@ class RepairedPublicationAcceptance(unittest.TestCase):
             "prefix": f"agent-qualified/{self.artifact_sha256}.zip",
             "versionId": "serving-v1",
         }
+        serving_bucket = self.bucket
+        serving_key = f"agent-qualified/{self.artifact_sha256}.zip"
 
         class VersionedServingS3(NativeS3):
+            def __init__(self, objects):
+                super().__init__(objects)
+                self.put_calls = []
+                self.head_calls = []
+                self.list_calls = []
+
+            def get_object(self, **request):
+                # Native S3 returns the current VersionId when VersionId is
+                # omitted. Missing objects use NoSuchKey, not the fake's
+                # in-memory KeyError behavior.
+                if (
+                    request["Bucket"] == serving_bucket
+                    and request["Key"] == serving_key
+                    and "VersionId" not in request
+                    and (serving_bucket, serving_key, "serving-v1") in self.objects
+                ):
+                    request = {**request, "VersionId": "serving-v1"}
+                try:
+                    return super().get_object(**request)
+                except ClientError as error:
+                    if error.response.get("Error", {}).get("Code") == "ResourceNotFoundException":
+                        raise ClientError(
+                            {"Error": {"Code": "NoSuchKey", "Message": "missing object"}},
+                            "GetObject",
+                        ) from error
+                    raise
+
+            def head_object(self, **request):
+                self.head_calls.append(copy.deepcopy(request))
+                key = (str(request["Bucket"]), str(request["Key"]), "serving-v1")
+                if key not in self.objects:
+                    raise ClientError({"Error": {"Code": "404", "Message": "Not Found"}}, "HeadObject")
+                return {"VersionId": "serving-v1"}
+
+            def list_object_versions(self, **request):
+                self.list_calls.append(copy.deepcopy(request))
+                raise AssertionError("publisher must not list an absent serving prefix")
+
             def put_object(self, **request: object) -> dict[str, str]:
+                self.put_calls.append(copy.deepcopy(request))
+                key = (str(request["Bucket"]), str(request["Key"]), "serving-v1")
+                if request.get("IfNoneMatch") == "*" and key in self.objects:
+                    raise ClientError(
+                        {"Error": {"Code": "PreconditionFailed", "Message": "already exists"}},
+                        "PutObject",
+                    )
                 self.objects[(str(request["Bucket"]), str(request["Key"]), "serving-v1")] = request["Body"]
                 self.calls.append(copy.deepcopy(request))
                 return {"VersionId": "serving-v1"}
@@ -759,6 +820,21 @@ class RepairedPublicationAcceptance(unittest.TestCase):
         self.assertEqual(attr("serving-v1"), row["artifactVersionId"])
         self.assertNotIn("sourceVersionId", row)
         self.assertNotIn("configurationVersionId", row)
+        self.assertEqual([], self.s3.head_calls)
+        self.assertEqual([], self.s3.list_calls)
+
+        # A second invocation exercises native IfNoneMatch reconciliation. It
+        # receives a 412, reads the current object's VersionId, and verifies
+        # that exact version without creating a duplicate serving object.
+        second = self._call(module)
+        self.assertEqual("serving-v1", second["artifactVersionId"])
+        self.assertEqual(2, len(self.s3.put_calls))
+        self.assertEqual([], self.s3.head_calls)
+        self.assertEqual([], self.s3.list_calls)
+        self.assertEqual(
+            1,
+            len([key for key in self.s3.objects if key == (serving_bucket, serving_key, "serving-v1")]),
+        )
 
     def test_valid_clearance_cannot_publish_tampered_or_unversioned_artifact_bytes(self):
         for mode in ("tampered", "missing", "wrong-version", "different-returned-version"):
@@ -846,6 +922,7 @@ class RepairedPublicationAcceptance(unittest.TestCase):
         old_runtime["environmentVariables"]["AGENT_ARTIFACT_SHA256"] = "f" * 64
         self.control.runtimes["20"] = old_runtime
         self.control.endpoints["repaired"].update(liveVersion="20", targetVersion="20")
+        self.control.endpoint_transition_pending_reads = 1
         self.controller.items["AGENT_RUN#repaired-old"] = {
             "pk": attr("AGENT_RUN#repaired-old"),
             "status": attr("complete"),
@@ -858,6 +935,7 @@ class RepairedPublicationAcceptance(unittest.TestCase):
         self.assertEqual(1, len(self.control.runtime_updates))
         self.assertEqual(1, len(self.control.endpoint_updates))
         self.assertEqual("repaired", self.control.endpoint_updates[0]["endpointName"])
+        self.assertEqual(["UPDATING", "READY", "READY", "READY"], self.control.endpoint_read_statuses)
         self.assertEqual(faulty_endpoint, self.control.endpoints["faulty"])
         self.assertEqual("complete", self.controller.items["AGENT_RUN#repaired-old"]["status"]["S"])
         self.assertEqual([], self.adapter.updates)
