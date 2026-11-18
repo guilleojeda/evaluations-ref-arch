@@ -16,7 +16,8 @@
     "sourceBundle": "PHASE22_SOURCE_BUNDLE",
     "reviewedSuite": "PHASE18_SUITE",
     "reviewedEvaluator": "PHASE18_EVALUATOR",
-    "experimentRoot": "PHASE18_EXPERIMENTS"
+    "experimentRoot": "PHASE18_EXPERIMENTS",
+    "baselineExperimentRoot": "PHASE18_BASELINE_EXPERIMENTS"
   },
   "rules": [
     "All values resolve outside the editable Git worktree.",

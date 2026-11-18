@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "stage": "S3",
+  "stage": "S4",
   "candidateId": "repaired",
   "candidateDefault": "repaired",
   "prompt": {
@@ -12,12 +12,12 @@
       "semanticId": "faulty-phase19",
       "sourceRevision": "bd6f77df97933e3e675ee9c2a699db16e29ea1b6",
       "promptSha256": "161aa4357b908cffe9691349d01da284411cd5d4689235717525d79e1073fffc",
-      "mode": "explicit checked reverse patch in this folder; refuse if dirty"
+      "mode": "immutable temporary source snapshot; no additional editable workspace"
     }
   },
   "capabilityAnchor": {
-    "revision": "e0a36c84850347b31029862a87f19101cc8f6359",
-    "description": "Phase 17 fresh editable candidate execution, scoring, and offline comparison"
+    "revision": "8c68a737984496c91a4c132818fb4e0c5b09fa0b",
+    "description": "Phase 18 native Strands experiment with captured execution and advisory evaluators"
   },
   "scorerAnchor": {
     "revision": "3505ffb39504c07ac333501ec9b81e7ca98c018c",
@@ -25,6 +25,12 @@
     "model": "us.anthropic.claude-sonnet-4-6",
     "rubric": "single",
     "verdict": "advisory"
+  },
+  "experimentAnchor": {
+    "revision": "296830da7d24c6484514f1641ab8c9a9c8f5966e",
+    "comparisonRepairRevision": "0328aa2",
+    "focusedRevision": "3a6b7a9",
+    "sdk": "strands-agents-evals==1.9.0"
   },
   "runtime": {
     "descriptor": "scripts/faulty-reference.json",
@@ -34,7 +40,7 @@
     "promptSourceSha256": "88b8b94f2da13263407aadc1301bc5b4c2345fcec3ac2bd148fead9835807bdd"
   },
   "inputs": {
-    "kind": "fresh-repaired-candidate-against-matching-reviewed-case",
+    "kind": "native-strands-experiment-with-reviewed-suite",
     "privateIndexEnv": "PHASE22_INPUT_INDEX",
     "asset": {
       "rootVariable": "asset_extract",
@@ -54,20 +60,24 @@
     "caseId": "phase14.denied-inventory-read.prepared",
     "caseSha256": "cb1480066a46f258ee8d9e27355d50b9bd05f171ee9ef84a169989f72af5e18d",
     "bundleSha256": "8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8",
-    "baselineExecutionId": "e3f934af-6af9-42aa-ac78-b315133e1571",
-    "recordedRepairedExecutionId": "295cd070-07e8-4f69-b8ce-c588a74fab42",
-    "recordedRepairedArchiveSha256": "5c019966694520efb4ce989f0581d1adb56c012bbb0ce216849caf3d0acd256f",
-    "requires": ["matching case/bundle", "matching cutoff", "same model/tools/report contract", "pinned evaluator descriptor", "unique output root"],
-    "forbidden": ["reusing the S2 execution as fresh S3", "relaxing comparator identity checks", "release publication"]
+    "suiteS3Key": "agent-evaluation/phase18/inputs/3dc869b82f3a7f690040d711c9170effa8e72174d5de86f516dcf2d0ea2db893/staging.tar.gz",
+    "suiteSha256": "64e81d8ac825154dd49ee36ca750aca81bb4a07ab1612d1d00e6c28dba0a7bfe",
+    "stagingSha256": "3dc869b82f3a7f690040d711c9170effa8e72174d5de86f516dcf2d0ea2db893",
+    "evaluatorSha256": "d153bfdc9551255516a565f8363eeea8f6c4962c7807ce015082d0edd907261f",
+    "caseIds": ["phase14.denied-inventory-read.prepared", "phase14.inventory-capacity-overload.prepared", "phase14.recovery-with-old-alert.prepared"],
+    "baselineExperimentRevision": "296830d",
+    "repairedExperimentRevision": "0328aa2",
+    "focusedExperimentRevision": "3a6b7a9",
+    "requires": ["full suite", "matching candidate/tool/evaluator snapshots", "unique output root", "same reviewed case meaning"],
+    "forbidden": ["focused run standing in for full suite", "mutable source imports from another workspace", "release publication"]
   },
   "entry": {
-    "offlineSmoke": "uv run --offline --project agent --locked python -m py_compile agent/prompt.py agent/evaluate_case.py agent/compare_executions.py",
-    "faultyOption": "git diff --quiet && git apply --reverse --check agent/prompts/s3-repair.patch && git apply --reverse agent/prompts/s3-repair.patch",
-    "run": "uv run --project agent --locked opentelemetry-instrument python agent/evaluate_case.py run --candidate repaired --case \"$PHASE22_REVIEWED_CASE\" --bundle \"$PHASE22_SOURCE_BUNDLE\" --output-root \"$PHASE22_S3_RUN_ROOT\"",
-    "show": "uv run --offline --project agent --locked python agent/evaluate_case.py show --run \"$PHASE22_S3_RUN\"",
-    "score": "uv run --project agent --locked python agent/evaluate_case.py score --run \"$PHASE22_S3_RUN\" --evaluator \"$PHASE18_EVALUATOR\" --rubric single --wait-seconds 300",
-    "faultyBaseline": "uv run --project agent --locked python talk/run-faulty-baseline.py --case \"$PHASE22_REVIEWED_CASE\" --bundle \"$PHASE22_SOURCE_BUNDLE\" --output-root \"$PHASE22_S3_BASELINE_ROOT\"",
-    "compare": "uv run --offline --project agent --locked python agent/evaluate_case.py compare --baseline \"$PHASE22_BASELINE_RUN\" --candidate \"$PHASE22_S3_RUN\"",
-    "policy": "S3 is a fresh candidate execution and advisory feedback. A saved S3 result is not S5 exact-package qualification."
+    "offlineSmoke": "uv run --offline --project agent --locked python -m py_compile agent/prompt.py agent/development_experiment.py agent/strands_evaluators.py",
+    "faultyBaseline": "uv run --project agent --locked python talk/run-faulty-experiment.py --suite \"$PHASE18_SUITE\" --evaluator \"$PHASE18_EVALUATOR\" --output-root \"$PHASE18_BASELINE_EXPERIMENTS\"",
+    "run": "uv run --project agent --locked opentelemetry-instrument python agent/development_experiment.py run --suite \"$PHASE18_SUITE\" --candidate repaired --evaluator \"$PHASE18_EVALUATOR\" --output-root \"$PHASE18_EXPERIMENTS\"",
+    "continuedRun": "uv run --project agent --locked opentelemetry-instrument python agent/development_experiment.py run --suite \"$PHASE18_SUITE\" --candidate repaired --source-run \"$PHASE22_S3_RUN\" --evaluator \"$PHASE18_EVALUATOR\" --output-root \"$PHASE18_EXPERIMENTS\"",
+    "show": "uv run --offline --project agent --locked python agent/development_experiment.py show --experiment \"$PHASE22_EXPERIMENT\"",
+    "compare": "uv run --offline --project agent --locked python agent/development_experiment.py compare --baseline \"$PHASE22_BASELINE_EXPERIMENT\" --candidate \"$PHASE22_EXPERIMENT\"",
+    "policy": "S4 must run the full native suite; a focused case is supplementary only. S4 is advisory developer feedback and does not qualify or publish the Runtime ZIP."
   }
 }
