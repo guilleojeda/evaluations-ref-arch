@@ -429,6 +429,7 @@ class ReleaseTemplateTests(unittest.TestCase):
             "ReadInventoryReleaseManifestBucket",
             "PublishInventoryReleaseManifest",
             "ListRuntimeVersions",
+            "CreateCheckedAgentRuntimeEndpoint",
             "ReadAgentReference",
             "PublishFaultyRecord",
         }
@@ -441,7 +442,6 @@ class ReleaseTemplateTests(unittest.TestCase):
             {
                 "bedrock-agentcore:GetAgentRuntime",
                 "bedrock-agentcore:UpdateAgentRuntime",
-                "bedrock-agentcore:CreateAgentRuntimeEndpoint",
                 "bedrock-agentcore:GetAgentRuntimeEndpoint",
                 "bedrock-agentcore:UpdateAgentRuntimeEndpoint",
             },
@@ -453,6 +453,16 @@ class ReleaseTemplateTests(unittest.TestCase):
                 "arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????/runtime-endpoint/faulty",
             },
             set(runtime["Resource"]),
+        )
+        create = managed_statements["CreateCheckedAgentRuntimeEndpoint"]
+        self.assertEqual("Allow", create["Effect"])
+        self.assertEqual("bedrock-agentcore:CreateAgentRuntimeEndpoint", create["Action"])
+        self.assertEqual(
+            {
+                "arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-7VWTOWDIs4",
+                "arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-7VWTOWDIs4/runtime-endpoint/*",
+            },
+            set(create["Resource"]),
         )
         self.assertEqual(
             {"aws:RequestedRegion": "us-east-1"},

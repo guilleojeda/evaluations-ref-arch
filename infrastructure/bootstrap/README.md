@@ -279,6 +279,15 @@ the named `IncidentTriageDemoAgent` stack and does not accept a caller-supplied
 Runtime. The effective-scope check must keep this read limitation visible;
 the create/get/update actions remain ARN-scoped.
 
+AgentCore evaluates `CreateAgentRuntimeEndpoint` before the requested endpoint
+name exists, using the synthetic
+`...:runtime/IncidentTriageDemoAgent-7VWTOWDIs4/runtime-endpoint/*` resource.
+That create-only collection grant is pinned to the observed Runtime ID in the
+bootstrap policy. The fixed workflow supplies the only approved endpoint name,
+`faulty`; get/update remain pinned to the final `.../runtime-endpoint/faulty`
+ARN and delete remains denied. If the Runtime is replaced and its generated ID
+changes, update this bootstrap policy before running the reference publisher.
+
 The app release script runs `scripts/prepare-inventory-versions.mjs` after the
 app stack is healthy. It verifies the healthy `live` alias, stages only the
 denied role with the observed `$LATEST` revision, publishes with the observed
