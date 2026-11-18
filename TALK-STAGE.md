@@ -22,24 +22,45 @@ SHA-256 `8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8`.
 The private index chooses physical locations; no session directory is assumed
 and files are never copied into this checkout.
 
-For the portable session-a archive, resolve the complete native roster and
-evaluator directly as follows. The repaired suite contains the three reviewed
-case IDs; the faulty suite in the same archive is the matching recorded
-baseline source if a saved fallback is needed:
+The maintained Phase 22 preparation exports `asset_extract` for the verified
+portable session-a asset and `PHASE22_ASSET_SHA256` from its receipt. Select
+one gate archive and extract exactly that archive. The stock gate is the
+default three-case roster; the carried gate preserves the optional four-case
+roster. Both `suite.json` and `evaluator.json` must come from the same
+extracted `staging/` directory:
 
 ```sh
-export PHASE22_AUDIENCE_ARCHIVE="/private/path/phase22-session-a-audience-full.tar.gz"
-printf '%s  %s\n' \
-  87447304deb0f8617434d8dcd6c530e20e7425035024e8cefb7db9340402d032 \
-  "$PHASE22_AUDIENCE_ARCHIVE" | sha256sum -c -
-asset_extract="$(mktemp -d "$PHASE22_PRIVATE_ROOT/s4/archive.XXXXXX")"
-tar -xzf "$PHASE22_AUDIENCE_ARCHIVE" -C "$asset_extract"
-(cd "$asset_extract" && sha256sum -c SHA256SUMS)
-export PHASE18_SUITE="$asset_extract/s4/full-suite/repaired/ec704bf1-a3c6-4b04-8ad2-0b32ebefc20e/suite.json"
-export PHASE18_EVALUATOR="$asset_extract/s4/full-suite/repaired/ec704bf1-a3c6-4b04-8ad2-0b32ebefc20e/evaluator.json"
+: "${asset_extract:?run maintained Phase 22 asset preparation first}"
+: "${PHASE22_ASSET_SHA256:?read from session-audience-full-final-s3-receipt.json}"
+test -d "$asset_extract"
+printf 'Using verified Phase 22 asset %s\n' "$PHASE22_ASSET_SHA256"
+
+mkdir -p "$PHASE22_PRIVATE_ROOT/s4"
+export PHASE22_GATE_SELECTION="${PHASE22_GATE_SELECTION:-stock}" # stock|carried
+gate_extract="$(mktemp -d "$PHASE22_PRIVATE_ROOT/s4/gate.XXXXXX")"
+case "$PHASE22_GATE_SELECTION" in
+  stock) gate_archive="$asset_extract/gate/stock-staging.tar.gz" ;;
+  carried) gate_archive="$asset_extract/gate/staging.tar.gz" ;;
+  *) echo "PHASE22_GATE_SELECTION must be stock or carried" >&2; exit 2 ;;
+esac
+test -s "$gate_archive"
+tar -xzf "$gate_archive" -C "$gate_extract"
+export PHASE18_SUITE="$gate_extract/staging/suite.json"
+export PHASE18_EVALUATOR="$gate_extract/staging/evaluator.json"
 export PHASE18_EXPERIMENTS="$PHASE22_PRIVATE_ROOT/s4/experiments"
 export PHASE18_BASELINE_EXPERIMENTS="$PHASE22_PRIVATE_ROOT/s4/baselines"
-export PHASE22_S3_RUN="$asset_extract/s3/run/295cd070-07e8-4f69-b8ce-c588a74fab42"
+test -s "$PHASE18_SUITE" "$PHASE18_EVALUATOR"
+```
+
+The archive's `s4/experiment/bf...` and `s3/run/295cd070-07e8-4f69-b8ce-
+c588a74fab42` entries are archived offline-show evidence only. They are not
+the fresh suite or a source run for this stage. A fresh S3 continuation must
+set `PHASE22_S3_RUN` to the current repaired S3 output directory printed by
+the S3 runner:
+
+```sh
+: "${PHASE22_S3_RUN:?run the fresh repaired S3 command first}"
+test -s "$PHASE22_S3_RUN/execution.json"
 ```
 
 ```sh
@@ -76,9 +97,11 @@ snapshotted at launch.
 
 ## Run the native experiment
 
-The suite must contain the three reviewed case IDs, their source bundles and
-cutoffs, and the same pinned Sonnet 4.6 evaluator used by S2/S3. Preserve the
-full suite file and its digest; do not silently replace it with a focused case.
+The selected suite must contain the selected gate's complete reviewed roster,
+source bundles and cutoffs, and the same pinned Sonnet 4.6 evaluator used by
+S2/S3. Preserve the full selected suite; do not silently replace it with a
+focused case. The three-case stock roster is the default, while the four-case
+carried roster is an explicit alternative.
 Run the full suite from a clean stage workspace:
 
 ```sh
