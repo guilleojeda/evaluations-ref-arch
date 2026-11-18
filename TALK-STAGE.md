@@ -3,8 +3,9 @@
 This workspace is the Phase 22 S1 checkpoint. It keeps the faulty candidate
 unchanged and adds reviewed-case validation, freezing, and a public candidate
 projection. The default candidate remains `faulty`; S1 does not run S0, trigger
-an alarm, invoke a model, or score a case. The imported Phase 14 manifest has
-SHA-256 `222c63de2a2acc30060a7807a2d1cf17e6bfa0b921eebe4410a9557b12739ae1`.
+an alarm, invoke a model, or score a case. The portable archive's root
+`SHA256SUMS` manifest is verified before any case edit; its SHA-256 is
+`a2ef965bcd7debff17d71d0c5643e3e42cfbb3e4a70836b63e875c8f145ed69b`.
 
 Set `PHASE22_PRIVATE_ROOT` outside this checkout and export
 `PHASE22_INPUT_INDEX` to the private session index. Set
