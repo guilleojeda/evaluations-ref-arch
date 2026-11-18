@@ -62,11 +62,22 @@
     "caseSha256": "cb1480066a46f258ee8d9e27355d50b9bd05f171ee9ef84a169989f72af5e18d",
     "carriedCaseSha256": "e53d6af51b41ccc4c8056b101f879a19a1e06d5e580cd5658198ddf4cc187266",
     "bundleSha256": "8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8",
-    "suiteS3Key": "agent-evaluation/phase18/inputs/3dc869b82f3a7f690040d711c9170effa8e72174d5de86f516dcf2d0ea2db893/staging.tar.gz",
-    "suiteSha256": "64e81d8ac825154dd49ee36ca750aca81bb4a07ab1612d1d00e6c28dba0a7bfe",
-    "stagingSha256": "3dc869b82f3a7f690040d711c9170effa8e72174d5de86f516dcf2d0ea2db893",
-    "evaluatorSha256": "d153bfdc9551255516a565f8363eeea8f6c4962c7807ce015082d0edd907261f",
+    "selectedGate": {
+      "selectionEnv": "PHASE22_SUITE",
+      "archives": {
+        "stock": "gate/stock-staging.tar.gz",
+        "carried": "gate/staging.tar.gz"
+      },
+      "suitePath": "staging/suite.json",
+      "evaluatorPath": "staging/evaluator.json",
+      "suiteSha256": {
+        "stock": "64e81d8ac825154dd49ee36ca750aca81bb4a07ab1612d1d00e6c28dba0a7bfe",
+        "carried": "4617201adf7d4c8c3df80b52892312cbe516d2064783545762b6297c5a55b178"
+      },
+      "evaluatorSha256": "d153bfdc9551255516a565f8363eeea8f6c4962c7807ce015082d0edd907261f"
+    },
     "caseIds": ["phase14.denied-inventory-read.prepared", "phase14.inventory-capacity-overload.prepared", "phase14.recovery-with-old-alert.prepared"],
+    "carriedCaseIds": ["phase14.denied-inventory-read.prepared", "phase14.inventory-capacity-overload.prepared", "phase14.recovery-with-old-alert.prepared", "phase14.denied-inventory-read.session-draft"],
     "baselineExperimentRevision": "296830d",
     "repairedExperimentRevision": "0328aa2",
     "focusedExperimentRevision": "3a6b7a9",

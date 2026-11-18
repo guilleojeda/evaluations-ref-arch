@@ -57,8 +57,9 @@ test -s "$PHASE18_SUITE"
 test -s "$PHASE18_EVALUATOR"
 ```
 
-The archive's `s4/experiment/bf...` and `s3/run/295cd070-07e8-4f69-b8ce-
-c588a74fab42` entries are archived offline-show evidence only. They are not
+The archive's `s4/experiment/bf215f68-402d-4a42-8f51-8e6cb5f5a1ae` and
+`s3/run/295cd070-07e8-4f69-b8ce-c588a74fab42` entries are archived
+offline-show evidence only. They are not
 the fresh suite or a source run for this stage. A fresh S3 continuation must
 set `PHASE22_S3_RUN` to the current repaired S3 output directory printed by
 the S3 runner:
