@@ -16,9 +16,12 @@ resolve `PHASE18_SUITE`, `PHASE18_EVALUATOR`, `PHASE18_EXPERIMENTS`, and
 `PHASE18_BASELINE_EXPERIMENTS` to private paths outside the checkout. A
 continued run may additionally use `PHASE22_S3_RUN`; all paths remain private.
 
-The carried reviewed denial pair has case identity
-`cb1480066a46f258ee8d9e27355d50b9bd05f171ee9ef84a169989f72af5e18d` and bundle
-SHA-256 `8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8`.
+The default stock denial case has identity
+`cb1480066a46f258ee8d9e27355d50b9bd05f171ee9ef84a169989f72af5e18d`; the
+optional carried audience-denial case has identity
+`e53d6af51b41ccc4c8056b101f879a19a1e06d5e580cd5658198ddf4cc187266`. Both
+use the reviewed bundle SHA-256
+`8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8`.
 The private index chooses physical locations; no session directory is assumed
 and files are never copied into this checkout.
 
@@ -36,9 +39,10 @@ test -d "$asset_extract"
 printf 'Using verified Phase 22 asset %s\n' "$PHASE22_ASSET_SHA256"
 
 mkdir -p "$PHASE22_PRIVATE_ROOT/s4"
-export PHASE22_GATE_SELECTION="${PHASE22_GATE_SELECTION:-stock}" # stock|carried
+: "${PHASE22_SUITE:?maintained preparation must select stock or carried}"
+export PHASE22_GATE_SELECTION="$PHASE22_SUITE"
 gate_extract="$(mktemp -d "$PHASE22_PRIVATE_ROOT/s4/gate.XXXXXX")"
-case "$PHASE22_GATE_SELECTION" in
+case "$PHASE22_SUITE" in
   stock) gate_archive="$asset_extract/gate/stock-staging.tar.gz" ;;
   carried) gate_archive="$asset_extract/gate/staging.tar.gz" ;;
   *) echo "PHASE22_GATE_SELECTION must be stock or carried" >&2; exit 2 ;;
@@ -49,7 +53,8 @@ export PHASE18_SUITE="$gate_extract/staging/suite.json"
 export PHASE18_EVALUATOR="$gate_extract/staging/evaluator.json"
 export PHASE18_EXPERIMENTS="$PHASE22_PRIVATE_ROOT/s4/experiments"
 export PHASE18_BASELINE_EXPERIMENTS="$PHASE22_PRIVATE_ROOT/s4/baselines"
-test -s "$PHASE18_SUITE" "$PHASE18_EVALUATOR"
+test -s "$PHASE18_SUITE"
+test -s "$PHASE18_EVALUATOR"
 ```
 
 The archive's `s4/experiment/bf...` and `s3/run/295cd070-07e8-4f69-b8ce-
