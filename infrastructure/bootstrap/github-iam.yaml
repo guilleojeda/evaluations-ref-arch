@@ -460,8 +460,9 @@ Resources:
             Effect: Allow
             Action: bedrock-agentcore:GetAgentRuntimeEndpoint
             Resource:
-              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????/runtime-endpoint/faulty
-              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????/runtime-endpoint/repaired
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-7VWTOWDIs4
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-7VWTOWDIs4/runtime-endpoint/faulty
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-7VWTOWDIs4/runtime-endpoint/repaired
           - Sid: CreateRepairedEndpoint
             Effect: Allow
             Action: bedrock-agentcore:CreateAgentRuntimeEndpoint
@@ -471,7 +472,9 @@ Resources:
           - Sid: UpdateRepairedEndpoint
             Effect: Allow
             Action: bedrock-agentcore:UpdateAgentRuntimeEndpoint
-            Resource: arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-??????????/runtime-endpoint/repaired
+            Resource:
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-7VWTOWDIs4
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-7VWTOWDIs4/runtime-endpoint/repaired
           - Sid: PassAgentRuntimeRole
             Effect: Allow
             Action: iam:PassRole
