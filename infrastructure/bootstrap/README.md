@@ -265,6 +265,13 @@ other controller-table keys. It cannot provide an archive URI, digest, Runtime,
 endpoint name, or candidate through the workflow; those values come from the
 reviewed fixed descriptor.
 
+The publisher's controller-record read/write also causes DynamoDB to decrypt
+the table key. That permission is limited to the controller table's exact AWS
+managed DynamoDB CMK, `dynamodb.us-east-1.amazonaws.com`, and the observed
+`aws:dynamodb:tableName=IncidentTriageDemoControllerRun` plus account context.
+It does not grant direct KMS encryption, grant creation, re-encryption, or
+access to another DynamoDB table.
+
 The additive Phase 19 grants and the existing Runtime-finalization grants are
 attached through the customer-managed `IncidentTriageDemoPhase19Publisher`
 policy. The original inline guard retains all explicit denies and remains
