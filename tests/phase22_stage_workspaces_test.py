@@ -657,6 +657,22 @@ class StageWorkspaceAcceptance(unittest.TestCase):
             stage="S3",
         )
 
+    def test_s5_rejects_contradictory_rich_source_revision_without_stage_publication_id(self):
+        session = self.fixture.session_input()
+        session["demoDeploy"]["sourceRevision"] = self.fixture.commits["S4"]
+        session["demoDeploy"]["remoteTip"] = self.fixture.demo_deploy_commit
+        session["stages"]["S5"].pop("publicationId")
+        session_path = self._write_json(
+            self.fixture.root / "session-contradictory-s5-binding.json", session
+        )
+        before_refs = self.fixture.ref_state()
+        rejected = self._prepare_rejected(session=session_path)
+        self.assertRegex(
+            rejected.stderr + rejected.stdout,
+            r"(?i)S5|qualification|sourceRevision|conflict|qualifiedCommit",
+        )
+        self.assertEqual(before_refs, self.fixture.ref_state())
+
     def test_wrong_or_foreign_s5_branch_or_candidate_rejects_without_ref_changes(self):
         for variant in ("branch", "candidate"):
             with self.subTest(variant=variant):

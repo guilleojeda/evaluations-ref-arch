@@ -115,6 +115,47 @@ def _validate_stage_map(raw: Any, label: str) -> dict[str, dict[str, Any]]:
     return result
 
 
+def _validate_s5_revision_consistency(
+    document: Mapping[str, Any],
+    stages: Mapping[str, Mapping[str, Any]],
+    qualified_commit: str,
+) -> None:
+    """Reject contradictory rich publication/source identities.
+
+    The minimal session carrier only needs ``qualifiedCommit``.  Verified
+    bindings may additionally carry source, remote, publication, and receipt
+    revisions; whenever those fields are present they must agree with the
+    qualified branch commit.  This check intentionally does not depend on an
+    optional stage publication identity being present.
+    """
+
+    scopes: list[tuple[str, Any]] = [
+        ("demoDeploy", document.get("demoDeploy")),
+        ("publication", document.get("publication")),
+        ("S5 liveReleaseBinding", stages.get(S5, {}).get("liveReleaseBinding")),
+    ]
+    qualification = document.get("qualification")
+    if isinstance(qualification, dict):
+        scopes.append(("qualification", qualification))
+        receipt = qualification.get("receipt")
+        if isinstance(receipt, dict):
+            scopes.append(("qualification.receipt", receipt))
+    for label, value in scopes:
+        if value is None:
+            continue
+        if not isinstance(value, dict):
+            raise WorkspaceError(f"S5 qualification {label} must be an object")
+        for field in ("qualifiedCommit", "sourceRevision", "remoteTip"):
+            if field not in value or value[field] is None:
+                continue
+            observed = _validate_commit(value[field], f"S5 qualification {label}.{field}")
+            if observed != qualified_commit:
+                raise WorkspaceError(
+                    "S5 qualification identity conflict: "
+                    f"{label}.{field}={observed} differs from qualifiedCommit={qualified_commit}"
+                )
+
+
 def _load_checkpoints(
     path: Path, requested: tuple[str, ...]
 ) -> tuple[dict[str, dict[str, Any]], Any]:
@@ -179,6 +220,7 @@ def _load_session(path: Path, requested: tuple[str, ...]) -> dict[str, Any]:
             raise WorkspaceError("S5 is unready: stage candidate differs from qualification")
         if stage_identity.get("publicationId") not in (None, qualified.get("publicationId")):
             raise WorkspaceError("S5 is unready: stage publication differs from qualification")
+        _validate_s5_revision_consistency(document, stages, qualified["qualifiedCommit"])
     return document
 
 
