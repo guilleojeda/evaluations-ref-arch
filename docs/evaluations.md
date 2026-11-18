@@ -33,11 +33,20 @@ To substantiate this example, retain the raw trace and source observations at S0
 
 Local and CI regression executions use versioned, queryable captures for all four agent tools: logs, metrics, sanitized configuration, and bounded change history. Captures support the case's explicit effective investigation reference time. Keep source observation time, capture time, and that case time distinct; derive as-of configuration only from captured observations or history that supports it. A recovered case uses an explicit later reference time with source observations from after recovery.
 
+The frozen bundle retains the original observation and acquisition timestamps.
+Replay uses them to determine which rows were available at the case reference
+time. Tool responses omit archive metadata dated after that cutoff. The model
+still sees each eligible row’s timestamps, the requested window and coverage gaps.
+
 Retain the raw source evidence from S0, including configuration before recovery changes it; review and case creation begin at S1. The original trace alone records only the original queries and may not support a different valid investigation. Review the captured coverage against the case's expectations. If the capture cannot support those expectations, the case/evaluation is incomplete; do not fill the gap with live state or score an unsupported expected answer as an agent defect.
 
 The regression tools query only their referenced captures. They do not fall back to current AWS state or include evidence from after the case reference time. Logs and metrics preserve the candidate's requested windows; configuration reflects values at the reference time; bounded history includes only changes effective by then. Relative query windows, freshness, and current-state assessment use the case reference time, with real execution timestamps recorded separately. Partial results and unavailable coverage stay visible in the tool output. Each candidate chooses its own queries, windows, and order. Do not replay a saved tool-call sequence, inject scenario labels or expected answers, or replace candidate outputs. A fixed captured trace can be judged again, but that is not execution of a changed candidate.
 
 Every regression execution has its own identity, separate from the originating live alarm's deduplication identity. Retain the original alarm and case provenance alongside the regression identity so repeated candidates do not appear as new live events or overwrite a live run. The delivered Phase 13 capture schema and provider are the S1 input boundary; any later capture/provider change is a new identified input that requires its own digest and review. Preserve the same case meaning and criteria across evaluation paths without claiming an automatic format interchange.
+
+S4 and S5 record the digest of the replay implementation in the run’s tooling
+manifest. A prompt-only comparison requires matching replay tooling. An earlier
+S2 or S4 report remains available under the tooling identity that produced it.
 
 ## S1: Author, validate, freeze, and hand off
 
@@ -211,7 +220,7 @@ The intended execution and scoring path is:
 2. Export that execution's actual model/tool/report telemetry to CloudWatch through the prepared outside-Runtime observability configuration, with session correlation. Wait for ingestion, then collect the matching complete session spans and conversation content. The case reference time governs evidence access; telemetry timestamps describe the new execution.
 3. Submit those spans to AgentCore on-demand `Evaluate`, using the same versioned semantic evaluators and reviewed reference expectations as the baseline. Supply expectations as evaluator reference inputs, outside the agent's prompt and tool evidence. Verify that reference-dependent criteria actually consumed the supplied fields.
 4. Run the deterministic action/target checks against the new report and keep their findings separate from the semantic judgments. Reuse the check logic when exposing a check through an AgentCore Lambda evaluator rather than writing a second copy.
-5. Compare the captured S2 faulty candidate and the repaired candidate on the same cases, captured evidence, criteria, and scoring setup. Use the identified matching S2 baseline. The offline comparison verifies common runtime/tool source hashes, case and evidence identities, evaluator and scoring source pins, the selected score attempt, and the native session/trace binding. For an alternate input with no matching baseline, execute the captured S2 prompt and retain the observed result. Missing spans, ignored required references, foreign results, or failed required scoring leave the evaluation incomplete while preserving available reports and deterministic findings.
+5. Compare the captured S2 faulty candidate and the repaired candidate on the same cases, captured evidence, criteria, scoring setup, and replay tooling. Use the identified S2 baseline only when its captured-evidence and trusted-tooling identities match the new execution. The offline comparison verifies common runtime/tool source hashes, case and evidence identities, evaluator and scoring source pins, the selected score attempt, and the native session/trace binding. For an alternate input with no matching baseline, execute the captured S2 prompt with the current identified tooling and retain the observed result; do not manufacture a fresh S2 result from an older record. Missing spans, ignored required references, foreign results, or failed required scoring leave the evaluation incomplete while preserving available reports and deterministic findings.
 
 AWS supports on-demand evaluation of supported-framework agents outside AgentCore Runtime. Its [on-demand prerequisites](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ondemand-evaluations-prereqs.html) and [outside-Runtime observability setup](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-configure.html#observability-configure-outside) establish this route. Prepare telemetry export, session propagation, source collection, and evaluation permissions before the session. Ground-truth reference inputs are described in [ground-truth evaluation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ground-truth-evaluations.html); shared code checks can use the [Lambda evaluator contract](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-based-evaluators.html).
 
@@ -237,9 +246,11 @@ execution/session/trace identities; a later prompt, case, tooling, or lock edit
 cannot alter an accepted run. SDK retries cannot launch a second investigation
 or judge call after a typed task/evaluator failure, and later selected cases may
 continue after an incomplete case. `show` reopens the native report without
-credentials or side effects. `compare` joins exact case, tooling, runtime,
-input, evaluator, scorer, report, and selected-attempt identities and retains
-available rows when another pair is unavailable or mismatched.
+credentials or side effects. `compare` joins exact case, tooling—including the
+captured-evidence projection—runtime, input, evaluator, scorer, report, and
+selected-attempt identities and retains available rows when another pair is
+unavailable or mismatched. A result using an earlier replay projection remains
+historical and cannot be promoted to a current comparison baseline.
 
 Each native report contains one row per `(case, evaluator)`. For two cases and
 the two custom evaluators, that is four rows; each deterministic row exposes
