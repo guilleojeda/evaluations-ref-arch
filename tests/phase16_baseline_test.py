@@ -21,6 +21,7 @@ from botocore.session import get_session
 
 from phase14_reviewed_cases_test import make_case, write_bundle
 from phase15_deterministic_checks_test import recommendation, report_for
+from support.prompt_fixture import materialize_faulty_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -222,6 +223,15 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory()
         self.addCleanup(self.directory.cleanup)
         root = Path(self.directory.name)
+        import captured_execution
+        self.agent_source = materialize_faulty_source(
+            ROOT / "agent",
+            root,
+            ROOT / "tests/fixtures/phase20_faulty_prompt.py",
+        )
+        previous_agent_directory = captured_execution.AGENT_DIRECTORY
+        captured_execution.AGENT_DIRECTORY = self.agent_source
+        self.addCleanup(setattr, captured_execution, "AGENT_DIRECTORY", previous_agent_directory)
         self.source = root / "case.json"
         self.frozen = root / "frozen.json"
         self.bundle = root / "bundle.json"

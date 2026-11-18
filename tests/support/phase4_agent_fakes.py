@@ -8,6 +8,7 @@ import io
 import json
 import os
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -563,6 +564,17 @@ def isolated_runtime(
         if not real_strands:
             stack.enter_context(patch.object(strands, "Agent", ScriptedStrandsAgent))
         module = importlib.reload(sys.modules["main"]) if "main" in sys.modules else importlib.import_module("main")
+        # A materialized repaired checkout intentionally keeps the tracked
+        # development manifest at the historical faulty digest.  The Runtime
+        # ZIP builder writes the effective prompt digest, so this disposable
+        # runtime fixture must provide the same coherent package identity
+        # without weakening main._manifest() or relabeling the candidate.
+        manifest = json.loads((AGENT_DIR / "agent-manifest.json").read_text(encoding="utf-8"))
+        manifest["promptSha256"] = module.PROMPT_SHA256
+        manifest_dir = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="phase4-manifest-")))
+        manifest_path = manifest_dir / "agent-manifest.json"
+        manifest_path.write_text(json.dumps(manifest, sort_keys=True) + "\n", encoding="utf-8")
+        stack.enter_context(patch.object(module, "MANIFEST_PATH", manifest_path))
         yield module, boundary
 
 
