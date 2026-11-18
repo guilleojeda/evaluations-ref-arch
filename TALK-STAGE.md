@@ -33,6 +33,23 @@ SHA-256 `8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8`.
 The files remain private and their physical locations are selected by the
 index.
 
+For the portable session-a archive, the same values can be resolved directly
+without an internal session-directory assumption:
+
+```sh
+export PHASE22_AUDIENCE_ARCHIVE="/private/path/phase22-session-a-audience-full.tar.gz"
+printf '%s  %s\n' \
+  87447304deb0f8617434d8dcd6c530e20e7425035024e8cefb7db9340402d032 \
+  "$PHASE22_AUDIENCE_ARCHIVE" | sha256sum -c -
+asset_extract="$(mktemp -d "$PHASE22_PRIVATE_ROOT/s3/archive.XXXXXX")"
+tar -xzf "$PHASE22_AUDIENCE_ARCHIVE" -C "$asset_extract"
+(cd "$asset_extract" && sha256sum -c SHA256SUMS)
+export PHASE22_S2_RUN="$asset_extract/s2/run/e3f934af-6af9-42aa-ac78-b315133e1571"
+export PHASE22_REVIEWED_CASE="$asset_extract/prepared/denial.frozen.json"
+export PHASE22_SOURCE_BUNDLE="$asset_extract/prepared/denial.json"
+export PHASE18_EVALUATOR="$asset_extract/s2/evaluator.json"
+```
+
 ## Install and verify
 
 A cold cache may fetch the locked dependencies; a warmed cache can use the
