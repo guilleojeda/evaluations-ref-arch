@@ -23,11 +23,11 @@
   "inputs": {
     "kind": "prepared-private-review-archive",
     "privateIndexEnv": "PHASE22_INPUT_INDEX",
-    "archive": {
-      "env": "PHASE22_AUDIENCE_ARCHIVE",
-      "archiveSha256": "87447304deb0f8617434d8dcd6c530e20e7425035024e8cefb7db9340402d032",
-      "manifestSha256": "a2ef965bcd7debff17d71d0c5643e3e42cfbb3e4a70836b63e875c8f145ed69b",
-      "requiredFiles": ["audience/denial-session-draft.json", "prepared/denial.json", "prepared/denial.frozen.json", "SHA256SUMS"]
+    "asset": {
+      "rootVariable": "asset_extract",
+      "sha256Env": "PHASE22_ASSET_SHA256",
+      "sessionId": "phase22-session-a-audience-full-final",
+      "requiredFiles": ["audience/denial-session-draft.json", "prepared/denial.json", "prepared/denial.frozen.json"]
     },
     "caseId": "phase14.denied-inventory-read.session-draft",
     "caseSha256": "e53d6af51b41ccc4c8056b101f879a19a1e06d5e580cd5658198ddf4cc187266",

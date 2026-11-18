@@ -3,25 +3,27 @@
 This workspace is the Phase 22 S1 checkpoint. It keeps the faulty candidate
 unchanged and adds reviewed-case validation, freezing, and a public candidate
 projection. The default candidate remains `faulty`; S1 does not run S0, trigger
-an alarm, invoke a model, or score a case. The portable archive's root
-`SHA256SUMS` manifest is verified before any case edit; its SHA-256 is
-`a2ef965bcd7debff17d71d0c5643e3e42cfbb3e4a70836b63e875c8f145ed69b`.
+an alarm, invoke a model, or score a case. Maintained preparation verifies the
+canonical asset and exports its digest as `PHASE22_ASSET_SHA256` from the
+session-audience-full-final S3 receipt before any case edit.
 
 Set `PHASE22_PRIVATE_ROOT` outside this checkout and export
 `PHASE22_INPUT_INDEX` to the private session index. Set
-`PHASE22_AUDIENCE_ARCHIVE` to the verified portable
-`phase22-session-a-audience-full.tar.gz`, then extract it into a new private S1
-directory. Its root contains `SHA256SUMS`, `audience/denial-session-draft.json`,
-and the matching `prepared/denial.json` bundle. Private case/trace bytes stay
-outside the editable worktree.
+`asset_extract` to the already verified canonical asset extraction and
+`PHASE22_ASSET_SHA256` to the digest read from
+`session-audience-full-final-s3-receipt.json`. The extraction contains
+`audience/denial-session-draft.json` and the matching `prepared/denial.json`
+bundle. Private case/trace bytes stay outside the editable worktree.
 
 ```sh
 uv sync --project agent --locked
 uv sync --offline --project agent --locked
 mkdir -p "$PHASE22_PRIVATE_ROOT/s1/edit" "$PHASE22_PRIVATE_ROOT/s1/frozen"
-asset_extract="$(mktemp -d "$PHASE22_PRIVATE_ROOT/s1/archive.XXXXXX")"
-tar -xzf "$PHASE22_AUDIENCE_ARCHIVE" -C "$asset_extract"
-(cd "$asset_extract" && sha256sum -c SHA256SUMS)
+: "${asset_extract:?run maintained asset preparation first}"
+: "${PHASE22_ASSET_SHA256:?read from session-audience-full-final-s3-receipt.json}"
+test -d "$asset_extract" && test -s "$asset_extract/audience/denial-session-draft.json"
+test -s "$asset_extract/prepared/denial.json"
+printf 'Using verified Phase 22 asset %s\n' "$PHASE22_ASSET_SHA256"
 cp "$asset_extract/audience/denial-session-draft.json" \
   "$PHASE22_PRIVATE_ROOT/s1/edit/denial.reviewed.json"
 export PHASE22_REVIEWED_CASE="$PHASE22_PRIVATE_ROOT/s1/edit/denial.reviewed.json"
