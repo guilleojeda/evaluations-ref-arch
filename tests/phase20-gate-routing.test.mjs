@@ -199,6 +199,21 @@ test('quality gate and protected publication use isolated roles, dependencies, a
   requireMatch(gate, /actions\/download-artifact/, 'the gate must consume the checked artifact');
   requireMatch(gate, /(?:configure-aws-credentials|sts assume-role)/,
     'the gate must acquire an evaluation session');
+  const evaluationOidc = steps(gate).find((block) => /Verify the evaluation OIDC case/.test(block));
+  assert.ok(evaluationOidc, 'the evaluation gate must exercise its native OIDC trust case');
+  requireMatch(evaluationOidc, /PHASE0_OIDC_ROLE_ARN:\s*\$\{\{\s*env\.PHASE20_EVALUATION_ROLE_ARN\s*\}\}/,
+    'the evaluation OIDC probe must target the isolated evaluation role');
+  requireMatch(evaluationOidc, /PHASE0_OIDC_ENVIRONMENT:\s*demo-evaluation/,
+    'the evaluation OIDC probe must carry the demo-evaluation environment binding');
+  requireMatch(evaluationOidc, /PHASE0_DENIED_OIDC_ROLE_ARNS:\s*\$\{\{\s*env\.PHASE0_DEPLOY_ROLE_ARN\s*\}\},\$\{\{\s*env\.PHASE20_PUBLISHER_ROLE_ARN\s*\}\}/,
+    'the evaluation OIDC probe must deny both legacy and repaired publisher WebIdentity targets');
+  requireAbsent(evaluationOidc, /PHASE0_OIDC_ROLE_ARN:\s*\$\{\{\s*env\.PHASE0_DEPLOY_ROLE_ARN/,
+    'the evaluation OIDC probe must not test the broad deployment role');
+  const diagnostics = steps(gate).find((block) => /Preserve private qualification diagnostics/.test(block));
+  assert.ok(diagnostics, 'qualification failures must have a private diagnostic path');
+  requireMatch(diagnostics, /s3api put-object/, 'qualification diagnostics must be retained in private S3');
+  requireAbsent(diagnostics, /actions\/upload-artifact|cat\s+.*qualification\.(?:stderr|summary)/i,
+    'qualification diagnostics must not be published as a public artifact or echoed raw');
   assert.ok(runStepIndex(gate, /(?:sha256sum|sha256|artifactSha256)/i) >= 0,
     'the gate must record package identity in an executed check');
   requireAbsent(gate, /continue-on-error:\s*true/i, 'machine rejection/incompleteness must fail the gate');

@@ -412,6 +412,8 @@ jobs:
       - name: Verify the allowed OIDC case
         env:
           PHASE0_OIDC_CASE: allowed
+          PHASE0_OIDC_ROLE_ARN: ${{ env.PHASE0_DEPLOY_ROLE_ARN }}
+          PHASE0_OIDC_ENVIRONMENT: demo-infrastructure
         run: node --test tests/phase0-oidc.test.mjs
       - name: Assume the GitHub deployment role
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -764,6 +766,9 @@ jobs:
       - name: Verify the evaluation OIDC case
         env:
           PHASE0_OIDC_CASE: allowed
+          PHASE0_OIDC_ROLE_ARN: ${{ env.PHASE20_EVALUATION_ROLE_ARN }}
+          PHASE0_OIDC_ENVIRONMENT: demo-evaluation
+          PHASE0_DENIED_OIDC_ROLE_ARNS: ${{ env.PHASE0_DEPLOY_ROLE_ARN }},${{ env.PHASE20_PUBLISHER_ROLE_ARN }}
         run: node --test tests/phase0-oidc.test.mjs
       - name: Assume the scoped evaluation role
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -991,6 +996,27 @@ jobs:
           jq -e '.artifact.sha256 and .source.sha256 and .configuration.sha256 and .reviewManifestSha256 and .servingArtifact.bucket and .servingArtifact.key' "$receipt_path" >/dev/null
           echo "qualification=$receipt_path" >> "$GITHUB_OUTPUT"
           echo "exit_status=$qualify_status" >> "$GITHUB_OUTPUT"
+      - name: Preserve private qualification diagnostics
+        if: >-
+          always() && (steps.qualification.outcome == 'failure' ||
+          steps.qualification.outputs.exit_status != '0')
+        shell: bash
+        env:
+          EVIDENCE_BUCKET: ${{ env.PHASE20_EVIDENCE_BUCKET }}
+          EVIDENCE_PREFIX: agent-evaluation/phase20/${{ steps.artifact.outputs.artifact_sha256 }}
+          QUALIFICATION_ROOT: ${{ runner.temp }}/phase20-qualification
+        run: |
+          set -euo pipefail
+          for diagnostic in qualification.stderr.log summary.json; do
+            diagnostic_path="$QUALIFICATION_ROOT/$diagnostic"
+            [[ -s "$diagnostic_path" ]] || continue
+            diagnostic_key="$EVIDENCE_PREFIX/diagnostics/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/$diagnostic"
+            diagnostic_sha256="$(sha256sum "$diagnostic_path" | awk '{print $1}')"
+            aws s3api put-object --bucket "$EVIDENCE_BUCKET" --key "$diagnostic_key" \
+              --body "$diagnostic_path" --if-none-match '*' --server-side-encryption AES256 \
+              --metadata "sha256=$diagnostic_sha256" --content-type text/plain >/dev/null
+            echo "Private qualification diagnostic preserved: sha256=$diagnostic_sha256"
+          done
       - name: Verify the private review manifest readback
         if: always() && steps.qualification.outputs.qualification != ''
         shell: bash
@@ -1319,6 +1345,8 @@ jobs:
       - name: Verify the allowed OIDC case
         env:
           PHASE0_OIDC_CASE: allowed
+          PHASE0_OIDC_ROLE_ARN: ${{ env.PHASE0_DEPLOY_ROLE_ARN }}
+          PHASE0_OIDC_ENVIRONMENT: demo-infrastructure
         run: node --test tests/phase0-oidc.test.mjs
       - name: Assume the GitHub deployment role
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
