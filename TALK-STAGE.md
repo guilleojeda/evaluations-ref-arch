@@ -13,6 +13,7 @@ metadata-only: it must not start a model, send application traffic, switch a
 live target, publish, or reset the controller.
 
 ```sh
+uv sync --project agent --locked
 uv sync --offline --project agent --locked
 uv run --offline --project agent --locked python -m py_compile \
   agent/prompt.py agent/main.py agent/investigation.py
