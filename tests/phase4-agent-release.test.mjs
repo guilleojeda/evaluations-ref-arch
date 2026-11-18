@@ -15,13 +15,16 @@ const checkedTemplate = { Resources: {
   RunTable: { Type: 'AWS::DynamoDB::Table', Properties: { TableName: 'IncidentTriageDemoAgentRun' }, DeletionPolicy: 'Retain', UpdateReplacePolicy: 'Retain' },
   AdapterLogGroupABC: { Type: 'AWS::Logs::LogGroup', Properties: { LogGroupName: '/aws/lambda/IncidentTriageDemoAlarmAdapter' }, DeletionPolicy: 'Retain', UpdateReplacePolicy: 'Retain' },
 } };
-function check(action, replacement, overrides = {}, resourceOverrides = {}, template = checkedTemplate) {
+function runGuard(changes, overrides = {}, template = checkedTemplate) {
   const directory = mkdtempSync(join(tmpdir(), 'phase4-agent-guard-'));
   try {
     const path = join(directory, 'checked-template.json');
     writeFileSync(path, JSON.stringify(template));
-    return spawnSync(process.execPath, [guard, path], { encoding: 'utf8', input: JSON.stringify({ ...description, Changes: [{ Type: 'Resource', ResourceChange: { Action: action, LogicalResourceId: 'RunTable', ResourceType: 'AWS::DynamoDB::Table', ...(replacement === undefined ? {} : { Replacement: replacement }), ...resourceOverrides } }], ...overrides }) });
+    return spawnSync(process.execPath, [guard, path], { encoding: 'utf8', input: JSON.stringify({ ...description, Changes: changes, ...overrides }) });
   } finally { rmSync(directory, { recursive: true, force: true }); }
+}
+function check(action, replacement, overrides = {}, resourceOverrides = {}, template = checkedTemplate) {
+  return runGuard([{ Type: 'Resource', ResourceChange: { Action: action, LogicalResourceId: 'RunTable', ResourceType: 'AWS::DynamoDB::Table', ...(replacement === undefined ? {} : { Replacement: replacement }), ...resourceOverrides } }], overrides, template);
 }
 test('agent release accepts retained run data and rejects removal, uncertain replacement and incomplete inspection', () => {
   assert.equal(check('Add').status, 0);
@@ -29,6 +32,29 @@ test('agent release accepts retained run data and rejects removal, uncertain rep
   for (const result of [check('Remove'), check('Modify', 'True'), check('Modify', 'Conditional'), check('Modify'), check('Modify', 'False', { NextToken: 'next' }), check('Modify', 'False', { ExecutionStatus: 'OBSOLETE' }), check('Modify', 'False', { StackName: 'IncidentTriageDemoApp' })]) {
     assert.equal(result.status, 1, result.stdout + result.stderr);
   }
+});
+
+test('normal AWS change-set property resolution removes only the dynamic Permission false positive', () => {
+  const adapter = {
+    Type: 'Resource',
+    ResourceChange: {
+      Action: 'Modify', LogicalResourceId: 'AlarmAdapter94C8F489',
+      ResourceType: 'AWS::Lambda::Function', Replacement: 'False',
+      Details: [{ Target: { Attribute: 'Properties', Name: 'Environment', RequiresRecreation: 'Never' }, Evaluation: 'Dynamic', ChangeSource: 'DirectModification' }],
+    },
+  };
+  const dynamicPermission = {
+    Type: 'Resource',
+    ResourceChange: {
+      Action: 'Modify', LogicalResourceId: 'NativeAlarmPermission',
+      ResourceType: 'AWS::Lambda::Permission', Replacement: 'Conditional',
+      Details: [{ Target: { Attribute: 'Properties', Name: 'FunctionName', RequiresRecreation: 'Always' }, Evaluation: 'Dynamic', ChangeSource: 'ResourceAttribute', CausingEntity: 'AlarmAdapter94C8F489.Arn' }],
+    },
+  };
+  const normalDetail = runGuard([adapter, dynamicPermission]);
+  assert.equal(normalDetail.status, 1, normalDetail.stdout + normalDetail.stderr);
+  const resolvedDetail = runGuard([adapter]);
+  assert.equal(resolvedDetail.status, 0, resolvedDetail.stdout + resolvedDetail.stderr);
 });
 
 test('agent release imports only the exact checked retained table and adapter logs', () => {
