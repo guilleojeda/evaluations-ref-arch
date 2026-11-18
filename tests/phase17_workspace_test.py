@@ -36,6 +36,7 @@ from phase16_baseline_test import (
     report_for,
     write_bundle,
 )
+from support.prompt_fixture import materialize_faulty_source, write_coherent_manifest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -90,7 +91,7 @@ class S3WorkspaceAcceptance(unittest.TestCase):
         # it can create its running record.
         self.default_agent = self.root / "default-agent"
         shutil.copytree(AGENT, self.default_agent, ignore=shutil.ignore_patterns(".venv", "__pycache__"))
-        self._sync_prompt_manifest(self.default_agent)
+        write_coherent_manifest(self.default_agent)
         previous_agent_directory = captured_execution.AGENT_DIRECTORY
         captured_execution.AGENT_DIRECTORY = self.default_agent
         self.addCleanup(setattr, captured_execution, "AGENT_DIRECTORY", previous_agent_directory)
@@ -145,19 +146,6 @@ class S3WorkspaceAcceptance(unittest.TestCase):
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes((AGENT / name).read_bytes())
         return editable
-
-    @staticmethod
-    def _sync_prompt_manifest(agent_directory: Path) -> None:
-        prompt = agent_directory / "prompt.py"
-        spec = importlib.util.spec_from_file_location("phase17_manifest_prompt", prompt)
-        if spec is None or spec.loader is None:
-            raise AssertionError("prompt fixture cannot be imported")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        manifest_path = agent_directory / "agent-manifest.json"
-        manifest = json.loads(manifest_path.read_bytes())
-        manifest["promptSha256"] = module.PROMPT_SHA256
-        manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
     def _launch_repaired(self, agent_directory, bedrock):
         def with_scripted_bedrock(case_path, bundle_path, output_root, **kwargs):
@@ -241,27 +229,13 @@ class S3WorkspaceAcceptance(unittest.TestCase):
         patch_file = AGENT / "prompts" / "s3-repair.patch"
         self.assertTrue(patch_file.is_file(), "prepared S3 repair patch is missing")
         checkout = self.root / "prepared-checkout"
-        (checkout / "agent").mkdir(parents=True)
-        for name in (*captured_execution.SOURCE_FILES, *captured_execution.DEPENDENCY_FILES):
-            target = checkout / "agent" / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(AGENT / name, target)
-        subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
-        # The patch is authored against the checked-in faulty source.  A
-        # Phase20 positive checkout contains the repaired source, so restore
-        # the faulty base in this disposable fixture before applying the patch
-        # forward; this does not alter the product checkout or acceptance.
-        base_check = subprocess.run(
-            ["git", "apply", "--check", str(patch_file)], cwd=checkout,
-            capture_output=True, text=True, check=False,
+        agent_source = materialize_faulty_source(
+            AGENT,
+            checkout,
+            ROOT / "tests/fixtures/phase20_faulty_prompt.py",
         )
-        if base_check.returncode != 0:
-            reverse_check = subprocess.run(
-                ["git", "apply", "--check", "--reverse", str(patch_file)], cwd=checkout,
-                capture_output=True, text=True, check=False,
-            )
-            self.assertEqual(reverse_check.returncode, 0, reverse_check.stderr)
-            subprocess.run(["git", "apply", "--reverse", str(patch_file)], cwd=checkout, check=True)
+        checkout = agent_source.parent
+        subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
         faulty_prompt = (checkout / "agent/prompt.py").read_bytes()
         subprocess.run(["git", "add", "agent"], cwd=checkout, check=True)
         subprocess.run(

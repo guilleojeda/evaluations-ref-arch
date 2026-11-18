@@ -412,6 +412,8 @@ jobs:
       - name: Verify the allowed OIDC case
         env:
           PHASE0_OIDC_CASE: allowed
+          PHASE0_OIDC_ROLE_ARN: ${{ env.PHASE0_DEPLOY_ROLE_ARN }}
+          PHASE0_OIDC_ENVIRONMENT: demo-infrastructure
         run: node --test tests/phase0-oidc.test.mjs
       - name: Assume the GitHub deployment role
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -764,6 +766,9 @@ jobs:
       - name: Verify the evaluation OIDC case
         env:
           PHASE0_OIDC_CASE: allowed
+          PHASE0_OIDC_ROLE_ARN: ${{ env.PHASE20_EVALUATION_ROLE_ARN }}
+          PHASE0_OIDC_ENVIRONMENT: demo-evaluation
+          PHASE0_DENIED_OIDC_ROLE_ARNS: ${{ env.PHASE0_DEPLOY_ROLE_ARN }},${{ env.PHASE20_PUBLISHER_ROLE_ARN }}
         run: node --test tests/phase0-oidc.test.mjs
       - name: Assume the scoped evaluation role
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -991,7 +996,29 @@ jobs:
           jq -e '.artifact.sha256 and .source.sha256 and .configuration.sha256 and .reviewManifestSha256 and .servingArtifact.bucket and .servingArtifact.key' "$receipt_path" >/dev/null
           echo "qualification=$receipt_path" >> "$GITHUB_OUTPUT"
           echo "exit_status=$qualify_status" >> "$GITHUB_OUTPUT"
+      - name: Preserve private qualification diagnostics
+        if: >-
+          always() && (steps.qualification.outcome == 'failure' ||
+          steps.qualification.outputs.exit_status != '0')
+        shell: bash
+        env:
+          EVIDENCE_BUCKET: ${{ env.PHASE20_EVIDENCE_BUCKET }}
+          EVIDENCE_PREFIX: agent-evaluation/phase20/${{ steps.artifact.outputs.artifact_sha256 }}
+          QUALIFICATION_ROOT: ${{ runner.temp }}/phase20-qualification
+        run: |
+          set -euo pipefail
+          for diagnostic in qualification.stderr.log summary.json; do
+            diagnostic_path="$QUALIFICATION_ROOT/$diagnostic"
+            [[ -s "$diagnostic_path" ]] || continue
+            diagnostic_key="$EVIDENCE_PREFIX/diagnostics/${GITHUB_RUN_ID}/${GITHUB_RUN_ATTEMPT}/$diagnostic"
+            diagnostic_sha256="$(sha256sum "$diagnostic_path" | awk '{print $1}')"
+            aws s3api put-object --bucket "$EVIDENCE_BUCKET" --key "$diagnostic_key" \
+              --body "$diagnostic_path" --if-none-match '*' --server-side-encryption AES256 \
+              --metadata "sha256=$diagnostic_sha256" --content-type text/plain >/dev/null
+            echo "Private qualification diagnostic preserved: sha256=$diagnostic_sha256"
+          done
       - name: Verify the private review manifest readback
+        id: review_readback
         if: always() && steps.qualification.outputs.qualification != ''
         shell: bash
         env:
@@ -1008,7 +1035,9 @@ jobs:
             "$review_path" >/dev/null
       - name: Publish only the safe qualification handoff
         id: receipt
-        if: always() && steps.qualification.outputs.qualification != ''
+        if: >-
+          always() && steps.qualification.outputs.qualification != '' &&
+          steps.review_readback.outcome == 'success'
         shell: bash
         env:
           QUALIFICATION_PATH: ${{ steps.qualification.outputs.qualification }}
@@ -1028,29 +1057,51 @@ jobs:
           status="$(jq -r '.status // "unknown"' "$QUALIFICATION_PATH")"
           verdict="$(jq -r '.verdict // "unknown"' "$QUALIFICATION_PATH")"
           reason_raw="$(jq -r '.reason // empty' "$QUALIFICATION_PATH")"
+          case "$status" in
+            review_required|rejected|incomplete|eligible) safe_status="$status" ;;
+            *) safe_status='unknown' ;;
+          esac
+          case "$verdict" in
+            reject|incomplete|review_required|pass) safe_verdict="$verdict" ;;
+            *) safe_verdict='unavailable' ;;
+          esac
           safe_reason='Machine qualification did not produce an eligible review handoff.'
-          if [[ "$reason_raw" =~ ^deterministic\ check\ failed:\ ([A-Za-z0-9_-]+)$ ]]; then
-            safe_reason="Required deterministic criterion failed: ${BASH_REMATCH[1]}"
-          elif [[ "$status" == incomplete ]]; then
-            safe_reason='Required machine evidence was incomplete.'
+          safe_criterion=''
+          if [[ "$reason_raw" =~ deterministic[[:space:]]+check[[:space:]]+failed:[[:space:]]*([a-z_]+)$ ]]; then
+            safe_criterion="${BASH_REMATCH[1]}"
+            safe_reason="Required deterministic criterion failed: $safe_criterion"
+          elif [[ "$reason_raw" =~ deterministic[[:space:]]+check[[:space:]]+is[[:space:]]+incomplete:[[:space:]]*([a-z_]+)$ ]]; then
+            safe_criterion="${BASH_REMATCH[1]}"
+            safe_reason="Required deterministic criterion is incomplete: $safe_criterion"
           fi
-          console_url="$(jq -r '.privateReview.s3.consoleUrl // empty' "$QUALIFICATION_PATH")"
+          case "$safe_criterion" in
+            report_structure|assessment|action|target|target_value|source_scope|as_of_time|operator_boundary) ;;
+            '') ;;
+            *)
+              safe_criterion=''
+              safe_reason='Machine qualification did not produce an eligible review handoff.'
+              ;;
+          esac
+          review_bucket="$(jq -er '.privateReview.s3.bucket' "$QUALIFICATION_PATH")"
+          review_prefix="$(jq -er '.privateReview.s3.prefix' "$QUALIFICATION_PATH")"
+          [[ "$review_bucket" == "${{ env.PHASE20_EVIDENCE_BUCKET }}" ]]
+          [[ "$review_prefix" =~ ^agent-evaluation/phase20/[0-9a-f]{64}/[A-Za-z0-9._-]{1,120}/[0-9]+/[0-9]+/[0-9a-f]{64}$ ]]
+          console_url="$(jq -er '.privateReview.s3.consoleUrl' "$QUALIFICATION_PATH")"
+          expected_console_url="https://s3.console.aws.amazon.com/s3/buckets/${review_bucket}?region=${AWS_REGION}&prefix=${review_prefix}/"
+          [[ "$console_url" == "$expected_console_url" ]]
           {
             if [[ "$status" == review_required ]]; then
               echo '### Phase 20 evaluation: eligible, pending protected review'
-              echo "- Status: $status"
-              echo "- Artifact SHA-256: ${{ steps.artifact.outputs.artifact_sha256 }}"
-              echo "- Review manifest SHA-256: $review_manifest_sha256"
-              if [[ -n "$console_url" ]]; then
-                echo "- Private evidence (authenticated AWS Console): $console_url"
-              fi
             else
               echo '### Phase 20 evaluation: publication blocked'
-              echo "- Status: $status"
-              case "$verdict" in
-                reject|incomplete) echo "- Machine verdict: $verdict" ;;
-                *) echo '- Machine verdict: unavailable' ;;
-              esac
+            fi
+            echo "- Status: $safe_status"
+            echo "- Machine verdict: $safe_verdict"
+            echo "- Artifact SHA-256: ${{ steps.artifact.outputs.artifact_sha256 }}"
+            echo "- Qualification receipt SHA-256: $qualification_sha256"
+            echo "- Review manifest SHA-256: $review_manifest_sha256"
+            echo "- Private evidence (authenticated AWS Console): $console_url"
+            if [[ "$status" != review_required ]]; then
               echo "- Safe failed criterion: $safe_reason"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
@@ -1319,6 +1370,8 @@ jobs:
       - name: Verify the allowed OIDC case
         env:
           PHASE0_OIDC_CASE: allowed
+          PHASE0_OIDC_ROLE_ARN: ${{ env.PHASE0_DEPLOY_ROLE_ARN }}
+          PHASE0_OIDC_ENVIRONMENT: demo-infrastructure
         run: node --test tests/phase0-oidc.test.mjs
       - name: Assume the GitHub deployment role
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
