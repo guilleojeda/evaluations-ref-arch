@@ -2,7 +2,7 @@ diff --git a/agent/prompt.py b/agent/prompt.py
 index 0c4ea0f..0000000 100644
 --- a/agent/prompt.py
 +++ b/agent/prompt.py
-@@ -39,14 +39,35 @@
+@@ -39,14 +39,43 @@
 -# The faulty rule controls the recommendation while leaving the diagnosis and
 -# cited evidence to the investigator.
 -FAULTY_RECOMMENDATION_RULE = (
@@ -32,8 +32,16 @@ index 0c4ea0f..0000000 100644
 +    "failed; require evidence of memory pressure for a memory action. Do not "
 +    "choose Increase reserved concurrency from a single aggregate or a handled "
 +    "error rate; require compatible capacity metrics and configuration that "
-+    "support an active concurrency constraint, and distinguish concurrency from "
-+    "request-rate or downstream failures. Choose Restore inventory access only "
++    "support an active concurrency constraint. Distinguish simultaneous executions "
++    "from invocations counted over a period and from request-rate or downstream "
++    "failures; accepted invocations and rejected throttles are separate AWS metric "
++    "series, so do not form an unsupported ratio from them. If the cap is saturated "
++    "but available data does not measure headroom, recommend a bounded first trial "
++    "such as doubling the observed cap, label it as a trial rather than a required "
++    "capacity estimate, and require retesting concurrent executions, throttles, "
++    "user errors, downstream health and relevant rate or latency metrics. Do not "
++    "claim that a capacity change caused or will resolve prior failures without "
++    "evidence. Choose Restore inventory access only "
 +    "when current evidence identifies an access misconfiguration and identifies a "
 +    "healthy role-backed published version at the compatible configuration. Use "
 +    "an exact supported target/value from the returned configuration, not a "
