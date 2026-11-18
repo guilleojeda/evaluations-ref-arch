@@ -14,6 +14,13 @@ Set `PHASE22_PRIVATE_ROOT` outside this checkout and export
 `PHASE22_S3_RUN_ROOT`, and `PHASE18_EVALUATOR` to private paths outside the
 checkout.
 
+The presenter input index maps the reviewed denial pair to
+`stage-assets-full/session-a/s2/case.frozen.json` and
+`stage-assets-full/session-a/s2/bundle.json` (case SHA-256
+`cb1480066a46f258ee8d9e27355d50b9bd05f171ee9ef84a169989f72af5e18d`, bundle
+SHA-256 `8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8`).
+The files remain private and are never copied into this checkout.
+
 ```sh
 uv sync --offline --project agent --locked
 uv run --offline --project agent --locked python -m py_compile \
