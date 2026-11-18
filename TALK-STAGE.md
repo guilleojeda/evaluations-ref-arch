@@ -8,20 +8,26 @@ SHA-256 `222c63de2a2acc30060a7807a2d1cf17e6bfa0b921eebe4410a9557b12739ae1`.
 
 Set `PHASE22_PRIVATE_ROOT` outside this checkout and export
 `PHASE22_INPUT_INDEX` to the private session index. Set
-`PHASE14_IMPORT_ARCHIVE` to the archive whose digest is recorded in that index,
-then import it into a new S1 directory. Private case/trace bytes stay outside
-the editable worktree.
+`PHASE22_AUDIENCE_ARCHIVE` to the verified portable
+`phase22-session-a-audience-full.tar.gz`, then extract it into a new private S1
+directory. Its root contains `SHA256SUMS`, `audience/denial-session-draft.json`,
+and the matching `prepared/denial.json` bundle. Private case/trace bytes stay
+outside the editable worktree.
 
 ```sh
 uv sync --project agent --locked
 uv sync --offline --project agent --locked
-mkdir -p "$PHASE22_PRIVATE_ROOT/s1/import" "$PHASE22_PRIVATE_ROOT/s1/edit" "$PHASE22_PRIVATE_ROOT/s1/frozen"
-tar -xzf "$PHASE14_IMPORT_ARCHIVE" -C "$PHASE22_PRIVATE_ROOT/s1/import"
-(cd "$PHASE22_PRIVATE_ROOT/s1/import" && sha256sum -c SHA256SUMS)
-cp "$PHASE22_PRIVATE_ROOT/s1/import/denial-session-draft.json" \
+mkdir -p "$PHASE22_PRIVATE_ROOT/s1/edit" "$PHASE22_PRIVATE_ROOT/s1/frozen"
+asset_extract="$(mktemp -d "$PHASE22_PRIVATE_ROOT/s1/archive.XXXXXX")"
+tar -xzf "$PHASE22_AUDIENCE_ARCHIVE" -C "$asset_extract"
+(cd "$asset_extract" && sha256sum -c SHA256SUMS)
+cp "$asset_extract/audience/denial-session-draft.json" \
   "$PHASE22_PRIVATE_ROOT/s1/edit/denial.reviewed.json"
 export PHASE22_REVIEWED_CASE="$PHASE22_PRIVATE_ROOT/s1/edit/denial.reviewed.json"
-export PHASE22_SOURCE_BUNDLE="$PHASE22_PRIVATE_ROOT/s1/import/denial.json"
+export PHASE22_SOURCE_BUNDLE="$asset_extract/prepared/denial.json"
+printf '%s  %s\n' \
+  8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8 \
+  "$PHASE22_SOURCE_BUNDLE" | sha256sum -c -
 uv run --offline --project agent --locked python -m py_compile \
   agent/reviewed_cases.py agent/captured_evidence.py
 python -m json.tool talk/stage.json >/dev/null

@@ -24,17 +24,20 @@
     "kind": "prepared-private-review-archive",
     "privateIndexEnv": "PHASE22_INPUT_INDEX",
     "archive": {
-      "env": "PHASE14_IMPORT_ARCHIVE",
-      "manifestSha256": "222c63de2a2acc30060a7807a2d1cf17e6bfa0b921eebe4410a9557b12739ae1",
-      "requiredFiles": ["denial-session-draft.json", "denial-prepared.json", "denial-prepared.frozen.json", "denial.json", "denial-trace-pointer.json", "SHA256SUMS"]
+      "env": "PHASE22_AUDIENCE_ARCHIVE",
+      "archiveSha256": "87447304deb0f8617434d8dcd6c530e20e7425035024e8cefb7db9340402d032",
+      "manifestSha256": "a2ef965bcd7debff17d71d0c5643e3e42cfbb3e4a70836b63e875c8f145ed69b",
+      "requiredFiles": ["audience/denial-session-draft.json", "prepared/denial.json", "prepared/denial.frozen.json", "SHA256SUMS"]
     },
-    "caseId": "phase14.denied-inventory-read.prepared",
+    "caseId": "phase14.denied-inventory-read.session-draft",
+    "caseSha256": "e53d6af51b41ccc4c8056b101f879a19a1e06d5e580cd5658198ddf4cc187266",
+    "bundleSha256": "8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8",
     "forbidden": ["new alarm", "model execution", "score", "release gate"]
   },
   "entry": {
     "offlineSmoke": "uv run --offline --project agent --locked python -m py_compile agent/reviewed_cases.py agent/captured_evidence.py",
     "validate": "uv run --offline --project agent --locked python agent/reviewed_cases.py validate --case \"$PHASE22_REVIEWED_CASE\" --bundle \"$PHASE22_SOURCE_BUNDLE\"",
-    "freeze": "uv run --offline --project agent --locked python agent/reviewed_cases.py freeze --case \"$PHASE22_REVIEWED_CASE\" --bundle \"$PHASE22_SOURCE_BUNDLE\" --output \"$PHASE22_PRIVATE_ROOT/s1/denial.frozen.json\"",
-    "candidateInput": "uv run --offline --project agent --locked python agent/reviewed_cases.py candidate-input --case \"$PHASE22_PRIVATE_ROOT/s1/denial.frozen.json\" --bundle \"$PHASE22_SOURCE_BUNDLE\" > \"$PHASE22_PRIVATE_ROOT/s1/denial.candidate-task.json\""
+    "freeze": "uv run --offline --project agent --locked python agent/reviewed_cases.py freeze --case \"$PHASE22_REVIEWED_CASE\" --bundle \"$PHASE22_SOURCE_BUNDLE\" --output \"$PHASE22_PRIVATE_ROOT/s1/frozen/denial.frozen.json\"",
+    "candidateInput": "uv run --offline --project agent --locked python agent/reviewed_cases.py candidate-input --case \"$PHASE22_PRIVATE_ROOT/s1/frozen/denial.frozen.json\" --bundle \"$PHASE22_SOURCE_BUNDLE\" > \"$PHASE22_PRIVATE_ROOT/s1/denial.candidate-task.json\""
   }
 }
