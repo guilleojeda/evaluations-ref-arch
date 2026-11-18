@@ -13,8 +13,14 @@ ARG AWS_CLI_X64_SHA256=fe0553306b3d001d162bc193d3b040027aab3466b9f910b50e702c122
 ARG AWS_CLI_ARM64_SHA256=ce7b03ebceed1dc6a0a8f27134a41a9a3b5671f09c57ab2e7fc6d43710dbaef3
 
 RUN set -eux; \
-    apt-get update; \
-    apt-get install --yes --no-install-recommends ca-certificates curl gh git jq unzip xz-utils; \
+    printf '%s\n' \
+      'deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://deb.debian.org/debian bookworm main' \
+      'deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://deb.debian.org/debian bookworm-updates main' \
+      'deb [signed-by=/usr/share/keyrings/debian-archive-keyring.gpg] https://deb.debian.org/debian-security bookworm-security main' > /tmp/talk-bootstrap.list; \
+    debian_apt() { apt-get -o Dir::Etc::sourcelist=/tmp/talk-bootstrap.list -o Dir::Etc::sourceparts=- "$@"; }; \
+    debian_apt update; \
+    debian_apt install --yes --no-install-recommends ca-certificates curl gh git jq unzip xz-utils; \
+    rm /tmp/talk-bootstrap.list; \
     case "$TARGETARCH" in \
       amd64) node_arch=x64; node_checksum="$NODE_X64_SHA256"; aws_arch=x86_64; aws_checksum="$AWS_CLI_X64_SHA256" ;; \
       arm64) node_arch=arm64; node_checksum="$NODE_ARM64_SHA256"; aws_arch=aarch64; aws_checksum="$AWS_CLI_ARM64_SHA256" ;; \
