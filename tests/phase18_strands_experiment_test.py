@@ -15,7 +15,7 @@ collection.
 from __future__ import annotations
 
 import copy
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 import hashlib
 import importlib
 import inspect
@@ -888,6 +888,64 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
         self.assertNotIn("semantic", rows[0])
         self.assertEqual(rows[1]["caseId"], "phase18.synthetic-capacity")
         self.assertEqual(rows[1]["status"], "complete")
+
+    def test_pre_execution_deadlock_finishes_native_experiment_incomplete_with_private_diagnostic(self):
+        """A task failure before execution identity must not leave the experiment running."""
+
+        import _frozen_importlib
+        import captured_execution
+
+        module = self.product()
+        model_session, _clients = self._clients("repaired")
+        aws = FakeAWS(self.runs)
+        failure_message = "deadlock detected by module lock"
+        failure = _frozen_importlib._DeadlockError(
+            failure_message
+        )
+
+        # The real native driver is loaded from the saved tooling snapshot.
+        # This scope keeps the fixture focused on the task/report lifecycle
+        # while making the frozen captured runner raise before it can allocate
+        # an execution identity.
+        @contextmanager
+        def use_current_driver(_directory):
+            yield module
+
+        with patch.object(module, "_frozen_tooling_scope", use_current_driver):
+            with patch.object(captured_execution, "run_captured_case", side_effect=failure):
+                with patch.object(boto3, "Session", side_effect=aws.session_factory):
+                    experiment = Path(module.run_experiment(
+                        self.suite,
+                        self.runs,
+                        candidate_id="repaired",
+                        evaluator_path=self.evaluator,
+                        wait_seconds=0,
+                        selected_cases=["phase18.synthetic-denial"],
+                        model_session=model_session,
+                        source_directory=self.source_workspaces["repaired"],
+                    ))
+
+        record = self._read_record(experiment)
+        self.assertEqual(record["status"], "incomplete")
+        self.assertEqual(record["phase"], "finished")
+        self.assertIsNone(record["cases"][0].get("executionId"))
+        self.assertEqual(record["cases"][0]["status"], "incomplete")
+        self.assertEqual(
+            record["cases"][0]["error"],
+            f"_DeadlockError: {failure_message}",
+        )
+        self.assertEqual(record["decision"]["verdict"], "incomplete")
+        self.assertTrue((experiment / "native-report.json").is_file())
+        self.assertIn("native report execution identity is missing", record["readErrors"])
+
+        shown = module.show_experiment(experiment)
+        self.assertEqual(shown["status"], "incomplete")
+        self.assertEqual(shown["decision"]["verdict"], "incomplete")
+        shown_row = shown["cases"][0]
+        self.assertEqual(shown_row["status"], "incomplete")
+        self.assertIsNone(shown_row.get("executionId"))
+        self.assertEqual(shown_row["error"], record["cases"][0]["error"])
+        self.assertIn("native report execution identity is missing", shown["readErrors"])
 
     def test_each_case_reopens_through_existing_native_root_trace_validation(self):
         from captured_execution import load_execution

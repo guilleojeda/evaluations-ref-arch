@@ -235,6 +235,61 @@ class QualificationManifestTests(unittest.TestCase):
         self.assertIsNone(rendered["cases"][0]["score"])
         self.assertEqual(receipt["reviewManifestSha256"], self.qualify.verify_private_review(review)["manifestSha256"])
 
+    def test_pre_execution_case_without_identity_keeps_private_incomplete_diagnostic(self):
+        """A native no-ID case is retained as incomplete, never admitted as a run."""
+
+        for record_row in (self.record["cases"][0],):
+            record_row["executionId"] = None
+            record_row["sessionId"] = None
+            record_row["traceId"] = None
+            record_row.pop("promptSha256", None)
+            record_row["status"] = "incomplete"
+            record_row["score"] = {
+                "status": "incomplete",
+                "reason": "captured execution is incomplete; semantic scoring was not started",
+            }
+            record_row["error"] = "_DeadlockError: deadlock detected by module lock"
+        self.record["status"] = "incomplete"
+
+        shown = copy.deepcopy(self.shown)
+        shown["status"] = "incomplete"
+        shown["readErrors"] = ["native report execution identity is missing"]
+        shown["decision"] = {
+            "verdict": "incomplete",
+            "reason": "authenticated experiment evidence is incomplete",
+        }
+        shown_row = shown["cases"][0]
+        shown_row["executionId"] = None
+        shown_row["sessionId"] = None
+        shown_row["traceId"] = None
+        shown_row.pop("promptSha256", None)
+        shown_row["status"] = "incomplete"
+        shown_row["score"] = None
+        shown_row["error"] = self.record["cases"][0]["error"]
+
+        _receipt_path, receipt = self._build(shown_override=shown)
+
+        self.assertEqual(receipt["status"], "incomplete")
+        self.assertEqual(receipt["verdict"], "incomplete")
+        self.assertEqual(
+            receipt["diagnostic"],
+            {
+                "kind": "authenticated-native-read",
+                "status": "incomplete",
+                "errors": ["native report execution identity is missing"],
+            },
+        )
+        review = self.root / "qualification" / "review"
+        self.qualify.verify_private_review(review, manifest_sha256=receipt["reviewManifestSha256"])
+        rendered = json.loads((review / "cases" / "phase20.synthetic.case" / "index.json").read_text())
+        self.assertNotIn("executionId", rendered["identity"])
+
+    def test_complete_case_still_requires_authenticated_prompt_identity(self):
+        shown = copy.deepcopy(self.shown)
+        shown["cases"][0]["promptSha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "prompt identity"):
+            self._build(shown_override=shown)
+
     def test_missing_score_without_authenticated_read_error_is_rejected(self):
         shown = copy.deepcopy(self.shown)
         shown["cases"][0]["score"] = None

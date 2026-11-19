@@ -1362,7 +1362,29 @@ def run_experiment(
         report.to_file(str(report_path))
         reopened, report_error = _read_native_report(state.directory, state.record)
         if reopened is None:
-            raise ValueError(report_error or "native report could not be reopened")
+            # Strands can still produce a complete native report when a task
+            # returns a typed pre-execution failure.  Such a case has no
+            # execution identity by design, so reopening the report cannot
+            # admit it as a complete authenticated execution.  Persist the
+            # report and finish the experiment as incomplete instead of
+            # leaving the canonical record falsely running or raising before
+            # the private diagnostics are retained.
+            rows, read_errors = _authenticated_rows(state.directory, state.record)
+            if report_error:
+                read_errors.append(report_error)
+            state.record["nativeReport"] = {
+                "path": "native-report.json",
+                "sha256": _bytes_digest(report_path.read_bytes()),
+                "caseCount": len(report.cases),
+            }
+            state.record["status"] = "incomplete"
+            state.record["phase"] = "finished"
+            state.record["finishedAt"] = _now()
+            state.record["decision"] = _decision(rows)
+            if read_errors:
+                state.record["readErrors"] = read_errors
+            state.save()
+            return state.directory
         state.record["nativeReport"] = {
             "path": "native-report.json",
             "sha256": _bytes_digest(report_path.read_bytes()),
