@@ -13,7 +13,6 @@ import copy
 from contextlib import redirect_stdout
 import hashlib
 import importlib
-import importlib.util
 import json
 import multiprocessing
 import os
@@ -47,6 +46,7 @@ ROOT = Path(__file__).resolve().parents[1]
 AGENT = ROOT / "agent"
 if str(AGENT) not in sys.path:
     sys.path.insert(0, str(AGENT))
+import captured_execution
 
 
 class BlockingBedrock(ScriptedBedrock):
@@ -232,19 +232,13 @@ class StageHandoffAcceptance(unittest.TestCase):
             shutil.copy2(AGENT / filename, target)
         prompt = workspace / "prompt.py"
         prompt.write_text(
-            prompt.read_text(encoding="utf-8")
-            + f'\nSYSTEM_PROMPT += "\\n{marker}"\n'
-            + 'PROMPT_SHA256 = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()\n',
+            prompt.read_text(encoding="utf-8").replace(
+                "Candidate recommendation rule:",
+                f"Candidate recommendation rule:\\n{marker}",
+                1,
+            ),
             encoding="utf-8",
         )
-        spec = importlib.util.spec_from_file_location(f"phase22_{name}_prompt", prompt)
-        if spec is None or spec.loader is None:
-            raise AssertionError("phase22 prompt fixture cannot be imported")
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        manifest = json.loads((workspace / "agent-manifest.json").read_bytes())
-        manifest["promptSha256"] = module.PROMPT_SHA256
-        (workspace / "agent-manifest.json").write_text(json.dumps(manifest) + "\n", encoding="utf-8")
         return workspace
 
     def _record(self, experiment: Path) -> dict:
@@ -282,6 +276,28 @@ class StageHandoffAcceptance(unittest.TestCase):
         try:
             active_source = self._wait_for_running(source_root, entered)
             source_identity = json.loads((active_source / "execution.json").read_bytes())["identity"]
+            editor_manifest = self.s3_workspace / "agent-manifest.json"
+            editor_manifest_before = editor_manifest.read_bytes()
+            captured_manifest = json.loads(
+                (active_source / "source" / "agent" / "agent-manifest.json").read_bytes()
+            )
+            self.assertNotEqual(
+                json.loads(editor_manifest_before)["promptSha256"],
+                source_identity["promptSha256"],
+                "the edited workspace keeps its historical manifest",
+            )
+            self.assertEqual(captured_manifest["promptSha256"], source_identity["promptSha256"])
+            source_files = {
+                f"agent/{name}": (active_source / "source" / "agent" / name).read_bytes()
+                for name in captured_execution.SOURCE_FILES
+            }
+            dependency_files = {
+                f"agent/{name}": (active_source / "source" / "agent" / name).read_bytes()
+                for name in captured_execution.DEPENDENCY_FILES
+            }
+            self.assertEqual(source_identity["sourceSha256"], captured_execution._named_digest(source_files))
+            self.assertEqual(source_identity["dependencySha256"], captured_execution._named_digest(dependency_files))
+            self.assertEqual(editor_manifest.read_bytes(), editor_manifest_before)
 
             # The S3 snapshot is immutable even while its owning process is in
             # flight.  The S4 checkout has a different prepared source marker.
