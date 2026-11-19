@@ -12,7 +12,8 @@ The score attempt is `ce3e3a4a-ac3d-42a5-bcad-e7125a21127d`.
 Set `PHASE22_PRIVATE_ROOT` outside this checkout and export
 `PHASE22_INPUT_INDEX` to the private session index. Maintained preparation
 already provides the verified `asset_extract` directory,
-`PHASE22_ASSET_SHA256` from `session-audience-full-final-s3-receipt.json`, and
+`PHASE22_ASSET_SHA256` from the receipt named by `PHASE22_ASSET_RECEIPT`, and
+the roster session ID in `PHASE22_ASSET_SESSION_ID`, and
 the selected suite in `PHASE22_SUITE` (`stock` or `carried`). The extraction
 contains the matching S2 run, case, bundle, and capture receipt. Resolve the
 scoring evaluator from the selected gate's `staging/evaluator.json`; this keeps
@@ -23,7 +24,9 @@ uv sync --project agent --locked
 uv sync --offline --project agent --locked
 mkdir -p "$PHASE22_PRIVATE_ROOT/s2"
 : "${asset_extract:?run maintained asset preparation first}"
-: "${PHASE22_ASSET_SHA256:?read from session-audience-full-final-s3-receipt.json}"
+: "${PHASE22_ASSET_RECEIPT:?set the verified private asset receipt path}"
+: "${PHASE22_ASSET_SESSION_ID:?set the session ID from session-roster.json}"
+: "${PHASE22_ASSET_SHA256:?read from PHASE22_ASSET_RECEIPT}"
 : "${PHASE22_SUITE:?maintained preparation must select stock or carried}"
 test -d "$asset_extract"
 test -s "$asset_extract/s2/run/e3f934af-6af9-42aa-ac78-b315133e1571/execution.json"

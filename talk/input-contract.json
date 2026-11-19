@@ -6,6 +6,8 @@
   "locations": {
     "assetRoot": "asset_extract",
     "assetSha256": "PHASE22_ASSET_SHA256",
+    "assetReceipt": "PHASE22_ASSET_RECEIPT",
+    "assetSessionId": "PHASE22_ASSET_SESSION_ID",
     "suiteSelection": "PHASE22_SUITE",
     "gateArchive": "selected gate archive under assetRoot; extracted to a private temporary directory",
     "s2Run": "PHASE22_S2_RUN",
