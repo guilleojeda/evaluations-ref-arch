@@ -1,8 +1,8 @@
 diff --git a/agent/prompt.py b/agent/prompt.py
-index c59b546..4cd244c 100644
+index c59b546..6019913 100644
 --- a/agent/prompt.py
 +++ b/agent/prompt.py
-@@ -36,17 +36,65 @@ inventory and the healthy role-backed version at the current memory. Do not
+@@ -36,17 +36,71 @@ inventory and the healthy role-backed version at the current memory. Do not
  recommend broadening the Inventory role.
  """
  
@@ -42,10 +42,16 @@ index c59b546..4cd244c 100644
 +    "user errors, downstream health and relevant rate or latency metrics. Do not "
 +    "claim that a capacity change caused or will resolve prior failures without "
 +    "evidence. Choose Restore inventory access only "
-+    "when current evidence identifies an access misconfiguration and identifies a "
-+    "healthy role-backed published version at the compatible configuration. Use "
-+    "an exact supported target/value from the returned configuration, not a "
-+    "guessed version or allocation. "
++    "when current evidence identifies an access misconfiguration. First read the "
++    "currently serving version's memory and artifact from the returned "
++    "configuration, then identify observed published version(s) with the same "
++    "returned fields and an access-capable role, and choose the exact eligible "
++    "target. If the artifact is not returned, match only the configuration fields "
++    "actually observed; do not invent artifact compatibility. Never prioritize a "
++    "newer or larger version from its number or timestamp, or roll memory for an "
++    "access-only fix. Use an exact supported target/value from the returned "
++    "configuration; if no adequately evidenced target exists, choose Other rather "
++    "than guess. "
 +    "Match request IDs across correlated Gateway, Checkout and Inventory "
 +    "observations before describing a request path. A Gateway or Lambda "
 +    "integration status describes integration only, not downstream business "
