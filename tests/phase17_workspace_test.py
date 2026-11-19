@@ -171,6 +171,8 @@ class S3WorkspaceAcceptance(unittest.TestCase):
         )
         self.assertIn(marker, edited_prompt)
         prompt_path.write_bytes(edited_prompt)
+        editor_manifest = editable_agent / "agent-manifest.json"
+        editor_manifest_before = editor_manifest.read_bytes()
         original_spec = importlib.util.spec_from_file_location
         expected = original_spec("phase17_saved_prompt", prompt_path)
         expected_prompt_module = importlib.util.module_from_spec(expected)
@@ -198,16 +200,21 @@ class S3WorkspaceAcceptance(unittest.TestCase):
         second_model = ScriptedBedrock(report, self.case["task"])
         second_dir = self._launch_repaired(editable_agent, second_model)
         before, after = self._show(first_dir), self._show(second_dir)
-        for shown, model in ((before, first_model), (after, second_model)):
+        for shown, model, run_dir in ((before, first_model, first_dir), (after, second_model, second_dir)):
             self.assertEqual(shown["status"], "complete")
             self.assertEqual(shown["identity"]["candidateId"], "repaired")
             self.assertEqual(shown["identity"]["originatingRunId"], self.case["evidence"]["originatingRunId"])
             self.assertEqual(shown["identity"]["promptSha256"], expected_prompt_module.PROMPT_SHA256)
             self.assertEqual(shown["manifest"]["sourceFiles"]["agent/prompt.py"], hashlib.sha256(edited_prompt).hexdigest())
+            source_manifest = json.loads(
+                (run_dir / "source/agent/agent-manifest.json").read_bytes()
+            )
+            self.assertEqual(source_manifest["promptSha256"], shown["identity"]["promptSha256"])
             self.assertEqual(shown["report"]["recommendation"]["value"], "75")
             self.assertTrue(model.requests)
             for request in model.requests:
                 self.assertEqual(request["system"][0]["text"], expected_prompt_module.SYSTEM_PROMPT)
+        self.assertEqual(editor_manifest.read_bytes(), editor_manifest_before)
         for key in ("caseSha256", "bundleSha256", "referenceTime", "sourceSha256", "promptSha256"):
             self.assertEqual(before["identity"][key], after["identity"][key])
         for key in ("executionId", "sessionId", "traceId"):

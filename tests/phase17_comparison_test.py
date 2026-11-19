@@ -222,6 +222,11 @@ class OfflineComparisonAcceptance(unittest.TestCase):
         self.assertEqual(before["identity"]["caseSha256"], after["identity"]["caseSha256"])
         self.assertNotEqual(before["identity"]["executionId"], after["identity"]["executionId"])
         self.assertNotEqual(before["identity"]["promptSha256"], after["identity"]["promptSha256"])
+        self.assertNotEqual(
+            before["sourceDigests"]["agent/agent-manifest.json"],
+            after["sourceDigests"]["agent/agent-manifest.json"],
+            "development captures derive each manifest from its captured prompt",
+        )
         self.assertEqual(before["report"]["recommendation"]["action"], "Increase memory")
         self.assertEqual(after["report"]["recommendation"], recommendation("Restore inventory access", "inventory", "75", "version"))
         self.assertEqual(before["deterministic"]["findings"]["action"]["verdict"], "fail")

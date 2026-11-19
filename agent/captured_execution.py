@@ -161,6 +161,27 @@ def _read_source_bytes(agent_directory: str | Path | None = None) -> tuple[dict[
     return source, dependencies
 
 
+def _development_manifest_bytes(manifest_raw: bytes, prompt_sha256: str) -> bytes:
+    """Return the development manifest bound to one captured prompt digest."""
+
+    try:
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("development agent manifest is invalid JSON") from exc
+    if not isinstance(manifest, Mapping):
+        raise ValueError("development agent manifest must be an object")
+    if manifest.get("sourceRevision") != "development":
+        # Published and historical source snapshots are already immutable
+        # identities. Never reinterpret their manifest bytes as an editor
+        # template.
+        return manifest_raw
+    if manifest.get("promptSha256") == prompt_sha256:
+        return manifest_raw
+    generated_manifest = dict(manifest)
+    generated_manifest["promptSha256"] = prompt_sha256
+    return json.dumps(generated_manifest, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+
+
 def _parse_headers(value: str) -> dict[str, str]:
     headers: dict[str, str] = {}
     for item in value.split(","):
@@ -648,7 +669,17 @@ def _run_snapshot(
         actual_prompt_sha256 = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()
         if PROMPT_SHA256 != actual_prompt_sha256:
             raise ValueError("prompt digest does not match the saved system prompt")
-        manifest_value = _decode_json((agent_source / "agent-manifest.json").read_bytes(), "agent manifest")
+        manifest_path = agent_source / "agent-manifest.json"
+        manifest_raw = manifest_path.read_bytes()
+        if not strict_manifest:
+            generated_manifest = _development_manifest_bytes(manifest_raw, actual_prompt_sha256)
+            if generated_manifest != manifest_raw:
+                source_files = dict(source_files)
+                source_files["agent/agent-manifest.json"] = generated_manifest
+                manifest_path.write_bytes(generated_manifest)
+                manifest_path.chmod(0o600)
+                manifest_raw = generated_manifest
+        manifest_value = _decode_json(manifest_raw, "agent manifest")
         if (
             not isinstance(manifest_value, Mapping)
             or (strict_manifest and manifest_value.get("promptSha256") != actual_prompt_sha256)
