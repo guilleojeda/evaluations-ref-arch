@@ -370,6 +370,50 @@ release decision.
 
 ## Run, score and compare the repaired candidate (S3)
 
+For a replacement terminal, use the maintained stage boundary so the selected
+AWS profile, `us-east-1`, STS account, and (for fresh S3 work) the locked ADOT
+environment are selected by the command rather than copied from shell history.
+Setup checks the selected workspace and AWS identity. S3 also starts the
+locked telemetry launcher and records the effective `SYSTEM_PROMPT` from the
+selected faulty baseline before the edit. Neither setup invokes a model. The receipt is bound to the
+selected workspace and maintained launcher.
+
+```sh
+session="${PHASE22_SESSION_ROOT:?path to the selected session root}"
+source="${PHASE22_SOURCE_REPO:?path to the maintained source checkout}"
+profile="${PHASE22_AWS_PROFILE:?approved presenter profile}"
+account="${PHASE22_AWS_ACCOUNT:?approved AWS account}"
+checker="$source/scripts/talk_stage.py"
+inputs="${PHASE22_INPUT_ROOT:?path to the selected private inputs}"
+outputs="${PHASE22_STAGE_OUTPUT_ROOT:?path to durable stage outputs}"
+s2_run="${PHASE22_S2_RUN:?selected retained S2 execution directory}"
+s2_evaluator="${PHASE22_S2_EVALUATOR:?selected reviewed S2 evaluator descriptor}"
+s3_baseline="${PHASE22_S3_BASELINE_ROOT:?selected case-matched archived S3 baseline}"
+s3_case="${PHASE22_S3_CASE:?selected frozen S3 case}"
+s3_bundle="${PHASE22_S3_BUNDLE:?selected S3 source bundle}"
+
+python3 "$checker" setup --stage S2 --repository "$source" --workspace "$session/S2" \
+  --session-root "$session" --inputs "$inputs" --output "$outputs" \
+  --profile "$profile" --account "$account"
+python3 "$checker" run --stage S2 --repository "$source" \
+  --workspace "$session/S2" --output "$outputs" --profile "$profile" \
+  --account "$account" -- uv run --project agent --locked python agent/evaluate_case.py score \
+  --run "$s2_run" --evaluator "$s2_evaluator" --rubric single --wait-seconds 300
+
+# Run this before editing S3/agent/prompt.py. The guard rejects unrelated and
+# comment-only edits before the paid native run; it also accepts a clean exact
+# repair back to a repaired frozen HEAD when the effective prompt changed.
+python3 "$checker" setup --stage S3 --repository "$source" --workspace "$session/S3" \
+  --session-root "$session" --inputs "$inputs" --output "$outputs" \
+  --baseline "$s3_baseline" --profile "$profile" --account "$account"
+# Edit only "$session/S3/agent/prompt.py" in the IDE.
+python3 "$checker" run --stage S3 --repository "$source" \
+  --workspace "$session/S3" --output "$outputs" --profile "$profile" \
+  --account "$account" -- uv run --project agent --locked opentelemetry-instrument \
+  python agent/evaluate_case.py run --candidate repaired \
+  --case "$s3_case" --bundle "$s3_bundle" --output-root "$outputs/S3/candidate"
+```
+
 S3 is a prompt-only edit in the browser IDE. Apply the prepared patch in a clean
 editable workspace, or type the same small change while the faulty prompt is
 open. The patch changes only `agent/prompt.py` and leaves the checked-in faulty
