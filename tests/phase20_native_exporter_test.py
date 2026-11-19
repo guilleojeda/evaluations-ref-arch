@@ -207,6 +207,7 @@ import boto3
 from botocore.session import get_session
 
 case = json.loads(Path(request["stagedCase"]).read_text())["case"]
+task = case["task"]
 report = {
     "assessment": "ongoing",
     "summary": "The packaged child produced a bounded synthetic report.",
@@ -214,9 +215,9 @@ report = {
     "evidence": [{
         "source": "logs",
         "resource": "inventory",
-        "windowStart": case["task"]["incidentWindow"]["start"],
-        "windowEnd": case["task"]["referenceTime"],
-        "observedAt": case["task"]["referenceTime"],
+        "windowStart": task["incidentWindow"]["start"],
+        "windowEnd": task["referenceTime"],
+        "observedAt": task["referenceTime"],
         "finding": "Synthetic packaged child observation.",
     }],
     "uncertainties": ["Synthetic package-process evidence is intentionally bounded."],
@@ -240,7 +241,7 @@ class ScriptedBedrock:
         else:
             scope = next(self.reads, None)
             name = "search_logs" if scope is not None else None
-            arguments = {**(scope or {}), "start": case["task"]["incidentWindow"]["start"], "end": case["task"]["referenceTime"]}
+            arguments = {**(scope or {}), "start": task["incidentWindow"]["start"], "end": task["referenceTime"]}
         events = [{"messageStart": {"role": "assistant"}}]
         if name is None:
             events.append({"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "I inspected the packaged evidence."}}})
@@ -338,7 +339,12 @@ assert telemetry["posts"] and telemetry["posts"][0]["dataBytes"] > 0, telemetry
 assert telemetry["posts"][0]["url"] == os.environ["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]
 assert record["modelResponseCount"] == record["modelSpanCount"] > 0, record
 spans = json.loads((Path(run_dir) / "strands.native-spans.json").read_text())["spans"]
-assert any(span.get("name") == "invoke_agent" for span in spans), "captured Strands root span missing"
+def operation(span):
+    attributes = span.get("attributes", {}) if isinstance(span, dict) else {}
+    if isinstance(attributes, dict) and isinstance(attributes.get("attributes"), dict):
+        attributes = attributes["attributes"]
+    return attributes.get("gen_ai.operation.name") if isinstance(attributes, dict) else None
+assert any(operation(span) == "invoke_agent" for span in spans), "captured Strands root span missing"
 assert record["identity"]["runtimeOrigin"]["moduleOrigins"]["strands"]["loaded"] is True
 '''
             result = subprocess.run(
