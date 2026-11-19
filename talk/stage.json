@@ -5,10 +5,10 @@
   "candidateDefault": "repaired",
   "prompt": {
     "path": "agent/prompt.py",
-    "semanticId": "repaired-ea890c0",
-    "sourceRevision": "ea890c0cd166dfa33dce987e9f2d55dc08ce9670",
-    "fileSha256": "2ed7fb9aad73fb4fcaa6500f0c90ed820a367f2a6d66f53796ffc8498db89c2f",
-    "promptSha256": "f67d8af0d38e2d24090d91d7296274b9e62349f9ef6c3b7b0b715faf4359b15c",
+    "semanticId": "repaired-c3e568a",
+    "sourceRevision": "c3e568a90fbd2e17a787b8d2458ffea93d7fe15a",
+    "fileSha256": "c5b88c2e80f275bed1c5f83fc7d42d65a21ed040d4da9eb8d0b95527e4ac68e7",
+    "promptSha256": "69706e75a177b333c836430b58540fbb65d1063ab14d8e9e8c19d8f34034f4c4",
     "faultyStartingOption": {
       "semanticId": "faulty-phase19",
       "sourceRevision": "bd6f77df97933e3e675ee9c2a699db16e29ea1b6",
@@ -32,7 +32,7 @@
     "sourceRevision": "62236d0e8731242d5a6468cf931f003a323b5349",
     "artifactSha256": "1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7",
     "lockSha256": "887c9bcf91ec028fe3b0939aac00a7d4c3dfbc68b2287e4469a15f3798651831",
-    "promptSourceSha256": "2ed7fb9aad73fb4fcaa6500f0c90ed820a367f2a6d66f53796ffc8498db89c2f"
+    "promptSourceSha256": "c5b88c2e80f275bed1c5f83fc7d42d65a21ed040d4da9eb8d0b95527e4ac68e7"
   },
   "inputs": {
     "kind": "fresh-repaired-candidate-against-matching-reviewed-case",
