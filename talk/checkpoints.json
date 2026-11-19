@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "generation": "talk/v1",
+  "checkpoints": {
+    "S0": {
+      "tag": "talk/v1/S0",
+      "commit": "56ba1c97fb07b7572c51cb8b99e8975b1051e5eb"
+    },
+    "S1": {
+      "tag": "talk/v1/S1",
+      "commit": "c954f218b6386ef92b8647cb220c2c974f8d3b25"
+    },
+    "S2": {
+      "tag": "talk/v1/S2",
+      "commit": "681045bf2b9ff0f68faf0d28fa092338ed6e8587"
+    },
+    "S3": {
+      "tag": "talk/v1/S3",
+      "commit": "94f4bf4a8b9ce92e0676591666e76d0a099bba7b"
+    },
+    "S4": {
+      "tag": "talk/v1/S4",
+      "commit": "ed735fd84d00e0ece9fa8d4ea588deee0353d00a"
+    },
+    "S5": {
+      "tag": "talk/v1/S5",
+      "commit": "57fe6c5d6bf7822c9b0ccb1dcb36bae97ba49f02"
+    }
+  }
+}

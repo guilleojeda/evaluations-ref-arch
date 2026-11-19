@@ -12,10 +12,11 @@ the S3/S4 runners or the S5 gate and is not installed by the maintained
 devcontainer.
 
 The [checkpoint map](checkpoints.md) is maintained separately from a private
-session index. The map identifies the six annotated tags and peeled commits;
-the session index identifies the selected case, candidate, publication and
-result for this performance. Keep both outside credential material and retain
-their digests in the private session record.
+session index. The map identifies six source tags and peeled commits; it does
+not qualify S5 or prove that tags have been published. The session index
+identifies the selected case, candidate, publication and result for this
+performance. Keep the session index and all private inputs outside credential
+material and retain their digests in the private session record.
 
 ## 1. Create the session record
 
@@ -85,7 +86,7 @@ software merely because another performance is scheduled.
 
 ## 3. Verify browser access and the development environment
 
-Create or reopen a Codespace from the maintained checkout. A replacement
+Create or reopen a Codespace from the maintained checkout. A cold or replacement
 Codespace must install its own tools and dependencies; do not copy a local
 credential cache, `.venv`, `node_modules`, or binaries from an older Codespace.
 The committed `.devcontainer/` installs the pinned AWS CLI, Node.js and `uv`,
@@ -106,32 +107,50 @@ npm ci
 uv sync --locked --project agent
 ```
 
-The container has no AWS credentials. Sign in only through the named operator
-profile and verify the account before opening private evidence:
+For a cold browser, use a clean clone and fetch the maintained map. The clone
+and all private session paths are separate from the browser receipt and from
+credential storage:
+
+```sh
+replacement_root="${PHASE22_REPLACEMENT_ROOT:?set a new private directory}"
+repository_url="${REPOSITORY_URL:?set the repository URL}"
+umask 077
+mkdir -p "$replacement_root"
+git clone "$repository_url" "$replacement_root/repository"
+git -C "$replacement_root/repository" fetch origin main
+git -C "$replacement_root/repository" switch --detach FETCH_HEAD
+cd "$replacement_root/repository"
+git -C "$replacement_root/repository" status --short
+```
+
+The container has no AWS credentials. Sign in only through a named operator
+profile and verify the account before opening private evidence. Keep the
+profile name and region in environment variables so the same commands work in
+another Codespace:
 
 ```sh
 aws configure list-profiles
-# Run once in a new Codespace when the profile is absent. The prompts use the
-# operator's private IAM Identity Center Start URL, us-west-2 directory, the
-# assigned account/role, and us-east-1 as the demo default region.
-aws configure sso --profile reinvent-2026-talk --use-device-code --no-browser
-aws sso login --profile reinvent-2026-talk
-export AWS_PROFILE=reinvent-2026-talk
-export AWS_REGION=us-east-1
-export AWS_DEFAULT_REGION=us-east-1
+operator_profile="${PHASE22_AWS_PROFILE:?set the short-lived operator profile}"
+export AWS_PROFILE="$operator_profile"
+export AWS_REGION="${PHASE22_AWS_REGION:?set the demo region}"
+export AWS_DEFAULT_REGION="$AWS_REGION"
+# Run once in a new Codespace when the profile is absent. Use the operator's
+# private IAM Identity Center values at the prompts; do not save credentials in
+# the repository or copy a credential cache from another browser.
+aws configure sso --profile "$operator_profile" --no-browser
+aws sso login --profile "$operator_profile" --use-device-code --no-browser
 aws sts get-caller-identity --profile "$AWS_PROFILE" --region "$AWS_REGION" \
   --query '{Account:Account,Arn:Arn}' --output json
 ```
 
 If the terminal cannot open a browser, use
-`aws sso login --profile reinvent-2026-talk --use-device-code --no-browser` and
-enter the displayed URL and code in the operator's browser. Do not use a
-default profile, paste long-lived keys, or save credentials in a worktree. The
-demo account is `027224425948` and the demo resources are in `us-east-1`.
+`aws sso login --profile "$operator_profile" --use-device-code --no-browser`
+and enter the displayed URL and code in the operator's browser. Do not use a
+default profile, paste long-lived keys, or save credentials in a worktree.
 
 If this AWS CLI build does not expose `--use-device-code` on `configure sso`,
-run `aws configure sso --profile reinvent-2026-talk --no-browser` and use
-`aws sso login --profile reinvent-2026-talk --use-device-code --no-browser`.
+run `aws configure sso --profile "$operator_profile" --no-browser` and use
+`aws sso login --profile "$operator_profile" --use-device-code --no-browser`.
 The profile contains only non-secret SSO configuration. Evaluation commands use
 the separately scoped, short-lived evaluation role through the documented role
 chain; do not reuse the app/controller bearer or deployment credentials.
@@ -189,6 +208,21 @@ git fetch origin refs/heads/demo-deploy:refs/heads/demo-deploy
 git rev-parse --verify refs/heads/demo-deploy
 ```
 
+Keep the identities separate when preparing S5. The map's S5 commit is the
+frozen source checkpoint; the production verifier's `demoDeploy.qualifiedCommit`
+is the current repaired source that the publication actually serves. Compare
+both to their recorded evidence, but do not change a tag or move `demo-deploy`
+to make them match:
+
+```sh
+checkpoint_map="${PHASE22_CHECKPOINTS:?set the maintained checkpoint map}"
+s5_tag="$(jq -er '.checkpoints.S5.tag' "$checkpoint_map")"
+s5_tag_commit="$(jq -er '.checkpoints.S5.commit' "$checkpoint_map")"
+printf 'frozen S5 source: %s -> %s\n' "$s5_tag" "$s5_tag_commit"
+git rev-parse --verify "refs/tags/$s5_tag^{commit}" 2>/dev/null || \
+  printf '%s\n' 'S5 tag is not published in this checkout; do not create it here.'
+```
+
 For a full session, defer the qualified source, `faulty`/`repaired` publication
 tuples and immutable Runtime/package readbacks to the read-only verifier in the
 next step, after the prepared assets have been imported. A failed S5 regression
@@ -221,14 +255,46 @@ source-tree path or rearrange files to satisfy it; request the refreshed
 portable archive from the stage-assets maintainer.
 
 The downloaded prepared-input/session archive is a versioned private object in
-`cdk-evaltalk-assets-027224425948-us-east-1` under `talk-sessions/`. Its nested
-`gate/staging.tar.gz` is the existing Phase 18 content-addressed object in the
-unversioned evidence bucket. That pointer and SHA are checked from the roster;
-the content-addressed object does not acquire a fabricated S3 version. Keep the
-downloaded archive, roster and generated input outside the checkout:
+the asset bucket under `talk-sessions/`. Its nested `gate/staging.tar.gz` is a
+content-addressed evaluation object in the evidence bucket. That pointer and
+SHA are checked from the roster; the content-addressed object does not acquire
+a fabricated S3 version. Keep the downloaded archive, roster and generated
+input outside the checkout.
+
+The replacement-browser receipt is itself a pinned, versioned S3 object. Keep
+the locator JSON private, fetch exactly its recorded object version, and verify
+the locator digest before deriving the archive key/version/digest. This is the
+same procedure on a cold or replacement Codespace; do not copy an old download
+or infer a new key from a prior session:
 
 ```sh
-asset_bucket="${PHASE22_ASSET_BUCKET:-cdk-evaltalk-assets-027224425948-us-east-1}"
+asset_root="${PHASE22_ASSET_ROOT:?set a new private directory outside the checkout}"
+receipt_locator="${PHASE22_ASSET_RECEIPT_LOCATOR:?path to the private pinned browser receipt locator}"
+umask 077
+mkdir -p "$asset_root"
+chmod 700 "$asset_root"
+receipt_bucket="$(jq -er '.bucket' "$receipt_locator")"
+receipt_key="$(jq -er '.key' "$receipt_locator")"
+receipt_version_id="$(jq -er '.versionId' "$receipt_locator")"
+receipt_sha256="$(jq -er '.sha256' "$receipt_locator")"
+receipt="$asset_root/inputs.json"
+aws s3api get-object --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --bucket "$receipt_bucket" --key "$receipt_key" \
+  --version-id "$receipt_version_id" "$receipt" >/dev/null
+printf '%s  %s\n' "$receipt_sha256" "$receipt" | sha256sum -c -
+# Stage runbooks consume this verified downloaded receipt, not the locator JSON.
+export PHASE22_ASSET_RECEIPT="$receipt"
+export PHASE22_ASSET_BUCKET="$(jq -er '.archive.bucket' "$receipt")"
+export PHASE22_ASSET_KEY="$(jq -er '.archive.key' "$receipt")"
+export PHASE22_ASSET_VERSION_ID="$(jq -er '.archive.versionId' "$receipt")"
+export PHASE22_ASSET_SHA256="$(jq -er '.archive.sha256' "$receipt")"
+```
+
+The archive download uses the IDs from that receipt, not a mutable latest
+object:
+
+```sh
+asset_bucket="${PHASE22_ASSET_BUCKET:?set the exact versioned asset bucket from the receipt}"
 asset_key="${PHASE22_ASSET_KEY:?set the exact versioned talk-sessions key from the private receipt}"
 asset_version_id="${PHASE22_ASSET_VERSION_ID:?set the recorded S3 VersionId}"
 asset_sha256="${PHASE22_ASSET_SHA256:?set the recorded archive SHA-256}"
@@ -251,6 +317,12 @@ tar -xzf "$archive" -C "$asset_extract"
 roster="$asset_extract/session-roster.json"
 jq -e '.schemaVersion == 1 and .assetRoot == "." and ((.stages | keys) == ["S0","S1","S2","S3","S4","S5"])' \
   "$roster" >/dev/null
+performance_id="${PHASE22_SESSION_ID:?set the unique per-performance ID above}"
+export PHASE22_ASSET_SESSION_ID="$(jq -er '.sessionId | select(type == "string" and length > 0)' "$roster")"
+test "$PHASE22_ASSET_SESSION_ID" != "$performance_id" || {
+  printf '%s\n' 'asset session ID must differ from the performance session ID' >&2
+  exit 2
+}
 ```
 
 The importer is intentionally local and deterministic: it authenticates the
@@ -264,7 +336,6 @@ recursively and rejects symlinks or missing content:
 
 ```sh
 suite="${PHASE22_SUITE:?set stock or carried to match the verified qualification pointer}"
-performance_id="${PHASE22_SESSION_ID:?set the unique per-performance ID above}"
 phase22_s3_session="$asset_root/session-input-s3.json"
 python3 scripts/talk-inputs.py build \
   --roster "$roster" \
@@ -347,17 +418,46 @@ commit. S5 alone owns the current qualified `demo-deploy` branch, which may be
 newer than the frozen S5 tag. No stage switch moves a ref or changes a cloud
 resource.
 
-For direct entry, pass only the selected checkpoint map and session inputs. For
-example, S3 does not require S5 qualification or an earlier S0–S2 run:
+For direct entry, pass only the selected checkpoint map and that stage's private
+session input. S3, for example, does not require S5 qualification or an earlier
+S0–S2 run. A stage-only input is sufficient; it does not need the all-stage
+`PHASE22_SESSION` created by the S5 binding route:
 
 ```sh
+checkpoint_map="${PHASE22_CHECKPOINTS:?set the maintained checkpoint map}"
+session_root="${PHASE22_SESSION_ROOT:?set a new private session directory}"
 python3 scripts/talk-session.py prepare \
-  --checkpoints "$PHASE22_S3_CHECKPOINTS" \
+  --checkpoints "$checkpoint_map" \
   --session "$PHASE22_S3_SESSION" \
-  --directory "$PHASE22_S3_ROOT" \
+  --directory "$session_root" \
   --stage S3
 python3 scripts/talk-session.py status \
-  --directory "$PHASE22_S3_ROOT" --stage S3
+  --directory "$session_root" --stage S3
+```
+
+To continue an independently prepared S3 performance into S4, build S4's own
+stage-only input from the same roster, assets, suite and performance ID. Use the
+same session root so the existing S3 workspace is preserved, then inspect S4
+before editing. The S3-to-S4 handoff still consumes the current immutable S3 run
+directory printed by the S3 runner; opening S4 does not relaunch S3:
+
+```sh
+s3_run_directory="${PHASE22_S3_RUN_DIRECTORY:?set the current fresh S3 run directory printed by the runner}"
+export PHASE22_S3_RUN="$s3_run_directory"
+test -s "$PHASE22_S3_RUN/execution.json"
+phase22_s4_session="$PHASE22_ASSET_ROOT/session-input-s4.json"
+python3 scripts/talk-inputs.py build \
+  --roster "$roster" \
+  --session-id "$performance_id" \
+  --suite "$suite" --stage S4 --output "$phase22_s4_session"
+export PHASE22_S4_SESSION="$phase22_s4_session"
+python3 scripts/talk-session.py prepare \
+  --checkpoints "$checkpoint_map" \
+  --session "$PHASE22_S4_SESSION" \
+  --directory "$session_root" \
+  --stage S4
+python3 scripts/talk-session.py status \
+  --directory "$session_root" --stage S4
 ```
 
 Status is read-only. Use it before switching or editing and after reconnecting
@@ -412,19 +512,18 @@ must snapshot its candidate, tooling, lockfile, case/bundle, evaluator and
 configuration at launch and write to a unique private result directory. Keep
 the command output and identity in the session record.
 
-For the S3 → S4 handoff, pass the directory printed by the new S3 run to
-`--source-run`. The historical repaired run `295cd070…` reopens for S3
-comparison. Its saved prompt digest differs from its execution identity, so
-S4 refuses it as an executable source. Keep the recorded result under its
-original identity.
+For the S3 → S4 handoff, pass the directory printed by the current S3 run to
+`--source-run` when continuing from that execution. Do not substitute a
+historical run whose saved prompt, source, or tooling identity does not match;
+keep any recorded result under its original identity.
 
 | Stage | Entry and required evidence |
 | --- | --- |
 | S0 | Open/edit the faulty source. Use the hosted controller and [S0 operating instructions](demo-script.md) for a genuine alarm; retain the actual report, trace, and sanitized capture. Source editing does not change the served publication. |
 | S1 | From the S1 worktree root, copy the portable `audience/denial-session-draft.json` to the session edit directory. Review it against `prepared/denial.json`, then run `validate`, `freeze` and `candidate-input`. Review produces no score. See [agent README](../agent/README.md#review-and-freeze-a-case-s1). |
 | S2 | Open the identified saved run with `evaluate_case.py show`, then score only that matching execution with the pinned evaluator. Keep the original execution identity and advisory result. See [agent README](../agent/README.md#run-and-score-the-captured-baseline-s2). |
-| S3 | Edit only the prompt in the S3 worktree. Run `evaluate_case.py run --candidate repaired`, inspect with `show`, score with the same evaluator, and compare with the matching S2 baseline. See [agent README](../agent/README.md#run-score-and-compare-the-repaired-candidate-s3). |
-| S4 | Run `development_experiment.py run` with the prepared suite/evaluator, optionally using an explicitly selected immutable `--source-run`; inspect with `show` and compare offline. A focused run cannot qualify a release. See [agent README](../agent/README.md#run-the-native-strands-development-experiment-s4). |
+| S3 | Edit only the prompt in the S3 worktree. Run `evaluate_case.py run --candidate repaired`, inspect with `show`, score the fresh execution with the same evaluator, and compare only after the matching S2 and S3 scores complete. See [agent README](../agent/README.md#run-score-and-compare-the-repaired-candidate-s3). |
+| S4 | Run the native `development_experiment.py run` launcher with the prepared suite/evaluator, optionally using an explicitly selected immutable `--source-run`; inspect with `show` and compare the saved experiment offline. A focused run cannot qualify a release. See [agent README](../agent/README.md#run-the-native-strands-development-experiment-s4). |
 | S5 | In the only `demo-deploy` worktree, make the reviewed prompt-only regression commit and push through the normal workflow. Record the rejected gate, exact commit/package, frozen case roster, and unchanged repaired serving tuple. Repair the branch through the normal gate before the next full session. |
 
 Switching from S3 to S4 while S3 is running is allowed only after confirming
@@ -497,20 +596,20 @@ currently qualified release or used to overwrite a newer live `demo-deploy`.
 After A is preserved and released, normal preparation for session B alone may
 check out the current qualified `demo-deploy` branch and verify its new tip.
 
-For durable storage, use the existing versioned private
-`cdk-evaltalk-assets-027224425948-us-east-1` bucket under a unique
-`talk-sessions/<session-id>/` prefix. Upload/download is an operator action
-after local save/restore has passed, not part of preparation:
+For durable storage, use the existing versioned private asset bucket from the
+operator's receipt under a unique `talk-sessions/<session-id>/` prefix.
+Upload/download is an operator action after local save/restore has passed, not
+part of preparation:
 
 ```sh
 archive_sha256="$(sha256sum "$private_archive" | awk '{print $1}')"
 archive_key="talk-sessions/${session_id}/$(basename "$private_archive")"
 aws s3api put-object --profile "$AWS_PROFILE" --region "$AWS_REGION" \
-  --bucket cdk-evaltalk-assets-027224425948-us-east-1 \
+  --bucket "${PHASE22_ASSET_BUCKET:?set the versioned asset bucket}" \
   --key "$archive_key" --body "$private_archive" \
   --metadata "sha256=$archive_sha256,session-id=$session_id"
 aws s3api head-object --profile "$AWS_PROFILE" --region "$AWS_REGION" \
-  --bucket cdk-evaltalk-assets-027224425948-us-east-1 --key "$archive_key" \
+  --bucket "$PHASE22_ASSET_BUCKET" --key "$archive_key" \
   --query '{VersionId:VersionId,Size:ContentLength,Metadata:Metadata,LastModified:LastModified}' \
   --output json
 ```
@@ -521,7 +620,7 @@ recorded version explicitly, then verify the local SHA-256 before restore:
 
 ```sh
 aws s3api get-object --profile "$AWS_PROFILE" --region "$AWS_REGION" \
-  --bucket cdk-evaltalk-assets-027224425948-us-east-1 \
+  --bucket "$PHASE22_ASSET_BUCKET" \
   --key "$archive_key" --version-id "$version_id" "$private_archive"
 sha256sum "$private_archive"
 ```
