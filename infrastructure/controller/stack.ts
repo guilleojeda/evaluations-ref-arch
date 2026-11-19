@@ -35,7 +35,13 @@ const INVENTORY_READ_DENY_POLICY_ARN = `arn:aws:iam::${ACCOUNT}:policy/IncidentT
 const INVENTORY_VARIANTS_MANIFEST_BUCKET = "cdk-evaltalk-assets-027224425948-us-east-1";
 const EVIDENCE_BUCKET_NAME = `incident-triage-demo-evidence-${ACCOUNT}-${REGION}`;
 const FAULTY_CONFIGURATION_OBJECT = `arn:aws:s3:::${INVENTORY_VARIANTS_MANIFEST_BUCKET}/agent-reference/7febe979fa1365360983d886f9d1dc78b55d9bde91a6fe7357e5f9fd97d2d7a7.json`;
-const REPAIRED_CONFIGURATION_OBJECT = `arn:aws:s3:::${EVIDENCE_BUCKET_NAME}/agent-evaluation/phase20/1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7/runtime-configuration.json`;
+// Qualification stages are immutable under the artifact SHA-256 directory.
+// IAM's single-character wildcard keeps that directory depth and the final
+// configuration filename fixed while allowing future repaired publications.
+// It does not validate hex or prevent a slash; the application authenticates
+// the publisher row, key, digest, and numbered Runtime before this read.
+const REPAIRED_ARTIFACT_DIGEST_PATTERN = "?".repeat(64);
+const REPAIRED_CONFIGURATION_OBJECT = `arn:aws:s3:::${EVIDENCE_BUCKET_NAME}/agent-evaluation/phase20/${REPAIRED_ARTIFACT_DIGEST_PATTERN}/runtime-configuration.json`;
 const STAGE_ALARM_NAME = "IncidentTriageDemoAppStage5xx";
 const STAGE_ALARM_ARN = `arn:aws:cloudwatch:${REGION}:${ACCOUNT}:alarm:${STAGE_ALARM_NAME}`;
 
