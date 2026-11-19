@@ -569,6 +569,38 @@ class SessionInputCommandTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("authenticated capacity case", result.stderr)
 
+    def test_carried_gate_rejects_fixed_id_disguised_as_capacity(self) -> None:
+        source = self.fixture.root / "gate/staging.tar.gz"
+        replacement = self.fixture.root / "gate/staging-disguised-denial.tar.gz"
+        with tarfile.open(source, "r:gz") as incoming, tarfile.open(replacement, "w:gz") as outgoing:
+            for member in incoming.getmembers():
+                data = incoming.extractfile(member).read() if member.isfile() else None
+                if member.name == "staging/manifest.json":
+                    manifest = json.loads(data)
+                    for row in manifest["cases"]:
+                        if row["caseId"] == CURRENT_OVERLOAD_CASE_ID:
+                            row["label"] = "other"
+                        elif row["caseId"] == FIXED_CASE_IDS[1]:
+                            row["label"] = "capacity"
+                    data = json.dumps(manifest, sort_keys=True).encode()
+                    member.size = len(data)
+                if data is not None:
+                    outgoing.addfile(member, io.BytesIO(data))
+        replacement_sha = sha256(replacement)
+        source.unlink()
+        replacement.rename(source)
+        self.fixture.roster["gate"]["archiveSha256"] = replacement_sha  # type: ignore[index]
+        self.fixture.roster["gate"]["currentOverloadCaseId"] = FIXED_CASE_IDS[1]  # type: ignore[index]
+        pointer = json.loads((self.fixture.root / "gate/qualification-input.json").read_text(encoding="utf-8"))
+        pointer["sha256"] = replacement_sha
+        pointer["s3Key"] = f"agent-evaluation/phase18/inputs/{replacement_sha}/staging.tar.gz"
+        (self.fixture.root / "gate/qualification-input.json").write_text(json.dumps(pointer) + "\n", encoding="utf-8")
+        self.fixture.roster["selectedDigests"]["gate/staging.tar.gz"] = replacement_sha  # type: ignore[index]
+        self.fixture.roster_path.write_text(json.dumps(self.fixture.roster, indent=2) + "\n", encoding="utf-8")
+        result = self.run_cli(stage="S4", suite="carried")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("case IDs do not match", result.stderr)
+
     def test_legacy_carried_gate_defaults_to_historical_capacity_case(self) -> None:
         self.fixture.use_legacy_carried_gate()
         result = self.run_cli(stage="S4", suite="carried")
