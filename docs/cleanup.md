@@ -67,11 +67,11 @@ python3 scripts/talk-session.py save \
 sha256sum "$private_archive"
 ```
 
-Upload the resulting archive only through the existing versioned private
-`cdk-evaltalk-assets-027224425948-us-east-1/talk-sessions/<session-id>/` prefix.
+Upload the resulting archive only through the versioned private asset bucket
+and `talk-sessions/<session-id>/` prefix named by the operator's receipt.
 Record the returned S3 `VersionId`, object SHA-256/metadata, key, UTC time and
 operator identity. The upload/download receipt is separate from the
-content-addressed Phase 18 evaluation inputs in the evidence bucket. See the
+content-addressed evaluation inputs in the evidence bucket. See the
 [versioned readback commands](preparation.md#6-save-and-recover-a-session).
 
 On a replacement Codespace, prepare clean stage bases first and then restore
@@ -82,6 +82,8 @@ python3 scripts/talk-session.py restore \
   --directory "$replacement_session_root" \
   --archive "$private_archive" \
   --inventory "$private_inventory"
+python3 scripts/talk-session.py status \
+  --directory "$replacement_session_root" --stage S3
 ```
 
 Verify the restored files' original digests, each stage's base commit and diff,
@@ -97,11 +99,35 @@ artifact continues serving. Reverting source creates a new package identity;
 the earlier pass does not qualify it.
 
 ```sh
-git status --short
-git branch --show-current
-git fetch origin demo-deploy
-git log --oneline -8
-git merge --ff-only origin/demo-deploy
+s5_root="${PHASE22_S5_ROOT:?path to the only demo-deploy worktree}"
+test -d "$s5_root" || { printf '%s\n' "S5 worktree is unavailable: $s5_root" >&2; exit 2; }
+s5_branch="$(git -C "$s5_root" branch --show-current)"
+test "$s5_branch" = demo-deploy || {
+  printf 'S5 worktree must be on demo-deploy (found %s)\n' "${s5_branch:-detached}" >&2
+  exit 2
+}
+test -z "$(git -C "$s5_root" status --porcelain)" || {
+  printf '%s\n' 'S5 worktree is dirty; preserve its edits before continuing.' >&2
+  exit 2
+}
+git -C "$s5_root" fetch origin demo-deploy || {
+  printf '%s\n' 'Unable to refresh origin/demo-deploy; stop without changing S5.' >&2
+  exit 2
+}
+local_commit="$(git -C "$s5_root" rev-parse HEAD)"
+remote_commit="$(git -C "$s5_root" rev-parse --verify origin/demo-deploy 2>/dev/null)" || {
+  printf '%s\n' 'origin/demo-deploy is unavailable; stop without changing S5.' >&2
+  exit 2
+}
+if test "$local_commit" != "$remote_commit"; then
+  git -C "$s5_root" merge-base --is-ancestor "$local_commit" "$remote_commit" || {
+    printf '%s\n' 'S5 diverged from origin/demo-deploy; stop and inspect.' >&2
+    exit 2
+  }
+  git -C "$s5_root" merge --ff-only "$remote_commit"
+fi
+git -C "$s5_root" status --short
+git -C "$s5_root" log --oneline -8
 ```
 
 Preserve the recorded regression SHA, inspect that it is prompt-only, and
@@ -109,12 +135,23 @@ revert that exact commit in the S5 worktree. Do not reset, rebase, amend,
 force-push, move a frozen tag, or replace newer source with an old checkpoint.
 
 ```sh
+s5_root="${PHASE22_S5_ROOT:?path to the only demo-deploy worktree}"
 regression_commit="${REGRESSION_COMMIT:?set the recorded S5 regression SHA}"
-git show --stat "$regression_commit"
-git revert "$regression_commit"
-git show --stat --oneline HEAD
-git diff HEAD^ HEAD
-git push origin HEAD:demo-deploy
+s5_branch="$(git -C "$s5_root" branch --show-current)"
+test "$s5_branch" = demo-deploy || {
+  printf 'S5 worktree must be on demo-deploy (found %s)\n' "${s5_branch:-detached}" >&2
+  exit 2
+}
+test -z "$(git -C "$s5_root" status --porcelain)" || {
+  printf '%s\n' 'S5 worktree is dirty; preserve its edits before reverting.' >&2
+  exit 2
+}
+git -C "$s5_root" status --short
+git -C "$s5_root" show --stat "$regression_commit"
+git -C "$s5_root" revert "$regression_commit"
+git -C "$s5_root" show --stat --oneline HEAD
+git -C "$s5_root" diff HEAD^ HEAD
+git -C "$s5_root" push origin HEAD:demo-deploy
 ```
 
 Wait for the normal full gate. Inspect the exact new ZIP, source/prompt/config
@@ -192,5 +229,5 @@ confirmed Reset with a new action UUID/productVersion.
 Routine cleanup does not delete the three stacks, retained tables, logs,
 private evidence, prepared publications or frozen checkpoints. If retiring the
 demo, inventory and export evidence first and use a separately reviewed teardown
-procedure for account `027224425948` / `us-east-1`; stack deletion does not
-remove every retained resource.
+procedure for the configured account and region; stack deletion does not remove
+every retained resource.
