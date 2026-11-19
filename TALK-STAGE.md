@@ -47,8 +47,17 @@ test -s "$gate_archive"
 tar -xzf "$gate_archive" -C "$gate_extract"
 export PHASE18_EVALUATOR="$gate_extract/staging/evaluator.json"
 test -s "$PHASE18_EVALUATOR"
+if [ "$PHASE22_SUITE" = carried ]; then
+  export PHASE22_S1_REVIEWED_CASE="$asset_extract/audience/denial-session.frozen.json"
+  export PHASE22_S1_SOURCE_BUNDLE="$gate_extract/staging/bundles/audience-denial.json"
+  export PHASE22_S1_S2_RUN_ROOT="$PHASE22_PRIVATE_ROOT/s2/carried-runs"
+  test -s "$PHASE22_S1_REVIEWED_CASE"
+  test -s "$PHASE22_S1_SOURCE_BUNDLE"
+  mkdir -p "$PHASE22_S1_S2_RUN_ROOT"
+fi
 uv run --offline --project agent --locked python -m py_compile \
-  agent/evaluate_case.py agent/deterministic_checks.py agent/agentcore_evaluation.py
+  agent/evaluate_case.py agent/deterministic_checks.py agent/agentcore_evaluation.py \
+  agent/evaluation_telemetry.py
 python -m json.tool talk/stage.json >/dev/null
 ```
 
@@ -85,3 +94,33 @@ uv run --project agent --locked python agent/evaluate_case.py score \
   --run "$PHASE22_S2_RUN" --evaluator "$PHASE18_EVALUATOR" \
   --rubric single --wait-seconds 300
 ```
+
+## Run and score the carried S1 case
+
+When `PHASE22_SUITE=carried`, the separately frozen S1 case can be run as a
+new faulty execution with its matching audience bundle. This uses the same
+Phase 16 Sonnet 4.6 single categorical evaluator and timing-evidence
+projection, but it is a new execution with a new identity; it never replaces
+the saved S2 run or its original score:
+
+```sh
+uv run --project agent --locked opentelemetry-instrument \
+  python agent/evaluate_case.py run \
+  --case "$PHASE22_S1_REVIEWED_CASE" --bundle "$PHASE22_S1_SOURCE_BUNDLE" \
+  --output-root "$PHASE22_S1_S2_RUN_ROOT"
+```
+
+Record the printed directory as `PHASE22_S1_S2_RUN`, inspect it, and score
+that exact directory with the selected gate evaluator:
+
+```sh
+uv run --offline --project agent --locked python agent/evaluate_case.py show \
+  --run "$PHASE22_S1_S2_RUN"
+uv run --project agent --locked python agent/evaluate_case.py score \
+  --run "$PHASE22_S1_S2_RUN" --evaluator "$PHASE18_EVALUATOR" \
+  --rubric single --wait-seconds 300
+```
+
+Use the approved ADOT environment block before each instrumented command. The
+case, bundle, cutoff, prompt, model, lock, evaluator and score identities must
+remain matched; do not compare this carried run with the original S2 result.

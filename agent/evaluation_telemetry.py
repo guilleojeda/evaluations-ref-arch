@@ -22,12 +22,21 @@ class TelemetryIncomplete(ValueError):
 
 
 _DIMENSIONS = ("diagnosis_support", "evidence_grounding")
+_SINGLE_FINDING_NAME = "semantic_quality"
 _REPORT_TOOL = "InvestigationReport"
 _CLOUDWATCH_QUERY_TIMEOUT_SECONDS = 60.0
 _CLOUDWATCH_POLL_SECONDS = 0.5
 _SCORING_POLL_SECONDS = 1.0
 _MAX_QUERY_SECONDS = 6 * 60 * 60
 _MAX_QUERY_ROWS = 10_000
+
+# AgentCore's EvaluationContent allows 100,000 characters per assertion. Keep
+# the projection comfortably below that service limit even if a caller hands
+# us an unexpectedly large returned result. The normal evidence tools already
+# bound a successful response to 120 observations; this smaller byte budget is
+# an additional integrity boundary for persisted/native records.
+_MAX_TIMING_ASSERTION_BYTES = 80_000
+_MAX_TIMING_ROWS = 120
 
 
 def _json_bytes(value: Any) -> bytes:
@@ -577,6 +586,185 @@ def execution_content(spans: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _timing_token(value: Any, *, max_length: int = 160) -> str:
+    """Keep identifiers in timing assertions from becoming judge instructions."""
+
+    if value is None:
+        return "missing"
+    if not isinstance(value, (str, int)) or isinstance(value, bool):
+        return "invalid"
+    text = str(value).strip()
+    if not text:
+        return "missing"
+    # Source/resource/call IDs in the persisted schema are ordinary bounded
+    # identifiers. Hash anything outside that vocabulary rather than copying
+    # arbitrary model- or source-controlled text into evaluator reference data.
+    if len(text) > max_length or re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/@+=%-]*", text) is None:
+        return f"sha256:{hashlib.sha256(text.encode('utf-8', 'replace')).hexdigest()[:16]}"
+    return text
+
+
+def _timing_time(value: Any) -> str:
+    """Keep source ISO precision and render numeric CloudWatch times in UTC."""
+
+    if value is None:
+        return "missing"
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return "invalid"
+    try:
+        if isinstance(value, str):
+            value = value.strip()
+            if re.fullmatch(r"[+-]?[0-9]+(?:\.[0-9]+)?", value) is None:
+                _timestamp_seconds(value, "log timestamp")
+                return value
+        seconds = float(value)
+        if abs(seconds) >= 100_000_000_000:
+            seconds /= 1000
+        timestamp = datetime.fromtimestamp(seconds, timezone.utc)
+        return timestamp.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+    except (ValueError, OverflowError, OSError):
+        return "invalid"
+
+
+def _timing_count(value: Any) -> str:
+    if value is None:
+        return "missing"
+    if not isinstance(value, list):
+        return "invalid"
+    return str(len(value))
+
+
+def _timing_scope(value: Any) -> str:
+    if not isinstance(value, list):
+        return "invalid"
+    if not value:
+        return "empty"
+    rendered: list[str] = []
+    for item in value[:8]:
+        rendered.append(_timing_token(item))
+    if len(value) > len(rendered):
+        rendered.append(f"omitted:{len(value) - len(rendered)}")
+    return ",".join(rendered)
+
+
+def _timing_gap_windows(value: Any) -> str:
+    """Retain only the canonical captured-source coverage-bound messages."""
+
+    if not isinstance(value, list):
+        return "invalid" if value is not None else "missing"
+    bounds: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        for prefix, label in (
+            ("capture coverage starts at ", "capture coverage starts at"),
+            ("capture coverage ends at ", "capture coverage ends at"),
+        ):
+            if item.startswith(prefix):
+                timestamp = _timing_time(item[len(prefix):].strip())
+                if timestamp not in {"missing", "invalid"}:
+                    bounds.append(f"{label} {timestamp}")
+                break
+    if len(bounds) < len(value):
+        bounds.append("additional gaps detailed in native result")
+    return "|".join(bounds) if bounds else "none"
+
+
+def _timing_coverage(result: Mapping[str, Any]) -> str:
+    window = result.get("window")
+    if isinstance(window, Mapping):
+        window_start = _timing_time(window.get("start"))
+        window_end = _timing_time(window.get("end"))
+    elif window is None:
+        window_start = window_end = "missing"
+    else:
+        window_start = window_end = "invalid"
+    completeness = _timing_token(result.get("completeness"))
+    truncated = result.get("truncated")
+    truncated_value = str(truncated).lower() if isinstance(truncated, bool) else "invalid"
+    return (
+        f"source={_timing_token(result.get('source'))} "
+        f"scope={_timing_scope(result.get('scope'))} "
+        f"windowStart={window_start} windowEnd={window_end} "
+        f"referenceTime={_timing_time(result.get('referenceTime'))} "
+        f"completeness={completeness} truncated={truncated_value} "
+        f"gaps={_timing_count(result.get('gaps'))} errors={_timing_count(result.get('errors'))} "
+        f"coverageGaps={_timing_gap_windows(result.get('gaps'))}"
+    )
+
+
+def _timing_row(index: int, row: Any) -> str:
+    if not isinstance(row, Mapping):
+        return f"row[{index}]=invalid"
+    return (
+        f"row[{index}] resource={_timing_token(row.get('resource'))} "
+        f"eventId={_timing_token(row.get('eventId'))} "
+        f"logStreamName={_timing_token(row.get('logStreamName'))} "
+        f"eventTime={_timing_time(row.get('timestamp'))} "
+        f"ingestionTime={_timing_time(row.get('ingestionTime'))} "
+        f"availableAt={_timing_time(row.get('availableAt'))}"
+    )
+
+
+def timing_evidence_assertions(tool_calls: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Project authenticated ``search_logs`` results into judge-only timing facts.
+
+    The native spans remain the submitted execution evidence. These assertions
+    contain only the sanitized result fields already returned by successful log
+    calls: source/coverage metadata and row identity/timing fields. Free-form
+    query text, log messages, and projected ``fields`` are intentionally not
+    copied into evaluator reference inputs.
+    """
+
+    if not isinstance(tool_calls, Sequence) or isinstance(tool_calls, (str, bytes)):
+        return []
+    assertions: list[str] = []
+    for call in tool_calls:
+        if not isinstance(call, Mapping) or call.get("tool") != "search_logs":
+            continue
+        if call.get("status") != "success":
+            continue
+        result = call.get("result")
+        if not isinstance(result, Mapping):
+            continue
+        observations = result.get("observations")
+        if observations is None:
+            # The canonical four tools omit observations for a successful
+            # zero-row result. Keep that distinction explicit without turning
+            # the omission into evidence of a source row.
+            observation_state = "empty"
+            rows: list[Any] = []
+        elif isinstance(observations, list):
+            observation_state = "present"
+            rows = observations
+        else:
+            observation_state = "invalid"
+            rows = []
+
+        base = (
+            "Source log view: verified search_logs timing projection "
+            f"callId={_timing_token(call.get('callId'))} "
+            f"{_timing_coverage(result)} "
+            f"observations={observation_state} returnedRows={len(rows)}"
+        )
+        omitted_source = result.get("truncated") is True
+        row_parts: list[str] = []
+        size = len(base.encode("utf-8"))
+        for index, row in enumerate(rows[:_MAX_TIMING_ROWS]):
+            candidate = f"; {_timing_row(index, row)}"
+            size += len(candidate.encode("utf-8"))
+            if size > _MAX_TIMING_ASSERTION_BYTES:
+                break
+            row_parts.append(candidate)
+        projection_omitted = len(rows) - len(row_parts)
+        if omitted_source:
+            base += " omittedRows=unknown"
+        if projection_omitted:
+            base += f" projectionOmittedRows={projection_omitted}"
+        assertions.append(base + "".join(row_parts))
+    return assertions
+
+
 def interrupted_execution_content(
     spans: Sequence[Mapping[str, Any]],
     *,
@@ -992,16 +1180,20 @@ def _validate_session(
         return {}, str(exc) if isinstance(exc, TelemetryIncomplete) else "CloudWatch content could not be validated"
 
 
-def _blank_semantic(status: str, message: str) -> dict[str, Any]:
-    return {
+def _blank_semantic(status: str, message: str, mode: str = "multi") -> dict[str, Any]:
+    finding_names = (_SINGLE_FINDING_NAME,) if mode == "single" else _DIMENSIONS
+    result = {
         "status": status,
         "findings": {
             name: {"status": status, "verdict": None, "explanation": None, "errorMessage": message}
-            for name in _DIMENSIONS
+            for name in finding_names
         },
         "rawResponse": None,
         "tokenUsage": None,
     }
+    if mode == "single":
+        result["mode"] = mode
+    return result
 
 
 def _score_result(
@@ -1020,13 +1212,14 @@ def _score_result(
     scoring_seconds: float = 0,
     evidence_sha256: str | None = None,
     assertions_sha256: str | None = None,
+    semantic_mode: str = "multi",
 ) -> dict[str, Any]:
     result: dict[str, Any] = {
         "status": status,
         "executionId": execution_id,
         "scoringAttemptId": attempt_id,
         "identity": dict(identity or {}),
-        "semantic": dict(semantic or _blank_semantic("incomplete", "scoring did not run")),
+        "semantic": dict(semantic or _blank_semantic("incomplete", "scoring did not run", semantic_mode)),
         "deterministic": dict(deterministic or {}),
         "telemetry": dict(telemetry or {"status": "incomplete"}),
         "assertions": list(assertions) if assertions is not None else None,
@@ -1055,6 +1248,7 @@ def score_execution(
     wait_seconds: float,
     verified_spans: Sequence[Mapping[str, Any]] | None = None,
     scoring_attempt_id: str | None = None,
+    semantic_mode: str = "multi",
 ) -> dict[str, Any]:
     """Wait for CloudWatch content matching native spans verified by the loader.
 
@@ -1064,11 +1258,21 @@ def score_execution(
     but cannot submit session context to Evaluate.
     """
 
+    if semantic_mode not in {"multi", "single"}:
+        semantic_mode = "multi"
+        invalid_mode = True
+    else:
+        invalid_mode = False
     attempt_id = scoring_attempt_id if isinstance(scoring_attempt_id, str) and scoring_attempt_id.strip() else str(uuid.uuid4())
     execution_id = None
     identity = _mapping(record.get("identity")) if isinstance(record, Mapping) else {}
     if isinstance(identity.get("executionId"), str):
         execution_id = identity["executionId"]
+    if invalid_mode:
+        return _score_result(
+            status="error", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
+            diagnostic="unsupported semantic evaluator mode", semantic_mode=semantic_mode,
+        )
     try:
         wait_value = float(wait_seconds)
         if not math.isfinite(wait_value) or wait_value < 0 or wait_value > _MAX_QUERY_SECONDS:
@@ -1077,22 +1281,24 @@ def score_execution(
         return _score_result(
             status="error", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
             diagnostic="invalid bounded telemetry wait", requested_wait_seconds=0,
+            semantic_mode=semantic_mode,
         )
     mismatch = _identity_mismatch(record, loaded_case)
     if mismatch is not None:
         return _score_result(
             status="incomplete", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
-            diagnostic=mismatch, requested_wait_seconds=wait_value,
+            diagnostic=mismatch, requested_wait_seconds=wait_value, semantic_mode=semantic_mode,
         )
     if not isinstance(evaluator_id, str) or not evaluator_id.strip():
         return _score_result(
             status="error", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
-            diagnostic="evaluator ID is missing", requested_wait_seconds=wait_value,
+            diagnostic="evaluator ID is missing", requested_wait_seconds=wait_value, semantic_mode=semantic_mode,
         )
     if not callable(fetch_session):
         return _score_result(
             status="error", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
             diagnostic="CloudWatch session fetcher is not callable", requested_wait_seconds=wait_value,
+            semantic_mode=semantic_mode,
         )
 
     try:
@@ -1109,7 +1315,7 @@ def score_execution(
         return _score_result(
             status="error", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
             diagnostic=f"reviewed scoring contract is unavailable: {detail}",
-            requested_wait_seconds=wait_value,
+            requested_wait_seconds=wait_value, semantic_mode=semantic_mode,
         )
 
     deterministic = check_report(record["report"], loaded_case)
@@ -1118,7 +1324,7 @@ def score_execution(
             status="incomplete", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
             deterministic=deterministic,
             assertions=assertions, diagnostic="saved report does not satisfy the canonical schema",
-            requested_wait_seconds=wait_value,
+            requested_wait_seconds=wait_value, semantic_mode=semantic_mode,
         )
     if verified_spans is None:
         return _score_result(
@@ -1126,7 +1332,7 @@ def score_execution(
             deterministic=deterministic,
             assertions=assertions,
             diagnostic="authenticated saved native spans are required for CloudWatch scoring",
-            requested_wait_seconds=wait_value,
+            requested_wait_seconds=wait_value, semantic_mode=semantic_mode,
         )
 
     locally_validated, local_reason = _validate_session(
@@ -1138,7 +1344,7 @@ def score_execution(
             deterministic=deterministic,
             assertions=assertions,
             diagnostic=f"saved native spans do not authenticate the execution: {local_reason}",
-            requested_wait_seconds=wait_value,
+            requested_wait_seconds=wait_value, semantic_mode=semantic_mode,
         )
     for recorded_report_source in (
         record.get("reportSource"),
@@ -1150,7 +1356,7 @@ def score_execution(
                 deterministic=deterministic,
                 assertions=assertions,
                 diagnostic="saved report-source marker differs from authenticated native spans",
-                requested_wait_seconds=wait_value,
+                requested_wait_seconds=wait_value, semantic_mode=semantic_mode,
             )
     deterministic = check_captured_report(record["report"], loaded_case, record["ledger"])
 
@@ -1188,10 +1394,11 @@ def score_execution(
             return _score_result(
                 status="incomplete", execution_id=execution_id, attempt_id=attempt_id, identity=identity,
                 deterministic=deterministic,
-                semantic=_blank_semantic("incomplete", last_reason),
+                semantic=_blank_semantic("incomplete", last_reason, semantic_mode),
                 telemetry={"status": "incomplete", "reason": last_reason},
                 assertions=assertions, diagnostic=last_reason, requested_wait_seconds=wait_value,
                 collection_seconds=now - started,
+                semantic_mode=semantic_mode,
             )
         time.sleep(min(_SCORING_POLL_SECONDS, remaining))
 
@@ -1199,6 +1406,15 @@ def score_execution(
     telemetry_digest = _sha256(session_spans)
     collection_seconds = max(0.0, time.monotonic() - started)
     deterministic = check_captured_report(record["report"], loaded_case, record["ledger"])
+
+    # Only the authenticated CloudWatch projection may contribute timing
+    # reference facts. Keep these after the reviewed case criteria so the
+    # evaluator sees the source view as supplemental, not as a replacement or
+    # expected-label override.
+    assertions = [
+        *assertions,
+        *timing_evidence_assertions(validated["content"]["toolCalls"]),
+    ]
 
     scoring_started = time.monotonic()
     try:
@@ -1209,9 +1425,10 @@ def score_execution(
             trace_id=identity["traceId"],
             session_spans=session_spans,
             assertions=assertions,
+            mode=semantic_mode,
         )
     except Exception as exc:
-        semantic = _blank_semantic("error", f"AgentCore Evaluate failed ({type(exc).__name__})")
+        semantic = _blank_semantic("error", f"AgentCore Evaluate failed ({type(exc).__name__})", semantic_mode)
     scoring_seconds = max(0.0, time.monotonic() - scoring_started)
     status = semantic.get("status") if isinstance(semantic, Mapping) else "error"
     if status not in {"complete", "incomplete", "error"}:
@@ -1232,6 +1449,7 @@ def score_execution(
         scoring_seconds=scoring_seconds,
         evidence_sha256=telemetry_digest,
         assertions_sha256=_sha256(assertions),
+        semantic_mode=semantic_mode,
     )
     return result
 
@@ -1242,4 +1460,5 @@ __all__ = [
     "execution_content",
     "interrupted_execution_content",
     "score_execution",
+    "timing_evidence_assertions",
 ]

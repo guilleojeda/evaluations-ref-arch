@@ -56,10 +56,12 @@
     "forbidden": ["agent rerun", "case substitution", "release publication"]
   },
   "entry": {
-    "offlineSmoke": "uv run --offline --project agent --locked python -m py_compile agent/evaluate_case.py agent/deterministic_checks.py agent/agentcore_evaluation.py",
+    "offlineSmoke": "uv run --offline --project agent --locked python -m py_compile agent/evaluate_case.py agent/deterministic_checks.py agent/agentcore_evaluation.py agent/evaluation_telemetry.py",
     "show": "uv run --offline --project agent --locked python agent/evaluate_case.py show --run \"$PHASE22_S2_RUN\"",
     "deterministic": "evaluate_case.py show reopens the saved execution through captured_execution.load_execution, which authenticates native spans and recomputes deterministic findings offline; no tarball is passed to this command",
     "score": "uv run --project agent --locked python agent/evaluate_case.py score --run \"$PHASE22_S2_RUN\" --evaluator \"$PHASE18_EVALUATOR\" --rubric single --wait-seconds 300",
+    "carriedRun": "uv run --project agent --locked opentelemetry-instrument python agent/evaluate_case.py run --case \"$PHASE22_S1_REVIEWED_CASE\" --bundle \"$PHASE22_S1_SOURCE_BUNDLE\" --output-root \"$PHASE22_S1_S2_RUN_ROOT\"",
+    "carriedScore": "uv run --project agent --locked python agent/evaluate_case.py score --run \"$PHASE22_S1_S2_RUN\" --evaluator \"$PHASE18_EVALUATOR\" --rubric single --wait-seconds 300",
     "policy": "show is offline and does not rerun the agent; score is an explicit native advisory scoring attempt and never a release gate."
   }
 }
