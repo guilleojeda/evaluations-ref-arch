@@ -124,6 +124,29 @@ print(json.dumps({'stage': stage, 'directory': str(workspace.resolve()), 'curren
         self.assertIn("aws sso login", rejected.stderr)
         self.assertFalse((self.output / "s3-setup.json").exists())
 
+    def test_cli_without_export_falls_back_to_named_profile_and_sdk_sts(self) -> None:
+        aws_v1 = self.aws.with_name("aws-v1")
+        self._write(
+            aws_v1,
+            "#!/bin/sh\n"
+            "case \"$1 $2\" in\n"
+            "sts\\ get-caller-identity) echo '{\"Account\":\"123\",\"Arn\":\"arn:aws:iam::123:role/cli\"}' ;;\n"
+            "configure\\ export-credentials) echo 'Invalid choice' >&2; exit 2 ;;\n"
+            "*) exit 1 ;;\nesac\n",
+            executable=True,
+        )
+        ready = self._run("setup", aws=aws_v1)
+        self.assertEqual(ready.returncode, 0, ready.stderr)
+        self.assertIn("python -c", self.uv_log.read_text(encoding="utf-8"))
+        self.assertEqual(json.loads((self.output / "s3-setup.json").read_text(encoding="utf-8"))["sdk"]["account"], "123")
+
+    def test_missing_uv_is_reported_as_dependency_failure(self) -> None:
+        missing = self.output / "missing-uv"
+        rejected = self._run("setup", uv=missing)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("failed to start", rejected.stderr)
+        self.assertNotIn("aws sso login", rejected.stderr)
+
     def test_s2_setup_checks_identity_without_native_otel(self) -> None:
         ready = self._run("setup", stage="S2")
         self.assertEqual(ready.returncode, 0, ready.stderr)

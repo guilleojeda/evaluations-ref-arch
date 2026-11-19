@@ -139,13 +139,25 @@ def sso_refresh_message(profile: str) -> str:
     )
 
 
+def process_start_failure(message: str) -> bool:
+    lowered = message.lower()
+    return "failed to start" in lowered or "timed out" in lowered
+
+
+def sdk_auth_failure(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in ("unauthorized", "accessdenied", "invalidgrant", "expired", "sso", "token"))
+
+
 def check_aws(aws: str, profile: str, account: str, region: str) -> dict[str, str]:
     if region != REGION:
         raise StageError(f"the talk evaluation is pinned to {REGION}, not {region}")
     environment = aws_environment(profile, account, region)
     try:
         raw = run((aws, "sts", "get-caller-identity", "--profile", profile, "--region", region, "--output", "json"), env=environment, label="AWS STS identity check")
-    except StageError:
+    except StageError as exc:
+        if process_start_failure(str(exc)):
+            raise
         raise StageError(sso_refresh_message(profile)) from None
     try:
         value = json.loads(raw)
@@ -165,6 +177,13 @@ def cli_credentials(aws: str, profile: str, account: str, region: str) -> dict[s
     environment = aws_environment(profile, account, region)
     try:
         raw = run((aws, "configure", "export-credentials", "--profile", profile), env=environment, label="AWS credential export")
+    except StageError as exc:
+        if process_start_failure(str(exc)):
+            raise
+        # Some installations can use the profile but cannot export credentials.
+        # The locked SDK must prove the named profile works before any command runs.
+        return environment
+    try:
         value = json.loads(raw)
         required = {"AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration"}
         if not isinstance(value, dict) or not required.issubset(value):
@@ -177,7 +196,7 @@ def cli_credentials(aws: str, profile: str, account: str, region: str) -> dict[s
             "AWS_SECRET_ACCESS_KEY": str(value["SecretAccessKey"]),
             "AWS_SESSION_TOKEN": str(value["SessionToken"]),
         }
-    except (StageError, ValueError, TypeError, json.JSONDecodeError):
+    except (ValueError, TypeError, json.JSONDecodeError):
         raise StageError(sso_refresh_message(profile)) from None
     environment.update(credentials)
     return environment
@@ -197,7 +216,11 @@ def check_sdk(uv: str, workspace: Path, environment: Mapping[str, str], account:
     try:
         raw = run((uv, "run", "--offline", "--project", "agent", "--locked", "python", "-c", code), cwd=workspace, env=child_environment, label="locked Python SDK STS identity check")
         value = json.loads(raw)
-    except (StageError, json.JSONDecodeError):
+    except StageError as exc:
+        if process_start_failure(str(exc)) or not sdk_auth_failure(str(exc)):
+            raise
+        raise StageError(sso_refresh_message(profile)) from None
+    except json.JSONDecodeError:
         raise StageError(sso_refresh_message(profile)) from None
     if not isinstance(value, dict) or value.get("Account") != account or not isinstance(value.get("Arn"), str) or not value["Arn"]:
         raise StageError(f"locked Python SDK AWS account mismatch: expected {account}")
