@@ -39,7 +39,8 @@
     "asset": {
       "rootVariable": "asset_extract",
       "sha256Env": "PHASE22_ASSET_SHA256",
-      "sessionId": "session-audience-full-final-s3",
+      "receiptEnv": "PHASE22_ASSET_RECEIPT",
+      "sessionIdEnv": "PHASE22_ASSET_SESSION_ID",
       "gateSelectionEnv": "PHASE22_SUITE",
       "gateArchives": {
         "stock": "gate/stock-staging.tar.gz",

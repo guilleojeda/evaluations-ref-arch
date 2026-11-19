@@ -45,7 +45,9 @@ re-extract an archive inside this stage or substitute an older archive:
 
 ```sh
 : "${asset_extract:?run maintained Phase 22 asset preparation first}"
-: "${PHASE22_ASSET_SHA256:?read from session-audience-full-final-s3-receipt.json}"
+: "${PHASE22_ASSET_RECEIPT:?set the verified private asset receipt path}"
+: "${PHASE22_ASSET_SESSION_ID:?set the session ID from session-roster.json}"
+: "${PHASE22_ASSET_SHA256:?read from PHASE22_ASSET_RECEIPT}"
 test -d "$asset_extract"
 printf 'Using verified Phase 22 asset %s\n' "$PHASE22_ASSET_SHA256"
 
