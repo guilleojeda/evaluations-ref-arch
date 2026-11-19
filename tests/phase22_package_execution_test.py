@@ -7,8 +7,10 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 import unittest
@@ -206,6 +208,54 @@ class PackageExecutionIsolationTests(unittest.TestCase):
                     runner_source=runner_source,
                 )
             self.assertEqual((staging / "ambient-result").read_text(), "missing")
+
+    def test_real_trusted_child_entry_reaches_package_preflight(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            staging = root / "staging"
+            agent_source = staging / "source" / "agent"
+            agent_source.mkdir(parents=True)
+            for name in (*captured_execution.SOURCE_FILES, *captured_execution.DEPENDENCY_FILES):
+                shutil.copy2(AGENT / name, agent_source / name)
+            environment = {
+                "AGENT_OBSERVABILITY_ENABLED": "true",
+                "AWS_GENAI_CONTENT_EXTRACTION_OPT_OUT": "true",
+                "AWS_ACCOUNT_ID": captured_execution.AWS_ACCOUNT_ID,
+                "AWS_REGION": "us-east-1",
+                "AWS_DEFAULT_REGION": "us-east-1",
+                "AWS_ACCESS_KEY_ID": "dummy",
+                "AWS_SECRET_ACCESS_KEY": "dummy",
+                "AWS_SESSION_TOKEN": "dummy",
+                "AWS_EC2_METADATA_DISABLED": "true",
+                "OTEL_PYTHON_DISTRO": "aws_distro",
+                "OTEL_PYTHON_CONFIGURATOR": "aws_configurator",
+                "OTEL_RESOURCE_ATTRIBUTES": f"service.name=phase22-child,aws.log.group.names={captured_execution.EVALUATION_LOG_GROUP}",
+                "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": captured_execution.TRACE_ENDPOINT,
+                "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL": "http/protobuf",
+                "OTEL_EXPORTER_OTLP_TRACES_HEADERS": f"x-aws-log-group={captured_execution.EVALUATION_LOG_GROUP},x-aws-log-stream=spans",
+                "OTEL_TRACES_EXPORTER": "otlp",
+                "OTEL_LOGS_EXPORTER": "none",
+                "OTEL_METRICS_EXPORTER": "none",
+                "OTEL_TRACES_SAMPLER": "always_on",
+            }
+            with patch.dict(os.environ, environment, clear=False):
+                with self.assertRaises(ValueError) as failure:
+                    captured_execution._run_packaged_case_process(
+                        staging=staging,
+                        staged_case=staging / "missing-case.json",
+                        staged_bundle=staging / "missing-bundle.json",
+                        output_root=root / "runs",
+                        candidate_id="repaired",
+                        strict_manifest=False,
+                        dependency_root=Path(sysconfig.get_path("purelib")),
+                        dependency_modules=(),
+                        runtime_origin=None,
+                        progress_callback=None,
+                        runner_source=Path(captured_execution.__file__).read_bytes(),
+                    )
+            self.assertIn("frozen case is not valid UTF-8 JSON", str(failure.exception))
+            self.assertNotIn("positional", str(failure.exception))
 
     def test_worker_thread_parent_termination_does_not_orphan_child(self):
         runner_source = b'''import json, os, signal, sys, threading, time\nfrom pathlib import Path\ndef _package_child_main():\n    request = json.loads(Path(sys.argv[1]).read_bytes())\n    def watch_parent():\n        with os.fdopen(request["parentWatchdogFd"], "rb") as pipe:\n            if pipe.read(1) == b"":\n                os.kill(os.getpid(), signal.SIGINT)\n    threading.Thread(target=watch_parent, daemon=True).start()\n    (Path(request["staging"]) / "child.pid").write_text(str(os.getpid()))\n    while True:\n        time.sleep(1)\nif __name__ == "__main__":\n    _package_child_main()\n'''

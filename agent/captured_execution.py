@@ -799,7 +799,7 @@ def _run_packaged_case_child(request: Mapping[str, Any], *, progress_callback: A
     runtime_origin = request.get("runtimeOrigin")
     if runtime_origin is not None and not isinstance(runtime_origin, Mapping):
         raise ValueError("package child Runtime origin is malformed")
-    with _package_process_imports(agent_source, dependency_root):
+    with _package_process_imports(agent_source, dependency_root=dependency_root):
         # This child has no inherited trusted provider.  Configure the signed
         # package exporter after its exact dependency path is established.
         provider = _configure_packaged_exporter(None)
