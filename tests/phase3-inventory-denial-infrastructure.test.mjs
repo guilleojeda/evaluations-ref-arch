@@ -175,7 +175,7 @@ test('controller evidence is private and the worker can only read the prepared p
   assert.deepEqual(aliasUpdate, [`arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoInventory`]);
   const approvedAgentConfigurations = [
     `${assetBucketArn}/agent-reference/7febe979fa1365360983d886f9d1dc78b55d9bde91a6fe7357e5f9fd97d2d7a7.json`,
-    `arn:aws:s3:::${evidenceName}/agent-evaluation/phase20/1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7/runtime-configuration.json`,
+    `arn:aws:s3:::${evidenceName}/agent-evaluation/phase20/${'?'.repeat(64)}/runtime-configuration.json`,
   ];
   const manifestReads = grants(worker, 's3:GetObject');
   assert.deepEqual(manifestReads.sort(), [
