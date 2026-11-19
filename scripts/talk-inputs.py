@@ -28,6 +28,8 @@ FIXED_CASE_IDS = [
     "phase14.denied-inventory-read.prepared",
     "phase14.recovery-with-old-alert.prepared",
 ]
+HISTORICAL_OVERLOAD_CASE_ID = FIXED_CASE_IDS[0]
+FIXED_NON_OVERLOAD_CASE_IDS = FIXED_CASE_IDS[1:]
 SHA256_LENGTH = 64
 
 
@@ -190,26 +192,35 @@ def case_rows(root: Path, roster: dict[str, Any], suite: str, *, authenticate_au
     gate["stock"] = suite == "stock"
     rows, evaluator, evaluator_sha = gate_rows(root, gate)
     case_ids = list(rows)
-    fixed = {
-        "phase14.inventory-capacity-overload.prepared",
-        "phase14.denied-inventory-read.prepared",
-        "phase14.recovery-with-old-alert.prepared",
-    }
-    if not fixed <= set(case_ids) or gate.get("fixedDenialCaseId") != "phase14.denied-inventory-read.prepared":
-        raise InputError("proposed gate does not retain the fixed denial/capacity/recovery coverage")
+    fixed = set(FIXED_CASE_IDS)
+    if not set(FIXED_NON_OVERLOAD_CASE_IDS) <= set(case_ids) or gate.get("fixedDenialCaseId") != FIXED_NON_OVERLOAD_CASE_IDS[0]:
+        raise InputError("proposed gate does not retain the fixed denial/recovery coverage")
     audience: dict[str, Any] = {}
     if authenticate_audience:
         audience, audience_row = authenticated_audience(root, roster)
     if suite == "carried":
         if len(case_ids) != 4:
-            raise InputError("carried gate must contain the fixed three cases plus the audience case")
+            raise InputError("carried gate must contain the selected overload, fixed denial/recovery, and audience cases")
+        # Older carried archives predate the replacement pointer.  Their
+        # historical capacity row remains a supported replay input; a new
+        # roster explicitly selects the replacement row by its case ID.
+        current_overload = gate.get("currentOverloadCaseId", HISTORICAL_OVERLOAD_CASE_ID)
+        if not isinstance(current_overload, str) or not current_overload:
+            raise InputError("carried gate must declare currentOverloadCaseId")
+        current_row = rows.get(current_overload)
+        if not isinstance(current_row, dict) or current_row.get("label") != "capacity":
+            raise InputError("carried gate currentOverloadCaseId is not an authenticated capacity case")
+        if sum(row.get("label") == "capacity" for row in rows.values()) != 1:
+            raise InputError("carried gate must contain exactly one authenticated capacity case")
         if authenticate_audience:
             if audience.get("caseId") not in case_ids:
                 raise InputError("audience case is not part of the carried gate roster")
             gate_audience = rows.get(audience["caseId"])
-            if not isinstance(gate_audience, dict) or any(gate_audience.get(field) != audience_row.get(field) for field in ("caseSha256", "bundleSha256", "referenceTime")):
+            if not isinstance(gate_audience, dict) or gate_audience.get("label") != "audience-denial" or audience.get("caseId") == current_overload or any(gate_audience.get(field) != audience_row.get(field) for field in ("caseSha256", "bundleSha256", "referenceTime")):
                 raise InputError("audience case identity differs from the verified carried gate row")
     else:
+        if set(case_ids) != fixed:
+            raise InputError("stock gate must retain exactly the historical fixed denial/capacity/recovery cases")
         case_ids = list(FIXED_CASE_IDS)
     return case_ids, audience, rows, evaluator, evaluator_sha
 
