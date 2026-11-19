@@ -1,6 +1,6 @@
 """Run a matching faulty Strands experiment from an immutable source snapshot.
 
-S4 opens with the repaired prompt.  The normal experiment CLI's candidate label
+S4 opens with the proposed repaired prompt.  The normal experiment CLI's candidate label
 does not change source bytes, so this helper calls the same native
 ``run_experiment`` entry point with a temporary source directory containing the
 current tooling and the verified Phase 19 faulty prompt.  The suite, evaluator,
