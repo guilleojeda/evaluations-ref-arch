@@ -4,14 +4,15 @@ This workspace is the Phase 22 S1 checkpoint. It keeps the faulty candidate
 unchanged and adds reviewed-case validation, freezing, and a public candidate
 projection. The default candidate remains `faulty`; S1 does not run S0, trigger
 an alarm, invoke a model, or score a case. Maintained preparation verifies the
-canonical asset and exports its digest as `PHASE22_ASSET_SHA256` from the
-session-audience-full-final S3 receipt before any case edit.
+selected private asset and exports its digest as `PHASE22_ASSET_SHA256` from
+the receipt named by `PHASE22_ASSET_RECEIPT` before any case edit.
 
 Set `PHASE22_PRIVATE_ROOT` outside this checkout and export
 `PHASE22_INPUT_INDEX` to the private session index. Set
-`asset_extract` to the already verified canonical asset extraction and
-`PHASE22_ASSET_SHA256` to the digest read from
-`session-audience-full-final-s3-receipt.json`. The extraction contains
+`asset_extract` to the already verified asset extraction,
+`PHASE22_ASSET_RECEIPT` to its private receipt,
+`PHASE22_ASSET_SESSION_ID` to the roster's session ID, and
+`PHASE22_ASSET_SHA256` to the receipt's archive digest. The extraction contains
 `audience/denial-session-draft.json` and the matching `prepared/denial.json`
 bundle. Private case/trace bytes stay outside the editable worktree.
 
@@ -20,7 +21,9 @@ uv sync --project agent --locked
 uv sync --offline --project agent --locked
 mkdir -p "$PHASE22_PRIVATE_ROOT/s1/edit" "$PHASE22_PRIVATE_ROOT/s1/frozen"
 : "${asset_extract:?run maintained asset preparation first}"
-: "${PHASE22_ASSET_SHA256:?read from session-audience-full-final-s3-receipt.json}"
+: "${PHASE22_ASSET_RECEIPT:?set the verified private asset receipt path}"
+: "${PHASE22_ASSET_SESSION_ID:?set the session ID from session-roster.json}"
+: "${PHASE22_ASSET_SHA256:?read from PHASE22_ASSET_RECEIPT}"
 test -d "$asset_extract" && test -s "$asset_extract/audience/denial-session-draft.json"
 test -s "$asset_extract/prepared/denial.json"
 printf 'Using verified Phase 22 asset %s\n' "$PHASE22_ASSET_SHA256"

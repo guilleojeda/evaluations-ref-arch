@@ -26,7 +26,8 @@
     "asset": {
       "rootVariable": "asset_extract",
       "sha256Env": "PHASE22_ASSET_SHA256",
-      "sessionId": "phase22-session-a-audience-full-final",
+      "receiptEnv": "PHASE22_ASSET_RECEIPT",
+      "sessionIdEnv": "PHASE22_ASSET_SESSION_ID",
       "requiredFiles": ["audience/denial-session-draft.json", "prepared/denial.json", "prepared/denial.frozen.json"]
     },
     "caseId": "phase14.denied-inventory-read.session-draft",
