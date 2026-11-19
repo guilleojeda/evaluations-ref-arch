@@ -1,15 +1,15 @@
 {
   "bucket": "incident-triage-demo-evidence-027224425948-us-east-1",
   "caseIds": [
-    "phase14.inventory-capacity-overload.prepared",
+    "phase22.inventory-capacity-overload.5e82d802-8661-4963-a170-d98c5f57c79f.43987d04c302",
     "phase14.denied-inventory-read.prepared",
     "phase14.recovery-with-old-alert.prepared",
     "phase14.denied-inventory-read.session-draft"
   ],
   "evaluatorSha256": "d153bfdc9551255516a565f8363eeea8f6c4962c7807ce015082d0edd907261f",
-  "purpose": "Phase 22 audience-reviewed private evaluation input handoff",
-  "s3Key": "agent-evaluation/phase18/inputs/f3e63fdde9c04247c98a4baab8e7de9a52ac4f2fd4ea4b66ad02f2a4672216b1/staging.tar.gz",
+  "purpose": "Phase 22 approved private evaluation input handoff",
+  "s3Key": "agent-evaluation/phase18/inputs/079c1664a4c9b8e48735e6b230ff3e583c436d311d06b07b3f19506b98dd1074/staging.tar.gz",
   "schemaVersion": 1,
-  "sha256": "f3e63fdde9c04247c98a4baab8e7de9a52ac4f2fd4ea4b66ad02f2a4672216b1",
+  "sha256": "079c1664a4c9b8e48735e6b230ff3e583c436d311d06b07b3f19506b98dd1074",
   "suiteSha256": "4617201adf7d4c8c3df80b52892312cbe516d2064783545762b6297c5a55b178"
 }
