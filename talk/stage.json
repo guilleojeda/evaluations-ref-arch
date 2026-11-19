@@ -5,7 +5,7 @@
   "candidateDefault": "repaired",
   "prompt": {
     "path": "agent/prompt.py",
-    "semanticId": "repaired-proposed-bd8f59cb",
+    "semanticId": "repaired-bd8f59cb",
     "sourceRevision": "bd8f59cbf60e2cd75477ff92dfc5a74b885f9daf",
     "fileSha256": "0b08e9506d735b5938b3e8b3296b58331c406a8fb83f6b4a380a12ffc80cefea",
     "promptSha256": "814862e5ea5894f1b32a2d70039157d330072fe59d678e7687787c77559fbd4f",
@@ -70,7 +70,8 @@
     "run": "uv run --project agent --locked opentelemetry-instrument python agent/evaluate_case.py run --candidate repaired --case \"$PHASE22_REVIEWED_CASE\" --bundle \"$PHASE22_SOURCE_BUNDLE\" --output-root \"$PHASE22_S3_RUN_ROOT\"",
     "show": "uv run --offline --project agent --locked python agent/evaluate_case.py show --run \"$PHASE22_S3_RUN\"",
     "score": "uv run --project agent --locked python agent/evaluate_case.py score --run \"$PHASE22_S3_RUN\" --evaluator \"$PHASE18_EVALUATOR\" --rubric single --wait-seconds 300",
-    "faultyBaseline": "uv run --project agent --locked python talk/run-faulty-baseline.py --case \"$PHASE22_REVIEWED_CASE\" --bundle \"$PHASE22_SOURCE_BUNDLE\" --output-root \"$PHASE22_S3_BASELINE_ROOT\"",
+    "faultyBaseline": "uv run --project agent --locked opentelemetry-instrument python talk/run-faulty-baseline.py --case \"$PHASE22_REVIEWED_CASE\" --bundle \"$PHASE22_SOURCE_BUNDLE\" --output-root \"$PHASE22_S3_BASELINE_ROOT\"",
+    "faultyBaselineScore": "uv run --project agent --locked python agent/evaluate_case.py score --run \"$PHASE22_BASELINE_RUN\" --evaluator \"$PHASE18_EVALUATOR\" --rubric single --wait-seconds 300",
     "compare": "uv run --offline --project agent --locked python agent/evaluate_case.py compare --baseline \"$PHASE22_BASELINE_RUN\" --candidate \"$PHASE22_S3_RUN\"",
     "policy": "S3 is a fresh candidate execution and advisory feedback. A saved S3 result is not S5 exact-package qualification."
   }

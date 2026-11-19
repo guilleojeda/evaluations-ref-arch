@@ -1,10 +1,10 @@
 # S3 — Edit and run a repaired candidate
 
-This workspace is the Phase 22 S3 checkpoint. Its default candidate is the
-proposed repaired prompt from source revision `bd8f59cbf60e2cd75477ff92dfc5a74b885f9daf`.
+This workspace is the Phase 22 S3 checkpoint. Its editable default candidate is
+the repaired prompt from source revision `bd8f59cbf60e2cd75477ff92dfc5a74b885f9daf`.
 S3 adds a fresh editable execution and comparison while retaining a matching
-faulty baseline. This prompt revision is provisional pending package review;
-it is not the S5-qualified release source. `agent/prompt.py` has file SHA-256
+faulty baseline. New edits and runs have their own identities; saved results
+retain their historical inputs. `agent/prompt.py` has file SHA-256
 `0b08e9506d735b5938b3e8b3296b58331c406a8fb83f6b4a380a12ffc80cefea` and
 semantic prompt SHA-256
 `814862e5ea5894f1b32a2d70039157d330072fe59d678e7687787c77559fbd4f`.
@@ -132,13 +132,23 @@ temporary source snapshot and uses the same case, bundle, lock, model and
 capture runner:
 
 ```sh
-uv run --project agent --locked python talk/run-faulty-baseline.py \
+uv run --project agent --locked opentelemetry-instrument \
+  python talk/run-faulty-baseline.py \
   --case "$PHASE22_REVIEWED_CASE" --bundle "$PHASE22_SOURCE_BUNDLE" \
   --output-root "$PHASE22_S3_BASELINE_ROOT"
 ```
 
-Record the helper's printed directory as `PHASE22_BASELINE_RUN`. It is the
-baseline for the S3 comparison; the carried S2 run remains provenance only.
+Record the helper's printed directory as `PHASE22_BASELINE_RUN`, then score that
+same saved baseline with the pinned evaluator before comparing:
+
+```sh
+uv run --project agent --locked python agent/evaluate_case.py score \
+  --run "$PHASE22_BASELINE_RUN" --evaluator "$PHASE18_EVALUATOR" \
+  --rubric single --wait-seconds 300
+```
+
+The scored baseline is the comparison input; the carried S2 run remains
+provenance only.
 
 ## Run and compare
 
