@@ -1,6 +1,6 @@
 """Run an immutable faulty S3 comparison source without changing the S3 folder.
 
-The S3 checkpoint opens with the qualified repaired prompt.  ``evaluate_case.py
+The S3 checkpoint opens with the proposed repaired prompt.  ``evaluate_case.py
 run --candidate faulty`` labels the current source; it does not switch the
 prompt.  This helper snapshots the current agent files into a temporary source
 directory, replaces only ``prompt.py`` with the verified Phase 19 faulty bytes,
