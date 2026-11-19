@@ -179,7 +179,6 @@ import json
 import os
 from pathlib import Path
 import tempfile
-import zipfile
 
 import captured_execution
 from amazon.opentelemetry.distro.exporter.otlp.aws.traces.otlp_aws_span_exporter import OTLPAwsSpanExporter as LauncherExporter
@@ -197,15 +196,16 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 
-import boto3
-from botocore.session import get_session
-
 request = json.loads(Path(sys.argv[1]).read_text())
 staging = Path(request["staging"])
 dependency_root = Path(request["dependencyRoot"])
 agent_source = staging / "source" / "agent"
 stdlib = [path for path in sys.path if path and "site-packages" not in path and "dist-packages" not in path]
 sys.path[:] = [str(dependency_root), str(agent_source), *stdlib]
+
+import boto3
+from botocore.session import get_session
+
 case = json.loads(Path(request["stagedCase"]).read_text())["case"]
 report = {
     "assessment": "ongoing",
@@ -312,12 +312,7 @@ captured_execution._snapshot_imports = lambda *args, **kwargs: (_ for _ in ()).t
 
 try:
     runtime_zip = Path(os.environ["PHASE20_RUNTIME_ZIP"])
-    with tempfile.TemporaryDirectory(prefix="phase20-runtime-package-") as package_dir:
-        package_root = Path(package_dir) / "runtime"
-        package_root.mkdir()
-        with zipfile.ZipFile(runtime_zip) as archive:
-            archive.extractall(package_root)
-        modules = ("amazon", "boto3", "botocore", "opentelemetry", "pydantic", "strands")
+    with development_experiment._extract_runtime_package(runtime_zip) as (package_root, package_origin, dependency_modules):
         with tempfile.TemporaryDirectory(prefix="phase20-package-candidate-") as candidate_dir:
             candidate_source = development_experiment._assemble_package_candidate(package_root, Path(candidate_dir) / "agent")
             run_dir = captured_execution.run_captured_case(
@@ -328,7 +323,8 @@ try:
                 candidate_id="repaired",
                 source_directory=candidate_source,
                 dependency_root=package_root,
-                dependency_modules=modules,
+                dependency_modules=dependency_modules,
+                runtime_origin=package_origin,
                 trusted_runner=True,
             )
 finally:
