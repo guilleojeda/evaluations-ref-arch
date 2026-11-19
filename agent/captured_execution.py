@@ -9,19 +9,23 @@ for verification and execution.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from collections import deque
 import fcntl
 import hashlib
 import importlib.util
 import json
 import os
 import re
+import signal
+import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Event, Timer
+from threading import Event, Thread, Timer
 from typing import Any, Iterator, Mapping, Sequence
 
 
@@ -345,6 +349,50 @@ def _snapshot_imports(
         sys.modules.update(old_modules)
 
 
+def _standard_library_paths(initial_path: Sequence[str]) -> list[str]:
+    """Return standard-library search paths, excluding ambient packages."""
+
+    paths: list[str] = []
+    for key in ("stdlib", "platstdlib"):
+        value = sysconfig.get_path(key)
+        if isinstance(value, str) and value and value not in paths:
+            paths.append(value)
+    value = sysconfig.get_config_var("DESTSHARED")
+    if isinstance(value, str) and value and value not in paths:
+        paths.append(value)
+    # The -S child normally already has the standard-library zip or dynamic
+    # module directory in sys.path. Preserve those entries, excluding the
+    # current directory and any ambient third-party installation.
+    for path in initial_path:
+        if path and "site-packages" not in path and "dist-packages" not in path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+@contextmanager
+def _package_process_imports(
+    agent_source: Path,
+    *,
+    dependency_root: Path,
+) -> Iterator[None]:
+    """Expose only the checked package, trusted support and standard library.
+
+    This context is used only in the fresh package-case interpreter.  That
+    interpreter has no trusted third-party modules to evict, and the package
+    ADOT provider is configured before the task starts.  Keeping modules alive
+    for the whole process avoids the import-lock race that can occur when a
+    background exporter imports a module while ``_snapshot_imports`` removes
+    it from a live instrumented parent.
+    """
+
+    old_path = list(sys.path)
+    sys.path[:] = [str(dependency_root), str(agent_source), *_standard_library_paths(old_path)]
+    try:
+        yield
+    finally:
+        sys.path[:] = old_path
+
+
 def _private_directory(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
     if path.is_symlink() or not path.is_dir():
@@ -467,6 +515,28 @@ def run_captured_case(
                 raise ValueError("captured execution snapshot cannot be loaded")
             snapshot_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(snapshot_module)
+        if selected_dependency_root is not None and model_session is None:
+            # The checked Runtime ZIP must never be loaded by mutating the
+            # trusted instrumented evaluator process.  A fresh child owns the
+            # package dependency graph and its exporter threads; the native
+            # Strands experiment and scorer remain in this parent.
+            return _run_packaged_case_process(
+                staging=staging,
+                staged_case=staged_case,
+                staged_bundle=staged_bundle,
+                output_root=Path(output_root),
+                candidate_id=selected_candidate,
+                strict_manifest=strict_manifest,
+                dependency_root=selected_dependency_root,
+                dependency_modules=dependency_modules,
+                runtime_origin=runtime_origin,
+                progress_callback=progress_callback,
+                runner_source=(
+                    Path(__file__).read_bytes()
+                    if trusted_runner
+                    else (agent_source / "captured_execution.py").read_bytes()
+                ),
+            )
         return Path(snapshot_module._run_snapshot(
             staging=staging,
             staged_case=staged_case,
@@ -482,6 +552,273 @@ def run_captured_case(
             dependency_root=selected_dependency_root,
             dependency_modules=dependency_modules,
             runtime_origin=runtime_origin,
+        ))
+
+
+_PACKAGE_CHILD_PROGRESS_PREFIX = "__CAPTURED_PACKAGE_PROGRESS__ "
+
+
+def _package_child_main() -> int:
+    """Bootstrap the package child from this trusted runner source file."""
+
+    request_path = Path(sys.argv[1])
+    request = json.loads(request_path.read_bytes())
+    staging = Path(request["staging"])
+    agent_source = staging / "source" / "agent"
+    dependency_root = Path(request["dependencyRoot"])
+    sys.path[:] = [str(dependency_root), str(agent_source), *_standard_library_paths(sys.path)]
+
+    parent_watchdog_fd = request.get("parentWatchdogFd")
+    if type(parent_watchdog_fd) is int and parent_watchdog_fd >= 0:
+        def watch_parent() -> None:
+            try:
+                with os.fdopen(parent_watchdog_fd, "rb", closefd=True) as parent_pipe:
+                    if parent_pipe.read(1) == b"":
+                        os.kill(os.getpid(), signal.SIGINT)
+            except (OSError, ValueError):
+                # The child is already terminating or the parent pipe was
+                # closed during process startup; no second failure is needed.
+                return
+
+        Thread(target=watch_parent, name="captured-parent-watchdog", daemon=True).start()
+
+    def progress(run_dir: Path, record: Mapping[str, Any]) -> None:
+        print(
+            _PACKAGE_CHILD_PROGRESS_PREFIX
+            + json.dumps(
+                {
+                    "kind": "progress",
+                    "runDirectory": str(run_dir),
+                    "record": record,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+
+    try:
+        run_dir = _run_packaged_case_child(request, progress_callback=progress)
+        print(
+            _PACKAGE_CHILD_PROGRESS_PREFIX
+            + json.dumps(
+                {"kind": "result", "runDirectory": str(run_dir)},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+    except BaseException as exc:
+        print(
+            _PACKAGE_CHILD_PROGRESS_PREFIX
+            + json.dumps(
+                {"kind": "error", "type": type(exc).__name__, "message": str(exc)[:500]},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            flush=True,
+        )
+        raise
+    return 0
+
+
+def _stop_package_child(process: subprocess.Popen[str]) -> None:
+    """Ask a package child to persist its interrupted execution before exit."""
+
+    if process.poll() is not None:
+        return
+    try:
+        process.send_signal(signal.SIGINT)
+        process.wait(timeout=10)
+        return
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    if process.poll() is None:
+        try:
+            process.terminate()
+            process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
+
+def _run_packaged_case_process(
+    *,
+    staging: Path,
+    staged_case: Path,
+    staged_bundle: Path,
+    output_root: Path,
+    candidate_id: str,
+    strict_manifest: bool,
+    dependency_root: Path,
+    dependency_modules: Sequence[str],
+    runtime_origin: Mapping[str, Any] | None,
+    progress_callback: Any,
+    runner_source: bytes,
+) -> Path:
+    """Run one checked package case in a fresh interpreter process."""
+
+    request_path = staging / "package-child-request.json"
+    runner_path = staging / "trusted-package-runner.py"
+    _write_bytes(runner_path, runner_source)
+    environment = os.environ.copy()
+    # -S below excludes the parent virtualenv's site-packages.  Keep the
+    # production telemetry variables, but do not inherit a workspace path that
+    # could satisfy a missing package dependency.
+    environment["PYTHONPATH"] = ""
+    environment["PYTHONNOUSERSITE"] = "1"
+    parent_watchdog_read, parent_watchdog_write = os.pipe()
+    try:
+        _write_json_atomic(
+            request_path,
+            {
+                "staging": str(staging),
+                "stagedCase": str(staged_case),
+                "stagedBundle": str(staged_bundle),
+                "outputRoot": str(output_root),
+                "candidateId": candidate_id,
+                "strictManifest": strict_manifest,
+                "dependencyRoot": str(dependency_root),
+                "dependencyModules": list(dependency_modules),
+                "runtimeOrigin": dict(runtime_origin) if runtime_origin is not None else None,
+                "parentWatchdogFd": parent_watchdog_read,
+            },
+        )
+        process = subprocess.Popen(
+            [sys.executable, "-S", str(runner_path), str(request_path)],
+            cwd=str(staging),
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            pass_fds=(parent_watchdog_read,),
+        )
+    except BaseException:
+        os.close(parent_watchdog_read)
+        os.close(parent_watchdog_write)
+        raise
+    os.close(parent_watchdog_read)
+    output_lines: deque[str] = deque(maxlen=20)
+    result_directory: Path | None = None
+    previous_sigterm = None
+    sigterm_installed = False
+
+    def forward_sigterm(_signum: int, _frame: Any) -> None:
+        _stop_package_child(process)
+        raise SystemExit(128 + signal.SIGTERM)
+
+    try:
+        try:
+            previous_sigterm = signal.signal(signal.SIGTERM, forward_sigterm)
+            sigterm_installed = True
+        except ValueError:
+            # A caller may execute a case from a worker thread.  Python only
+            # allows signal handlers on the main thread; normal cancellation
+            # and KeyboardInterrupt still use the cleanup path below.
+            previous_sigterm = None
+        assert process.stdout is not None
+        for line in process.stdout:
+            line = line.rstrip("\n")
+            if not line.startswith(_PACKAGE_CHILD_PROGRESS_PREFIX):
+                output_lines.append(line)
+                continue
+            payload = line[len(_PACKAGE_CHILD_PROGRESS_PREFIX):]
+            try:
+                event = json.loads(payload)
+            except (TypeError, ValueError):
+                output_lines.append(line)
+                continue
+            if not isinstance(event, Mapping):
+                output_lines.append(line)
+                continue
+            kind = event.get("kind")
+            if kind == "progress":
+                run_directory = event.get("runDirectory")
+                record = event.get("record")
+                if isinstance(run_directory, str) and isinstance(record, dict) and callable(progress_callback):
+                    progress_callback(Path(run_directory), record)
+            elif kind == "result":
+                run_directory = event.get("runDirectory")
+                if isinstance(run_directory, str):
+                    result_directory = Path(run_directory)
+            elif kind == "error":
+                output_lines.append(f"{event.get('type', 'ChildError')}: {event.get('message', '')}")
+    except BaseException:
+        _stop_package_child(process)
+        raise
+    finally:
+        if sigterm_installed:
+            signal.signal(signal.SIGTERM, previous_sigterm)
+        if process.stdout is not None:
+            process.stdout.close()
+        os.close(parent_watchdog_write)
+    return_code = process.wait()
+    if return_code != 0:
+        details = "\n".join(output_lines).strip()
+        message = f"packaged case child exited with status {return_code}"
+        if details:
+            message += f": {details[:2000]}"
+        raise ValueError(message)
+    if result_directory is None:
+        details = "\n".join(output_lines).strip()
+        message = "packaged case child did not return an execution directory"
+        if details:
+            message += f": {details[:2000]}"
+        raise ValueError(message)
+    return result_directory
+
+
+def _run_packaged_case_child(request: Mapping[str, Any], *, progress_callback: Any = None) -> Path:
+    """Execute a parent-snapshotted package case inside the package process."""
+
+    staging = Path(request["staging"])
+    staged_case = Path(request["stagedCase"])
+    staged_bundle = Path(request["stagedBundle"])
+    output_root = Path(request["outputRoot"])
+    dependency_root = Path(request["dependencyRoot"])
+    agent_source = staging / "source" / "agent"
+    source_files: dict[str, bytes] = {}
+    dependency_files: dict[str, bytes] = {}
+    for name in SOURCE_FILES:
+        path = agent_source / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"selected agent source is unavailable: {name}")
+        source_files[f"agent/{name}"] = path.read_bytes()
+    for name in DEPENDENCY_FILES:
+        path = agent_source / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"locked dependency input is unavailable: {name}")
+        dependency_files[f"agent/{name}"] = path.read_bytes()
+    runtime_origin = request.get("runtimeOrigin")
+    if runtime_origin is not None and not isinstance(runtime_origin, Mapping):
+        raise ValueError("package child Runtime origin is malformed")
+    with _package_process_imports(agent_source, dependency_root=dependency_root):
+        # This child has no inherited trusted provider.  Configure the signed
+        # package exporter after its exact dependency path is established.
+        provider = _configure_packaged_exporter(None)
+        return Path(_run_snapshot(
+            staging=staging,
+            staged_case=staged_case,
+            staged_bundle=staged_bundle,
+            output_root=output_root,
+            source_files=source_files,
+            dependency_files=dependency_files,
+            model_session=None,
+            provider=provider,
+            candidate_id=request["candidateId"],
+            strict_manifest=bool(request["strictManifest"]),
+            progress_callback=progress_callback,
+            dependency_root=dependency_root,
+            dependency_modules=request.get("dependencyModules", ()),
+            runtime_origin=dict(runtime_origin) if runtime_origin is not None else None,
+            package_process=True,
         ))
 
 
@@ -785,13 +1122,19 @@ def _run_snapshot(
     dependency_root: Path | None,
     dependency_modules: Sequence[str],
     runtime_origin: Mapping[str, Any] | None,
+    package_process: bool = False,
 ) -> Path:
     agent_source = staging / "source" / "agent"
-    with _snapshot_imports(
-        agent_source,
-        dependency_root=dependency_root,
-        dependency_modules=dependency_modules,
-    ):
+    import_scope = (
+        _package_process_imports(agent_source, dependency_root=dependency_root)
+        if package_process and dependency_root is not None
+        else _snapshot_imports(
+            agent_source,
+            dependency_root=dependency_root,
+            dependency_modules=dependency_modules,
+        )
+    )
+    with import_scope:
         from captured_evidence import CapturedEvidenceTools
         from deterministic_checks import check_captured_report, check_report
         from evaluation_telemetry import execution_content, interrupted_execution_content
@@ -900,14 +1243,14 @@ def _run_snapshot(
         timer: Timer | None = None
         cancel_signal = Event()
         observer: Any = None
-        packaged_provider = False
+        packaged_provider = package_process and provider is not None and model_session is None
         try:
             # Tests inject a fake session; production normally passes the
             # provider already verified before the package snapshot loaded.
             from opentelemetry import trace
             from opentelemetry.sdk.trace import TracerProvider
 
-            if provider is not None and model_session is None and dependency_root is not None:
+            if provider is not None and model_session is None and dependency_root is not None and not package_process:
                 # The launcher provider was authenticated before package
                 # imports. Rebuild its exporter with the package's own OTel
                 # classes to keep SpanKind/resource/encoder identities
@@ -1435,3 +1778,7 @@ def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any],
                 raise ValueError("interrupted native Strands span digest does not match the execution record")
             native_spans = native["spans"]
     return record, loaded_case, native_spans
+
+
+if __name__ == "__main__":
+    raise SystemExit(_package_child_main())
