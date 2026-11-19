@@ -23,6 +23,13 @@ const cloudFormationTags = [{ tag: '!Sub', resolve: (value) => ({ 'Fn::Sub': val
 const selectedKey = 'AGENT_SELECTION';
 const publicationKeys = ['AGENT_PUBLICATION#faulty', 'AGENT_PUBLICATION#repaired'];
 const ordinaryControllerKeys = ['STATE', 'ACTION#00000000-0000-4000-8000-000000000000', 'RUN#00000000-0000-4000-8000-000000000000'];
+const faultyArtifactDigest = '7febe979fa1365360983d886f9d1dc78b55d9bde91a6fe7357e5f9fd97d2d7a7';
+const oldRepairedArtifactDigest = '1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7';
+const newRepairedArtifactDigest = 'f263f9ca70549c399cfc786963de693899bf4f8881e7904d3c704df72fb38fe8';
+const configurationResource = (digest) =>
+  `arn:aws:s3:::incident-triage-demo-evidence-${account}-${region}/agent-evaluation/phase20/${digest}/runtime-configuration.json`;
+const faultyConfigurationResource =
+  `arn:aws:s3:::cdk-evaltalk-assets-${account}-${region}/agent-reference/${faultyArtifactDigest}.json`;
 
 // This is a deliberately bounded policy probe, not a replacement for IAM's
 // evaluator. It models only the exact actions, ARNs, and DynamoDB leading keys
@@ -348,8 +355,9 @@ test('HTTP effective permissions read both publication/native bindings, avoid se
   }
 
   const configurationObjects = [
-    `arn:aws:s3:::cdk-evaltalk-assets-${account}-${region}/agent-reference/7febe979fa1365360983d886f9d1dc78b55d9bde91a6fe7357e5f9fd97d2d7a7.json`,
-    `arn:aws:s3:::incident-triage-demo-evidence-${account}-${region}/agent-evaluation/phase20/1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7/runtime-configuration.json`,
+    faultyConfigurationResource,
+    configurationResource(oldRepairedArtifactDigest),
+    configurationResource(newRepairedArtifactDigest),
   ];
   for (const resource of configurationObjects) {
     for (const action of ['s3:GetObject', 's3:GetObjectVersion']) {
@@ -360,6 +368,72 @@ test('HTTP effective permissions read both publication/native bindings, avoid se
   assert.equal(effectiveAllows(statements, boundary, controller, 's3:GetObjectVersion',
     `arn:aws:s3:::incident-triage-demo-evidence-${account}-${region}/agent-evaluation/phase20/private-qualification.json`), false,
   'HTTP readiness must not read private qualification reports');
+});
+
+test('repaired configuration reads allow old, current, and future package digests only through both role-boundary intersections', () => {
+  const controller = readJson(controllerTemplatePath, 'controller');
+  const bootstrap = readYaml(cfnExecutionPath);
+  const roleBoundaries = [
+    ['IncidentTriageDemoControllerHttp', 'IncidentTriageDemoControllerHttpRuntimeBoundary', 'HTTP'],
+    ['IncidentTriageDemoControllerWorker', 'IncidentTriageDemoControllerWorkerRuntimeBoundary', 'worker'],
+  ];
+  const allowedDigests = [oldRepairedArtifactDigest, newRepairedArtifactDigest, 'c'.repeat(64)];
+  const nonHexDigest = 'z'.repeat(64);
+  const slashContainingDigest = `${'a'.repeat(63)}/`;
+  const allowedConfigurationObjects = [
+    ...allowedDigests.map(configurationResource),
+    // IAM's '?' matches one arbitrary character, including '/', so this
+    // fixture intentionally demonstrates the limit of the policy pattern.
+    configurationResource(nonHexDigest),
+    configurationResource(slashContainingDigest),
+  ];
+  const deniedConfigurationObjects = [
+    configurationResource('c'.repeat(63)),
+    configurationResource('c'.repeat(65)),
+    configurationResource('DEFAULT'),
+    configurationResource(newRepairedArtifactDigest).replace('/runtime-configuration.json', '/runtime.zip'),
+    configurationResource(newRepairedArtifactDigest).replace('/runtime-configuration.json', '/qualification.json'),
+    configurationResource(newRepairedArtifactDigest).replace('/runtime-configuration.json', '/reports/runtime-configuration.json'),
+    faultyConfigurationResource.replace(`/${faultyArtifactDigest}.json`, `/${newRepairedArtifactDigest}.zip`),
+    `arn:aws:s3:::incident-triage-demo-evidence-${account}-${region}/agent-evaluation/other/${newRepairedArtifactDigest}/runtime-configuration.json`,
+  ];
+
+  for (const [functionName, boundaryName, owner] of roleBoundaries) {
+    const { statements } = scopedRole(controller, functionName, boundaryName, `controller ${owner}`);
+    const boundary = boundaryStatements(bootstrap, boundaryName);
+    const repairedPatterns = [...statements, ...boundary]
+      .flatMap((statement) => resourceList(statement))
+      .filter((resource) => typeof resource === 'string' && resource.includes('/agent-evaluation/phase20/'));
+    assert.ok(repairedPatterns.length > 0, `${owner} must declare a repaired configuration pattern`);
+    assert.equal(repairedPatterns.includes(
+      `arn:aws:s3:::incident-triage-demo-evidence-${account}-${region}/agent-evaluation/phase20/${'?'.repeat(64)}/runtime-configuration.json`,
+    ), true,
+    `${owner} must use exactly 64 IAM single-character wildcards for repaired configuration reads`);
+    assert.equal(repairedPatterns.some((resource) => resource.includes(oldRepairedArtifactDigest)), false,
+      `${owner} must not retain the old repaired digest as a fixed policy resource`);
+
+    for (const resource of [faultyConfigurationResource, ...allowedConfigurationObjects]) {
+      for (const action of ['s3:GetObject', 's3:GetObjectVersion']) {
+        assert.equal(effectiveAllows(statements, boundary, controller, action, resource), true,
+          `${owner} must allow ${action} for the approved configuration object ${resource}`);
+      }
+    }
+    for (const resource of deniedConfigurationObjects) {
+      for (const action of ['s3:GetObject', 's3:GetObjectVersion']) {
+        assert.equal(effectiveAllows(statements, boundary, controller, action, resource), false,
+          `${owner} must deny ${action} for the out-of-scope configuration object ${resource}`);
+      }
+    }
+    for (const resource of [configurationResource(newRepairedArtifactDigest), faultyConfigurationResource]) {
+      for (const action of ['s3:PutObject', 's3:DeleteObject', 's3:ListBucket']) {
+        const target = action === 's3:ListBucket'
+          ? resource.split('/agent-')[0]
+          : resource;
+        assert.equal(effectiveAllows(statements, boundary, controller, action, target), false,
+          `${owner} must not grant ${action} on the configuration source ${target}`);
+      }
+    }
+  }
 });
 
 test('both controller functions receive the fixed Runtime ARN used by publication verification', () => {
@@ -411,8 +485,8 @@ test('action worker owns selection writes while retaining ordinary controller st
         `worker must retain ${action} for current application configuration`);
     }
   }
-  const faultyConfiguration = `arn:aws:s3:::cdk-evaltalk-assets-${account}-${region}/agent-reference/7febe979fa1365360983d886f9d1dc78b55d9bde91a6fe7357e5f9fd97d2d7a7.json`;
-  const repairedConfiguration = `arn:aws:s3:::incident-triage-demo-evidence-${account}-${region}/agent-evaluation/phase20/1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7/runtime-configuration.json`;
+  const faultyConfiguration = faultyConfigurationResource;
+  const repairedConfiguration = configurationResource(newRepairedArtifactDigest);
   for (const resource of [faultyConfiguration, repairedConfiguration]) {
     for (const action of ['s3:GetObject', 's3:GetObjectVersion']) {
       assert.equal(effectiveAllows(statements, boundary, controller, action, resource), true,
