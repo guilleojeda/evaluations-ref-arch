@@ -10,6 +10,7 @@ AWS/native-OTel environment needed by the requested action.
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -117,7 +118,10 @@ def aws_environment(profile: str, account: str, region: str) -> dict[str, str]:
     if existing and existing != profile:
         raise StageError(f"AWS_PROFILE is {existing!r}; selected profile is {profile!r}")
     # The native SDK must use the same named SSO profile checked by STS.
-    for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_SECURITY_TOKEN"):
+    for key in (
+        "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_SECURITY_TOKEN",
+        "AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_ROLE_ARN", "AWS_ROLE_SESSION_NAME",
+    ):
         environment.pop(key, None)
     environment.update({
         "AWS_PROFILE": profile, "AWS_DEFAULT_PROFILE": profile,
@@ -127,11 +131,34 @@ def aws_environment(profile: str, account: str, region: str) -> dict[str, str]:
     return environment
 
 
+def sso_refresh_message(profile: str) -> str:
+    return (
+        f"AWS SSO credentials for profile {profile!r} are expired or unavailable; "
+        f"run `aws sso login --profile {profile} --use-device-code --no-browser` "
+        "and rerun the stage command"
+    )
+
+
+def process_start_failure(message: str) -> bool:
+    lowered = message.lower()
+    return "failed to start" in lowered or "timed out" in lowered
+
+
+def sdk_auth_failure(message: str) -> bool:
+    lowered = message.lower()
+    return any(marker in lowered for marker in ("unauthorized", "accessdenied", "invalidgrant", "expired", "sso", "token"))
+
+
 def check_aws(aws: str, profile: str, account: str, region: str) -> dict[str, str]:
     if region != REGION:
         raise StageError(f"the talk evaluation is pinned to {REGION}, not {region}")
     environment = aws_environment(profile, account, region)
-    raw = run((aws, "sts", "get-caller-identity", "--profile", profile, "--region", region, "--output", "json"), env=environment, label="AWS STS identity check")
+    try:
+        raw = run((aws, "sts", "get-caller-identity", "--profile", profile, "--region", region, "--output", "json"), env=environment, label="AWS STS identity check")
+    except StageError as exc:
+        if process_start_failure(str(exc)):
+            raise
+        raise StageError(sso_refresh_message(profile)) from None
     try:
         value = json.loads(raw)
     except json.JSONDecodeError as exc:
@@ -144,8 +171,64 @@ def check_aws(aws: str, profile: str, account: str, region: str) -> dict[str, st
     return {"profile": profile, "region": region, "account": account, "arn": value["Arn"]}
 
 
-def check_otel(uv: str, workspace: Path, profile: str, account: str, region: str) -> None:
+def cli_credentials(aws: str, profile: str, account: str, region: str) -> dict[str, str]:
+    """Resolve short-lived CLI credentials in memory for the locked SDK."""
+
     environment = aws_environment(profile, account, region)
+    try:
+        raw = run((aws, "configure", "export-credentials", "--profile", profile), env=environment, label="AWS credential export")
+    except StageError as exc:
+        if process_start_failure(str(exc)):
+            raise
+        # Some installations can use the profile but cannot export credentials.
+        # The locked SDK must prove the named profile works before any command runs.
+        return environment
+    try:
+        value = json.loads(raw)
+        required = {"AccessKeyId", "SecretAccessKey", "SessionToken", "Expiration"}
+        if not isinstance(value, dict) or not required.issubset(value):
+            raise ValueError("credential export is incomplete")
+        expiration = datetime.fromisoformat(str(value["Expiration"]).replace("Z", "+00:00"))
+        if expiration <= datetime.now(timezone.utc):
+            raise ValueError("credential export is expired")
+        credentials = {
+            "AWS_ACCESS_KEY_ID": str(value["AccessKeyId"]),
+            "AWS_SECRET_ACCESS_KEY": str(value["SecretAccessKey"]),
+            "AWS_SESSION_TOKEN": str(value["SessionToken"]),
+        }
+    except (ValueError, TypeError, json.JSONDecodeError):
+        raise StageError(sso_refresh_message(profile)) from None
+    environment.update(credentials)
+    return environment
+
+
+def check_sdk(uv: str, workspace: Path, environment: Mapping[str, str], account: str, profile: str) -> dict[str, str]:
+    """Check STS through the exact locked Python dependency used natively."""
+
+    child_environment = dict(environment)
+    child_environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    child_environment["PYTHONPATH"] = str(workspace / "agent")
+    code = (
+        "import boto3,json; "
+        "v=boto3.Session().client('sts').get_caller_identity(); "
+        "print(json.dumps({'Account':v.get('Account'),'Arn':v.get('Arn')}))"
+    )
+    try:
+        raw = run((uv, "run", "--offline", "--project", "agent", "--locked", "python", "-c", code), cwd=workspace, env=child_environment, label="locked Python SDK STS identity check")
+        value = json.loads(raw)
+    except StageError as exc:
+        if process_start_failure(str(exc)) or not sdk_auth_failure(str(exc)):
+            raise
+        raise StageError(sso_refresh_message(profile)) from None
+    except json.JSONDecodeError:
+        raise StageError(sso_refresh_message(profile)) from None
+    if not isinstance(value, dict) or value.get("Account") != account or not isinstance(value.get("Arn"), str) or not value["Arn"]:
+        raise StageError(f"locked Python SDK AWS account mismatch: expected {account}")
+    return {"profile": profile, "account": account, "arn": value["Arn"]}
+
+
+def check_otel(uv: str, workspace: Path, profile: str, account: str, region: str, base_environment: Mapping[str, str] | None = None) -> None:
+    environment = dict(base_environment) if base_environment is not None else aws_environment(profile, account, region)
     environment.update(OTEL_ENV)
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     environment["PYTHONPATH"] = str(workspace / "agent")
@@ -205,6 +288,8 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
         if not isinstance(previous_aws, Mapping) or any(previous_aws.get(key) != expected for key, expected in (("profile", args.profile), ("account", args.account), ("region", args.region))):
             raise StageError("setup receipt belongs to another AWS identity")
         check_aws(args.aws, args.profile, args.account, args.region)
+        native_environment = cli_credentials(args.aws, args.profile, args.account, args.region)
+        check_sdk(args.uv, workspace, native_environment, args.account, args.profile)
         return {"status": "already-ready", "receipt": str(receipt_path), **saved}
     changed = status(workspace)
     if any(entry[:2] != " M" or entry[3:] != "agent/prompt.py" for entry in changed):
@@ -218,14 +303,16 @@ def setup(args: argparse.Namespace) -> dict[str, Any]:
     if (stage_record.get("stage"), stage_record.get("directory"), stage_record.get("currentCommit")) != (args.stage, str(workspace), info["head"]):
         raise StageError(f"selected workspace differs from the prepared {args.stage} stage")
     aws = check_aws(args.aws, args.profile, args.account, args.region)
-    receipt: dict[str, Any] = {"schemaVersion": 1, "kind": "talk-stage-setup", **info, "aws": aws}
+    native_environment = cli_credentials(args.aws, args.profile, args.account, args.region)
+    sdk = check_sdk(args.uv, workspace, native_environment, args.account, args.profile)
+    receipt: dict[str, Any] = {"schemaVersion": 1, "kind": "talk-stage-setup", **info, "aws": aws, "sdk": sdk}
     if args.stage == "S3":
         baseline = canonical(Path(args.baseline), "selected S3 baseline")
         expected, baseline_source = prompt_digest(baseline / "source" / "agent" / "prompt.py")
         actual, actual_source = prompt_digest(workspace / "agent" / "prompt.py")
         if actual != expected:
             raise StageError("S3 workspace is not at the selected faulty pre-edit SYSTEM_PROMPT")
-        check_otel(args.uv, workspace, args.profile, args.account, args.region)
+        check_otel(args.uv, workspace, args.profile, args.account, args.region, native_environment)
         receipt["preEdit"] = {
             "baseline": str(baseline), "baselinePromptSourceSha256": baseline_source,
             "effectivePromptSha256": expected, "workspacePromptSourceSha256": actual_source,
@@ -295,7 +382,8 @@ def run_native(args: argparse.Namespace) -> int:
         if not isinstance(aws, Mapping) or any(aws.get(key) != expected for key, expected in (("profile", args.profile), ("account", args.account), ("region", args.region))):
             raise StageError("S2 setup receipt belongs to another AWS identity")
     check_aws(args.aws, args.profile, args.account, args.region)
-    environment = aws_environment(args.profile, args.account, args.region)
+    environment = cli_credentials(args.aws, args.profile, args.account, args.region)
+    check_sdk(args.uv, workspace, environment, args.account, args.profile)
     if args.stage == "S3":
         environment.update(OTEL_ENV)
     os.chdir(workspace)
@@ -330,6 +418,7 @@ def parser() -> argparse.ArgumentParser:
     env_parser.add_argument("--account", required=True)
     env_parser.add_argument("--region", default=REGION)
     run_parser = sub.add_parser("run", parents=[common])
+    run_parser.add_argument("--uv", default="uv")
     run_parser.add_argument("native_command", nargs=argparse.REMAINDER)
     return root
 

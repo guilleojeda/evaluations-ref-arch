@@ -55,11 +55,12 @@ print(json.dumps({'stage': stage, 'directory': str(workspace.resolve()), 'curren
             "case \"$1 $2\" in\n"
             "configure\\ list-profiles) echo approved ;;\n"
             "sts\\ get-caller-identity) echo '{\"Account\":\"123\",\"Arn\":\"arn:aws:iam::123:role/test\"}' ;;\n"
+            "configure\\ export-credentials) echo '{\"Version\":1,\"AccessKeyId\":\"AKIA_TEST\",\"SecretAccessKey\":\"secret\",\"SessionToken\":\"token\",\"Expiration\":\"2099-01-01T00:00:00Z\"}' ;;\n"
             "*) exit 1 ;;\nesac\n",
             executable=True,
         )
         self.uv = root / "uv"
-        self._write(self.uv, f"#!/bin/sh\necho called >> {self.uv_log}\nexit 0\n", executable=True)
+        self._write(self.uv, f"#!/bin/sh\necho \"$*\" >> {self.uv_log}\ncase \"$*\" in *'python -c'*) echo '{{\"Account\":\"123\",\"Arn\":\"arn:aws:iam::123:role/sdk\"}}' ;; esac\nexit 0\n", executable=True)
 
     def tearDown(self) -> None:
         self.temp.cleanup()
@@ -75,7 +76,7 @@ print(json.dumps({'stage': stage, 'directory': str(workspace.resolve()), 'curren
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.strip()
 
-    def _run(self, action: str, *, stage: str = "S3", workspace: Path | None = None, aws: Path | None = None, native: bool = False) -> subprocess.CompletedProcess[str]:
+    def _run(self, action: str, *, stage: str = "S3", workspace: Path | None = None, aws: Path | None = None, uv: Path | None = None, native: bool = False) -> subprocess.CompletedProcess[str]:
         env = os.environ.copy()
         env.pop("AWS_PROFILE", None)
         command = [
@@ -85,11 +86,11 @@ print(json.dumps({'stage': stage, 'directory': str(workspace.resolve()), 'curren
             "--aws", str(aws or self.aws),
         ]
         if action == "setup":
-            command += ["--session-root", str(self.session), "--uv", str(self.uv)]
+            command += ["--session-root", str(self.session), "--uv", str(uv or self.uv)]
             if stage == "S3":
                 command += ["--baseline", str(self.baseline)]
         if native:
-            command += ["--", sys.executable, "-c", "import os; from pathlib import Path; Path('native-env.txt').write_text(os.environ['AWS_PROFILE'] + '|' + os.environ['OTEL_TRACES_EXPORTER'])"]
+            command += ["--uv", str(self.uv), "--", sys.executable, "-c", "import os; from pathlib import Path; Path('native-env.txt').write_text(os.environ['AWS_PROFILE'] + '|' + os.environ['OTEL_TRACES_EXPORTER'])"]
         return subprocess.run(command, text=True, capture_output=True, env=env, check=False)
 
     def test_effective_preimage_and_comment_only_guard(self) -> None:
@@ -105,7 +106,7 @@ print(json.dumps({'stage': stage, 'directory': str(workspace.resolve()), 'curren
         prompt.write_text(prompt.read_text(encoding="utf-8").replace("'faulty'", "'repaired'"), encoding="utf-8")
         accepted = self._run("guard")
         self.assertEqual(accepted.returncode, 0, accepted.stderr)
-        self.assertEqual(len(self.uv_log.read_text(encoding="utf-8").splitlines()), 1)
+        self.assertEqual(len(self.uv_log.read_text(encoding="utf-8").splitlines()), 2)
 
     def test_aws_failure_prevents_native_launcher(self) -> None:
         bad = self.aws.with_name("aws-bad")
@@ -115,12 +116,44 @@ print(json.dumps({'stage': stage, 'directory': str(workspace.resolve()), 'curren
         self.assertFalse(self.uv_log.exists())
         self.assertFalse((self.output / "s3-setup.json").exists())
 
+    def test_cli_green_but_pinned_sdk_failure_blocks_setup_with_refresh_instruction(self) -> None:
+        sdk_failure = self.aws.with_name("uv-sdk-failure")
+        self._write(sdk_failure, "#!/bin/sh\necho sdk-unauthorized >&2\nexit 1\n", executable=True)
+        rejected = self._run("setup", uv=sdk_failure)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("aws sso login", rejected.stderr)
+        self.assertFalse((self.output / "s3-setup.json").exists())
+
+    def test_cli_without_export_falls_back_to_named_profile_and_sdk_sts(self) -> None:
+        aws_v1 = self.aws.with_name("aws-v1")
+        self._write(
+            aws_v1,
+            "#!/bin/sh\n"
+            "case \"$1 $2\" in\n"
+            "sts\\ get-caller-identity) echo '{\"Account\":\"123\",\"Arn\":\"arn:aws:iam::123:role/cli\"}' ;;\n"
+            "configure\\ export-credentials) echo 'Invalid choice' >&2; exit 2 ;;\n"
+            "*) exit 1 ;;\nesac\n",
+            executable=True,
+        )
+        ready = self._run("setup", aws=aws_v1)
+        self.assertEqual(ready.returncode, 0, ready.stderr)
+        self.assertIn("python -c", self.uv_log.read_text(encoding="utf-8"))
+        self.assertEqual(json.loads((self.output / "s3-setup.json").read_text(encoding="utf-8"))["sdk"]["account"], "123")
+
+    def test_missing_uv_is_reported_as_dependency_failure(self) -> None:
+        missing = self.output / "missing-uv"
+        rejected = self._run("setup", uv=missing)
+        self.assertNotEqual(rejected.returncode, 0)
+        self.assertIn("failed to start", rejected.stderr)
+        self.assertNotIn("aws sso login", rejected.stderr)
+
     def test_s2_setup_checks_identity_without_native_otel(self) -> None:
         ready = self._run("setup", stage="S2")
         self.assertEqual(ready.returncode, 0, ready.stderr)
         receipt = json.loads((self.output / "s2-setup.json").read_text(encoding="utf-8"))
         self.assertFalse(receipt["nativeOtel"]["required"])
-        self.assertFalse(self.uv_log.exists())
+        self.assertEqual(len(self.uv_log.read_text(encoding="utf-8").splitlines()), 1)
+        self.assertNotIn("opentelemetry-instrument", self.uv_log.read_text(encoding="utf-8"))
 
     def test_receipt_is_bound_to_workspace_and_head(self) -> None:
         self.assertEqual(self._run("setup").returncode, 0)
