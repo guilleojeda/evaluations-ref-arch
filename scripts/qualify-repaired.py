@@ -424,7 +424,32 @@ def _experiment_attestation(
     )
     for case_id, canonical in canonical_by_id.items():
         shown_row = shown_by_id[case_id]
-        if canonical.get("promptSha256") != effective_prompt_sha256 or shown_row.get("promptSha256") != effective_prompt_sha256:
+        no_execution_identity = all(
+            canonical.get(key) is None and shown_row.get(key) is None
+            for key in ("executionId", "sessionId", "traceId", "promptSha256")
+        )
+        canonical_score = canonical.get("score")
+        typed_pre_execution_failure = (
+            canonical.get("status") in {"running", "incomplete", "error", "interrupted"}
+            and (
+                (isinstance(canonical.get("error"), str) and bool(canonical["error"].strip()))
+                or (
+                    isinstance(canonical_score, Mapping)
+                    and canonical_score.get("status") in {"error", "incomplete"}
+                    and isinstance(canonical_score.get("reason"), str)
+                    and bool(canonical_score["reason"].strip())
+                )
+            )
+        )
+        incomplete_pre_execution = (
+            authenticated_incomplete_read
+            and no_execution_identity
+            and typed_pre_execution_failure
+        )
+        if not incomplete_pre_execution and (
+            canonical.get("promptSha256") != effective_prompt_sha256
+            or shown_row.get("promptSha256") != effective_prompt_sha256
+        ):
             raise ValueError(f"native prompt identity differs from the schema-v2 package manifest for {case_id}")
         for key in (
             "caseSha256", "bundleSha256", "executionId", "sessionId", "traceId",

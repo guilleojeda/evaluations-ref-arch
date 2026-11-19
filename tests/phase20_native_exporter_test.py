@@ -169,45 +169,112 @@ with tempfile.TemporaryDirectory(prefix="phase20-package-exporter-") as temporar
                 "PHASE20_AGENT_ROOT": str(ROOT / "agent"),
                 "PHASE20_CASE_PATH": str(fixture.case_paths["denial"]),
                 "PHASE20_BUNDLE_PATH": str(fixture.bundle),
+                "PHASE20_TEST_OUTPUT": "phase20-package-child.json",
             }
         )
         with tempfile.TemporaryDirectory(prefix="phase20-native-run-") as output:
             environment["PHASE20_OUTPUT_ROOT"] = output
             script = r'''
-import contextlib
 import json
 import os
 from pathlib import Path
-from types import SimpleNamespace
 import tempfile
-import zipfile
 
 import captured_execution
-from phase15_deterministic_checks_test import recommendation, report_for
-from phase16_baseline_test import ScriptedBedrock
+from amazon.opentelemetry.distro.exporter.otlp.aws.traces.otlp_aws_span_exporter import OTLPAwsSpanExporter as LauncherExporter
+from opentelemetry.sdk.trace.export import SpanExportResult
+import development_experiment
 
-runtime_zip = Path(os.environ["PHASE20_RUNTIME_ZIP"])
-case = json.loads(Path(os.environ["PHASE20_CASE_PATH"]).read_text())["case"]
-client = ScriptedBedrock(
-    report_for(recommendation("Increase memory", "inventory", 512, "MB")),
-    case["task"],
-    reads=({"resource": "inventory"},),
-)
+# Keep the parent launcher preflight offline; the actual package exporter and
+# model transport are patched inside the fresh package child below.
+LauncherExporter.export = lambda self, spans: SpanExportResult.SUCCESS
+
+child_runner_source = r"""
+import json
+import os
+from pathlib import Path
+import sys
+from types import SimpleNamespace
+
+request = json.loads(Path(sys.argv[1]).read_text())
+staging = Path(request["staging"])
+dependency_root = Path(request["dependencyRoot"])
+agent_source = staging / "source" / "agent"
+stdlib = [path for path in sys.path if path and "site-packages" not in path and "dist-packages" not in path]
+sys.path[:] = [str(dependency_root), str(agent_source), *stdlib]
+
+import boto3
+from botocore.session import get_session
+
+case = json.loads(Path(request["stagedCase"]).read_text())["case"]
+task = case["task"]
+report = {
+    "assessment": "ongoing",
+    "summary": "The packaged child produced a bounded synthetic report.",
+    "recommendation": {"action": "Increase memory", "target": "inventory", "value": 512, "unit": "MB"},
+    "evidence": [{
+        "source": "logs",
+        "resource": "inventory",
+        "windowStart": task["incidentWindow"]["start"],
+        "windowEnd": task["referenceTime"],
+        "observedAt": task["referenceTime"],
+        "finding": "Synthetic packaged child observation.",
+    }],
+    "uncertainties": ["Synthetic package-process evidence is intentionally bounded."],
+    "alternatives": [],
+}
+
+class ScriptedBedrock:
+    def __init__(self):
+        self.requests = []
+        self.reads = iter(({"resource": "inventory"},))
+        self.meta = SimpleNamespace(
+            region_name="us-east-1",
+            service_model=get_session().get_service_model("bedrock-runtime"),
+        )
+
+    def converse_stream(self, **request):
+        self.requests.append(request)
+        forced = request.get("toolConfig", {}).get("toolChoice", {}).get("tool", {}).get("name")
+        if forced == "InvestigationReport":
+            name, arguments = "InvestigationReport", report
+        else:
+            scope = next(self.reads, None)
+            name = "search_logs" if scope is not None else None
+            arguments = {**(scope or {}), "start": task["incidentWindow"]["start"], "end": task["referenceTime"]}
+        events = [{"messageStart": {"role": "assistant"}}]
+        if name is None:
+            events.append({"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "I inspected the packaged evidence."}}})
+        else:
+            events.extend((
+                {"contentBlockStart": {"contentBlockIndex": 0, "start": {"toolUse": {"toolUseId": f"tool-{len(self.requests)}", "name": name}}}},
+                {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"toolUse": {"input": json.dumps(arguments)}}}},
+            ))
+        events.extend((
+            {"contentBlockStop": {"contentBlockIndex": 0}},
+            {"messageStop": {"stopReason": "tool_use" if name else "end_turn"}},
+            {"metadata": {"usage": {"inputTokens": 3, "outputTokens": 2, "totalTokens": 5}, "metrics": {"latencyMs": 1}}},
+        ))
+        return {"stream": iter(events)}
+
+client = ScriptedBedrock()
+real_session_type = boto3.Session
+real_clients = []
+
 class ScriptedClient:
     def __init__(self, delegate, metadata):
         self._delegate = delegate
         self.meta = metadata
-    def client(self, service_name, **kwargs):
-        raise AssertionError("the scripted Bedrock client must not create nested clients")
+        self.region_name = metadata.region_name
+
     def converse_stream(self, **kwargs):
         return self._delegate.converse_stream(**kwargs)
 
-real_session_type = None
-real_clients = []
 class TransportSession:
     def __init__(self, *args, **kwargs):
         self._real = real_session_type(*args, **kwargs)
         self.region_name = self._real.region_name
+
     def client(self, service_name, **kwargs):
         real_client = self._real.client(service_name, **kwargs)
         if service_name != "bedrock-runtime":
@@ -217,57 +284,68 @@ class TransportSession:
         real_clients.append(real_client)
         return ScriptedClient(client, real_client.meta)
 
-original_snapshot_imports = captured_execution._snapshot_imports
 posts = []
 def fake_post(self, **kwargs):
-    posts.append(kwargs)
+    posts.append({"url": kwargs.get("url"), "dataBytes": len(kwargs.get("data", b""))})
     return SimpleNamespace(ok=True, reason="OK", status_code=200)
-@contextlib.contextmanager
-def patched_snapshot_imports(agent_source, **kwargs):
-    with original_snapshot_imports(agent_source, **kwargs):
-        import boto3 as runtime_boto3
-        from amazon.opentelemetry.distro.exporter.otlp.aws.traces.otlp_aws_span_exporter import AwsAuthSession as PackageAwsAuthSession
-        global real_session_type
-        real_session_type = runtime_boto3.Session
-        runtime_boto3.Session = TransportSession
-        PackageAwsAuthSession.post = fake_post
-        try:
-            yield
-        finally:
-            pass
-captured_execution._snapshot_imports = patched_snapshot_imports
 
 from amazon.opentelemetry.distro.exporter.otlp.aws.traces.otlp_aws_span_exporter import AwsAuthSession
-from amazon.opentelemetry.distro.exporter.otlp.aws.traces.otlp_aws_span_exporter import OTLPAwsSpanExporter as LauncherExporter
-from opentelemetry.sdk.trace.export import SpanExportResult
-LauncherExporter.export = lambda self, spans: SpanExportResult.SUCCESS
 AwsAuthSession.post = fake_post
+boto3.Session = TransportSession
 
-import development_experiment
-with tempfile.TemporaryDirectory(prefix="phase20-runtime-package-") as package_dir:
-    package_root = Path(package_dir) / "runtime"
-    package_root.mkdir()
-    with zipfile.ZipFile(runtime_zip) as archive:
-        archive.extractall(package_root)
-    modules = ("amazon", "boto3", "botocore", "opentelemetry", "pydantic", "strands")
-    with tempfile.TemporaryDirectory(prefix="phase20-package-candidate-") as candidate_dir:
-        candidate_source = development_experiment._assemble_package_candidate(package_root, Path(candidate_dir) / "agent")
-        run_dir = captured_execution.run_captured_case(
-            os.environ["PHASE20_CASE_PATH"],
-            os.environ["PHASE20_BUNDLE_PATH"],
-            os.environ["PHASE20_OUTPUT_ROOT"],
-            model_session=None,
-            candidate_id="repaired",
-            source_directory=candidate_source,
-            dependency_root=package_root,
-            dependency_modules=modules,
-            trusted_runner=True,
-        )
-        record = json.loads((Path(run_dir) / "execution.json").read_text())
-        assert record["status"] == "complete", record
-        assert real_clients and len(client.requests) >= 2, "the real packaged Bedrock client path did not observe model attempts"
-        assert posts and posts[0]["data"], "the real package OTLP encoder emitted no payload"
-        assert posts[0]["url"] == os.environ["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]
+import captured_execution
+try:
+    assert captured_execution._snapshot_imports.__name__ == "_snapshot_imports"
+    captured_execution._package_child_main()
+finally:
+    output = Path(request["outputRoot"]) / os.environ["PHASE20_TEST_OUTPUT"]
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps({"posts": posts, "modelRequests": len(client.requests), "clients": len(real_clients)}))
+"""
+
+original_child = captured_execution._run_packaged_case_process
+original_snapshot_imports = captured_execution._snapshot_imports
+def run_test_child(**kwargs):
+    kwargs["runner_source"] = child_runner_source.encode()
+    return original_child(**kwargs)
+captured_execution._run_packaged_case_process = run_test_child
+captured_execution._snapshot_imports = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("parent package scope must not evict modules"))
+
+try:
+    runtime_zip = Path(os.environ["PHASE20_RUNTIME_ZIP"])
+    with development_experiment._extract_runtime_package(runtime_zip) as (package_root, package_origin, dependency_modules):
+        with tempfile.TemporaryDirectory(prefix="phase20-package-candidate-") as candidate_dir:
+            candidate_source = development_experiment._assemble_package_candidate(package_root, Path(candidate_dir) / "agent")
+            run_dir = captured_execution.run_captured_case(
+                os.environ["PHASE20_CASE_PATH"],
+                os.environ["PHASE20_BUNDLE_PATH"],
+                os.environ["PHASE20_OUTPUT_ROOT"],
+                model_session=None,
+                candidate_id="repaired",
+                source_directory=candidate_source,
+                dependency_root=package_root,
+                dependency_modules=dependency_modules,
+                runtime_origin=package_origin,
+                trusted_runner=True,
+            )
+finally:
+    captured_execution._snapshot_imports = original_snapshot_imports
+
+record = json.loads((Path(run_dir) / "execution.json").read_text())
+telemetry = json.loads((Path(os.environ["PHASE20_OUTPUT_ROOT"]) / os.environ["PHASE20_TEST_OUTPUT"]).read_text())
+assert record["status"] == "complete", record
+assert telemetry["clients"] >= 1 and telemetry["modelRequests"] >= 2, telemetry
+assert telemetry["posts"] and telemetry["posts"][0]["dataBytes"] > 0, telemetry
+assert telemetry["posts"][0]["url"] == os.environ["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]
+assert record["modelResponseCount"] == record["modelSpanCount"] > 0, record
+spans = json.loads((Path(run_dir) / "strands.native-spans.json").read_text())["spans"]
+def operation(span):
+    attributes = span.get("attributes", {}) if isinstance(span, dict) else {}
+    if isinstance(attributes, dict) and isinstance(attributes.get("attributes"), dict):
+        attributes = attributes["attributes"]
+    return attributes.get("gen_ai.operation.name") if isinstance(attributes, dict) else None
+assert any(operation(span) == "invoke_agent" for span in spans), "captured Strands root span missing"
+assert record["identity"]["runtimeOrigin"]["moduleOrigins"]["strands"]["loaded"] is True
 '''
             result = subprocess.run(
                 [
