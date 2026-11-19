@@ -171,7 +171,7 @@ def _child_active_source_process(case_path, bundle_path, source_root, source_dir
 
     source = BlockingBedrock(report_for(recommendation("Restore inventory access", "inventory", "75", "version")), task, entered, release)
     with patch.object(captured_execution, "AGENT_DIRECTORY", Path(source_directory)):
-        run_captured_case(case_path, bundle_path, source_root, model_session=source)
+        run_captured_case(case_path, bundle_path, source_root, candidate_id="repaired", model_session=source)
 
 
 class CaseDispatchSession:
@@ -457,18 +457,15 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
                 shutil.copy2(source, workspace / name)
         if candidate == "repaired":
             prompt = workspace / "prompt.py"
-            prompt.write_text(
-                prompt.read_text(encoding="utf-8")
-                + '\nSYSTEM_PROMPT += "\\nPHASE18_REPAIRED_SOURCE_MARKER"\n'
-                + 'PROMPT_SHA256 = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()\n',
-                encoding="utf-8",
-            )
-            spec = importlib.util.spec_from_file_location(f"phase18_{candidate}_prompt", prompt)
-            prompt_module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(prompt_module)
-            manifest = json.loads((workspace / "agent-manifest.json").read_bytes())
-            manifest["promptSha256"] = prompt_module.PROMPT_SHA256
-            (workspace / "agent-manifest.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+            original_manifest = (workspace / "agent-manifest.json").read_bytes()
+            prompt.write_bytes(prompt.read_bytes().replace(
+                b"Candidate recommendation rule:",
+                b"Candidate recommendation rule: PHASE18_REPAIRED_SOURCE_MARKER",
+                1,
+            ))
+            # Reproduce a prompt-only editor save: the checked-in development
+            # manifest remains untouched and is bound during snapshotting.
+            self.assertEqual((workspace / "agent-manifest.json").read_bytes(), original_manifest)
         return workspace
 
     def product(self):
@@ -611,7 +608,10 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
         report = report_for(recommendation("Increase memory", "inventory", 512, "MB"))
         source = ScriptedBedrock(report, self._case("denial")["task"], reads=({"resource": "inventory"},))
         with patch.object(captured_execution, "AGENT_DIRECTORY", self.source_workspaces[candidate]):
-            return Path(run_captured_case(self.case_paths["denial"], self.bundle, source_root, model_session=source))
+            return Path(run_captured_case(
+                self.case_paths["denial"], self.bundle, source_root,
+                candidate_id=candidate, model_session=source,
+            ))
 
     def run_experiment(self, candidate="faulty", *, selected=None, after_first=None, reports=None, label="pass", explanation=None, source_run=None, reads_by_label=None, evaluate_error=None, retry_once=False, observe_env=None, observe_judge_env=None, token_usage=None, control_error=None):
         module = self.product()

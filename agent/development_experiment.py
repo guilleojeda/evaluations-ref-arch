@@ -314,6 +314,46 @@ def _verify_prompt_snapshot(source: Mapping[str, bytes], identity: Mapping[str, 
         raise ValueError("selected source prompt digest does not match its execution identity")
 
 
+def _prepare_development_source(source_files: Mapping[str, bytes]) -> dict[str, bytes]:
+    """Bind a direct development snapshot to the copied prompt bytes.
+
+    The editable workspace may still contain the checked-in development
+    manifest after a prompt-only save.  Generate the matching manifest in
+    memory for the immutable candidate snapshot, without writing back to the
+    editor workspace.  Authenticated source runs continue through
+    ``_source_run_snapshot`` and therefore retain their exact archived bytes.
+    """
+
+    prompt_raw = source_files.get("agent/prompt.py")
+    manifest_raw = source_files.get("agent/agent-manifest.json")
+    if prompt_raw is None or manifest_raw is None:
+        raise ValueError("development source prompt or manifest is missing")
+    module_name = f"_phase18_development_prompt_{uuid.uuid4().hex}"
+    with tempfile.TemporaryDirectory(prefix="phase18-development-prompt-") as temporary_name:
+        prompt_path = Path(temporary_name) / "prompt.py"
+        prompt_path.write_bytes(prompt_raw)
+        spec = importlib.util.spec_from_file_location(module_name, prompt_path)
+        if spec is None or spec.loader is None:
+            raise ValueError("development prompt cannot be loaded")
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+            system_prompt = module.SYSTEM_PROMPT
+            declared_digest = module.PROMPT_SHA256
+        except Exception as exc:
+            raise ValueError("development prompt cannot be authenticated") from exc
+    if not isinstance(system_prompt, str) or not isinstance(declared_digest, str):
+        raise ValueError("development prompt must define SYSTEM_PROMPT and PROMPT_SHA256")
+    computed_digest = hashlib.sha256(system_prompt.encode("utf-8")).hexdigest()
+    if declared_digest != computed_digest:
+        raise ValueError("development prompt declared digest differs from its computed digest")
+    prepared = dict(source_files)
+    prepared["agent/agent-manifest.json"] = captured_execution._development_manifest_bytes(
+        manifest_raw, computed_digest,
+    )
+    return prepared
+
+
 def _source_run_snapshot(source_run: Path) -> tuple[dict[str, bytes], dict[str, bytes], dict[str, Any]]:
     """Authenticate a complete or still-owned Phase17 execution snapshot."""
 
@@ -553,6 +593,8 @@ def _snapshot_experiment(
         source_origin: dict[str, Any] = {"kind": "workspace", "directory": str(source_directory or AGENT_DIRECTORY)}
         if source_run is not None:
             source, dependencies, source_origin = _source_run_snapshot(source_run)
+        else:
+            source = _prepare_development_source(source)
         tooling: dict[str, bytes] = {}
         for name in TOOLING_FILES:
             tooling[f"agent/{name}"] = (AGENT_DIRECTORY / name).read_bytes()

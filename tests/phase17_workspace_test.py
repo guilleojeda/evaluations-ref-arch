@@ -164,6 +164,8 @@ class S3WorkspaceAcceptance(unittest.TestCase):
         first_model = ScriptedBedrock(report, self.case["task"])
         editable_agent = self._editable_agent()
         prompt_path = editable_agent / "prompt.py"
+        manifest_path = editable_agent / "agent-manifest.json"
+        editor_manifest_before = manifest_path.read_bytes()
         marker = b"S3_SAVED_PROMPT"
         late_marker = b"S3_LATER_EDITOR_SAVE"
         edited_prompt = prompt_path.read_bytes().replace(
@@ -193,17 +195,21 @@ class S3WorkspaceAcceptance(unittest.TestCase):
         self.assertEqual(len(edited_during_launch), 1)
         self.assertIn(late_marker, prompt_path.read_bytes())
         self.assertEqual((first_dir / "source/agent/prompt.py").read_bytes(), edited_prompt)
+        self.assertEqual(manifest_path.read_bytes(), editor_manifest_before)
 
         prompt_path.write_bytes(edited_prompt)
         second_model = ScriptedBedrock(report, self.case["task"])
         second_dir = self._launch_repaired(editable_agent, second_model)
         before, after = self._show(first_dir), self._show(second_dir)
-        for shown, model in ((before, first_model), (after, second_model)):
+        for shown, model, run_dir in ((before, first_model, first_dir), (after, second_model, second_dir)):
             self.assertEqual(shown["status"], "complete")
             self.assertEqual(shown["identity"]["candidateId"], "repaired")
             self.assertEqual(shown["identity"]["originatingRunId"], self.case["evidence"]["originatingRunId"])
             self.assertEqual(shown["identity"]["promptSha256"], expected_prompt_module.PROMPT_SHA256)
             self.assertEqual(shown["manifest"]["sourceFiles"]["agent/prompt.py"], hashlib.sha256(edited_prompt).hexdigest())
+            captured_manifest = json.loads((run_dir / "source/agent/agent-manifest.json").read_bytes())
+            self.assertEqual(captured_manifest["promptSha256"], expected_prompt_module.PROMPT_SHA256)
+            self.assertNotEqual(captured_manifest["promptSha256"], json.loads(editor_manifest_before)["promptSha256"])
             self.assertEqual(shown["report"]["recommendation"]["value"], "75")
             self.assertTrue(model.requests)
             for request in model.requests:
