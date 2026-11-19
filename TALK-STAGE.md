@@ -18,15 +18,20 @@ The branch must be `demo-deploy`, clean, at the verified qualified revision. A d
 
 ## Make the change and inspect the real gate
 
-Edit `agent/prompt.py` in this workspace. Restore the rehearsed memory-first recommendation for denied Inventory reads. For a scripted rehearsal that needs the exact known change, start with a clean prompt and apply the reverse of the reviewed repair:
+Edit `agent/prompt.py` in this workspace. Restore the rehearsed memory-first recommendation for denied Inventory reads. For a scripted rehearsal that needs the exact known change, start with a clean tracked prompt and restore only that path from the generation's frozen faulty S2 source. Verify that the maintained checkpoint map still resolves S2 to the exact frozen tag before changing the worktree:
 
 ```sh
-git diff --exit-code HEAD -- agent/prompt.py &&
-  git apply --reverse --check agent/prompts/s3-repair.patch &&
-  git apply --reverse agent/prompts/s3-repair.patch
+checkpoint_map="${PHASE22_CHECKPOINTS:?set the maintained checkpoint map}"
+faulty_s2_ref='refs/tags/talk/v1/S2'
+expected_s2_commit="$(python3 -c 'import json,sys; source=json.load(open(sys.argv[1], encoding="utf-8"))["checkpoints"]["S2"]; assert source["tag"] == "talk/v1/S2"; print(source["commit"])' "$checkpoint_map")"
+test "$(git rev-parse --verify "${faulty_s2_ref}^{commit}")" = "$expected_s2_commit" &&
+  git cat-file -e "${faulty_s2_ref}^{commit}:agent/prompt.py" &&
+  git diff --quiet --cached -- agent/prompt.py &&
+  git diff --quiet -- agent/prompt.py &&
+  git restore --source=refs/tags/talk/v1/S2 --worktree -- agent/prompt.py
 ```
 
-Show the full prompt diff before committing. Confirm the suite pointer and all other inputs are unchanged. A push to this branch starts the real workflow.
+The two quiet diff checks separately reject staged and unstaged prompt changes, including opposite changes whose net diff against `HEAD` is empty. `git restore --worktree` leaves the index untouched. The command does not replace the S5 branch, alter any other path, or rewrite the historical `agent/prompts/s3-repair.patch`, which remains the reviewed S3 input. Show the full prompt diff before committing. Confirm the suite pointer and all other inputs are unchanged. A push to this branch starts the real workflow.
 
 ```sh
 git diff --name-only HEAD
