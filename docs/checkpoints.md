@@ -47,17 +47,26 @@ conflicts with its remote counterpart, stop and inspect the discrepancy. A clean
 clone gives an independent comparison.
 
 ```sh
-git fetch origin 'refs/tags/talk/v1/*:refs/tags/talk/v1/*'
+export PHASE22_GENERATION="${PHASE22_GENERATION:?set the map generation, for example talk/v2}"
+generation="$PHASE22_GENERATION"
+git fetch origin "refs/tags/${generation}/*:refs/tags/${generation}/*"
 python3 - <<'PY'
 import json
+import os
 import subprocess
 from pathlib import Path
 
-stages = json.loads(Path("talk/checkpoints.json").read_text())["checkpoints"]
+document = json.loads(Path("talk/checkpoints.json").read_text())
+generation = os.environ["PHASE22_GENERATION"]
+if document.get("generation") != generation:
+    raise SystemExit("the map generation does not match PHASE22_GENERATION")
+stages = document["checkpoints"]
 if set(stages) != {f"S{n}" for n in range(6)}:
     raise SystemExit("The map must identify all six stages.")
 for stage, source in sorted(stages.items()):
     ref = "refs/tags/" + source["tag"]
+    if source["tag"] != f"{generation}/{stage}":
+        raise SystemExit(f"{stage}: tag is outside the selected generation")
     def git(*args):
         return subprocess.check_output(["git", *args], text=True).strip()
     actual = git("rev-parse", "--verify", f"{ref}^{{commit}}")
@@ -67,6 +76,13 @@ for stage, source in sorted(stages.items()):
     print(stage, source["tag"], actual)
 PY
 ```
+
+The corrected checkpoint set uses `talk/v2`; `talk/v1` remains immutable
+historical evidence. The v2 map keeps S0, S1, S2, S4 and the qualified S5
+source identities unchanged and replaces only the S3 snapshot whose repaired
+capture had a stale development manifest. The S5 source keeps its historical
+v1-S2 regression helper; the v2 S2 tag must therefore be byte-equivalent to
+the v1 S2 peeled commit before publishing the new generation.
 
 ## Maintain a generation
 
