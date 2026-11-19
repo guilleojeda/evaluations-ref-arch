@@ -542,18 +542,77 @@ Git bases/differences, selected untracked files, reviewed inputs/captures,
 result records and CI references. Do not archive a whole worktree, Git
 metadata, credentials, virtual environments, `node_modules`, or build caches.
 The archive command checks selected content digests and preserves unfinished
-records as unfinished; it never relaunches work.
+records as unfinished; it never relaunches work. The inventory and archive are
+both required restore inputs: an archive digest by itself is not a portable
+session receipt.
 
-```sh
+The session index is included as a private file by the command below. Add each
+reviewed evidence file with a repeated `--include-path`; for example,
+`evidence/s5/push.json` is one possible record. A reviewed untracked file such
+as `S0/talk/presenter/s0-intentional-untracked-note.md` may be selected with
+`--selected-untracked`, but neither example is mandatory; omit it when the
+session has no such file. `PHASE22_REVIEWED_RUN_DIR` is also optional for a
+session interrupted before a model run; when set, it must name a non-empty
+reviewed directory or the command stops. Never broaden `--selected-untracked`
+or `--include-path` to a whole worktree.
+
+```bash
+private_root="${PHASE22_PRIVATE_ROOT:?set a private directory outside the checkout}"
+session_id="${PHASE22_SESSION_ID:?set the distinct performance session ID}"
+private_inventory="${PHASE22_PRIVATE_INVENTORY:-$private_root/session.inventory.json}"
+private_archive="${PHASE22_PRIVATE_ARCHIVE:-$private_root/session.tar.gz}"
+# Select only reviewed paths from the session allowlist; never pass a whole tree.
+# The session index is always included. When a reviewed run directory exists,
+# add each regular file below it; this keeps source/tool snapshots and scores
+# together without transcribing a large path list. Do not select caches,
+# credentials, or symlinks. Add --selected-untracked separately for a reviewed
+# untracked file when one exists; omit it when the session has no such file.
+umask 077
+mkdir -p "$private_root"
+chmod 700 "$private_root"
+
+include_args=(--include-path session-index.json)
+if test -n "${PHASE22_REVIEWED_RUN_DIR:-}"; then
+  reviewed_run="$PHASE22_REVIEWED_RUN_DIR"
+  case "$reviewed_run" in
+    /*|../*|*/../*)
+      printf '%s\n' 'reviewed run directory must be session-relative; stop.' >&2
+      exit 2
+      ;;
+  esac
+  test -d "$session_root/$reviewed_run" &&
+    test ! -L "$session_root/$reviewed_run" || {
+    printf '%s\n' 'reviewed run directory is unavailable; stop.' >&2
+    exit 2
+  }
+  while IFS= read -r -d '' file; do
+    relative="${file#"$session_root"/}"
+    include_args+=(--include-path "$relative")
+  done < <(
+    find "$session_root/$reviewed_run" -type f \
+      ! -path '*/.venv/*' ! -path '*/node_modules/*' \
+      ! -path '*/__pycache__/*' ! -path '*/.cache/*' \
+      ! -path '*/.pytest_cache/*' ! -path '*/.mypy_cache/*' \
+      ! -path '*/build/*' ! -path '*/dist/*' -print0
+  )
+  test "${#include_args[@]}" -gt 2 || {
+    printf '%s\n' 'reviewed run directory has no regular files; stop.' >&2
+    exit 2
+  }
+fi
+python3 scripts/talk-session.py inventory \
+  --directory "$session_root" --session-id "$session_id" \
+  --output "$private_inventory" "${include_args[@]}"
 python3 scripts/talk-session.py save \
   --directory "$session_root" \
   --archive "$private_archive" \
   --inventory "$private_inventory"
-
-python3 scripts/talk-session.py restore \
-  --directory "$replacement_session_root" \
-  --archive "$private_archive" \
-  --inventory "$private_inventory"
+archive_sha256="$(sha256sum "$private_archive" | awk '{print $1}')"
+inventory_sha256="$(sha256sum "$private_inventory" | awk '{print $1}')"
+# save writes the required archive sidecar; inventory is checked directly
+# against its retained SHA-256 in the upload receipt.
+(cd "$(dirname "$private_archive")" && \
+  sha256sum -c "$(basename "$private_archive").sha256")
 ```
 
 Restore only into verified clean stage bases prepared first. Preserve unrelated
@@ -564,66 +623,120 @@ checks the exact saved HEAD before applying the selected file overlay; do not
 cherry-pick the commit again. Reopening a session shows saved status; it does
 not start an evaluation, checkout, alarm, deployment, or reset.
 
-For historical session A recovery, use a fresh clone and its recorded peeled
-base for every stage. Check out A's former S5 at its recorded commit in a
-**detached** worktree; never attach the current `demo-deploy` branch or move its
-tip while recovering A. Run the archive restore only after the clean bases have
-been checked; it imports any recorded stage-local commit bundle and applies the
-selected file overlay:
-
-```sh
-git clone "$REPOSITORY_URL" "$A_CLONE"
-git -C "$A_CLONE" fetch --tags origin
-mkdir -p "$A_ROOT"
-git -C "$A_CLONE" worktree add --detach "$A_ROOT/S0" "$A_S0_BASE"
-git -C "$A_CLONE" worktree add --detach "$A_ROOT/S1" "$A_S1_BASE"
-git -C "$A_CLONE" worktree add --detach "$A_ROOT/S2" "$A_S2_BASE"
-git -C "$A_CLONE" worktree add --detach "$A_ROOT/S3" "$A_S3_BASE"
-git -C "$A_CLONE" worktree add --detach "$A_ROOT/S4" "$A_S4_BASE"
-git -C "$A_CLONE" worktree add --detach "$A_ROOT/S5" "$A_S5_COMMIT"
-# Apply selected A files only after all six clean recorded bases exist:
-(
-  cd "$A_CLONE"
-  python3 scripts/talk-session.py restore \
-    --directory "$A_ROOT" --archive "$private_archive" --inventory "$private_inventory"
-)
-git -C "$A_ROOT/S5" status --short
-git -C "$A_ROOT/S5" log --oneline -2
-```
-
-Historical A is evidence recovery only. It must not be presented as the
-currently qualified release or used to overwrite a newer live `demo-deploy`.
-After A is preserved and released, normal preparation for session B alone may
-check out the current qualified `demo-deploy` branch and verify its new tip.
-
 For durable storage, use the existing versioned private asset bucket from the
 operator's receipt under a unique `talk-sessions/<session-id>/` prefix.
 Upload/download is an operator action after local save/restore has passed, not
-part of preparation:
+part of preparation. Upload both restore inputs, retain separate object
+versions and trusted hashes, and do not use an unpinned latest object:
 
 ```sh
 archive_sha256="$(sha256sum "$private_archive" | awk '{print $1}')"
+inventory_sha256="$(sha256sum "$private_inventory" | awk '{print $1}')"
+asset_bucket="${PHASE22_ASSET_BUCKET:?set the versioned asset bucket}"
 archive_key="talk-sessions/${session_id}/$(basename "$private_archive")"
+inventory_key="talk-sessions/${session_id}/$(basename "$private_inventory")"
 aws s3api put-object --profile "$AWS_PROFILE" --region "$AWS_REGION" \
-  --bucket "${PHASE22_ASSET_BUCKET:?set the versioned asset bucket}" \
+  --bucket "$asset_bucket" \
   --key "$archive_key" --body "$private_archive" \
   --metadata "sha256=$archive_sha256,session-id=$session_id"
+aws s3api put-object --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --bucket "$asset_bucket" \
+  --key "$inventory_key" --body "$private_inventory" \
+  --metadata "sha256=$inventory_sha256,session-id=$session_id"
+archive_head="$private_root/archive-head.json"
+inventory_head="$private_root/inventory-head.json"
 aws s3api head-object --profile "$AWS_PROFILE" --region "$AWS_REGION" \
-  --bucket "$PHASE22_ASSET_BUCKET" --key "$archive_key" \
+  --bucket "$asset_bucket" --key "$archive_key" \
   --query '{VersionId:VersionId,Size:ContentLength,Metadata:Metadata,LastModified:LastModified}' \
-  --output json
+  --output json > "$archive_head"
+aws s3api head-object --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --bucket "$asset_bucket" --key "$inventory_key" \
+  --query '{VersionId:VersionId,Size:ContentLength,Metadata:Metadata,LastModified:LastModified}' \
+  --output json > "$inventory_head"
+archive_version_id="$(jq -er '.VersionId' "$archive_head")"
+inventory_version_id="$(jq -er '.VersionId' "$inventory_head")"
+private_receipt="${PHASE22_SESSION_S3_RECEIPT:-$private_root/session.s3-receipt.json}"
+jq -n \
+  --arg session_id "$session_id" --arg bucket "$asset_bucket" \
+  --arg archive_key "$archive_key" --arg archive_version "$archive_version_id" \
+  --arg archive_sha256 "$archive_sha256" \
+  --arg inventory_key "$inventory_key" --arg inventory_version "$inventory_version_id" \
+  --arg inventory_sha256 "$inventory_sha256" \
+  '{schemaVersion: 1, sessionId: $session_id, bucket: $bucket,
+    archive: {key: $archive_key, versionId: $archive_version, sha256: $archive_sha256},
+    inventory: {key: $inventory_key, versionId: $inventory_version, sha256: $inventory_sha256}}' \
+  > "$private_receipt"
+chmod 600 "$private_receipt"
 ```
 
-Record the returned `VersionId`, SHA-256, object key, UTC time and
-`aws sts get-caller-identity` result. On a replacement Codespace, download the
-recorded version explicitly, then verify the local SHA-256 before restore:
+Record the two returned VersionId values, both SHA-256 values, object keys,
+UTC time and aws sts get-caller-identity result in the private receipt. On a
+replacement Codespace, read that retained receipt, download both exact object
+versions, and verify each against its trusted hash before writing/verifying the
+archive sidecar and restoring:
 
 ```sh
+replacement_root="${PHASE22_SESSION_REPLACEMENT_ROOT:?set a new private directory}"
+replacement_assets="$replacement_root/assets"
+receipt="${PHASE22_SESSION_S3_RECEIPT:?path to the retained private S3 receipt}"
+asset_bucket="$(jq -er '.bucket' "$receipt")"
+archive_key="$(jq -er '.archive.key' "$receipt")"
+archive_version_id="$(jq -er '.archive.versionId' "$receipt")"
+archive_sha256="$(jq -er '.archive.sha256' "$receipt")"
+inventory_key="$(jq -er '.inventory.key' "$receipt")"
+inventory_version_id="$(jq -er '.inventory.versionId' "$receipt")"
+inventory_sha256="$(jq -er '.inventory.sha256' "$receipt")"
+mkdir -p "$replacement_assets"
+replacement_archive="$replacement_assets/$(basename "$archive_key")"
+replacement_inventory="$replacement_assets/$(basename "$inventory_key")"
 aws s3api get-object --profile "$AWS_PROFILE" --region "$AWS_REGION" \
-  --bucket "$PHASE22_ASSET_BUCKET" \
-  --key "$archive_key" --version-id "$version_id" "$private_archive"
-sha256sum "$private_archive"
+  --bucket "$asset_bucket" --key "$archive_key" \
+  --version-id "$archive_version_id" "$replacement_archive" >/dev/null
+aws s3api get-object --profile "$AWS_PROFILE" --region "$AWS_REGION" \
+  --bucket "$asset_bucket" --key "$inventory_key" \
+  --version-id "$inventory_version_id" "$replacement_inventory" >/dev/null
+test "$(sha256sum "$replacement_archive" | awk '{print $1}')" = "$archive_sha256"
+test "$(sha256sum "$replacement_inventory" | awk '{print $1}')" = "$inventory_sha256"
+printf '%s  %s\n' "$archive_sha256" "$(basename "$replacement_archive")" \
+  > "$replacement_archive.sha256"
+(cd "$replacement_assets" && sha256sum -c "$(basename "$replacement_archive").sha256")
 ```
+
+Only after those exact-version readbacks and archive-sidecar check pass, use a
+fresh reviewed clone to prepare every detached A base—including S5—from the
+inventory, then restore the selected files. A must never attach or move the
+current demo-deploy branch:
+
+```sh
+A_CLONE="${PHASE22_SESSION_REPLACEMENT_REPOSITORY:?path to the reviewed clean replacement clone}"
+A_ROOT="${PHASE22_SESSION_REPLACEMENT_STAGES:?new directory for detached A stage worktrees}"
+test -d "$A_CLONE" || { printf '%s\n' 'replacement clone is unavailable; stop.' >&2; exit 2; }
+git -C "$A_CLONE" fetch --tags origin
+test -z "$(git -C "$A_CLONE" status --porcelain)" || {
+  printf '%s\n' 'replacement clone is dirty; stop before preparing A.' >&2
+  exit 2
+}
+mkdir -p "$A_ROOT"
+for stage in S0 S1 S2 S3 S4 S5; do
+  stage_base="$(jq -er --arg stage "$stage" \
+    '.sourceBase.commits[$stage]' "$replacement_inventory")"
+  git -C "$A_CLONE" worktree add --detach "$A_ROOT/$stage" "$stage_base"
+done
+test -z "$(git -C "$A_ROOT/S5" branch --show-current)"
+(
+  cd "$A_CLONE"
+  python3 scripts/talk-session.py restore \
+    --directory "$A_ROOT" \
+    --archive "$replacement_archive" \
+    --inventory "$replacement_inventory"
+)
+```
+
+Historical A is evidence recovery only and must not be presented as the
+currently qualified release or used to overwrite a newer live demo-deploy.
+Keep all six A worktrees detached. Only after A's restore and inspection are
+complete may separate session B preparation check out and own the current
+qualified demo-deploy branch and verify its new tip.
 
 Use the browser console or the CLI only with the scoped operator profile. Keep
 the private archive, version receipts and credentials off the public repo.

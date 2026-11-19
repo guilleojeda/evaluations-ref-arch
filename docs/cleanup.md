@@ -58,38 +58,47 @@ deleted; verify copies, digests and replacement-browser access. Remove
 credentials from material intended for sharing and do not rewrite reports or
 outcomes to match the intended story.
 
-```sh
-python3 scripts/talk-session.py status --directory "$session_root" --stage S3
-python3 scripts/talk-session.py save \
-  --directory "$session_root" \
-  --archive "$private_archive" \
-  --inventory "$private_inventory"
-sha256sum "$private_archive"
-```
+Before releasing the Codespace, run the complete [save and recover sequence](preparation.md#6-save-and-recover-a-session).
+That sequence uses the normal inventory CLI with only reviewed allowlisted
+session-index, selected-untracked and record files, then saves both the
+inventory and archive
+and verifies the archive sidecar. Inventory is verified directly against its
+retained SHA-256; do not invent a second required sidecar. Do not replace the
+sequence with an archive-only save or an archive digest; both files are
+required restore inputs.
 
-Upload the resulting archive only through the versioned private asset bucket
-and `talk-sessions/<session-id>/` prefix named by the operator's receipt.
-Record the returned S3 `VersionId`, object SHA-256/metadata, key, UTC time and
+Upload both files through the versioned private asset bucket and
+talk-sessions/<session-id>/ prefix named by the operator's receipt. Record a
+separate S3 VersionId and SHA-256/metadata for each object, plus UTC time and
 operator identity. The upload/download receipt is separate from the
-content-addressed evaluation inputs in the evidence bucket. See the
-[versioned readback commands](preparation.md#6-save-and-recover-a-session).
+content-addressed evaluation inputs in the evidence bucket. Use the exact
+versioned readback commands in [preparation](preparation.md#6-save-and-recover-a-session).
 
-On a replacement Codespace, prepare clean stage bases first and then restore
-the recorded archive version:
+On a replacement Codespace, read that retained receipt and use the exact
+archive and inventory object versions. Verify each downloaded file against its
+trusted receipt hash, write and verify the expected archive sidecar, and
+prepare all six clean A bases—including detached S5—from
+inventory.sourceBase.commits before restoring:
 
 ```sh
-python3 scripts/talk-session.py restore \
-  --directory "$replacement_session_root" \
-  --archive "$private_archive" \
-  --inventory "$private_inventory"
-python3 scripts/talk-session.py status \
-  --directory "$replacement_session_root" --stage S3
+replacement_repository="${PHASE22_SESSION_REPLACEMENT_REPOSITORY:?path to the reviewed replacement clone}"
+(
+  cd "$replacement_repository"
+  python3 scripts/talk-session.py restore \
+    --directory "$replacement_session_root" \
+    --archive "$replacement_archive" \
+    --inventory "$replacement_inventory"
+  python3 scripts/talk-session.py status \
+    --directory "$replacement_session_root" --stage S3
+)
 ```
 
 Verify the restored files' original digests, each stage's base commit and diff,
 the two run identities and the fact that an unfinished run remains unfinished.
 Do not silently rerun work during restore. Keep dirty or conflicting destination
-edits and stop rather than overwriting them.
+edits and stop rather than overwriting them. Keep every A worktree detached;
+only a separate session B may later own the current qualified demo-deploy
+branch.
 
 ## 3. Repair `demo-deploy` after the regression
 
