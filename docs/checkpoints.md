@@ -78,11 +78,13 @@ PY
 ```
 
 The corrected checkpoint set uses `talk/v2`; `talk/v1` remains immutable
-historical evidence. The v2 map keeps S0, S1, S2, S4 and the qualified S5
-source identities unchanged and replaces only the S3 snapshot whose repaired
-capture had a stale development manifest. The S5 source keeps its historical
-v1-S2 regression helper; the v2 S2 tag must therefore be byte-equivalent to
-the v1 S2 peeled commit before publishing the new generation.
+historical evidence. The v2 map keeps S0, S1, S2 and the qualified S5 source
+identities unchanged, and carries the corrected local-capture runner through
+the repaired S3 and S4 checkpoints. S3 fixes the stale development manifest
+binding; S4 uses the same runner so its candidate baseline remains comparable.
+The S5 source keeps its historical v1-S2 regression helper; the v2 S2 tag must
+therefore be byte-equivalent to the v1 S2 peeled commit before publishing the
+new generation.
 
 ## Maintain a generation
 
