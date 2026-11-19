@@ -214,9 +214,9 @@ report = {
     "evidence": [{
         "source": "logs",
         "resource": "inventory",
-        "windowStart": case["incidentWindow"]["start"],
-        "windowEnd": case["referenceTime"],
-        "observedAt": case["referenceTime"],
+        "windowStart": case["task"]["incidentWindow"]["start"],
+        "windowEnd": case["task"]["referenceTime"],
+        "observedAt": case["task"]["referenceTime"],
         "finding": "Synthetic packaged child observation.",
     }],
     "uncertainties": ["Synthetic package-process evidence is intentionally bounded."],
@@ -240,7 +240,7 @@ class ScriptedBedrock:
         else:
             scope = next(self.reads, None)
             name = "search_logs" if scope is not None else None
-            arguments = {**(scope or {}), "start": case["incidentWindow"]["start"], "end": case["referenceTime"]}
+            arguments = {**(scope or {}), "start": case["task"]["incidentWindow"]["start"], "end": case["task"]["referenceTime"]}
         events = [{"messageStart": {"role": "assistant"}}]
         if name is None:
             events.append({"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "I inspected the packaged evidence."}}})
