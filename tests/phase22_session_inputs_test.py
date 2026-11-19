@@ -27,6 +27,7 @@ FIXED_CASE_IDS = [
     "phase14.denied-inventory-read.prepared",
     "phase14.recovery-with-old-alert.prepared",
 ]
+CURRENT_OVERLOAD_CASE_ID = "phase22.inventory-capacity-overload.current-fixture"
 AUDIENCE_CASE_ID = "phase14.denied-inventory-read.session-draft"
 
 
@@ -50,6 +51,8 @@ class SessionInputFixture:
             case_id: chr(ord("d") + index) * 64
             for index, case_id in enumerate(FIXED_CASE_IDS)
         }
+        self.current_case_sha = "1" * 64
+        self.current_bundle_sha = "2" * 64
         bundle_value = {"schemaVersion": 1, "bundle": "fixture-denial"}
         self.audience_bundle_sha = hashlib.sha256((json.dumps(bundle_value, sort_keys=True) + "\n").encode("utf-8")).hexdigest()
         self.fixed_bundle_sha[FIXED_CASE_IDS[1]] = self.audience_bundle_sha
@@ -137,6 +140,7 @@ class SessionInputFixture:
             "status": "recorded-active",
         }
         evaluator_bytes = (json.dumps(evaluator, sort_keys=True) + "\n").encode()
+        self.gate_evaluator = evaluator
         # The selected gate archive, rather than s2/evaluator.json, is the
         # source of truth for the evaluator identity used by later stages.
         self.evaluator_sha = hashlib.sha256(evaluator_bytes).hexdigest()
@@ -147,20 +151,39 @@ class SessionInputFixture:
                 "bundleSha256": self.fixed_bundle_sha[case_id],
                 "case": f"prepared/{case_id}.json",
                 "bundle": f"prepared/{case_id}.tar.gz",
+                "label": {
+                    FIXED_CASE_IDS[0]: "capacity",
+                    FIXED_CASE_IDS[1]: "denial",
+                    FIXED_CASE_IDS[2]: "recovery",
+                }[case_id],
                 "referenceTime": "2026-11-15T00:00:00.000Z",
             }
             for case_id in FIXED_CASE_IDS
         ]
+        self.fixed_rows = fixed_rows
+        current_row = {
+            "caseId": CURRENT_OVERLOAD_CASE_ID,
+            "caseSha256": self.current_case_sha,
+            "bundleSha256": self.current_bundle_sha,
+            "case": "prepared/current-capacity.frozen.json",
+            "bundle": "prepared/current-capacity16.json",
+            "label": "capacity",
+            "acquisitionId": "fixture-current-capacity",
+            "provenance": "Approved Phase 22 overload-current fixture",
+            "referenceTime": "2026-11-18T00:00:00.000Z",
+        }
         audience_row = {
             "caseId": AUDIENCE_CASE_ID,
             "caseSha256": self.audience_case_sha,
             "bundleSha256": self.audience_bundle_sha,
             "case": "audience/denial-session.frozen.json",
             "bundle": "audience/denial-session.bundle.tar.gz",
+            "label": "audience-denial",
             "referenceTime": "2026-11-16T03:02:30.000Z",
         }
+        self.audience_row = audience_row
         carried_sha = self._write_archive(
-            "gate/staging.tar.gz", fixed_rows + [audience_row], evaluator
+            "gate/staging.tar.gz", [current_row, fixed_rows[1], fixed_rows[2], audience_row], evaluator
         )
         stock_sha = self._write_archive("gate/stock-staging.tar.gz", fixed_rows, evaluator)
         self._write(
@@ -173,7 +196,7 @@ class SessionInputFixture:
                 "sha256": carried_sha,
                 "suiteSha256": self.carried_suite_sha,
                 "evaluatorSha256": self.evaluator_sha,
-                "caseIds": FIXED_CASE_IDS + [AUDIENCE_CASE_ID],
+                "caseIds": [CURRENT_OVERLOAD_CASE_ID, FIXED_CASE_IDS[1], FIXED_CASE_IDS[2], AUDIENCE_CASE_ID],
             },
         )
         self._write(
@@ -191,6 +214,24 @@ class SessionInputFixture:
         )
         self.carried_archive_sha = carried_sha
         self.stock_archive_sha = stock_sha
+
+    def use_legacy_carried_gate(self) -> None:
+        """Switch this isolated fixture to the pre-replacement carried roster."""
+        carried_sha = self._write_archive(
+            "gate/staging.tar.gz", self.fixed_rows + [self.audience_row], self.gate_evaluator
+        )
+        pointer_path = self.root / "gate/qualification-input.json"
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+        pointer["sha256"] = carried_sha
+        pointer["s3Key"] = f"agent-evaluation/phase18/inputs/{carried_sha}/staging.tar.gz"
+        pointer["caseIds"] = FIXED_CASE_IDS + [AUDIENCE_CASE_ID]
+        pointer_path.write_text(json.dumps(pointer) + "\n", encoding="utf-8")
+        gate = self.roster["gate"]
+        gate["archiveSha256"] = carried_sha  # type: ignore[index]
+        gate["caseIds"] = FIXED_CASE_IDS + [AUDIENCE_CASE_ID]  # type: ignore[index]
+        gate.pop("currentOverloadCaseId", None)  # type: ignore[union-attr]
+        self.roster["selectedDigests"]["gate/staging.tar.gz"] = carried_sha  # type: ignore[index]
+        self.roster_path.write_text(json.dumps(self.roster, indent=2) + "\n", encoding="utf-8")
 
     def _write_roster(self) -> None:
         stage_inputs = {
@@ -233,7 +274,8 @@ class SessionInputFixture:
                 "archiveSha256": self.carried_archive_sha,
                 "suiteSha256": self.carried_suite_sha,
                 "fixedDenialCaseId": FIXED_CASE_IDS[1],
-                "caseIds": FIXED_CASE_IDS + [AUDIENCE_CASE_ID],
+                "currentOverloadCaseId": CURRENT_OVERLOAD_CASE_ID,
+                "caseIds": [CURRENT_OVERLOAD_CASE_ID, FIXED_CASE_IDS[1], FIXED_CASE_IDS[2], AUDIENCE_CASE_ID],
             },
             "stages": {
                 stage: {
@@ -277,7 +319,7 @@ class SessionInputFixture:
         pointer_sha = "3" * 64
         selected_suite_sha = self.stock_suite_sha if suite == "stock" else self.carried_suite_sha
         selected_archive_sha = self.stock_archive_sha if suite == "stock" else self.carried_archive_sha
-        selected_case_ids = FIXED_CASE_IDS if suite == "stock" else FIXED_CASE_IDS + [AUDIENCE_CASE_ID]
+        selected_case_ids = FIXED_CASE_IDS if suite == "stock" else [CURRENT_OVERLOAD_CASE_ID, FIXED_CASE_IDS[1], FIXED_CASE_IDS[2], AUDIENCE_CASE_ID]
         publication_tuple = {
             "endpointName": "fixture-endpoint",
             "endpointArn": "arn:fixture:endpoint",
@@ -519,6 +561,63 @@ class SessionInputCommandTests(unittest.TestCase):
         result = self.run_cli(stage="S3", suite="carried")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("audience case identity differs", result.stderr)
+
+    def test_carried_gate_rejects_unsupported_overload_substitution(self) -> None:
+        self.fixture.roster["gate"]["currentOverloadCaseId"] = FIXED_CASE_IDS[1]  # type: ignore[index]
+        self.fixture.roster_path.write_text(json.dumps(self.fixture.roster, indent=2) + "\n", encoding="utf-8")
+        result = self.run_cli(stage="S4", suite="carried")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("authenticated capacity case", result.stderr)
+
+    def test_carried_gate_rejects_fixed_id_disguised_as_capacity(self) -> None:
+        source = self.fixture.root / "gate/staging.tar.gz"
+        replacement = self.fixture.root / "gate/staging-disguised-denial.tar.gz"
+        with tarfile.open(source, "r:gz") as incoming, tarfile.open(replacement, "w:gz") as outgoing:
+            for member in incoming.getmembers():
+                data = incoming.extractfile(member).read() if member.isfile() else None
+                if member.name == "staging/manifest.json":
+                    manifest = json.loads(data)
+                    for row in manifest["cases"]:
+                        if row["caseId"] == CURRENT_OVERLOAD_CASE_ID:
+                            row["label"] = "other"
+                        elif row["caseId"] == FIXED_CASE_IDS[1]:
+                            row["label"] = "capacity"
+                    data = json.dumps(manifest, sort_keys=True).encode()
+                    member.size = len(data)
+                if data is not None:
+                    outgoing.addfile(member, io.BytesIO(data))
+        replacement_sha = sha256(replacement)
+        source.unlink()
+        replacement.rename(source)
+        self.fixture.roster["gate"]["archiveSha256"] = replacement_sha  # type: ignore[index]
+        self.fixture.roster["gate"]["currentOverloadCaseId"] = FIXED_CASE_IDS[1]  # type: ignore[index]
+        pointer = json.loads((self.fixture.root / "gate/qualification-input.json").read_text(encoding="utf-8"))
+        pointer["sha256"] = replacement_sha
+        pointer["s3Key"] = f"agent-evaluation/phase18/inputs/{replacement_sha}/staging.tar.gz"
+        (self.fixture.root / "gate/qualification-input.json").write_text(json.dumps(pointer) + "\n", encoding="utf-8")
+        self.fixture.roster["selectedDigests"]["gate/staging.tar.gz"] = replacement_sha  # type: ignore[index]
+        self.fixture.roster_path.write_text(json.dumps(self.fixture.roster, indent=2) + "\n", encoding="utf-8")
+        result = self.run_cli(stage="S4", suite="carried")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("case IDs do not match", result.stderr)
+
+    def test_legacy_carried_gate_defaults_to_historical_capacity_case(self) -> None:
+        self.fixture.use_legacy_carried_gate()
+        result = self.run_cli(stage="S4", suite="carried")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.output_json["stages"]["S4"]["caseIds"],  # type: ignore[attr-defined]
+            FIXED_CASE_IDS + [AUDIENCE_CASE_ID],
+        )
+
+    def test_carried_full_suite_uses_current_overload_and_preserves_fixed_cases(self) -> None:
+        self.fixture.write_binding(self.fixture.binding("carried"))
+        result = self.run_cli(suite="carried", binding=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(
+            result.output_json["stages"]["S5"]["caseIds"],  # type: ignore[attr-defined]
+            [CURRENT_OVERLOAD_CASE_ID, FIXED_CASE_IDS[1], FIXED_CASE_IDS[2], AUDIENCE_CASE_ID],
+        )
 
     def test_stock_all_stage_keeps_s1_audience_identity_outside_stock_gate_rows(self) -> None:
         self.fixture.write_binding()
