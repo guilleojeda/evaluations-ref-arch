@@ -695,6 +695,11 @@ def _snapshot_experiment(
             }
         if source_run is not None:
             source, dependencies, source_origin = _source_run_snapshot(source_run)
+        elif runtime_origin is None:
+            # Direct S4 development captures use the same editor-safe
+            # manifest generation as S3.  Authenticated source runs and
+            # Runtime ZIPs retain their already-verified bytes exactly.
+            source = captured_execution._prepare_development_source(source)
         tooling: dict[str, bytes] = {}
         for name in TOOLING_FILES:
             tooling[f"agent/{name}"] = (AGENT_DIRECTORY / name).read_bytes()

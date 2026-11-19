@@ -93,6 +93,11 @@ class PackageExecutionIsolationTests(unittest.TestCase):
             expected = root / "child-run"
             with (
                 patch.object(captured_execution, "_verify_exporter_setup", return_value=object()),
+                patch.object(
+                    captured_execution,
+                    "_prepare_development_source",
+                    side_effect=AssertionError("ZIP source must remain unchanged"),
+                ),
                 patch.object(captured_execution, "_snapshot_imports", side_effect=AssertionError("parent eviction")),
                 patch.object(captured_execution, "_run_packaged_case_process", return_value=expected) as child,
             ):

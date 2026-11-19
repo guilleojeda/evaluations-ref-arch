@@ -1,10 +1,10 @@
 """Acceptance tests for the editable S3 candidate workflow.
 
 These tests use the real captured-evidence runner and a scripted Bedrock
-transport. They do not call AWS. The repaired-candidate test deliberately
-leaves ``agent-manifest.json`` at its development value while changing the
-saved prompt, because S3 must snapshot the editable prompt itself and keep
-hosted-package validation separate.
+transport. They do not call AWS. The repaired-candidate test leaves
+``agent-manifest.json`` at its development value while changing the saved
+prompt. S3 derives a matching manifest only in the immutable captured
+snapshot; hosted-package validation remains separate.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from phase16_baseline_test import (
     report_for,
     write_bundle,
 )
-from support.prompt_fixture import materialize_faulty_source, write_coherent_manifest
+from support.prompt_fixture import materialize_faulty_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -84,14 +84,10 @@ class S3WorkspaceAcceptance(unittest.TestCase):
         self.frozen_case = self.root / "case.frozen.json"
         freeze_case(self.case_path, self.bundle, self.frozen_case)
         self.runs = self.root / "runs"
-        # The default captured runner loads the checkout's executable source,
-        # while package_runtime.py derives the prompt identity in its manifest.
-        # Use a disposable coherent copy so a repaired prompt commit does not
-        # make the default (faulty-labelled) interruption fixture fail before
-        # it can create its running record.
+        # Keep the default run source disposable; the capture helper derives a
+        # coherent development manifest in its immutable snapshot.
         self.default_agent = self.root / "default-agent"
         shutil.copytree(AGENT, self.default_agent, ignore=shutil.ignore_patterns(".venv", "__pycache__"))
-        write_coherent_manifest(self.default_agent)
         previous_agent_directory = captured_execution.AGENT_DIRECTORY
         captured_execution.AGENT_DIRECTORY = self.default_agent
         self.addCleanup(setattr, captured_execution, "AGENT_DIRECTORY", previous_agent_directory)

@@ -165,6 +165,67 @@ def _read_source_bytes(agent_directory: str | Path | None = None) -> tuple[dict[
     return source, dependencies
 
 
+def _development_manifest_bytes(manifest_raw: bytes, prompt_sha256: str) -> bytes:
+    """Return the development manifest bound to one captured prompt digest."""
+
+    try:
+        manifest = json.loads(manifest_raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError("development agent manifest is invalid JSON") from exc
+    if not isinstance(manifest, Mapping):
+        raise ValueError("development agent manifest must be an object")
+    if manifest.get("sourceRevision") != "development":
+        # Published and historical source snapshots are already immutable
+        # identities. Do not reinterpret their manifest bytes as a local
+        # editor template.
+        return manifest_raw
+    if manifest.get("promptSha256") == prompt_sha256:
+        return manifest_raw
+    generated_manifest = dict(manifest)
+    generated_manifest["promptSha256"] = prompt_sha256
+    return json.dumps(generated_manifest, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+
+
+def _prepare_development_source(source_files: Mapping[str, bytes]) -> dict[str, bytes]:
+    """Authenticate an editable prompt and derive its manifest in memory.
+
+    The browser IDE can save ``prompt.py`` without touching the checked-in
+    development manifest.  A local capture must therefore bind the manifest
+    to the exact bytes copied into its immutable source snapshot, rather than
+    editing the user's workspace.  Runtime ZIP captures do not call this
+    helper: their package manifest is authenticated by the package boundary
+    and must remain byte-for-byte unchanged.
+    """
+
+    prompt_raw = source_files.get("agent/prompt.py")
+    manifest_raw = source_files.get("agent/agent-manifest.json")
+    if prompt_raw is None or manifest_raw is None:
+        raise ValueError("development source prompt or manifest is missing")
+    module_name = f"_captured_development_prompt_{uuid.uuid4().hex}"
+    with tempfile.TemporaryDirectory(prefix="incident-triage-prompt-") as temporary_name:
+        prompt_path = Path(temporary_name) / "prompt.py"
+        prompt_path.write_bytes(prompt_raw)
+        spec = importlib.util.spec_from_file_location(module_name, prompt_path)
+        if spec is None or spec.loader is None:
+            raise ValueError("development prompt cannot be loaded")
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+            system_prompt = module.SYSTEM_PROMPT
+            declared_digest = module.PROMPT_SHA256
+        except Exception as exc:
+            raise ValueError("development prompt cannot be authenticated") from exc
+    if not isinstance(system_prompt, str) or not isinstance(declared_digest, str):
+        raise ValueError("development prompt must define SYSTEM_PROMPT and PROMPT_SHA256")
+    computed_digest = _sha256(system_prompt.encode("utf-8"))
+    if declared_digest != computed_digest:
+        raise ValueError("development prompt declared digest differs from its computed digest")
+    generated_manifest = _development_manifest_bytes(manifest_raw, computed_digest)
+    prepared = dict(source_files)
+    prepared["agent/agent-manifest.json"] = generated_manifest
+    return prepared
+
+
 def _parse_headers(value: str) -> dict[str, str]:
     headers: dict[str, str] = {}
     for item in value.split(","):
@@ -1147,7 +1208,17 @@ def _run_snapshot(
         actual_prompt_sha256 = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()
         if PROMPT_SHA256 != actual_prompt_sha256:
             raise ValueError("prompt digest does not match the saved system prompt")
-        manifest_value = _decode_json((agent_source / "agent-manifest.json").read_bytes(), "agent manifest")
+        manifest_path = agent_source / "agent-manifest.json"
+        manifest_raw = manifest_path.read_bytes()
+        if not strict_manifest and dependency_root is None:
+            generated_manifest = _development_manifest_bytes(manifest_raw, actual_prompt_sha256)
+            if generated_manifest != manifest_raw:
+                source_files = dict(source_files)
+                source_files["agent/agent-manifest.json"] = generated_manifest
+                manifest_path.write_bytes(generated_manifest)
+                manifest_path.chmod(0o600)
+                manifest_raw = generated_manifest
+        manifest_value = _decode_json(manifest_raw, "agent manifest")
         if (
             not isinstance(manifest_value, Mapping)
             or (strict_manifest and manifest_value.get("promptSha256") != actual_prompt_sha256)
