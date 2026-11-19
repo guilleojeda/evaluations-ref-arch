@@ -1,11 +1,11 @@
 # S4 — Run the native Strands experiment
 
-This workspace is the Phase 22 S4 checkpoint. Its default candidate is the
-proposed repaired prompt from source revision `bd8f59cbf60e2cd75477ff92dfc5a74b885f9daf`.
+This workspace is the Phase 22 S4 checkpoint. Its editable default candidate is
+the repaired prompt from source revision `bd8f59cbf60e2cd75477ff92dfc5a74b885f9daf`.
 S4 adds the native Strands experiment around the shared candidate runner and
 reviewed suite. It is independent of S3 unless the presenter explicitly
-selects `--source-run`. This prompt revision is provisional pending package
-review; it is not the S5-qualified release source.
+selects `--source-run`. New edits and runs have their own identities; saved
+results retain their historical inputs.
 `agent/prompt.py` has file SHA-256
 `0b08e9506d735b5938b3e8b3296b58331c406a8fb83f6b4a380a12ffc80cefea` and
 semantic prompt SHA-256
@@ -100,7 +100,8 @@ and invokes the same native `run_experiment` entry point. It does not create
 another editable workspace or modify this folder, its inputs, or its edits:
 
 ```sh
-uv run --project agent --locked python talk/run-faulty-experiment.py \
+uv run --project agent --locked opentelemetry-instrument \
+  python talk/run-faulty-experiment.py \
   --suite "$PHASE18_SUITE" --evaluator "$PHASE18_EVALUATOR" \
   --output-root "$PHASE18_BASELINE_EXPERIMENTS"
 ```
@@ -133,7 +134,8 @@ the matching faulty helper accepts the same repeated `--case` option:
 ```sh
 export PHASE18_FOCUSED_EXPERIMENTS="$PHASE22_PRIVATE_ROOT/s4-focused"
 export PHASE22_CASE_ID="<one case ID from PHASE18_SUITE>"
-uv run --project agent --locked python talk/run-faulty-experiment.py \
+uv run --project agent --locked opentelemetry-instrument \
+  python talk/run-faulty-experiment.py \
   --suite "$PHASE18_SUITE" --case "$PHASE22_CASE_ID" \
   --evaluator "$PHASE18_EVALUATOR" \
   --output-root "$PHASE18_FOCUSED_EXPERIMENTS"
