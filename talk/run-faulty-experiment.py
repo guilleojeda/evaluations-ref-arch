@@ -1,7 +1,7 @@
 """Run a matching faulty Strands experiment from an immutable source snapshot.
 
 S4 opens with the repaired prompt from source revision
-``ea890c0cd166dfa33dce987e9f2d55dc08ce9670``.  The normal experiment CLI's candidate label
+``c3e568a90fbd2e17a787b8d2458ffea93d7fe15a``.  The normal experiment CLI's candidate label
 does not change source bytes, so this helper calls the same native
 ``run_experiment`` entry point with a temporary source directory containing the
 current tooling and the verified Phase 19 faulty prompt.  The suite, evaluator,

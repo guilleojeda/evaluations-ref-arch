@@ -1,7 +1,7 @@
 """Run an immutable faulty S3 comparison source without changing the S3 folder.
 
 The S3 checkpoint opens with the repaired prompt from source revision
-``ea890c0cd166dfa33dce987e9f2d55dc08ce9670``.  ``evaluate_case.py
+``c3e568a90fbd2e17a787b8d2458ffea93d7fe15a``.  ``evaluate_case.py
 run --candidate faulty`` labels the current source; it does not switch the
 prompt.  This helper snapshots the current agent files into a temporary source
 directory, replaces only ``prompt.py`` with the verified Phase 19 faulty bytes,

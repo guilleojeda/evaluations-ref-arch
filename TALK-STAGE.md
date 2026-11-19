@@ -1,15 +1,15 @@
 # S4 — Run the native Strands experiment
 
 This workspace is the Phase 22 S4 checkpoint. Its editable default candidate is
-the repaired prompt from source revision `ea890c0cd166dfa33dce987e9f2d55dc08ce9670`.
+the repaired prompt from source revision `c3e568a90fbd2e17a787b8d2458ffea93d7fe15a`.
 S4 adds the native Strands experiment around the shared candidate runner and
 reviewed suite. It is independent of S3 unless the presenter explicitly
 selects `--source-run`. New edits and runs have their own identities; saved
 results retain their historical inputs.
 `agent/prompt.py` has file SHA-256
-`2ed7fb9aad73fb4fcaa6500f0c90ed820a367f2a6d66f53796ffc8498db89c2f` and
+`c5b88c2e80f275bed1c5f83fc7d42d65a21ed040d4da9eb8d0b95527e4ac68e7` and
 semantic prompt SHA-256
-`f67d8af0d38e2d24090d91d7296274b9e62349f9ef6c3b7b0b715faf4359b15c`.
+`69706e75a177b333c836430b58540fbb65d1063ab14d8e9e8c19d8f34034f4c4`.
 
 Set `PHASE22_PRIVATE_ROOT` to the private handoff directory and export
 `PHASE22_INPUT_INDEX` to its input index. The index is authoritative and must
