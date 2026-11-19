@@ -1,13 +1,13 @@
 # S3 — Edit and run a repaired candidate
 
 This workspace is the Phase 22 S3 checkpoint. Its editable default candidate is
-the repaired prompt from source revision `bd8f59cbf60e2cd75477ff92dfc5a74b885f9daf`.
+the repaired prompt from source revision `ea890c0cd166dfa33dce987e9f2d55dc08ce9670`.
 S3 adds a fresh editable execution and comparison while retaining a matching
 faulty baseline. New edits and runs have their own identities; saved results
 retain their historical inputs. `agent/prompt.py` has file SHA-256
-`0b08e9506d735b5938b3e8b3296b58331c406a8fb83f6b4a380a12ffc80cefea` and
+`2ed7fb9aad73fb4fcaa6500f0c90ed820a367f2a6d66f53796ffc8498db89c2f` and
 semantic prompt SHA-256
-`814862e5ea5894f1b32a2d70039157d330072fe59d678e7687787c77559fbd4f`.
+`f67d8af0d38e2d24090d91d7296274b9e62349f9ef6c3b7b0b715faf4359b15c`.
 
 Set `PHASE22_PRIVATE_ROOT` to the private handoff directory and
 `PHASE22_INPUT_INDEX` to its input index. The index is authoritative: it
