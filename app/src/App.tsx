@@ -306,7 +306,7 @@ function App() {
 
   const refreshCatalog = useCallback(
     async (activeCredential: string, reason: "login" | "refresh" | "after-order") => {
-      setBusy(reason === "after-order" ? "checkout" : "catalog");
+      setBusy(reason === "after-order" ? "stock-refresh" : "catalog");
       const result = await callApi<CatalogResponse>("GET", "/api/products", activeCredential);
       setBusy(null);
       if (result.networkError) {
@@ -479,6 +479,7 @@ function App() {
   const total = useMemo(() => (product ? product.unitPriceCents * quantity : 0), [product, quantity]);
   const isAuthenticated = credential !== null;
   const isCheckoutBusy = busy === "checkout";
+  const isStockRefreshBusy = busy === "stock-refresh";
 
   return (
     <main className="page-shell">
@@ -521,7 +522,7 @@ function App() {
                 <dl className="stats"><div><dt>Available stock</dt><dd>{product.availableQuantity.toLocaleString()}</dd></div><div><dt>Last refreshed</dt><dd>{formatTime(observedAt)}</dd></div></dl>
               </div>
             ) : <div className="empty-state"><p>Catalog unavailable.</p><p className="muted">Refresh when the service is ready.</p></div>}
-            <div className="card-actions"><button className="button button-secondary" type="button" onClick={refresh} disabled={busy !== null}>{busy === "catalog" ? "Refreshing…" : "Refresh stock"}</button>{catalogError && <span className="inline-error" role="alert">{catalogError}</span>}</div>
+            <div className="card-actions"><button className="button button-secondary" type="button" onClick={refresh} disabled={busy !== null}>{busy === "catalog" || isStockRefreshBusy ? "Refreshing stock…" : "Refresh stock"}</button>{catalogError && <span className="inline-error" role="alert">{catalogError}</span>}</div>
             {stockRefreshError && <p className="callout callout-warning" role="status">{stockRefreshError} The confirmed receipt below is unchanged.</p>}
           </section>
 
@@ -530,7 +531,7 @@ function App() {
             <form className="checkout-form" onSubmit={placeOrder}>
               <div className="quantity-control"><label htmlFor="quantity">Quantity</label><select id="quantity" value={quantity} onChange={(event) => setQuantity(Number(event.target.value))} disabled={!product || busy !== null || Boolean(pending)}>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value} {value === 1 ? "unit" : "units"}</option>)}</select></div>
               <div className="order-total"><span>Total</span><strong>{product ? formatMoney(total, product.currency) : "—"}</strong></div>
-              <button className="button button-primary button-large" type="submit" disabled={!product || busy !== null || Boolean(pending)}>{isCheckoutBusy ? "Placing order…" : pending ? "Resolve saved checkout first" : "Place order"}</button>
+              <button className="button button-primary button-large" type="submit" disabled={!product || busy !== null || Boolean(pending)}>{isStockRefreshBusy ? "Refreshing stock…" : isCheckoutBusy ? "Placing order…" : pending ? "Resolve saved checkout first" : "Place order"}</button>
             </form>
             {checkoutMessage && <p className={`callout callout-${checkoutMessageTone}`} role={checkoutMessageTone === "error" ? "alert" : "status"}>{checkoutMessage}</p>}
             {pending && <div className="pending-panel" role="status"><div><p className="eyebrow">Saved attempt</p><h3>Checkout response needs reconciliation</h3><p className="muted">ID <code>{pending.checkoutId}</code> · {pending.quantity} {pending.quantity === 1 ? "unit" : "units"} · Started <time dateTime={pending.startedAt}>{formatTime(pending.startedAt)}</time></p><p>{pendingMessage ?? "The original request may have committed. Check its durable status before starting another order."}</p></div><div className="pending-actions"><button className="button button-secondary" type="button" onClick={lookupStatus} disabled={busy !== null}>{busy === "status" ? "Looking up…" : "Look up status"}</button><button className="button button-primary" type="button" onClick={retryOrder} disabled={busy !== null}>{busy === "retry" ? "Retrying…" : "Retry same checkout"}</button></div></div>}
