@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from collections import deque
+import ast
 import fcntl
 import hashlib
 import importlib.util
@@ -29,7 +30,9 @@ from threading import Event, Thread, Timer
 from typing import Any, Iterator, Mapping, Sequence
 
 
-MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+MODEL_ID = "us.anthropic.claude-opus-5-5"
+_HISTORICAL_MODEL_IDS = frozenset(("us.anthropic.claude-sonnet-4-6",))
+_CAPTURED_MODEL_IDS = frozenset({MODEL_ID, *_HISTORICAL_MODEL_IDS})
 CANDIDATE_ID = "faulty"
 VALID_CANDIDATE_IDS = frozenset(("faulty", "repaired"))
 RUN_SECONDS = 240
@@ -83,6 +86,35 @@ def _sha256(raw: bytes) -> str:
 def _named_digest(files: Mapping[str, bytes]) -> str:
     digests = {name: _sha256(raw) for name, raw in sorted(files.items())}
     return _sha256(_json_bytes(digests))
+
+
+def _snapshot_model_id(source_files: Mapping[str, bytes]) -> str:
+    """Read the literal model identity from the authenticated source snapshot.
+
+    New captures are always produced by the current Opus runner.  Offline
+    scoring also needs to reopen retained Sonnet captures, but their model
+    identity must come from the saved source bytes rather than from the
+    current runner or a relabeled execution record.
+    """
+
+    raw = source_files.get("agent/investigation.py")
+    if raw is None:
+        raise ValueError("execution source snapshot is missing investigation.py")
+    try:
+        tree = ast.parse(raw.decode("utf-8"), filename="investigation.py")
+    except (UnicodeDecodeError, SyntaxError) as exc:
+        raise ValueError("execution investigation source is not valid Python") from exc
+    values: list[str] = []
+    for statement in tree.body:
+        if not isinstance(statement, ast.Assign):
+            continue
+        if not any(isinstance(target, ast.Name) and target.id == "MODEL_ID" for target in statement.targets):
+            continue
+        if isinstance(statement.value, ast.Constant) and type(statement.value.value) is str:
+            values.append(statement.value.value)
+    if len(values) != 1 or values[0] not in _CAPTURED_MODEL_IDS:
+        raise ValueError("execution source snapshot has an unsupported model identity")
+    return values[0]
 
 
 def _utc_now() -> str:
@@ -1632,7 +1664,7 @@ def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any],
     }
     if not required_identity <= set(identity):
         raise ValueError("execution identity is incomplete")
-    if identity.get("candidateId") not in VALID_CANDIDATE_IDS or identity.get("modelId") != MODEL_ID:
+    if identity.get("candidateId") not in VALID_CANDIDATE_IDS or identity.get("modelId") not in _CAPTURED_MODEL_IDS:
         raise ValueError("execution candidate or model identity is unsupported")
     runtime_origin = identity.get("runtimeOrigin")
     if runtime_origin is not None:
@@ -1687,6 +1719,8 @@ def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any],
     expected_dependencies = {f"agent/{name}" for name in DEPENDENCY_FILES}
     if set(source_manifest) != expected_sources or set(dependency_manifest) != expected_dependencies:
         raise ValueError("execution snapshot manifest does not contain the selected source and lock files")
+    if identity.get("modelId") != _snapshot_model_id(source_files):
+        raise ValueError("execution model identity does not match its retained source snapshot")
 
     case_path = directory / "case.frozen.json"
     bundle_path = directory / "bundle.json"

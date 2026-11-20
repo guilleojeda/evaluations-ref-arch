@@ -483,29 +483,38 @@ class AgentCoreSingleCategoricalScoringTests(unittest.TestCase):
         module = importlib.import_module("agentcore_evaluation")
         config = module.evaluator_config(module.SONNET_46_MODEL_ID, module.SINGLE_MODE)
         rubric = config["llmAsAJudge"]
-        self.assertEqual(module.SINGLE_RUBRIC_ID, "incident-triage.semantic.single.v2")
+        self.assertEqual(module.SINGLE_RUBRIC_ID, "incident-triage.semantic.single.v1")
         self.assertIn("categorical", rubric["ratingScale"])
         self.assertNotIn("multiDimensional", rubric["ratingScale"])
-        self.assertEqual(
-            {"temperature": 0.0, "maxTokens": 2400},
-            rubric["modelConfig"]["bedrockEvaluatorModelConfig"]["inferenceConfig"],
-        )
-        compatibility = module.evaluator_config(module.SONNET_46_MODEL_ID, module.MULTI_MODE)
-        self.assertEqual(
-            {"temperature": 0.0, "maxTokens": 2000},
-            compatibility["llmAsAJudge"]["modelConfig"]["bedrockEvaluatorModelConfig"]["inferenceConfig"],
-        )
         for phrase in (
             "BOTH requirements",
             "assessment and uncertainty",
-            "source claims, timestamps, and cutoff-bounded coverage",
-            "HARD CUTOFF RULE",
-            "Do not accept a later partial or empty result",
-            "eventTime, ingestionTime, availableAt",
+            "source claims and coverage",
+            "independently asserted",
+            "unsupported causal inferences",
+            "Identify both diagnosis and grounding defects",
+            "event time, ingestion time, availability time",
+            "without availableAt",
             "Recommendation action, target, and value correctness",
         ):
             with self.subTest(phrase=phrase):
                 self.assertIn(phrase, rubric["instructions"])
+
+    def test_opus_55_config_omits_unsupported_sampling_parameters(self):
+        module = importlib.import_module("agentcore_evaluation")
+        self.assertEqual(
+            "33d939080fa3a949bb026af190be48c5d4a7ee471b4a1acc7e336b91e54af52d",
+            module.evaluator_config_digest(module.OPUS_55_MODEL_ID, module.SINGLE_MODE),
+        )
+        for mode in (module.SINGLE_MODE, module.MULTI_MODE):
+            with self.subTest(mode=mode):
+                inference = module.evaluator_config(module.OPUS_55_MODEL_ID, mode)["llmAsAJudge"]["modelConfig"][
+                    "bedrockEvaluatorModelConfig"
+                ]["inferenceConfig"]
+                self.assertEqual({"maxTokens": 2000}, inference)
+                self.assertNotIn("temperature", inference)
+                self.assertNotIn("topP", inference)
+                self.assertNotIn("topK", inference)
 
     def test_single_categorical_row_has_one_canonical_finding(self):
         raw_response = response_with(single_result_row("pass"))

@@ -16,7 +16,7 @@ from boto3.dynamodb.types import TypeDeserializer
 
 _SELECTION_PK = "AGENT_SELECTION"
 _ALLOWED_ENDPOINTS = frozenset({"faulty", "repaired"})
-_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+_MODEL_ID = "us.anthropic.claude-opus-5-5"
 _COMMON_SELECTION_FIELDS = frozenset(
     {
         "pk",
