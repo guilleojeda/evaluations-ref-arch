@@ -6,10 +6,11 @@ artifact URI, or version from the caller.  The descriptor is the reviewable
 boundary for the archive, source provenance, runtime configuration, and the
 single ``faulty`` publication identity.
 
-The operation is ordered so that every source object is verified before any
-AgentCore, Lambda, or DynamoDB write.  Native writes are not treated as
-atomic: a caller can rerun this command after a lost response, and every
-subsequent step starts with a strong read of the state it owns.
+The operation is ordered so that every source object and, for a rotated
+descriptor, the exact reviewed predecessor are verified before any AgentCore,
+Lambda, or DynamoDB write.  Native writes are not treated as atomic: a caller
+can rerun this command after a lost response, and every subsequent step starts
+with a strong read of the state it owns.
 """
 
 from __future__ import annotations
@@ -37,6 +38,7 @@ ADAPTER_FUNCTION_NAME = "IncidentTriageDemoAlarmAdapter"
 SELECTION_TABLE_ENV = "AGENT_SELECTION_TABLE"
 RUNTIME_VERSION_RE = re.compile(r"^[1-9][0-9]{0,4}$")
 DESCRIPTOR_PATH = Path(__file__).with_name("faulty-reference.json")
+ROTATED_DESCRIPTOR_SCHEMA = 2
 
 
 def _sha256(value: bytes) -> str:
@@ -62,6 +64,57 @@ def _required_string(mapping: Mapping[str, Any], key: str, context: str) -> str:
     return value
 
 
+def _snapshot_digest(value: Mapping[str, Any]) -> str:
+    return hashlib.sha256(
+        json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
+
+def _validate_predecessor(descriptor: Mapping[str, Any]) -> None:
+    """Validate the reviewed old publication snapshot carried by a v2 descriptor."""
+
+    predecessor = descriptor.get("predecessor")
+    if not isinstance(predecessor, Mapping):
+        raise ValueError("rotated faulty-reference descriptor requires predecessor")
+    publication = predecessor.get("publication")
+    endpoint = predecessor.get("endpoint")
+    if not isinstance(publication, Mapping) or not isinstance(endpoint, Mapping):
+        raise ValueError("predecessor must contain publication and endpoint snapshots")
+    _required_string(predecessor, "publicationSha256", "predecessor")
+    if predecessor["publicationSha256"] != _snapshot_digest(publication):
+        raise ValueError("predecessor publication digest does not match its snapshot")
+    required_publication = {
+        "pk", "candidateId", "status", "endpointName", "runtimeArn",
+        "runtimeVersion", "endpointArn",
+    }
+    required_endpoint = {"agentRuntimeArn", "agentRuntimeEndpointArn", "status", "liveVersion"}
+    if not required_publication.issubset(publication) or not required_endpoint.issubset(endpoint):
+        raise ValueError("predecessor snapshot omits a fixed publication or endpoint identity")
+    if any(not isinstance(key, str) or not isinstance(value, str) for key, value in publication.items()):
+        raise ValueError("predecessor publication snapshot must contain only strings")
+    if any(not isinstance(key, str) or not isinstance(value, str) or not value for key, value in endpoint.items()):
+        raise ValueError("predecessor endpoint snapshot must contain only non-empty strings")
+    if publication["pk"] != "AGENT_PUBLICATION#faulty" or publication["candidateId"] != "faulty" or publication["status"] != "reference":
+        raise ValueError("predecessor publication does not identify the fixed faulty reference")
+    if publication["endpointName"] != "faulty" or publication["endpointArn"] != f"{publication['runtimeArn']}/runtime-endpoint/faulty":
+        raise ValueError("predecessor publication endpoint identity is not fixed faulty")
+    if endpoint["agentRuntimeArn"] != publication["runtimeArn"] or endpoint["agentRuntimeEndpointArn"] != publication["endpointArn"]:
+        raise ValueError("predecessor endpoint and publication identities differ")
+    if endpoint["status"] != "READY" or endpoint["liveVersion"] != publication["runtimeVersion"]:
+        raise ValueError("predecessor endpoint is not the reviewed READY version")
+    if endpoint.get("targetVersion", endpoint["liveVersion"]) != endpoint["liveVersion"]:
+        raise ValueError("predecessor endpoint has an unresolved target version")
+
+
+def _predecessor(descriptor: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    if descriptor.get("schemaVersion") != ROTATED_DESCRIPTOR_SCHEMA:
+        return None
+    value = descriptor.get("predecessor")
+    if not isinstance(value, Mapping):
+        raise ValueError("rotated faulty-reference descriptor requires predecessor")
+    return value
+
+
 def _read_descriptor() -> dict[str, Any]:
     try:
         value = json.loads(DESCRIPTOR_PATH.read_text())
@@ -75,8 +128,12 @@ def _read_descriptor() -> dict[str, Any]:
 
 
 def _validate_descriptor(descriptor: Mapping[str, Any]) -> None:
-    if descriptor.get("schemaVersion") != 1:
+    if descriptor.get("schemaVersion") not in (1, ROTATED_DESCRIPTOR_SCHEMA):
         raise ValueError("unsupported faulty-reference descriptor schema")
+    if descriptor.get("schemaVersion") == ROTATED_DESCRIPTOR_SCHEMA:
+        _validate_predecessor(descriptor)
+    elif "predecessor" in descriptor:
+        raise ValueError("predecessor is only supported by rotated descriptor schema")
     if descriptor.get("candidateId") != "faulty":
         raise ValueError("the fixed publisher only accepts candidate faulty")
     if descriptor.get("endpointName") != "faulty":
@@ -763,6 +820,165 @@ def _record_item(
     return {"pk": _attr(descriptor["controller"]["pk"]), **{key: _attr(value) for key, value in values.items()}}
 
 
+def _string_item_snapshot(item: Mapping[str, Any], context: str) -> dict[str, str]:
+    snapshot: dict[str, str] = {}
+    for key, value in item.items():
+        if not isinstance(key, str) or not isinstance(value, Mapping) or set(value) != {"S"} or not isinstance(value.get("S"), str):
+            raise RuntimeError(f"{context} contains a non-string or malformed field")
+        snapshot[key] = value["S"]
+    return snapshot
+
+
+def _publication_core(item: Mapping[str, Any]) -> dict[str, Any]:
+    """Exclude adapter attestation fields that can legitimately change separately."""
+
+    return {
+        key: value for key, value in item.items()
+        if key not in {"adapterArn", "adapterRevisionId", "adapterCodeSha256"}
+    }
+
+
+def _new_publication_version(
+    item: Mapping[str, Any],
+    descriptor: Mapping[str, Any],
+    *,
+    runtime_arn: str,
+    runtime_version: str,
+    verified: Mapping[str, Any],
+) -> bool:
+    """Match the new descriptor's publication core, ignoring adapter provenance."""
+
+    observed = _string_item_snapshot(item, "existing fixed publication")
+    endpoint = {
+        "agentRuntimeArn": runtime_arn,
+        "agentRuntimeEndpointArn": f"{runtime_arn}/runtime-endpoint/{descriptor['endpointName']}",
+        "status": "READY",
+        "liveVersion": runtime_version,
+        "targetVersion": runtime_version,
+    }
+    expected = _publication_core(_record_item(
+        descriptor,
+        runtime_arn=runtime_arn,
+        version=runtime_version,
+        endpoint=endpoint,
+        adapter={},
+        artifact_version=verified["artifactVersionId"],
+        source_version=verified["sourceVersionId"],
+        source_manifest_version=verified["sourceManifestVersionId"],
+        lock_version=verified["lockVersionId"],
+        configuration_version=verified["configurationVersionId"],
+    ))
+    expected_plain = _string_item_snapshot(expected, "new publication identity")
+    allowed_adapter = {"adapterArn", "adapterRevisionId", "adapterCodeSha256"}
+    return not (set(observed) - set(expected_plain) - allowed_adapter) and all(
+        observed.get(key) == value for key, value in expected_plain.items()
+    )
+
+
+def _endpoint_matches_snapshot(endpoint: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
+    required = ("agentRuntimeArn", "agentRuntimeEndpointArn", "status", "liveVersion")
+    if any(endpoint.get(key) != expected.get(key) for key in required):
+        return False
+    if "targetVersion" in expected and endpoint.get("targetVersion") != expected["targetVersion"]:
+        return False
+    return endpoint.get("targetVersion", endpoint.get("liveVersion")) == endpoint.get("liveVersion")
+
+
+def _verify_rotated_precondition(
+    control: Any,
+    controller: Any,
+    descriptor: Mapping[str, Any],
+    *,
+    runtime_id: str,
+    runtime_arn: str,
+    existing_endpoint: Mapping[str, Any] | None,
+    verified: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Gate a v2 replacement on the exact old tuple or a bounded retry."""
+
+    predecessor = _predecessor(descriptor)
+    if predecessor is None:
+        return {"mode": "legacy", "predecessorSnapshot": None}
+
+    existing_response = controller.get_item(
+        TableName=descriptor["controller"]["tableName"],
+        Key={"pk": {"S": descriptor["controller"]["pk"]}}, ConsistentRead=True,
+    )
+    existing_item = existing_response.get("Item") or {}
+    if existing_endpoint is None:
+        if existing_item:
+            raise RuntimeError("rotated faulty reference publication exists without its endpoint")
+        # A clean stack and a Runtime update that committed before a lost
+        # endpoint response are both safe bootstrap states. The existing
+        # Runtime/version discovery below remains the source of truth.
+        return {
+            "mode": "greenfield",
+            "predecessorSnapshot": copy.deepcopy(dict(predecessor)),
+            "observedEndpoint": None,
+            "observedPublication": {},
+        }
+    if existing_endpoint.get("status") != "READY":
+        raise RuntimeError("rotated faulty reference requires the reviewed or new READY endpoint")
+    live_version = existing_endpoint.get("liveVersion")
+    if not isinstance(live_version, str) or not RUNTIME_VERSION_RE.fullmatch(live_version):
+        raise RuntimeError("rotated faulty reference endpoint has no immutable live version")
+    if existing_endpoint.get("targetVersion", live_version) != live_version:
+        raise RuntimeError("rotated faulty reference endpoint has an unresolved target version")
+    expected_endpoint_arn = f"{runtime_arn}/runtime-endpoint/{descriptor['endpointName']}"
+    if existing_endpoint.get("agentRuntimeArn") != runtime_arn or existing_endpoint.get("agentRuntimeEndpointArn") != expected_endpoint_arn:
+        raise RuntimeError("rotated faulty reference endpoint identity differs from the intended Runtime")
+
+    if not existing_item:
+        try:
+            serving = control.get_agent_runtime(agentRuntimeId=runtime_id, agentRuntimeVersion=live_version)
+        except ClientError as error:
+            if _not_found(error):
+                serving = None
+            else:
+                raise
+        if serving is not None and _runtime_matches(serving, descriptor, runtime_arn):
+            return {
+                "mode": "endpoint-advanced-empty",
+                "predecessorSnapshot": copy.deepcopy(dict(predecessor)),
+                "observedEndpoint": copy.deepcopy(dict(existing_endpoint)),
+                "observedPublication": {},
+            }
+        raise RuntimeError("rotated faulty reference endpoint exists without a reviewed publication row")
+    existing_publication = _string_item_snapshot(existing_item, "existing fixed publication")
+    old = existing_publication == dict(predecessor["publication"]) and _endpoint_matches_snapshot(
+        existing_endpoint, predecessor["endpoint"]
+    )
+    try:
+        serving = control.get_agent_runtime(agentRuntimeId=runtime_id, agentRuntimeVersion=live_version)
+    except ClientError as error:
+        if _not_found(error):
+            serving = None
+        else:
+            raise
+    new_endpoint = serving is not None and _runtime_matches(serving, descriptor, runtime_arn)
+    new_row = new_endpoint and _new_publication_version(
+        existing_item, descriptor, runtime_arn=runtime_arn,
+        runtime_version=live_version, verified=verified,
+    )
+    if old:
+        mode = "predecessor"
+    elif new_endpoint and existing_publication == dict(predecessor["publication"]):
+        # Endpoint updates precede the publication-row write.  Accept exactly
+        # this lost-response state so a retry can finish the same transition.
+        mode = "endpoint-advanced"
+    elif new_row:
+        mode = "new"
+    else:
+        raise RuntimeError("live faulty endpoint and publication row do not match the reviewed predecessor or new tuple")
+
+    return {
+        "mode": mode,
+        "predecessorSnapshot": copy.deepcopy(dict(predecessor)),
+        "observedEndpoint": copy.deepcopy(dict(existing_endpoint)),
+        "observedPublication": existing_publication,
+    }
+
+
 def _record_matches(item: Mapping[str, Any], expected: Mapping[str, Any]) -> bool:
     # Compare every field this publisher writes.  In particular, optional
     # source-manifest/lock versions, adapter digest/revision, and provenance
@@ -812,6 +1028,7 @@ def _ensure_record(
     item: dict[str, dict[str, str]],
     *,
     preserve_existing: bool = False,
+    replacement_predecessor: Mapping[str, str] | None = None,
 ) -> dict[str, dict[str, str]]:
     table = descriptor["controller"]["tableName"]
     key = {"pk": {"S": descriptor["controller"]["pk"]}}
@@ -822,7 +1039,19 @@ def _ensure_record(
     if existing:
         _validate_historical_adapter_provenance(existing, item)
     expected_readback = item
-    if existing and preserve_existing:
+    write_item = not existing
+    if existing and replacement_predecessor is not None:
+        observed = _string_item_snapshot(existing, "existing fixed publication")
+        if observed == dict(replacement_predecessor):
+            write_item = True
+        elif _publication_core(existing) == _publication_core(item):
+            # A completed rotation may be repeated after the shared selector
+            # router has independently changed its attestation. Preserve the
+            # already-published row instead of rewriting that provenance.
+            expected_readback = existing
+        else:
+            raise RuntimeError("existing fixed publication record conflicts with the reviewed predecessor or new tuple")
+    elif existing and preserve_existing:
         # Adapter revision/digest are historical provenance. They can differ
         # from the current shared selector router even when the fixed faulty
         # publication itself is unchanged. Preserve the existing row exactly
@@ -841,10 +1070,11 @@ def _ensure_record(
         # behavior for the compatibility path; selector mode above is the
         # explicit no-overwrite boundary.
         expected_readback = item
-    if not existing or (not preserve_existing and not _record_matches(existing, item)):
+        write_item = not _record_matches(existing, item)
+    if write_item:
         controller.put_item(TableName=table, Item=item)
     readback = controller.get_item(TableName=table, Key=key, ConsistentRead=True).get("Item") or {}
-    if existing and preserve_existing and readback != existing:
+    if existing and expected_readback is existing and readback != existing:
         raise RuntimeError("fixed publication historical provenance changed during readback")
     if not _record_matches(readback, expected_readback):
         raise RuntimeError("fixed publication record strong readback does not match")
@@ -979,6 +1209,18 @@ def preflight_faulty_reference(session: Any, *, require_rollback: bool = False) 
         live_version = None
         serving_runtime = None
 
+    rotation = None
+    if _predecessor(descriptor) is not None:
+        rotation = _verify_rotated_precondition(
+            control,
+            session.client("dynamodb"),
+            descriptor,
+            runtime_id=runtime_id,
+            runtime_arn=runtime_arn,
+            existing_endpoint=existing_endpoint,
+            verified=verified,
+        )
+
     adapter = _wait_read(
         lambda: session.client("lambda").get_function_configuration(FunctionName=_adapter_function_name(descriptor)),
         success="Successful",
@@ -1104,6 +1346,7 @@ def preflight_faulty_reference(session: Any, *, require_rollback: bool = False) 
         "archive": archive,
         "trustedRollback": trusted_rollback,
         "partialBinding": partial_binding,
+        "referenceGeneration": rotation,
     }
 
 
@@ -1126,6 +1369,15 @@ def setup_faulty_reference(session: Any) -> dict[str, Any]:
         expected_endpoint_arn = f"{runtime_arn}/runtime-endpoint/{descriptor['endpointName']}"
         if existing_endpoint.get("agentRuntimeArn") != runtime_arn or existing_endpoint.get("agentRuntimeEndpointArn") != expected_endpoint_arn:
             raise RuntimeError("faulty endpoint identity differs from the intended Runtime")
+    rotation = _verify_rotated_precondition(
+        control,
+        session.client("dynamodb"),
+        descriptor,
+        runtime_id=runtime_id,
+        runtime_arn=runtime_arn,
+        existing_endpoint=existing_endpoint,
+        verified=verified,
+    )
     version, _runtime = _find_or_publish_runtime(control, runtime_id, descriptor, runtime_arn, existing_endpoint)
     endpoint = _ensure_endpoint(control, runtime_id, runtime_arn, descriptor["endpointName"], version, descriptor)
 
@@ -1147,6 +1399,11 @@ def setup_faulty_reference(session: Any) -> dict[str, Any]:
     _ensure_record(
         session.client("dynamodb"), descriptor, item,
         preserve_existing=preserve_existing,
+        replacement_predecessor=(
+            rotation["predecessorSnapshot"]["publication"]
+            if rotation["mode"] in {"predecessor", "endpoint-advanced"}
+            else None
+        ),
     )
     return {
         "status": "reference",
@@ -1157,6 +1414,11 @@ def setup_faulty_reference(session: Any) -> dict[str, Any]:
         "endpointArn": endpoint["agentRuntimeEndpointArn"],
         "artifactSha256": descriptor["artifact"]["sha256"],
         "sourceRevision": descriptor["sourceRevision"],
+        "referenceGeneration": rotation,
+        # The reviewed predecessor is part of the new immutable descriptor and
+        # is returned again so the workflow can retain a release-evidence
+        # snapshot alongside its native readback.
+        "historicalSnapshot": rotation.get("predecessorSnapshot"),
     }
 
 
