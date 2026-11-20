@@ -706,21 +706,41 @@ def _timing_row(index: int, row: Any) -> str:
     )
 
 
-def timing_evidence_assertions(tool_calls: Sequence[Mapping[str, Any]]) -> list[str]:
-    """Project authenticated ``search_logs`` results into judge-only timing facts.
+def _metric_array(value: Any, *, clock: bool) -> str:
+    if not isinstance(value, list):
+        return "missing" if value is None else "invalid"
+    items = []
+    for item in value[:_MAX_TIMING_ROWS]:
+        if clock:
+            items.append(_timing_time(item))
+        elif type(item) in (int, float) and math.isfinite(item):
+            items.append(str(item))
+        else:
+            items.append("invalid")
+    if len(value) > len(items):
+        items.append(f"omitted:{len(value) - len(items)}")
+    return ",".join(items) or "empty"
 
-    The native spans remain the submitted execution evidence. These assertions
-    contain only the sanitized result fields already returned by successful log
-    calls: source/coverage metadata and row identity/timing fields. Free-form
-    query text, log messages, and projected ``fields`` are intentionally not
-    copied into evaluator reference inputs.
-    """
 
+def _metric_timing_row(index: int, row: Any) -> str:
+    if not isinstance(row, Mapping):
+        return f"row[{index}]=invalid"
+    return (
+        f"row[{index}] metricId={_timing_token(row.get('Id'))} "
+        f"label={_timing_token(row.get('Label'))} "
+        f"bucketStarts={_metric_array(row.get('Timestamps'), clock=True)} "
+        f"values={_metric_array(row.get('Values'), clock=False)} "
+        f"rowObservedAt={_metric_array(row.get('observedAt'), clock=True)} "
+        f"availability={_metric_array(row.get('availability'), clock=True)}"
+    )
+
+
+def _source_timing_assertions(tool_calls: Sequence[Mapping[str, Any]], tool_name: str) -> list[str]:
     if not isinstance(tool_calls, Sequence) or isinstance(tool_calls, (str, bytes)):
         return []
     assertions: list[str] = []
     for call in tool_calls:
-        if not isinstance(call, Mapping) or call.get("tool") != "search_logs":
+        if not isinstance(call, Mapping) or call.get("tool") != tool_name:
             continue
         if call.get("status") != "success":
             continue
@@ -741,8 +761,18 @@ def timing_evidence_assertions(tool_calls: Sequence[Mapping[str, Any]]) -> list[
             observation_state = "invalid"
             rows = []
 
+        if tool_name == "read_metrics":
+            # This view supplies citation clocks only for returned measurements.
+            # Coverage and empty results remain available in the original spans.
+            if not rows:
+                continue
+            title = "Source metric view: authenticated read_metrics projection"
+            row_text = _metric_timing_row
+        else:
+            title = "Source log view: verified search_logs timing projection"
+            row_text = _timing_row
         base = (
-            "Source log view: verified search_logs timing projection "
+            f"{title} "
             f"callId={_timing_token(call.get('callId'))} "
             f"{_timing_coverage(result)} "
             f"observations={observation_state} returnedRows={len(rows)}"
@@ -751,7 +781,7 @@ def timing_evidence_assertions(tool_calls: Sequence[Mapping[str, Any]]) -> list[
         row_parts: list[str] = []
         size = len(base.encode("utf-8"))
         for index, row in enumerate(rows[:_MAX_TIMING_ROWS]):
-            candidate = f"; {_timing_row(index, row)}"
+            candidate = f"; {row_text(index, row)}"
             size += len(candidate.encode("utf-8"))
             if size > _MAX_TIMING_ASSERTION_BYTES:
                 break
@@ -763,6 +793,18 @@ def timing_evidence_assertions(tool_calls: Sequence[Mapping[str, Any]]) -> list[
             base += f" projectionOmittedRows={projection_omitted}"
         assertions.append(base + "".join(row_parts))
     return assertions
+
+
+def metric_evidence_assertions(tool_calls: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Return metric source facts, including per-point clocks when captured."""
+
+    return _source_timing_assertions(tool_calls, "read_metrics")
+
+
+def timing_evidence_assertions(tool_calls: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Supplement native spans with the same bounded source clocks in every scoring path."""
+
+    return _source_timing_assertions(tool_calls, "search_logs") + metric_evidence_assertions(tool_calls)
 
 
 def interrupted_execution_content(
@@ -1459,6 +1501,7 @@ __all__ = [
     "TelemetryIncomplete",
     "execution_content",
     "interrupted_execution_content",
+    "metric_evidence_assertions",
     "score_execution",
     "timing_evidence_assertions",
 ]

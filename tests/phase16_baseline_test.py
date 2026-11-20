@@ -297,6 +297,53 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         self.assertIn("omittedRows=unknown", projection)
         self.assertNotIn("ignore this free text", projection)
 
+    def test_metric_projection_keeps_bucket_and_acquisition_clocks_distinct(self):
+        from evaluation_telemetry import metric_evidence_assertions
+
+        assertions = metric_evidence_assertions([
+            {
+                "callId": "metrics-1",
+                "tool": "read_metrics",
+                "status": "success",
+                "result": {
+                    "source": "cloudwatch",
+                    "scope": ["inventory"],
+                    "window": {
+                        "start": "2026-11-14T17:55:30.000Z",
+                        "end": "2026-11-14T17:58:11.000Z",
+                    },
+                    "referenceTime": "2026-11-14T17:58:11.000Z",
+                    "observedAt": "2026-11-14T17:57:32.223Z",
+                    "completeness": "partial",
+                    "truncated": False,
+                    "gaps": ["requested window cuts a native metric bucket"],
+                    "errors": [],
+                    "observations": [
+                        {
+                            "Id": "inventory_concurrentexecutions",
+                            "Label": "ConcurrentExecutions",
+                            "resource": "inventory",
+                            "Timestamps": ["2026-11-14T17:56:00.000Z"],
+                            "Values": [16.0],
+                            "availability": ["2026-11-14T17:57:32.223442Z"],
+                            "observedAt": ["2026-11-14T17:57:31.100Z"],
+                        },
+                    ],
+                },
+            },
+        ])
+
+        self.assertEqual(1, len(assertions))
+        projection = assertions[0]
+        self.assertIn("Source metric view:", projection)
+        self.assertIn("bucketStarts=2026-11-14T17:56:00.000Z", projection)
+        self.assertIn("values=16.0", projection)
+        self.assertIn("availability=2026-11-14T17:57:32.223442Z", projection)
+        self.assertIn("rowObservedAt=2026-11-14T17:57:31.100Z", projection)
+        self.assertNotIn("2026-11-14T17:57:32.223Z", projection)
+        self.assertIn("coverageGaps=additional gaps detailed in native result", projection)
+        self.assertNotIn("pass", projection)
+
     def test_snapshot_model_identity_accepts_only_current_or_retained_source_model(self):
         from captured_execution import _snapshot_model_id
 
