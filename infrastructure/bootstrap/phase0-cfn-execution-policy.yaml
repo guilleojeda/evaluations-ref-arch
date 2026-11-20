@@ -832,6 +832,10 @@ Resources:
           - arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6
           - arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-6
           - arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6
+          - arn:aws:bedrock:us-east-1:027224425948:inference-profile/us.anthropic.claude-opus-5-5
+          - arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-5-5
+          - arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-opus-5-5
+          - arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-opus-5-5
         - Sid: OwnInvestigationRecords
           Effect: Allow
           Action:

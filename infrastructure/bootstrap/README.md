@@ -104,8 +104,11 @@ role. See [AgentCore service-linked roles](https://docs.aws.amazon.com/bedrock-a
 
 ## Before the first live Anthropic Runtime rehearsal
 
-The initial Runtime profile is `us.anthropic.claude-sonnet-4-6`; its underlying
-model ID is `anthropic.claude-sonnet-4-6` in `us-east-1`. Before live rehearsal,
+The active Runtime candidate uses the account's active US cross-Region profile
+`us.anthropic.claude-opus-5-5`; its destination model ID is
+`anthropic.claude-opus-5-5` in `us-east-1`, `us-east-2`, and `us-west-2`. The
+original faulty reference remains an immutable Sonnet 4.6 archive and is not
+rewritten by this switch. Before live rehearsal,
 the verified account administrator completes Anthropic's first-time-use form
 using accurate company/developer identity and industry information supplied
 and approved by the user. Do not store the form answers or personal details in
