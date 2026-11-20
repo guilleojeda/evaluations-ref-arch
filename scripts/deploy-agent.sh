@@ -386,6 +386,21 @@ if [[ "$infrastructure_only" == true ]]; then
   echo "Prepared infrastructure-only agent assembly; the existing published Runtime asset remains the sole bootstrap source"
 fi
 
+if [[ "$infrastructure_only" == true && "$fresh_stack" == false ]]; then
+  # CDK now synthesizes the active Opus model, while the existing
+  # publisher-owned Runtime may still be represented by a historic Sonnet
+  # literal in CloudFormation.  Preserve that one literal before CDK prepares
+  # the reconciliation so the change-set guard sees no Runtime mutation.
+  previous_template="$RUNNER_TEMP/agent-previous-template.json"
+  deploy_aws cloudformation get-template --stack-name "$stack" --template-stage Original --output json |
+    jq -er '.TemplateBody | if type == "string" then fromjson else . end' >"$previous_template"
+  candidate_path="$assembly/$candidate_template"
+  preserved_template="$candidate_path.preserved"
+  node scripts/preserve-agent-model-seed.mjs "$previous_template" "$candidate_path" >"$preserved_template"
+  mv "$preserved_template" "$candidate_path"
+  echo "Preserved the existing Runtime model seed for infrastructure-only reconciliation"
+fi
+
 app_state="$(deploy_aws cloudformation describe-stacks --stack-name "$PHASE0_APP_STACK" --output json)"
 app_api_id="$(jq -er '.Stacks[0].Outputs[] | select(.OutputKey == "ApiUrl") | .OutputValue | capture("https://(?<id>[a-z0-9]+)\\.execute-api\\.").id' <<<"$app_state")"
 

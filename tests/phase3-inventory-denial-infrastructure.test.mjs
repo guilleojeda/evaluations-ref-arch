@@ -175,15 +175,16 @@ test('controller evidence is private and the worker can only read the prepared p
   assert.deepEqual(aliasUpdate, [`arn:aws:lambda:${region}:${account}:function:IncidentTriageDemoInventory`]);
   const approvedAgentConfigurations = [
     `${assetBucketArn}/agent-reference/7febe979fa1365360983d886f9d1dc78b55d9bde91a6fe7357e5f9fd97d2d7a7.json`,
+    `${assetBucketArn}/agent-reference/8128392c1e4909fcbceb1f2cee39906c97c86c105b8142c9f7d0a191786a1372.json`,
     `arn:aws:s3:::${evidenceName}/agent-evaluation/phase20/${'?'.repeat(64)}/runtime-configuration.json`,
   ];
   const manifestReads = grants(worker, 's3:GetObject');
   assert.deepEqual(manifestReads.sort(), [
     `${assetBucketArn}/releases/app/*/inventory-variants.json`,
     ...approvedAgentConfigurations,
-  ].sort(), 'worker reads only the prepared Inventory manifest and two approved Agent configurations');
+  ].sort(), 'worker reads only the prepared Inventory manifest and the approved Agent configurations');
   assert.deepEqual(grants(worker, 's3:GetObjectVersion').sort(), approvedAgentConfigurations.sort(),
-    'versioned reads remain limited to the two approved Agent configurations');
+    'versioned reads remain limited to the approved Agent configurations');
   assert.ok(manifestReads.every((resource) => resource === `${assetBucketArn}/releases/app/*/inventory-variants.json` ||
     approvedAgentConfigurations.includes(resource)),
   'worker must not gain a broad evidence or private qualification read');

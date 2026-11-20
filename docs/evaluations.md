@@ -2,6 +2,10 @@
 
 The evaluations assess the operations agent's handling of incidents. They do not score application health. An agent can correctly diagnose an application outage and pass; it can mishandle a healthy or recovered application and fail.
 
+### Active model target
+
+The verified active agent target is `us.anthropic.claude-opus-5-5` in `us-east-1` through the ACTIVE US profile. The native agent tool/report path is working on the verified archived workflow. The selected original single AgentCore rubric uses runtime `maxTokens: 2000` and omits `temperature`; its actual evaluator is `IncidentOriginalOpus55_33d939080fa3a949bb-t6eO7tGuG6`. On the exact archived S4, the frozen Sonnet path produced the false pass while Opus rejected all three normal cases. The seven exposed controls completed with overlapping evidence and matching specific reasons. Original-production holdout recovery is now complete: 2/2 correct-recipe native responses passed the bounded-successful-checkout control and failed the sustained/complete claim after coverage ended at `18:02:54Z` despite the requested end `18:04:05Z`. Two earlier incompatible-recipe attempts had no raw result and remain incomplete outside that denominator. These facts do not qualify deployment or establish general accuracy. Frozen Sonnet executions, scores, timings, and calibration controls remain historical; do not rewrite their records or present them as Opus results.
+
 The Python evaluation workflow connects known incident cases, repeated development tests, evaluations of observed agent traces, and a release policy. The [agent component](components/operations-agent.md#software-stages) defines software capabilities and known behavior at S0–S5; [Demo progression](demo-progression.md) places those stages in the talk. S0 is instrumented but has no evaluation cases, evaluators, scores, or gate. S2 introduces deterministic checks, semantic diagnosis/grounding criteria, judge configuration, and AgentCore evaluation results. S4 connects the full local Strands experiment; S5 automates that same experiment and policy in CI. Schema validation, access limits, and tracing are runtime capabilities available from the start.
 
 ## Evaluation inputs and expectations
@@ -186,9 +190,10 @@ check passed. The grounding rubric checks claims about source observations
 and query coverage. Diagnosis support grades the causal explanation and
 incident assessment. The evaluator receives a compact view of verified log
 records with separate event, ingestion, and availability times alongside the
-native session. The pinned Sonnet 4.6 single-verdict score is advisory and can
-be shown with its reason after the evaluator descriptor and session identity
-are verified. It does not qualify a release by itself. The deterministic
+native session. The pinned Sonnet 4.6 single-verdict score is a historical
+advisory result and can be shown with its reason after the evaluator descriptor
+and session identity are verified. It does not qualify a release by itself or
+establish behavior for the active US Opus 5.5 target. The deterministic
 action, target, value and cutoff checks, together with identity-bound human
 review of the exact report, trace and pending artifact, control publication.
 
@@ -224,7 +229,7 @@ The intended execution and scoring path is:
 
 AWS supports on-demand evaluation of supported-framework agents outside AgentCore Runtime. Its [on-demand prerequisites](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ondemand-evaluations-prereqs.html) and [outside-Runtime observability setup](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-configure.html#observability-configure-outside) establish this route. Prepare telemetry export, session propagation, source collection, and evaluation permissions before the session. Ground-truth reference inputs are described in [ground-truth evaluation](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ground-truth-evaluations.html); shared code checks can use the [Lambda evaluator contract](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-based-evaluators.html).
 
-At S4, the Strands experiment reuses the candidate execution function as its native task and calls the SDK's `Experiment.run_evaluations`, rather than implementing a separate case loop. It creates native `Case` objects and two custom `Evaluator` objects: one projects the eight named deterministic findings, and one reuses the pinned AgentCore Sonnet 4.6 scoring operation for its categorical advisory verdict and reason. The returned native report has one `(case, evaluator)` row per pair—four rows for two cases and two evaluators. The semantic row carries a native numeric `0.0` only as `numericPlaceholder: true`; policy reads the actual categorical result and canonical status instead. Cases execute sequentially, and the two evaluator calls for a completed case may overlap. The AgentCore verdict and reason are advisory feedback. Preserve case meaning, supply the right reference inputs, and compare candidates within the selected scoring setup rather than treating scores from different evaluators as interchangeable. The direct prepared S4 entry has no S3-run prerequisite; an optional `--source-run` selects an authenticated immutable S3 source exactly, including an accepted active execution. A focused `--case` selection is a development subset. Native experiment snapshots freeze selected cases/bundles, candidate/tooling/dependency inputs, and the evaluator before the first case; later edits cannot change the run, and `show`/`compare` are read-only. A known deterministic failure rejects immediately, missing or error results are incomplete, and all deterministic checks passing with a complete advisory pass or fail yields `review_required`. Once selected, the S5 CI command invokes the same experiment and policy used locally. S3 remains a direct IDE runner and does not deploy the repaired candidate or invoke the live alarm adapter.
+At S4, the Strands experiment reuses the candidate execution function as its native task and calls the SDK's `Experiment.run_evaluations`, rather than implementing a separate case loop. It creates native `Case` objects and two custom `Evaluator` objects: one projects the eight named deterministic findings, and one uses the verified Opus AgentCore scoring operation above for its categorical advisory verdict and reason. The returned native report has one `(case, evaluator)` row per pair—four rows for two cases and two evaluators. The semantic row carries a native numeric `0.0` only as `numericPlaceholder: true`; policy reads the actual categorical result and canonical status instead. Cases execute sequentially, and the two evaluator calls for a completed case may overlap. The AgentCore verdict and reason are advisory feedback. Preserve case meaning, supply the right reference inputs, and compare candidates within the selected scoring setup rather than treating scores from different evaluators as interchangeable. The direct prepared S4 entry has no S3-run prerequisite; an optional `--source-run` selects an authenticated immutable S3 source exactly, including an accepted active execution. A focused `--case` selection is a development subset. Native experiment snapshots freeze selected cases/bundles, candidate/tooling/dependency inputs, and the evaluator before the first case; later edits cannot change the run, and `show`/`compare` are read-only. A known deterministic failure rejects immediately, missing or error results are incomplete, and all deterministic checks passing with a complete advisory pass or fail yields `review_required`. Once selected, the S5 CI command invokes the same experiment and policy used locally. S3 remains a direct IDE runner and does not deploy the repaired candidate or invoke the live alarm adapter.
 
 ## S4: Native Strands development experiment
 
@@ -255,7 +260,7 @@ historical and cannot be promoted to a current comparison baseline.
 Each native report contains one row per `(case, evaluator)`. For two cases and
 the two custom evaluators, that is four rows; each deterministic row exposes
 the eight named findings, while each advisory row retains the actual pinned
-AgentCore Sonnet 4.6 categorical verdict, reason, status, scoring attempt, and
+AgentCore Opus 5.5 categorical verdict, reason, status, scoring attempt, and
 full run/session/trace references. The SDK's required numeric field is `0.0`
 with `numericPlaceholder: true`; this placeholder is not a quality score and
 does not affect policy. A known required deterministic failure yields
@@ -266,7 +271,7 @@ findings passing plus a complete advisory result—whether pass or fail—yields
 authority; exact Runtime ZIP qualification and human approval belong to the
 later S5 gate.
 
-The browser IDE workflow has been verified with the frozen denial case, an uncommitted prompt edit, matching CloudWatch content and the pinned Sonnet 4.6 evaluator. Rehearsal preparation checks session correlation, complete telemetry, reference mapping and exact result identities. Feedback time includes execution, telemetry collection and scoring.
+The browser IDE workflow has been verified with the Opus audience-case comparison and the native four-case S4 runs. The repaired denial rows pass the access action and semantic grounding; overload's semantic result fails on an earlier event grouped with later events, and recovery's semantic result fails because only one of two claimed searches used an error filter. These are advisory results, not release qualification. The archived Sonnet workflow and cutoff report remain historical and separate. Original-production holdout recovery is complete at 2/2 correct-recipe responses, with two incompatible-recipe attempts incomplete and excluded. Rehearsal preparation checks session correlation, complete telemetry, reference mapping and exact result identities.
 
 ## Offline cases and observed traffic
 
@@ -276,7 +281,7 @@ AgentCore custom evaluators that reference ground-truth placeholders cannot be u
 
 ## Release decisions
 
-An S4 experiment produces feedback for a saved edit in the IDE. S5 runs the same Strands experiment and captured providers against the checked Linux ARM64 Runtime ZIP. Each required case has eight deterministic findings and an actual AgentCore Sonnet 4.6 advisory verdict with a reason. CI verifies the expected case and evidence identities independently of the rows the experiment returned.
+An S4 experiment produces feedback for a saved edit in the IDE. S5 runs the same Strands experiment and captured providers against the checked Linux ARM64 Runtime ZIP. The active workflow uses the verified Opus evaluator above for its advisory verdict and reason; the archived S4 evidence rejects all three normal cases, and the original-production holdout recovery is complete at 2/2 correct-recipe responses. The two incompatible-recipe attempts remain incomplete and excluded. The frozen Sonnet workflow remains historical. CI verifies the expected case and evidence identities independently of the rows the experiment returned.
 
 | Evidence for the pending package | Release decision |
 | --- | --- |

@@ -242,7 +242,7 @@ Set these private paths outside the editable checkout:
 
 ```sh
 reviewed_suite="${PHASE18_SUITE:?set the private suite JSON path}"
-reviewed_evaluator="${PHASE18_EVALUATOR:?set the pinned Sonnet 4.6 evaluator descriptor}"
+reviewed_evaluator="${PHASE18_EVALUATOR:?set the verified Opus 5.5 evaluator descriptor}"
 private_experiments="${PHASE18_EXPERIMENTS:?set a private experiment directory}"
 ```
 
@@ -274,7 +274,7 @@ retry behavior is bounded at the task/evaluator boundary, so an execution or
 score error is recorded once and later selected cases can continue. The native
 report has one row per `(case, evaluator)`—four rows for two cases and the two
 custom evaluators. Each case's deterministic row contains the eight named
-findings. The advisory row retains the actual pinned AgentCore Sonnet 4.6
+findings. The advisory row retains the actual pinned AgentCore Opus 5.5
 categorical verdict and reason, plus its selected scoring attempt and full
 identity references. Its required native numeric field is `0.0` with
 `numericPlaceholder: true`; that placeholder is not used by the policy.
@@ -312,9 +312,10 @@ uv run --offline --project agent --locked python agent/evaluate_case.py show --r
 ```
 
 Score that execution's matching CloudWatch session using the short-lived
-evaluation role and the reviewed evaluator descriptor. For the talk's pinned
-Sonnet 4.6 single-verdict evaluator, the semantic result is advisory. Keep the
-evaluator configuration and reviewed reference inputs with the score. Release
+evaluation role and the reviewed evaluator descriptor. The retained S2 receipt
+uses the historical Sonnet 4.6 single-verdict evaluator, whose semantic result
+is advisory; new active S3/S4 scores use the verified Opus 5.5 evaluator. Keep
+the evaluator configuration and reviewed reference inputs with the score. Release
 decisions still require the deterministic findings and an identity-bound human
 review of the exact report, trace and pending artifact.
 
@@ -445,8 +446,8 @@ uv run --offline --project agent --locked python agent/evaluate_case.py show \
   --run "$run_dir"
 ```
 
-Score the fresh execution with the same pinned Sonnet 4.6 evaluator used by S2.
-The score is advisory feedback and remains separate from deterministic findings.
+Score the fresh execution with the verified active Opus 5.5 evaluator. The
+score is advisory feedback and remains separate from deterministic findings.
 
 ```sh
 uv run --project agent --locked python agent/evaluate_case.py score \
