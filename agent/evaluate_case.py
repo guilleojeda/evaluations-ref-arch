@@ -384,6 +384,26 @@ def _reviewed_case_from_control(control: Mapping[str, Any]) -> Mapping[str, Any]
     raise ValueError("calibration control reviewed case lacks expectations, evidence, or review")
 
 
+def _calibration_assertions(
+    control: Mapping[str, Any],
+    reviewed_case: Mapping[str, Any] | None,
+) -> list[str]:
+    """Build calibration references without mixing legacy policy and case facts."""
+
+    if reviewed_case is not None:
+        # A reviewed case is authoritative: use exactly the production policy
+        # plus case assertions, not stale assertions retained on the control.
+        return judgment_assertions(reviewed_case)
+
+    # Case-less historical controls are trusted calibration inputs. Preserve
+    # their facts while deduplicating the canonical five-policy series.
+    output: list[str] = []
+    for item in (*judgment_assertions(), *control["assertions"]):
+        if item not in output:
+            output.append(item)
+    return output
+
+
 def _calibrate(
     source: Path,
     pin_path: Path,
@@ -394,7 +414,7 @@ def _calibrate(
     _validate_control(fixture)
     observed = execution_content(fixture["sessionSpans"])
     reviewed_case = _reviewed_case_from_control(fixture)
-    assertions = judgment_assertions(reviewed_case, existing_policy=fixture["assertions"])
+    assertions = _calibration_assertions(fixture, reviewed_case)
     assertions.extend(evidence_assertions(observed))
     pin = _read(pin_path)
     mode = pin.get("evaluatorMode", DEFAULT_MODE)
