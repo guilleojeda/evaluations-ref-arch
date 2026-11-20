@@ -230,7 +230,10 @@ def case_rows(root: Path, roster: dict[str, Any], suite: str, *, authenticate_au
     else:
         if set(case_ids) != fixed:
             raise InputError("stock gate must retain exactly the historical fixed denial/capacity/recovery cases")
-        case_ids = list(FIXED_CASE_IDS)
+        # Preserve the authenticated manifest order. The fixed-set check
+        # above protects membership without rewriting the source archive's
+        # deliberate order.
+        case_ids = list(case_ids)
     return case_ids, audience, rows, evaluator, evaluator_sha
 
 
@@ -329,8 +332,11 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         gate.update({"bucket": pointer.get("bucket"), "s3Key": pointer.get("s3Key"), "pointerCaseIds": pointer.get("caseIds"), "pointerSha256": pointer.get("sha256"), "pointerDocument": pointer, "evaluatorSha256": pointer.get("evaluatorSha256")})
         need_audience = "S1" in requested or (suite == "carried" and any(stage in {"S3", "S5"} for stage in requested))
         case_ids, audience, rows, evaluator, evaluator_sha = case_rows(root, {**roster, "gate": gate}, suite, authenticate_audience=need_audience)
-        if gate.get("pointerCaseIds") != case_ids or gate.get("evaluatorSha256") != evaluator_sha:
-            raise InputError("selected qualification pointer case roster differs from its authenticated manifest")
+        require_case_membership(
+            gate.get("pointerCaseIds"), case_ids, "selected qualification pointer caseIds"
+        )
+        if gate.get("evaluatorSha256") != evaluator_sha:
+            raise InputError("selected qualification pointer evaluator differs from its authenticated manifest")
         gate["evaluatorSha256"] = evaluator_sha
     else:
         gate = {"archiveSha256": None, "suiteSha256": None, "fixedDenialCaseId": "phase14.denied-inventory-read.prepared"}
@@ -432,8 +438,9 @@ def build(args: argparse.Namespace) -> dict[str, Any]:
         if human_review.get("manifestSha256") != demo_deploy["qualificationManifestSha256"] or approval.get("state") != "approved" or approval.get("environment") != "repaired-publication" or approval.get("headSha") != demo_deploy["sourceRevision"]:
             raise InputError("live-release binding human review tuple does not match the published source")
         pointer = qualification.get("inputPointer")
-        if not isinstance(pointer, dict) or set(pointer) != pointer_fields or pointer != gate.get("pointerDocument") or pointer.get("schemaVersion") != 1 or pointer.get("bucket") != gate.get("bucket") or pointer.get("s3Key") != gate.get("s3Key") or pointer.get("sha256") != gate.get("archiveSha256") or pointer.get("s3Key") != f"agent-evaluation/phase18/inputs/{gate.get('archiveSha256')}/staging.tar.gz" or pointer.get("suiteSha256") != gate.get("suiteSha256") or pointer.get("caseIds") != case_ids or pointer.get("evaluatorSha256") != gate.get("evaluatorSha256"):
+        if not isinstance(pointer, dict) or set(pointer) != pointer_fields or pointer != gate.get("pointerDocument") or pointer.get("schemaVersion") != 1 or pointer.get("bucket") != gate.get("bucket") or pointer.get("s3Key") != gate.get("s3Key") or pointer.get("sha256") != gate.get("archiveSha256") or pointer.get("s3Key") != f"agent-evaluation/phase18/inputs/{gate.get('archiveSha256')}/staging.tar.gz" or pointer.get("suiteSha256") != gate.get("suiteSha256") or pointer.get("evaluatorSha256") != gate.get("evaluatorSha256"):
             raise InputError("live-release binding input pointer does not exactly match the selected suite")
+        require_case_membership(pointer.get("caseIds"), case_ids, "live-release input pointer caseIds")
         if demo_deploy.get("suiteSha256") != gate.get("suiteSha256") or demo_deploy.get("evaluatorSha256") != gate.get("evaluatorSha256"):
             raise InputError("live-release binding qualified suite/evaluator does not exactly match the selected suite")
         result["demoDeploy"] = demo_deploy

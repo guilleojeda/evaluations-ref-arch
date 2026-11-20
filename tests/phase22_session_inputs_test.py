@@ -215,6 +215,22 @@ class SessionInputFixture:
         self.carried_archive_sha = carried_sha
         self.stock_archive_sha = stock_sha
 
+    def reorder_stock_archive(self, case_ids: list[str]) -> None:
+        rows_by_id = {row["caseId"]: row for row in self.fixed_rows}
+        rows = [rows_by_id[case_id] for case_id in case_ids]
+        stock_sha = self._write_archive("gate/stock-staging.tar.gz", rows, self.gate_evaluator)
+        pointer_path = self.root / "gate/stock-qualification-input.json"
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+        pointer["sha256"] = stock_sha
+        pointer["s3Key"] = f"agent-evaluation/phase18/inputs/{stock_sha}/staging.tar.gz"
+        pointer_path.write_text(json.dumps(pointer) + "\n", encoding="utf-8")
+        self.stock_archive_sha = stock_sha
+        self.roster["selectedDigests"]["gate/stock-staging.tar.gz"] = stock_sha  # type: ignore[index]
+        self.roster["selectedDigests"]["gate/stock-qualification-input.json"] = self._selected_digest(  # type: ignore[index]
+            "gate/stock-qualification-input.json"
+        )
+        self.roster_path.write_text(json.dumps(self.roster, indent=2) + "\n", encoding="utf-8")
+
     def use_legacy_carried_gate(self) -> None:
         """Switch this isolated fixture to the pre-replacement carried roster."""
         carried_sha = self._write_archive(
@@ -515,6 +531,29 @@ class SessionInputCommandTests(unittest.TestCase):
         self.assertIn("prepared/denial.frozen.json", stock_identity["paths"])
         self.assertEqual(carried.output_json["suiteMode"], "carried")  # type: ignore[attr-defined]
         self.assertEqual(stock.output_json["suiteMode"], "stock")  # type: ignore[attr-defined]
+
+    def test_stock_preserves_manifest_order_and_accepts_pointer_order_difference(self) -> None:
+        manifest_order = [FIXED_CASE_IDS[1], FIXED_CASE_IDS[0], FIXED_CASE_IDS[2]]
+        self.fixture.reorder_stock_archive(manifest_order)
+        result = self.run_cli(stage="S4", suite="stock")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        identity = result.output_json["stages"]["S4"]  # type: ignore[attr-defined]
+        self.assertEqual(identity["caseIds"], manifest_order)
+        self.fixture.write_binding(self.fixture.binding("stock"))
+        s5 = self.run_cli(stage="S5", suite="stock", binding=True)
+        self.assertEqual(s5.returncode, 0, s5.stderr)
+        self.assertEqual(s5.output_json["stages"]["S5"]["caseIds"], manifest_order)  # type: ignore[attr-defined]
+
+    def test_stock_pointer_duplicate_case_id_remains_rejected(self) -> None:
+        pointer_path = self.fixture.root / "gate/stock-qualification-input.json"
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+        pointer["caseIds"] = [FIXED_CASE_IDS[1], FIXED_CASE_IDS[1], FIXED_CASE_IDS[2]]
+        pointer_path.write_text(json.dumps(pointer) + "\n", encoding="utf-8")
+        self.fixture.roster["selectedDigests"]["gate/stock-qualification-input.json"] = sha256(pointer_path)  # type: ignore[index]
+        self.fixture.roster_path.write_text(json.dumps(self.fixture.roster, indent=2) + "\n", encoding="utf-8")
+        result = self.run_cli(stage="S4", suite="stock")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("selected qualification pointer caseIds", result.stderr)
 
     def test_s2_direct_entry_does_not_require_the_unselected_s1_frozen_file(self) -> None:
         (self.fixture.root / "audience/denial-session.frozen.json").unlink()
