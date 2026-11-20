@@ -34,7 +34,7 @@ observed.
 
 ```sh
 uv run --project agent --locked python agent/captured_evidence.py export \
-  --profile reinvent-2026-talk --account-id 027224425948 --region us-east-1 \
+  --profile "${AWS_PROFILE:?setup must export the verified AWS profile}" --account-id "${AWS_ACCOUNT_ID:?setup must export the verified AWS account}" --region us-east-1 \
   --api-id "$app_api_id" --alarm-arn "$alarm_arn" \
   --transition-at "$transition_at" --run-id "$run_id" \
   --start "$window_start" --end "$window_end" --output "$bundle"
@@ -200,7 +200,7 @@ Set these private paths outside the editable checkout:
 
 ```sh
 reviewed_suite="${PHASE18_SUITE:?set the private suite JSON path}"
-reviewed_evaluator="${PHASE18_EVALUATOR:?set the pinned Sonnet 4.6 evaluator descriptor}"
+reviewed_evaluator="${PHASE18_EVALUATOR:?set the pinned Opus 5.5 evaluator descriptor}"
 private_experiments="${PHASE18_EXPERIMENTS:?set a private experiment directory}"
 ```
 
@@ -232,7 +232,7 @@ retry behavior is bounded at the task/evaluator boundary, so an execution or
 score error is recorded once and later selected cases can continue. The native
 report has one row per `(case, evaluator)`—four rows for two cases and the two
 custom evaluators. Each case's deterministic row contains the eight named
-findings. The advisory row retains the actual pinned AgentCore Sonnet 4.6
+findings. The advisory row retains the actual pinned AgentCore Opus 5.5
 categorical verdict and reason, plus its selected scoring attempt and full
 identity references. Its required native numeric field is `0.0` with
 `numericPlaceholder: true`; that placeholder is not used by the policy.
@@ -271,7 +271,7 @@ uv run --offline --project agent --locked python agent/evaluate_case.py show --r
 
 Score that execution's matching CloudWatch session using the short-lived
 evaluation role and the reviewed evaluator descriptor. For the talk's pinned
-Sonnet 4.6 single-verdict evaluator, the semantic result is advisory. Keep the
+Opus 5.5 single-verdict evaluator, the semantic result is advisory. Keep the
 evaluator configuration and reviewed reference inputs with the score. Release
 decisions still require the deterministic findings and an identity-bound human
 review of the exact report, trace and pending artifact.
@@ -290,7 +290,7 @@ Configure the locked AWS OpenTelemetry distribution for the dedicated
 outside-Runtime trace destination:
 
 ```sh
-export AWS_ACCOUNT_ID=027224425948 AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1
+export AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:?setup must export the verified AWS account}" AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1
 export AGENT_OBSERVABILITY_ENABLED=true AWS_GENAI_CONTENT_EXTRACTION_OPT_OUT=true
 export OTEL_PYTHON_DISTRO=aws_distro OTEL_PYTHON_CONFIGURATOR=aws_configurator
 export OTEL_RESOURCE_ATTRIBUTES=service.name=incident-triage-evaluation,aws.log.group.names=/aws/bedrock-agentcore/incident-triage-evaluation
@@ -359,7 +359,7 @@ uv run --offline --project agent --locked python agent/evaluate_case.py show \
   --run "$run_dir"
 ```
 
-Score the fresh execution with the same pinned Sonnet 4.6 evaluator used by S2.
+Score the fresh execution with the same pinned Opus 5.5 evaluator used by S2.
 The score is advisory feedback and remains separate from deterministic findings.
 
 ```sh
