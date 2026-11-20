@@ -665,9 +665,113 @@ def _timing_gap_windows(value: Any) -> str:
                 if timestamp not in {"missing", "invalid"}:
                     bounds.append(f"{label} {timestamp}")
                 break
+        else:
+            if item == "reference time clips the requested log window" or item == "reference time clips the requested metric window" or item == "reference time clips the requested change window":
+                bounds.append("reference time clips requested window")
+            elif item == "requested log window is after the reference time" or item == "requested metric window is after the reference time" or item == "requested change window is after the reference time":
+                bounds.append("requested window is after reference time")
     if len(bounds) < len(value):
         bounds.append("additional gaps detailed in native result")
-    return "|".join(bounds) if bounds else "none"
+    return "|".join(bounds) if bounds else ("none" if value == [] else "capture bounds missing")
+
+
+def _timing_epoch_ns(value: Any) -> int | None:
+    """Parse the bounded timestamp forms used by captured source results."""
+
+    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            number = float(value)
+            if not math.isfinite(number):
+                return None
+            if abs(number) >= 100_000_000_000:
+                number /= 1_000
+            return int(round(number * 1_000_000_000))
+        text = value.strip()
+        if re.fullmatch(r"[+-]?[0-9]+(?:\.[0-9]+)?", text):
+            number = float(text)
+            if not math.isfinite(number):
+                return None
+            if abs(number) >= 100_000_000_000:
+                number /= 1_000
+            return int(round(number * 1_000_000_000))
+        parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            return None
+        delta = parsed.astimezone(timezone.utc) - datetime(1970, 1, 1, tzinfo=timezone.utc)
+        result = (delta.days * 86_400 + delta.seconds) * 1_000_000_000 + delta.microseconds * 1_000
+        fraction = re.search(r"[.,]([0-9]+)(?=Z$|[+-])", text)
+        if fraction is not None and len(fraction.group(1)) > 6:
+            result += int(fraction.group(1)[6:9].ljust(3, "0"))
+        return result
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _timing_capture_end(value: Any) -> tuple[str, int | None]:
+    """Return the proven archive end, or an explicit unknown marker."""
+
+    if not isinstance(value, list):
+        return ("missing" if value is None else "invalid", None)
+    prefix = "capture coverage ends at "
+    candidates: list[tuple[str, int]] = []
+    for item in value:
+        if not isinstance(item, str) or not item.startswith(prefix):
+            continue
+        raw = item[len(prefix):].strip()
+        display = _timing_time(raw)
+        epoch = _timing_epoch_ns(raw)
+        if display in {"missing", "invalid"} or epoch is None:
+            return ("invalid", None)
+        candidates.append((display, epoch))
+    if not candidates:
+        return ("missing", None)
+    # Multiple source bounds are safest when interpreted as the earliest proven
+    # end; later rows cannot establish coverage beyond an earlier truncation.
+    display, epoch = min(candidates, key=lambda item: item[1])
+    return display, epoch
+
+
+def _timing_effective_upper_bound(result: Mapping[str, Any]) -> tuple[str, str]:
+    """Intersect request end, proven archive end, and the case cutoff.
+
+    A partial result without a structured archive end cannot establish an
+    effective upper bound.  Preserve that uncertainty instead of treating the
+    requested window as captured coverage.
+    """
+
+    window = result.get("window")
+    requested_value = window.get("end") if isinstance(window, Mapping) else None
+    requested_display = _timing_time(requested_value)
+    requested_ns = _timing_epoch_ns(requested_value)
+    reference_value = result.get("referenceTime")
+    reference_display = _timing_time(reference_value)
+    reference_ns = _timing_epoch_ns(reference_value)
+    archive_display, archive_ns = _timing_capture_end(result.get("gaps"))
+    if archive_ns is None and result.get("completeness") == "complete" and requested_ns is not None:
+        archive_display, archive_ns = requested_display, requested_ns
+    if requested_ns is None or reference_ns is None or archive_ns is None:
+        effective = "unknown"
+    else:
+        effective = min(
+            ((requested_ns, requested_display), (archive_ns, archive_display), (reference_ns, reference_display)),
+            key=lambda item: item[0],
+        )[1]
+    return archive_display, effective
+
+
+def _timing_list(value: Any) -> str:
+    """Render a bounded list of timestamps without inventing a missing bound."""
+
+    if value is None:
+        return "missing"
+    if not isinstance(value, list):
+        return "invalid"
+    rendered = [_timing_time(item) for item in value[:8]]
+    if len(value) > len(rendered):
+        rendered.append(f"omitted:{len(value) - len(rendered)}")
+    return ",".join(rendered) if rendered else "empty"
 
 
 def _timing_coverage(result: Mapping[str, Any]) -> str:
@@ -682,48 +786,92 @@ def _timing_coverage(result: Mapping[str, Any]) -> str:
     completeness = _timing_token(result.get("completeness"))
     truncated = result.get("truncated")
     truncated_value = str(truncated).lower() if isinstance(truncated, bool) else "invalid"
+    archive_end, effective_end = _timing_effective_upper_bound(result)
     return (
         f"source={_timing_token(result.get('source'))} "
         f"scope={_timing_scope(result.get('scope'))} "
         f"windowStart={window_start} windowEnd={window_end} "
+        f"requestedWindowEnd={_timing_time(window.get('end') if isinstance(window, Mapping) else None)} "
+        f"archiveCoverageEnd={archive_end} effectiveUpperBound={effective_end} "
         f"referenceTime={_timing_time(result.get('referenceTime'))} "
+        f"sourceObservedAt={_timing_time(result.get('observedAt'))} "
+        f"sourceAcquiredAt={_timing_time(result.get('acquiredAt'))} "
         f"completeness={completeness} truncated={truncated_value} "
-        f"gaps={_timing_count(result.get('gaps'))} errors={_timing_count(result.get('errors'))} "
-        f"coverageGaps={_timing_gap_windows(result.get('gaps'))}"
+        f"coverageGaps={_timing_gap_windows(result.get('gaps'))} "
+        f"gaps={_timing_count(result.get('gaps'))} errors={_timing_count(result.get('errors'))}"
     )
 
 
-def _timing_row(index: int, row: Any) -> str:
+def _timing_row(index: int, row: Any, tool: str) -> str:
     if not isinstance(row, Mapping):
         return f"row[{index}]=invalid"
-    return (
-        f"row[{index}] resource={_timing_token(row.get('resource'))} "
-        f"eventId={_timing_token(row.get('eventId'))} "
-        f"logStreamName={_timing_token(row.get('logStreamName'))} "
-        f"eventTime={_timing_time(row.get('timestamp'))} "
-        f"ingestionTime={_timing_time(row.get('ingestionTime'))} "
-        f"availableAt={_timing_time(row.get('availableAt'))}"
+
+    identity = row.get("eventId")
+    if identity is None:
+        identity = row.get("Id")
+    if identity is None:
+        identity = row.get("kind")
+    resource = row.get("resource")
+    if resource is None:
+        resource = row.get("function")
+    if resource is None:
+        configuration = row.get("configuration")
+        if isinstance(configuration, Mapping):
+            resource = configuration.get("FunctionName")
+    if resource is None:
+        resource = row.get("roleName")
+
+    parts = [
+        f"row[{index}] resource={_timing_token(resource)}",
+        f"rowId={_timing_token(identity)}",
+    ]
+    if tool == "search_logs":
+        # CloudWatch log occurrence is the event timestamp.  Ingestion and
+        # availability are intentionally separate fields below.
+        parts.append(f"eventTime={_timing_time(row.get('timestamp'))}")
+        parts.append(f"logStreamName={_timing_token(row.get('logStreamName'))}")
+    elif tool == "read_change_history":
+        parts.append(f"eventTime={_timing_time(row.get('EventTime'))}")
+    elif tool == "read_metrics":
+        parts.append(f"bucketStarts={_timing_list(row.get('Timestamps'))}")
+        parts.append(f"bucketAvailability={_timing_list(row.get('availability'))}")
+    else:
+        # Configuration rows are point-in-time snapshots, not event rows.
+        parts.append("eventTime=not-applicable")
+    parts.extend(
+        (
+            f"ingestionTime={_timing_time(row.get('ingestionTime'))}",
+            f"availableAt={_timing_time(row.get('availableAt'))}",
+            f"rowObservedAt={_timing_time(row.get('observedAt'))}",
+        )
     )
+    return " ".join(parts)
 
 
 def timing_evidence_assertions(tool_calls: Sequence[Mapping[str, Any]]) -> list[str]:
-    """Project authenticated ``search_logs`` results into judge-only timing facts.
+    """Project authenticated read results into judge-only effective-time facts.
 
     The native spans remain the submitted execution evidence. These assertions
-    contain only the sanitized result fields already returned by successful log
-    calls: source/coverage metadata and row identity/timing fields. Free-form
-    query text, log messages, and projected ``fields`` are intentionally not
-    copied into evaluator reference inputs.
+    contain only bounded source/coverage metadata and row identity/timing fields
+    already returned by successful read calls. Every successful read is
+    represented, including an empty partial result. Free-form query text, log
+    messages, projected ``fields``, metric values, and configuration values are
+    intentionally not copied into evaluator reference inputs. Missing clocks or
+    coverage bounds remain explicitly marked as missing; they are never filled
+    from the requested window or reference time.
     """
 
     if not isinstance(tool_calls, Sequence) or isinstance(tool_calls, (str, bytes)):
         return []
     assertions: list[str] = []
     for call in tool_calls:
-        if not isinstance(call, Mapping) or call.get("tool") != "search_logs":
+        if not isinstance(call, Mapping) or call.get("tool") not in {
+            "search_logs", "read_metrics", "read_configuration", "read_change_history",
+        }:
             continue
         if call.get("status") != "success":
             continue
+        tool = str(call["tool"])
         result = call.get("result")
         if not isinstance(result, Mapping):
             continue
@@ -735,14 +883,15 @@ def timing_evidence_assertions(tool_calls: Sequence[Mapping[str, Any]]) -> list[
             observation_state = "empty"
             rows: list[Any] = []
         elif isinstance(observations, list):
-            observation_state = "present"
+            observation_state = "present" if observations else "empty"
             rows = observations
         else:
             observation_state = "invalid"
             rows = []
 
         base = (
-            "Source log view: verified search_logs timing projection "
+            "Source effective-time view: verified read timing projection "
+            f"tool={tool} "
             f"callId={_timing_token(call.get('callId'))} "
             f"{_timing_coverage(result)} "
             f"observations={observation_state} returnedRows={len(rows)}"
@@ -751,7 +900,7 @@ def timing_evidence_assertions(tool_calls: Sequence[Mapping[str, Any]]) -> list[
         row_parts: list[str] = []
         size = len(base.encode("utf-8"))
         for index, row in enumerate(rows[:_MAX_TIMING_ROWS]):
-            candidate = f"; {_timing_row(index, row)}"
+            candidate = f"; {_timing_row(index, row, tool)}"
             size += len(candidate.encode("utf-8"))
             if size > _MAX_TIMING_ASSERTION_BYTES:
                 break
