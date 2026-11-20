@@ -22,13 +22,13 @@ Edit `agent/prompt.py` in this workspace. Restore the rehearsed memory-first rec
 
 ```sh
 checkpoint_map="${PHASE22_CHECKPOINTS:?set the maintained checkpoint map}"
-faulty_s2_ref='refs/tags/talk/v1/S2'
-expected_s2_commit="$(python3 -c 'import json,sys; source=json.load(open(sys.argv[1], encoding="utf-8"))["checkpoints"]["S2"]; assert source["tag"] == "talk/v1/S2"; print(source["commit"])' "$checkpoint_map")"
+faulty_s2_ref="refs/tags/$(jq -er '.checkpoints.S2.tag | select(test("^talk/v[0-9]+/S2$"))' "$checkpoint_map")"
+expected_s2_commit="$(jq -er '.checkpoints.S2.commit | select(test("^[0-9a-f]{40}$"))' "$checkpoint_map")"
 test "$(git rev-parse --verify "${faulty_s2_ref}^{commit}")" = "$expected_s2_commit" &&
   git cat-file -e "${faulty_s2_ref}^{commit}:agent/prompt.py" &&
   git diff --quiet --cached -- agent/prompt.py &&
   git diff --quiet -- agent/prompt.py &&
-  git restore --source=refs/tags/talk/v1/S2 --worktree -- agent/prompt.py
+  git restore --source="$faulty_s2_ref" --worktree -- agent/prompt.py
 ```
 
 The two quiet diff checks separately reject staged and unstaged prompt changes, including opposite changes whose net diff against `HEAD` is empty. `git restore --worktree` leaves the index untouched. The command does not replace the S5 branch, alter any other path, or rewrite the historical `agent/prompts/s3-repair.patch`, which remains the reviewed S3 input. Show the full prompt diff before committing. Confirm the suite pointer and all other inputs are unchanged. A push to this branch starts the real workflow.
