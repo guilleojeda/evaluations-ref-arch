@@ -37,9 +37,9 @@ from captured_execution import (
 )
 from evaluation_telemetry import (
     CloudWatchSession,
+    evidence_assertions,
     execution_content,
     score_execution,
-    timing_evidence_assertions,
 )
 
 
@@ -132,8 +132,12 @@ def _provision(model_id: str, mode: str = DEFAULT_MODE) -> dict[str, Any]:
         None,
     )
     if evaluator_id is None:
+        # Bind idempotency to the complete immutable request identity. A
+        # digest-only token could be reused by a differently named provisional
+        # evaluator with the same configuration.
+        client_token = _digest({"evaluatorName": name, "evaluatorConfig": config})
         response = control.create_evaluator(
-            clientToken=digest, evaluatorName=name, level="SESSION", evaluatorConfig=config,
+            clientToken=client_token, evaluatorName=name, level="SESSION", evaluatorConfig=config,
             description="Captured incident diagnosis support and evidence grounding",
             tags={"Project": "IncidentTriageDemo"},
         )
@@ -373,7 +377,7 @@ def _calibrate(
     fixture = _read(source)
     _validate_control(fixture)
     observed = execution_content(fixture["sessionSpans"])
-    assertions = fixture["assertions"] + timing_evidence_assertions(observed["toolCalls"])
+    assertions = fixture["assertions"] + evidence_assertions(observed)
     pin = _read(pin_path)
     mode = pin.get("evaluatorMode", DEFAULT_MODE)
     if mode not in SEMANTIC_MODES:

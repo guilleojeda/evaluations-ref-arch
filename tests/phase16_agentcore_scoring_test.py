@@ -483,18 +483,25 @@ class AgentCoreSingleCategoricalScoringTests(unittest.TestCase):
         module = importlib.import_module("agentcore_evaluation")
         config = module.evaluator_config(module.SONNET_46_MODEL_ID, module.SINGLE_MODE)
         rubric = config["llmAsAJudge"]
-        self.assertEqual(module.SINGLE_RUBRIC_ID, "incident-triage.semantic.single.v1")
+        self.assertEqual(module.SINGLE_RUBRIC_ID, "incident-triage.semantic.single.v2")
         self.assertIn("categorical", rubric["ratingScale"])
         self.assertNotIn("multiDimensional", rubric["ratingScale"])
+        self.assertEqual(
+            {"temperature": 0.0, "maxTokens": 2400},
+            rubric["modelConfig"]["bedrockEvaluatorModelConfig"]["inferenceConfig"],
+        )
+        compatibility = module.evaluator_config(module.SONNET_46_MODEL_ID, module.MULTI_MODE)
+        self.assertEqual(
+            {"temperature": 0.0, "maxTokens": 2000},
+            compatibility["llmAsAJudge"]["modelConfig"]["bedrockEvaluatorModelConfig"]["inferenceConfig"],
+        )
         for phrase in (
             "BOTH requirements",
             "assessment and uncertainty",
-            "source claims and coverage",
-            "independently asserted",
-            "unsupported causal inferences",
-            "Identify both diagnosis and grounding defects",
-            "event time, ingestion time, availability time",
-            "without availableAt",
+            "source claims, timestamps, and cutoff-bounded coverage",
+            "HARD CUTOFF RULE",
+            "Do not accept a later partial or empty result",
+            "eventTime, ingestionTime, availableAt",
             "Recommendation action, target, and value correctness",
         ):
             with self.subTest(phrase=phrase):

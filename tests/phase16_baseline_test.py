@@ -434,6 +434,99 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         changed_projection = timing_evidence_assertions(changed)
         self.assertNotEqual(assertions[0], changed_projection[0])
 
+    def test_structured_claim_facts_joins_report_and_authenticated_rows_without_labels(self):
+        from evaluation_telemetry import _structured_claim_facts_assertion
+
+        content = {
+            "report": {
+                "summary": "The inventory read returned one event.",
+                "assessment": "ongoing",
+                "uncertainties": ["The archive has a later query observation."],
+                "alternatives": [],
+                "evidence": [{
+                    "source": "logs",
+                    "resource": "inventory",
+                    "observedAt": "2026-11-16T03:02:30.000Z",
+                    "windowStart": "2026-11-16T03:02:00.000Z",
+                    "windowEnd": "2026-11-16T03:02:30.000Z",
+                    "finding": "The event was observed before the cutoff.",
+                }],
+            },
+            "toolCalls": [{
+                "tool": "search_logs",
+                "callId": "logs-1",
+                "status": "success",
+                "result": {
+                    "source": "logs",
+                    "scope": ["inventory"],
+                    "referenceTime": "2026-11-16T03:02:30.000Z",
+                    "window": {
+                        "start": "2026-11-16T03:02:00.000Z",
+                        "end": "2026-11-16T03:02:30.000Z",
+                    },
+                    "observedAt": "2026-11-16T03:02:31.000Z",
+                    "acquiredAt": "2026-11-16T03:02:31.100Z",
+                    "completeness": "complete",
+                    "truncated": False,
+                    "gaps": [],
+                    "observations": [{
+                        "resource": "inventory",
+                        "eventId": "log-1",
+                        "timestamp": "2026-11-16T03:02:20.000Z",
+                        "ingestionTime": "2026-11-16T03:02:21.000Z",
+                        "availableAt": "2026-11-16T03:02:22.000Z",
+                        "observedAt": "2026-11-16T03:02:30.500Z",
+                        "fields": {"routeKey": "GET /inventory"},
+                    }],
+                },
+            }],
+        }
+
+        assertion = _structured_claim_facts_assertion(content)
+
+        self.assertIn("Structured authenticated report/source view (verified facts, no expected labels):", assertion)
+        self.assertIn('"summaryClaims"', assertion)
+        self.assertIn('"joinedLambdaClaims"', assertion)
+        self.assertIn('"citationClaims"', assertion)
+        self.assertIn('"typedResourceFacts"', assertion)
+        self.assertIn('"routeKey":"GET /inventory"', assertion)
+        self.assertIn('"eventTime":"2026-11-16T03:02:20.000Z"', assertion)
+        self.assertIn('"laterIntervalCapability":"none beyond referenceTime"', assertion)
+        self.assertNotIn('"verdict"', assertion)
+        self.assertNotIn('"label"', assertion)
+        self.assertLess(len(assertion.encode("utf-8")), 100_000)
+
+    def test_structured_claim_facts_does_not_invent_unreserved_concurrency(self):
+        from evaluation_telemetry import _structured_claim_facts_assertion
+
+        content = {
+            "report": {"summary": "The configuration read was incomplete.", "evidence": []},
+            "toolCalls": [{
+                "tool": "read_configuration",
+                "status": "success",
+                "result": {
+                    "observations": [
+                        {
+                            "kind": "lambda",
+                            "function": "IncidentTriageDemoCheckout",
+                            "configuration": {"FunctionName": "IncidentTriageDemoCheckout"},
+                            "concurrency": {"unavailable": "AccessDeniedException"},
+                        },
+                        {
+                            "kind": "lambda-version",
+                            "configuration": {"FunctionName": "IncidentTriageDemoInventory", "Version": "76"},
+                        },
+                    ],
+                },
+            }],
+        }
+
+        assertion = _structured_claim_facts_assertion(content)
+
+        self.assertIn('"concurrency":{"unavailable":"AccessDeniedException"}', assertion)
+        self.assertIn('"concurrencyStatus":"missing"', assertion)
+        self.assertNotIn('"reservedConcurrency":"unreserved"', assertion)
+
     def test_valid_captured_run_records_real_tool_results_and_reopens_offline(self):
         # The future acquisition cannot make an earlier event retroactively visible.
         bundle = json.loads(self.bundle.read_text())
@@ -506,10 +599,14 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         self.assertEqual(len(evaluate.calls), 1)
         self.assertEqual(evaluate.calls[0]["evaluationInput"]["sessionSpans"], native_spans)
         from agentcore_evaluation import case_assertions
-        from evaluation_telemetry import timing_evidence_assertions
+        from evaluation_telemetry import (
+            evidence_assertions,
+            execution_content,
+        )
+        observed = execution_content(native_spans)
         expected_assertions = [
             *case_assertions(reopened_case),
-            *timing_evidence_assertions(record["ledger"]["toolCalls"]),
+            *evidence_assertions(observed),
         ]
         self.assertEqual(expected_assertions, scored["assertions"])
         self.assertEqual(
