@@ -256,6 +256,12 @@ class S3WorkspaceAcceptance(unittest.TestCase):
         self.assertIsNotNone(prompt_spec.loader)
         prompt_module = importlib.util.module_from_spec(prompt_spec)
         prompt_spec.loader.exec_module(prompt_module)
+        self.assertIn("copy the matching series' observedAt[i] into the citation", prompt_module.SYSTEM_PROMPT)
+        self.assertIn("Timestamps[i] starts the measured bucket", prompt_module.SYSTEM_PROMPT)
+        self.assertNotIn(
+            "Choose Increase reserved concurrency only when the same measured period",
+            prompt_module.SYSTEM_PROMPT,
+        )
         report = report_for(
             recommendation("Restore inventory access", "inventory", "75", "version")
         )
