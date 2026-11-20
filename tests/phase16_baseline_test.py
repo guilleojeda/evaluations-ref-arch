@@ -438,7 +438,7 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         from agentcore_evaluation import judgment_assertions
 
         policy = judgment_assertions()
-        combined = judgment_assertions(self.loaded, existing_policy=policy)
+        combined = judgment_assertions(self.loaded)
 
         self.assertEqual([
             "Diagnosis support: assess whether the causal explanation and incident assessment follow from the captured observations at the exact task referenceTime; a correct recommendation cannot rescue an unsupported diagnosis.",
@@ -458,12 +458,7 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         from evaluate_case import _reviewed_case_from_control
         control = {"reviewedCase": self.loaded}
         self.assertEqual(self.loaded, _reviewed_case_from_control(control))
-        self.assertEqual(combined, judgment_assertions(_reviewed_case_from_control(control), existing_policy=policy))
-        legacy = judgment_assertions(
-            self.loaded,
-            existing_policy=[*policy, "Legacy case guidance: use the old assessment label."],
-        )
-        self.assertNotIn("Legacy case guidance", " ".join(legacy))
+        self.assertEqual(combined, judgment_assertions(_reviewed_case_from_control(control)))
 
         from evaluate_case import _calibration_assertions
         historical = _calibration_assertions(
