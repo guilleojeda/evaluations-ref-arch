@@ -686,7 +686,11 @@ class CapturedEvidenceTools(EvidenceTools):
                 if not isinstance(timestamps, list) or not isinstance(values, list):
                     gaps.append("metric observation lacks timestamps or values")
                     continue
-                for timestamp, value in zip(timestamps, values):
+                observed_times = item.get("observedAt")
+                # Older metric exports store one observation clock for the entire series.
+                if not isinstance(observed_times, list):
+                    observed_times = [observed_times] * len(timestamps)
+                for index, (timestamp, value) in enumerate(zip(timestamps, values)):
                     try:
                         bucket_start_ns = _epoch_nanoseconds(timestamp)
                     except (TypeError, ValueError, OverflowError):
@@ -697,11 +701,31 @@ class CapturedEvidenceTools(EvidenceTools):
                         continue
                     if bucket_end_ns > reference_ns:
                         continue
+                    observed_at = observed_times[index] if index < len(observed_times) else None
+                    if observed_at is not None:
+                        try:
+                            observed_ns = _epoch_nanoseconds(observed_at)
+                        except (TypeError, ValueError, OverflowError):
+                            gaps.append("metric observation has an invalid observedAt")
+                            continue
+                        if observed_ns > reference_ns:
+                            continue
+                        if not isinstance(observed_at, str):
+                            observed_at = _iso_nanoseconds(observed_ns)
                     bucket_start = _parse_time(timestamp)
                     key = (str(item.get("Id", item_name)), _iso(bucket_start))
                     previous = candidates.get(key)
                     if previous is None or (available_at_ns, order) >= (previous[0], previous[2]):
-                        candidates[key] = (available_at_ns, {"timestamp": _iso(bucket_start), "value": value, "item": dict(item)}, order)
+                        candidates[key] = (
+                            available_at_ns,
+                            {
+                                "timestamp": _iso(bucket_start),
+                                "value": value,
+                                "observedAt": observed_at,
+                                "item": dict(item),
+                            },
+                            order,
+                        )
 
         by_series: dict[str, dict[str, Any]] = {}
         for (_, _), (available_at_ns, bucket, _) in sorted(candidates.items(), key=lambda pair: pair[0][1]):
@@ -711,6 +735,7 @@ class CapturedEvidenceTools(EvidenceTools):
             series.setdefault("Timestamps", []).append(bucket["timestamp"])
             series.setdefault("Values", []).append(bucket["value"])
             series.setdefault("availability", []).append(_iso_nanoseconds(available_at_ns))
+            series.setdefault("observedAt", []).append(bucket["observedAt"])
             if item.get("StatusCode") not in (None, "Complete"):
                 gaps.append(f"metric {series_id} returned status {item.get('StatusCode')}")
         records = list(by_series.values())

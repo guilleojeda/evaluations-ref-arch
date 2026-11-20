@@ -591,6 +591,7 @@ class EvidenceTools:
                 )
         client = self._client("cloudwatch")
         token: str | None = None
+        response_observed_at: str | None = None
         for _ in range(MAX_PAGES):
             self._check_deadline()
             request: dict[str, Any] = {
@@ -606,11 +607,16 @@ class EvidenceTools:
             except Exception as exc:
                 errors.append(self._safe_error(exc))
                 break
+            # The metric service does not put a retrieval clock on each
+            # returned series.  Capture it immediately after each response so
+            # a bounded native series can carry the actual acquisition time
+            # for every bucket/value pair it contributed.
+            response_observed_at = self._utc_now()
             raw = response.get("MetricDataResults", []) if isinstance(response, Mapping) else []
             for item in raw:
                 if len(metric_results) >= limit:
                     break
-                projected = self._project_metric(item)
+                projected = self._project_metric(item, observed_at=response_observed_at)
                 if projected:
                     metric_results.append(projected)
             token = response.get("NextToken") if isinstance(response, Mapping) else None
@@ -619,6 +625,8 @@ class EvidenceTools:
             if not token:
                 break
         truncated = bool(token) or len(metric_results) >= limit
+        # Keep the result-envelope clock as the operation-completion time.
+        # Per-bucket clocks above retain the response that supplied each row.
         observed_at = self._utc_now()
         return self._result(
             source="cloudwatch",
@@ -1464,13 +1472,20 @@ class EvidenceTools:
         return value
 
     @staticmethod
-    def _project_metric(item: Any) -> dict[str, Any] | None:
+    def _project_metric(item: Any, *, observed_at: str) -> dict[str, Any] | None:
         if not isinstance(item, Mapping):
             return None
         output: dict[str, Any] = {}
         for key in ("Id", "Label", "Timestamps", "Values", "StatusCode", "Messages"):
             if key in item:
                 output[key] = item[key]
+        # Keep the native CloudWatch arrays untouched and add one lower-case
+        # timestamp array with the same positional alignment.  Do not invent
+        # a time for an empty/malformed series; its envelope still records the
+        # bounded acquisition attempt.
+        timestamps, values = output.get("Timestamps"), output.get("Values")
+        if isinstance(timestamps, list) and isinstance(values, list) and len(timestamps) == len(values):
+            output["observedAt"] = [str(observed_at)] * len(timestamps)
         return output or None
 
     def _project_alias(self, item: Mapping[str, Any]) -> dict[str, Any]:
