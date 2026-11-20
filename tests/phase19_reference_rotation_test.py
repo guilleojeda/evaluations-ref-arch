@@ -13,6 +13,7 @@ import copy
 from contextlib import ExitStack
 import hashlib
 import io
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sys
@@ -58,7 +59,8 @@ class RotatingControl(phase19.NativeControl):
 class ReferenceRotationAcceptance(unittest.TestCase):
     def setUp(self) -> None:
         self.fixture = phase19.FaultyReferenceAcceptance("runTest")
-        self.fixture.setUp()
+        with patch.object(phase19, "MODEL_ID", "us.anthropic.claude-sonnet-4-6"):
+            self.fixture.setUp()
         self.addCleanup(self.fixture.tearDown)
 
         # Establish the complete old publication in the native-shaped fakes.
@@ -170,8 +172,12 @@ class ReferenceRotationAcceptance(unittest.TestCase):
         return self.fixture._load()
 
     def test_reviewed_predecessor_rotates_endpoint_and_publication(self):
+        # The native read contains SDK dates as well as the endpoint identity.
+        self.control.endpoints["faulty"]["createdAt"] = datetime(2026, 1, 1, tzinfo=timezone.utc)
         result = self._call(self._module(), self.control, self.adapter, self.controller)
 
+        json.dumps(result)
+        self.assertNotIn("createdAt", result["referenceGeneration"]["observedEndpoint"])
         self.assertEqual("predecessor", result["referenceGeneration"]["mode"])
         self.assertEqual(self.new_descriptor["predecessor"], result["historicalSnapshot"])
         self.assertEqual(OPUS_MODEL_ID, self.controller.items[phase19.PUBLICATION_PK]["modelId"]["S"])

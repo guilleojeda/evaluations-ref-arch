@@ -16,8 +16,8 @@ const RUNTIME_NAME = "IncidentTriageDemoAgent";
 const ADAPTER_NAME = "IncidentTriageDemoAlarmAdapter";
 const ALARM_ARN = `arn:aws:cloudwatch:${REGION}:${ACCOUNT}:alarm:IncidentTriageDemoAppStage5xx`;
 const EVIDENCE_BUCKET = `incident-triage-demo-evidence-${ACCOUNT}-${REGION}`;
-// The active Runtime candidate is Opus 5.5. The immutable faulty reference
-// remains archived with its original Sonnet identity in scripts/faulty-reference.json.
+// Both named endpoints use Opus. Previously published Sonnet versions retain
+// their original profile permission during reference rotation.
 const MODEL_ID = "us.anthropic.claude-opus-5-5";
 const HISTORICAL_MODEL_ID = "us.anthropic.claude-sonnet-4-6";
 export class AgentStack extends DemoStack {

@@ -34,7 +34,10 @@ const INVENTORY_DENIED_ROLE_ARN = `arn:aws:iam::${ACCOUNT}:role/IncidentTriageDe
 const INVENTORY_READ_DENY_POLICY_ARN = `arn:aws:iam::${ACCOUNT}:policy/IncidentTriageDemoInventoryReadDeny`;
 const INVENTORY_VARIANTS_MANIFEST_BUCKET = "cdk-evaltalk-assets-027224425948-us-east-1";
 const EVIDENCE_BUCKET_NAME = `incident-triage-demo-evidence-${ACCOUNT}-${REGION}`;
-const FAULTY_CONFIGURATION_OBJECT = `arn:aws:s3:::${INVENTORY_VARIANTS_MANIFEST_BUCKET}/agent-reference/7febe979fa1365360983d886f9d1dc78b55d9bde91a6fe7357e5f9fd97d2d7a7.json`;
+const FAULTY_CONFIGURATION_OBJECTS = [
+  `arn:aws:s3:::${INVENTORY_VARIANTS_MANIFEST_BUCKET}/agent-reference/7febe979fa1365360983d886f9d1dc78b55d9bde91a6fe7357e5f9fd97d2d7a7.json`,
+  `arn:aws:s3:::${INVENTORY_VARIANTS_MANIFEST_BUCKET}/agent-reference/8128392c1e4909fcbceb1f2cee39906c97c86c105b8142c9f7d0a191786a1372.json`,
+];
 // Qualification stages are immutable under the artifact SHA-256 directory.
 // IAM's single-character wildcard keeps that directory depth and the final
 // configuration filename fixed while allowing future repaired publications.
@@ -96,7 +99,7 @@ export class ControllerStack extends DemoStack {
       { Effect: "Allow", Action: "bedrock-agentcore:GetAgentRuntimeEndpoint", Resource: [agentRuntimeArn.valueAsString, ...configuredEndpointArns] },
     ] } });
     agentReadinessPolicy.cfnOptions.condition = agentConfigured;
-    httpRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadAgentConfiguration", actions: ["s3:GetObject", "s3:GetObjectVersion"], resources: [FAULTY_CONFIGURATION_OBJECT, REPAIRED_CONFIGURATION_OBJECT] }));
+    httpRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadAgentConfiguration", actions: ["s3:GetObject", "s3:GetObjectVersion"], resources: [...FAULTY_CONFIGURATION_OBJECTS, REPAIRED_CONFIGURATION_OBJECT] }));
     const workerRole = new iam.Role(this, "WorkerRole", { roleName: WORKER_ROLE_NAME, assumedBy: new iam.ServicePrincipal("lambda.amazonaws.com"), permissionsBoundary: iam.ManagedPolicy.fromManagedPolicyArn(this, "WorkerBoundary", WORKER_BOUNDARY_ARN), description: "Action worker role for the Incident Triage controller." });
     workerLogGroup.grantWrite(workerRole);
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadControllerRunTable", actions: ["dynamodb:GetItem"], resources: [runTable.tableArn] }));
@@ -115,7 +118,7 @@ export class ControllerStack extends DemoStack {
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadInventoryVariantsManifest", actions: ["s3:GetObject"], resources: [`arn:aws:s3:::${INVENTORY_VARIANTS_MANIFEST_BUCKET}/releases/app/*/inventory-variants.json`] }));
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadStageAlarm", actions: ["cloudwatch:DescribeAlarms", "cloudwatch:DescribeAlarmHistory"], resources: [STAGE_ALARM_ARN] }));
     workerRole.addToPolicy(new iam.PolicyStatement({ sid: "WriteConfigurationCheckpoint", actions: ["s3:PutObject"], resources: [evidenceBucket.arnForObjects("configuration/*")] }));
-    workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadAgentConfiguration", actions: ["s3:GetObject", "s3:GetObjectVersion"], resources: [FAULTY_CONFIGURATION_OBJECT, REPAIRED_CONFIGURATION_OBJECT] }));
+    workerRole.addToPolicy(new iam.PolicyStatement({ sid: "ReadAgentConfiguration", actions: ["s3:GetObject", "s3:GetObjectVersion"], resources: [...FAULTY_CONFIGURATION_OBJECTS, REPAIRED_CONFIGURATION_OBJECT] }));
     const workerReadinessPolicy = new iam.CfnPolicy(this, "WorkerAgentReadinessPolicy", { policyName: "ReadConfiguredAgentRuntime", roles: [workerRole.roleName], policyDocument: { Version: "2012-10-17", Statement: [
       { Effect: "Allow", Action: "bedrock-agentcore:GetAgentRuntime", Resource: agentRuntimeArn.valueAsString },
       { Effect: "Allow", Action: "bedrock-agentcore:GetAgentRuntimeEndpoint", Resource: [agentRuntimeArn.valueAsString, ...configuredEndpointArns] },
