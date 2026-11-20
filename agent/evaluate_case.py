@@ -23,6 +23,7 @@ from agentcore_evaluation import (
     DEFAULT_MODE,
     HAIKU_45_MODEL_ID,
     MULTI_MODE,
+    OPUS_55_MODEL_ID,
     SINGLE_MODE,
     SONNET_46_MODEL_ID,
     evaluator_config,
@@ -470,7 +471,7 @@ def _parser() -> argparse.ArgumentParser:
     calibration.add_argument("--output-root", required=True, type=Path)
     _add_semantic_mode_arg(calibration)
     provision = commands.add_parser("provision", help="prepare an immutable evaluator definition with administrator access")
-    provision.add_argument("--model", required=True, choices=(HAIKU_45_MODEL_ID, SONNET_46_MODEL_ID))
+    provision.add_argument("--model", required=True, choices=(HAIKU_45_MODEL_ID, SONNET_46_MODEL_ID, OPUS_55_MODEL_ID))
     _add_semantic_mode_arg(provision, default=DEFAULT_MODE)
     return parser
 

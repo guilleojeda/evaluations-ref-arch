@@ -34,7 +34,7 @@ observed.
 
 ```sh
 uv run --project agent --locked python agent/captured_evidence.py export \
-  --profile reinvent-2026-talk --account-id 027224425948 --region us-east-1 \
+  --profile "${AWS_PROFILE:?setup must export the verified AWS profile}" --account-id "${AWS_ACCOUNT_ID:?setup must export the verified AWS account}" --region us-east-1 \
   --api-id "$app_api_id" --alarm-arn "$alarm_arn" \
   --transition-at "$transition_at" --run-id "$run_id" \
   --start "$window_start" --end "$window_end" --output "$bundle"
@@ -191,7 +191,7 @@ Configure the locked AWS OpenTelemetry distribution for the dedicated
 outside-Runtime trace destination:
 
 ```sh
-export AWS_ACCOUNT_ID=027224425948 AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1
+export AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:?setup must export the verified AWS account}" AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1
 export AGENT_OBSERVABILITY_ENABLED=true AWS_GENAI_CONTENT_EXTRACTION_OPT_OUT=true
 export OTEL_PYTHON_DISTRO=aws_distro OTEL_PYTHON_CONFIGURATOR=aws_configurator
 export OTEL_RESOURCE_ATTRIBUTES=service.name=incident-triage-evaluation,aws.log.group.names=/aws/bedrock-agentcore/incident-triage-evaluation

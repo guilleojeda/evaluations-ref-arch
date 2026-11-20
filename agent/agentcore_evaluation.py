@@ -24,7 +24,8 @@ SINGLE_FINDING_NAME = "semantic_quality"
 
 HAIKU_45_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 SONNET_46_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
-APPROVED_MODEL_IDS = frozenset({HAIKU_45_MODEL_ID, SONNET_46_MODEL_ID})
+OPUS_55_MODEL_ID = "us.anthropic.claude-opus-5-5"
+APPROVED_MODEL_IDS = frozenset({HAIKU_45_MODEL_ID, SONNET_46_MODEL_ID, OPUS_55_MODEL_ID})
 
 _DIMENSION_NAMES = ("diagnosis_support", "evidence_grounding")
 _RUBRIC = {
@@ -214,10 +215,13 @@ def evaluator_config(model_id: str, mode: str = DEFAULT_MODE) -> dict[str, Any]:
     mode = _validate_mode(mode)
 
     config = copy.deepcopy(_SINGLE_RUBRIC if mode == SINGLE_MODE else _RUBRIC)
+    inference_config = {"maxTokens": 2000}
+    if model_id != OPUS_55_MODEL_ID:
+        inference_config["temperature"] = 0.0
     config["modelConfig"] = {
         "bedrockEvaluatorModelConfig": {
             "modelId": model_id,
-            "inferenceConfig": {"temperature": 0.0, "maxTokens": 2000},
+            "inferenceConfig": inference_config,
         }
     }
     return {"llmAsAJudge": config}
@@ -611,6 +615,7 @@ def score_session(
 __all__ = [
     "APPROVED_MODEL_IDS",
     "HAIKU_45_MODEL_ID",
+    "OPUS_55_MODEL_ID",
     "RUBRIC_ID",
     "SINGLE_FINDING_NAME",
     "SINGLE_MODE",
