@@ -1136,7 +1136,7 @@ def run_experiment(
             or evaluator_descriptor.get("evaluatorMode") != "single"
             or evaluator_descriptor.get("judgeModelId") != MODEL_ID
         ):
-            raise ValueError("evaluator descriptor must pin the single-mode Sonnet 4.6 evaluator")
+            raise ValueError("evaluator descriptor must pin the single-mode Opus 5.5 evaluator")
         source_run_path = Path(source_run).resolve() if source_run is not None else None
         source_directory_path = Path(source_directory).resolve() if source_directory is not None else None
         state, candidate_source, inputs_root, operation_lock, source_origin = _snapshot_experiment(

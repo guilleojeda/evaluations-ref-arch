@@ -23,7 +23,7 @@ from strands import Agent
 from strands.models import BedrockModel
 
 
-MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+MODEL_ID = "us.anthropic.claude-opus-5-5"
 REPORT_SCHEMA_VERSION = 2
 RUN_SECONDS = 240
 MAX_MODEL_REQUESTS = 12

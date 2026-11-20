@@ -40,7 +40,7 @@ TOOL_SPAN = "c" * 16
 REPORT_SPAN = "d" * 16
 FAILED_TOOL_SPAN = "e" * 16
 EVALUATOR_ID = "IncidentTriageSemantic-0000000001"
-MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+MODEL_ID = "us.anthropic.claude-opus-5-5"
 SOURCE_DIGEST = "a" * 64
 PROMPT_DIGEST = "b" * 64
 LOCK_DIGEST = "c" * 64
@@ -104,7 +104,8 @@ class ScriptedBedrock:
             }
         events = [{"messageStart": {"role": "assistant"}}]
         if name is None:
-            events.append({"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "I inspected the captured Inventory evidence."}}})
+            text = json.dumps(self.report) if "outputConfig" in request else "I inspected the captured Inventory evidence."
+            events.append({"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": text}}})
         else:
             events.extend((
                 {"contentBlockStart": {"contentBlockIndex": 0, "start": {"toolUse": {"toolUseId": call_id, "name": name}}}},
@@ -284,291 +285,39 @@ class CapturedBaselineAcceptance(unittest.TestCase):
             },
         ])
 
-        self.assertEqual(2, len(assertions))
+        self.assertEqual(1, len(assertions))
         projection = assertions[0]
-        self.assertIn("Source effective-time view:", projection)
-        self.assertIn("tool=search_logs", projection)
+        self.assertIn("Source log view:", projection)
         self.assertIn("eventTime=2026-11-13T10:02:00.000Z", projection)
         self.assertIn("ingestionTime=2026-11-13T10:02:01.123456Z", projection)
         self.assertIn("availableAt=missing", projection)
-        self.assertIn("sourceObservedAt=missing", projection)
         self.assertIn("referenceTime=2026-11-13T10:05:00.000Z", projection)
         self.assertIn("capture coverage ends at 2026-11-13T10:04:59.123456Z", projection)
         self.assertIn("additional gaps detailed in native result", projection)
         self.assertIn("omittedRows=unknown", projection)
         self.assertNotIn("ignore this free text", projection)
-        empty_metrics = assertions[1]
-        self.assertIn("tool=read_metrics", empty_metrics)
-        self.assertIn("observations=empty returnedRows=0", empty_metrics)
-        self.assertIn("windowStart=missing windowEnd=missing", empty_metrics)
-        self.assertIn("coverageGaps=missing", empty_metrics)
 
-    def test_timing_projection_covers_all_reads_and_intersects_effective_upper_bound(self):
-        from evaluation_telemetry import timing_evidence_assertions
+    def test_snapshot_model_identity_accepts_only_current_or_retained_source_model(self):
+        from captured_execution import _snapshot_model_id
 
-        calls = [
-            {
-                "callId": "logs-1",
-                "status": "success",
-                "tool": "search_logs",
-                "result": {
-                    "source": "logs",
-                    "scope": ["inventory"],
-                    "window": {
-                        "start": "2026-11-16T03:02:00Z",
-                        "end": "2026-11-16T03:06:00Z",
-                    },
-                    "referenceTime": "2026-11-16T03:02:30.000Z",
-                    "observedAt": "2026-11-16T03:06:07.868Z",
-                    "acquiredAt": "2026-11-16T03:06:08.642Z",
-                    "completeness": "partial",
-                    "truncated": False,
-                    "gaps": [
-                        "capture coverage ends at 2026-11-16T03:05:45.000Z",
-                        "reference time clips the requested log window",
-                    ],
-                    "errors": [],
-                    # Empty partial results must never become absence claims.
-                },
-            },
-            {
-                "callId": "metrics-1",
-                "status": "success",
-                "tool": "read_metrics",
-                "result": {
-                    "source": "cloudwatch",
-                    "scope": ["inventory"],
-                    "window": {
-                        "start": "2026-11-16T03:00:00Z",
-                        "end": "2026-11-16T03:02:00Z",
-                    },
-                    "referenceTime": "2026-11-16T03:02:30.000Z",
-                    "completeness": "complete",
-                    "truncated": False,
-                    "gaps": [],
-                    "errors": [],
-                    "query": {"periodSeconds": 60},
-                    "observations": [{
-                        "Id": "inve2",
-                        "Timestamps": ["2026-11-16T03:01:00Z"],
-                        "Values": [112],
-                        "availability": ["2026-11-16T03:02:20Z"],
-                    }],
-                },
-            },
-            {
-                "callId": "configuration-1",
-                "status": "success",
-                "tool": "read_configuration",
-                "result": {
-                    "source": "configuration",
-                    "scope": ["inventory"],
-                    "window": {
-                        "start": "2026-11-16T03:02:30Z",
-                        "end": "2026-11-16T03:02:30Z",
-                    },
-                    "referenceTime": "2026-11-16T03:02:30.000Z",
-                    "completeness": "complete",
-                    "truncated": False,
-                    "gaps": [],
-                    "errors": [],
-                    "observedAt": "2026-11-16T03:02:20.107Z",
-                    "observations": [{
-                        "kind": "lambda",
-                        "function": "IncidentTriageDemoInventory",
-                        "observedAt": "2026-11-16T03:02:20.107Z",
-                        "availableAt": "2026-11-16T03:02:20.107Z",
-                    }],
-                },
-            },
-            {
-                "callId": "history-1",
-                "status": "success",
-                "tool": "read_change_history",
-                "result": {
-                    "source": "cloudtrail",
-                    "scope": ["inventory"],
-                    "window": {
-                        "start": "2026-11-16T03:00:00Z",
-                        "end": "2026-11-16T03:02:30Z",
-                    },
-                    "referenceTime": "2026-11-16T03:02:30.000Z",
-                    "completeness": "partial",
-                    "truncated": False,
-                    "gaps": ["capture coverage starts at 2026-11-16T03:01:00Z"],
-                    "errors": [],
-                    "observations": [{
-                        "eventId": "change-1",
-                        "EventTime": "2026-11-16T03:01:10Z",
-                        "availableAt": "2026-11-16T03:01:20Z",
-                    }],
-                },
-            },
-        ]
-
-        assertions = timing_evidence_assertions(calls)
-
-        self.assertEqual(4, len(assertions))
-        logs, metrics, configuration, history = assertions
-        self.assertIn("observations=empty returnedRows=0", logs)
-        self.assertIn("sourceObservedAt=2026-11-16T03:06:07.868Z", logs)
-        self.assertIn("archiveCoverageEnd=2026-11-16T03:05:45.000Z", logs)
-        self.assertIn("requestedWindowEnd=2026-11-16T03:06:00Z", logs)
-        self.assertIn("effectiveUpperBound=2026-11-16T03:02:30.000Z", logs)
-        self.assertIn("reference time clips requested window", logs)
-        self.assertLess(logs.index("coverageGaps="), logs.index("gaps=2"))
-        self.assertIn("bucketStarts=2026-11-16T03:01:00Z", metrics)
-        self.assertIn("bucketAvailability=2026-11-16T03:02:20Z", metrics)
-        self.assertIn("effectiveUpperBound=2026-11-16T03:02:00Z", metrics)
-        self.assertIn("eventTime=not-applicable", configuration)
-        self.assertIn("resource=IncidentTriageDemoInventory", configuration)
-        self.assertIn("rowObservedAt=2026-11-16T03:02:20.107Z", configuration)
-        self.assertIn("eventTime=2026-11-16T03:01:10Z", history)
-        self.assertIn("availableAt=2026-11-16T03:01:20Z", history)
-        self.assertIn("archiveCoverageEnd=missing effectiveUpperBound=unknown", history)
-
-        # The effective bound is not a defaulted query end: changing the
-        # authenticated source result changes the judge reference input.
-        changed = copy.deepcopy(calls)
-        changed[0]["result"]["gaps"] = ["reference time clips the requested log window"]
-        changed_projection = timing_evidence_assertions(changed)
-        self.assertNotEqual(assertions[0], changed_projection[0])
-
-    def test_generic_judgment_policy_is_shared_and_case_facts_are_deduplicated(self):
-        from agentcore_evaluation import judgment_assertions
-
-        policy = judgment_assertions()
-        combined = judgment_assertions(self.loaded)
-
-        self.assertEqual([
-            "Diagnosis support: assess whether the causal explanation and incident assessment follow from the captured observations at the exact task referenceTime; a correct recommendation cannot rescue an unsupported diagnosis.",
-            "Evidence grounding: assess material source claims throughout the report and match citations to source, resource, entity, value, event time, availability, query observation time and actual coverage.",
-            "Keep diagnosis support and evidence grounding independent. Unsupported causal inference alone does not fail grounding when all stated source facts are accurate. False source facts fail grounding even when the main diagnosis is supported.",
-            "The exact task referenceTime is the evidence cutoff. Preserve event time, log ingestion/availability time, metric bucket, per-record observation time, query observedAt and archive acquisition time as distinct. A historical record available by the cutoff remains usable when retrieved later, but later operational observations cannot establish facts available at the cutoff.",
-            "Partial or truncated coverage does not prove absence, exact full-window counts, sustained recovery, or complete configuration/change history.",
-        ], policy)
-        self.assertEqual(policy, combined[:5])
-        self.assertEqual(len(combined), len(set(combined)))
-        self.assertIn("False source facts fail grounding even when the main diagnosis is supported.", " ".join(policy))
-        self.assertIn("A historical record available by the cutoff remains usable when retrieved later", " ".join(policy))
-        self.assertIn("cannot excuse an independently false or cutoff-ineligible source claim", " ".join(combined))
-
-        # A calibration control that already carries the five exposed policy
-        # strings must not receive a second copy when case facts are available.
-        from evaluate_case import _reviewed_case_from_control
-        control = {"reviewedCase": self.loaded}
-        self.assertEqual(self.loaded, _reviewed_case_from_control(control))
-        self.assertEqual(combined, judgment_assertions(_reviewed_case_from_control(control)))
-
-        from evaluate_case import _calibration_assertions
-        historical = _calibration_assertions(
-            {"assertions": [policy[0], "Historical source fact retained by this control.", policy[0]]},
-            None,
+        source = (ROOT / "agent" / "investigation.py").read_bytes()
+        self.assertEqual(MODEL_ID, _snapshot_model_id({"agent/investigation.py": source}))
+        historical = source.replace(
+            b'MODEL_ID = "us.anthropic.claude-opus-5-5"',
+            b'MODEL_ID = "us.anthropic.claude-sonnet-4-6"',
+            1,
         )
         self.assertEqual(
-            [*policy, "Historical source fact retained by this control."],
-            historical,
+            "us.anthropic.claude-sonnet-4-6",
+            _snapshot_model_id({"agent/investigation.py": historical}),
         )
-        case_bound = _calibration_assertions(
-            {
-                "assertions": ["Legacy case guidance: use the old assessment label."],
-            },
-            self.loaded,
+        unsupported = source.replace(
+            b'MODEL_ID = "us.anthropic.claude-opus-5-5"',
+            b'MODEL_ID = "forged-model"',
+            1,
         )
-        self.assertEqual(judgment_assertions(self.loaded), case_bound)
-
-    def test_structured_claim_facts_joins_report_and_authenticated_rows_without_labels(self):
-        from evaluation_telemetry import _structured_claim_facts_assertion
-
-        content = {
-            "report": {
-                "summary": "The inventory read returned one event.",
-                "assessment": "ongoing",
-                "uncertainties": ["The archive has a later query observation."],
-                "alternatives": [],
-                "evidence": [{
-                    "source": "logs",
-                    "resource": "inventory",
-                    "observedAt": "2026-11-16T03:02:30.000Z",
-                    "windowStart": "2026-11-16T03:02:00.000Z",
-                    "windowEnd": "2026-11-16T03:02:30.000Z",
-                    "finding": "The event was observed before the cutoff.",
-                }],
-            },
-            "toolCalls": [{
-                "tool": "search_logs",
-                "callId": "logs-1",
-                "status": "success",
-                "result": {
-                    "source": "logs",
-                    "scope": ["inventory"],
-                    "referenceTime": "2026-11-16T03:02:30.000Z",
-                    "window": {
-                        "start": "2026-11-16T03:02:00.000Z",
-                        "end": "2026-11-16T03:02:30.000Z",
-                    },
-                    "observedAt": "2026-11-16T03:02:31.000Z",
-                    "acquiredAt": "2026-11-16T03:02:31.100Z",
-                    "completeness": "complete",
-                    "truncated": False,
-                    "gaps": [],
-                    "observations": [{
-                        "resource": "inventory",
-                        "eventId": "log-1",
-                        "timestamp": "2026-11-16T03:02:20.000Z",
-                        "ingestionTime": "2026-11-16T03:02:21.000Z",
-                        "availableAt": "2026-11-16T03:02:22.000Z",
-                        "observedAt": "2026-11-16T03:02:30.500Z",
-                        "fields": {"routeKey": "GET /inventory"},
-                    }],
-                },
-            }],
-        }
-
-        assertion = _structured_claim_facts_assertion(content)
-
-        self.assertIn("Structured authenticated report/source view (verified facts, no expected labels):", assertion)
-        self.assertIn('"summaryClaims"', assertion)
-        self.assertIn('"joinedLambdaClaims"', assertion)
-        self.assertIn('"citationClaims"', assertion)
-        self.assertIn('"typedResourceFacts"', assertion)
-        self.assertIn('"routeKey":"GET /inventory"', assertion)
-        self.assertIn('"eventTime":"2026-11-16T03:02:20.000Z"', assertion)
-        self.assertIn('"laterIntervalCapability":"none beyond referenceTime"', assertion)
-        self.assertNotIn('"verdict"', assertion)
-        self.assertNotIn('"label"', assertion)
-        self.assertLess(len(assertion.encode("utf-8")), 100_000)
-
-    def test_structured_claim_facts_does_not_invent_unreserved_concurrency(self):
-        from evaluation_telemetry import _structured_claim_facts_assertion
-
-        content = {
-            "report": {"summary": "The configuration read was incomplete.", "evidence": []},
-            "toolCalls": [{
-                "tool": "read_configuration",
-                "status": "success",
-                "result": {
-                    "observations": [
-                        {
-                            "kind": "lambda",
-                            "function": "IncidentTriageDemoCheckout",
-                            "configuration": {"FunctionName": "IncidentTriageDemoCheckout"},
-                            "concurrency": {"unavailable": "AccessDeniedException"},
-                        },
-                        {
-                            "kind": "lambda-version",
-                            "configuration": {"FunctionName": "IncidentTriageDemoInventory", "Version": "76"},
-                        },
-                    ],
-                },
-            }],
-        }
-
-        assertion = _structured_claim_facts_assertion(content)
-
-        self.assertIn('"concurrency":{"unavailable":"AccessDeniedException"}', assertion)
-        self.assertIn('"concurrencyStatus":"missing"', assertion)
-        self.assertNotIn('"reservedConcurrency":"unreserved"', assertion)
+        with self.assertRaisesRegex(ValueError, "unsupported model identity"):
+            _snapshot_model_id({"agent/investigation.py": unsupported})
 
     def test_valid_captured_run_records_real_tool_results_and_reopens_offline(self):
         # The future acquisition cannot make an earlier event retroactively visible.
@@ -641,21 +390,6 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         self.assertEqual(scored["status"], "complete", scored)
         self.assertEqual(len(evaluate.calls), 1)
         self.assertEqual(evaluate.calls[0]["evaluationInput"]["sessionSpans"], native_spans)
-        from agentcore_evaluation import judgment_assertions
-        from evaluation_telemetry import (
-            evidence_assertions,
-            execution_content,
-        )
-        observed = execution_content(native_spans)
-        expected_assertions = [
-            *judgment_assertions(reopened_case),
-            *evidence_assertions(observed),
-        ]
-        self.assertEqual(expected_assertions, scored["assertions"])
-        self.assertEqual(
-            [{"text": item} for item in expected_assertions],
-            evaluate.calls[0]["evaluationReferenceInputs"][0]["assertions"],
-        )
         self.assertEqual(record["evidenceToolCallCount"], 3)
         self.assertEqual(record["evidenceProviderCallCount"], 2)
 

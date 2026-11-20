@@ -22,8 +22,8 @@ from botocore.exceptions import BotoCoreError, ClientError
 from agentcore_evaluation import (
     DEFAULT_MODE,
     HAIKU_45_MODEL_ID,
-    judgment_assertions,
     MULTI_MODE,
+    OPUS_55_MODEL_ID,
     SINGLE_MODE,
     SONNET_46_MODEL_ID,
     evaluator_config,
@@ -38,9 +38,9 @@ from captured_execution import (
 )
 from evaluation_telemetry import (
     CloudWatchSession,
-    evidence_assertions,
     execution_content,
     score_execution,
+    timing_evidence_assertions,
 )
 
 
@@ -133,12 +133,8 @@ def _provision(model_id: str, mode: str = DEFAULT_MODE) -> dict[str, Any]:
         None,
     )
     if evaluator_id is None:
-        # Bind idempotency to the complete immutable request identity. A
-        # digest-only token could be reused by a differently named provisional
-        # evaluator with the same configuration.
-        client_token = _digest({"evaluatorName": name, "evaluatorConfig": config})
         response = control.create_evaluator(
-            clientToken=client_token, evaluatorName=name, level="SESSION", evaluatorConfig=config,
+            clientToken=digest, evaluatorName=name, level="SESSION", evaluatorConfig=config,
             description="Captured incident diagnosis support and evidence grounding",
             tags={"Project": "IncidentTriageDemo"},
         )
@@ -369,41 +365,6 @@ def _validate_control(control: dict[str, Any]) -> None:
         raise ValueError("constructed calibration control lacks verified shape, provenance or human labels")
 
 
-def _reviewed_case_from_control(control: Mapping[str, Any]) -> Mapping[str, Any] | None:
-    """Return the optional loaded ``reviewedCase`` carried by a calibration control."""
-
-    if "reviewedCase" not in control:
-        return None
-    candidate = control["reviewedCase"]
-    if not isinstance(candidate, Mapping):
-        raise ValueError("calibration control reviewed case must be an object")
-    if isinstance(candidate.get("case"), Mapping):
-        return candidate
-    if all(isinstance(candidate.get(key), Mapping) for key in ("expectations", "evidence", "review")):
-        return {"case": candidate}
-    raise ValueError("calibration control reviewed case lacks expectations, evidence, or review")
-
-
-def _calibration_assertions(
-    control: Mapping[str, Any],
-    reviewed_case: Mapping[str, Any] | None,
-) -> list[str]:
-    """Build calibration references without mixing legacy policy and case facts."""
-
-    if reviewed_case is not None:
-        # A reviewed case is authoritative: use exactly the production policy
-        # plus case assertions, not stale assertions retained on the control.
-        return judgment_assertions(reviewed_case)
-
-    # Case-less historical controls are trusted calibration inputs. Preserve
-    # their facts while deduplicating the canonical five-policy series.
-    output: list[str] = []
-    for item in (*judgment_assertions(), *control["assertions"]):
-        if item not in output:
-            output.append(item)
-    return output
-
-
 def _calibrate(
     source: Path,
     pin_path: Path,
@@ -413,9 +374,7 @@ def _calibrate(
     fixture = _read(source)
     _validate_control(fixture)
     observed = execution_content(fixture["sessionSpans"])
-    reviewed_case = _reviewed_case_from_control(fixture)
-    assertions = _calibration_assertions(fixture, reviewed_case)
-    assertions.extend(evidence_assertions(observed))
+    assertions = fixture["assertions"] + timing_evidence_assertions(observed["toolCalls"])
     pin = _read(pin_path)
     mode = pin.get("evaluatorMode", DEFAULT_MODE)
     if mode not in SEMANTIC_MODES:
@@ -512,7 +471,7 @@ def _parser() -> argparse.ArgumentParser:
     calibration.add_argument("--output-root", required=True, type=Path)
     _add_semantic_mode_arg(calibration)
     provision = commands.add_parser("provision", help="prepare an immutable evaluator definition with administrator access")
-    provision.add_argument("--model", required=True, choices=(HAIKU_45_MODEL_ID, SONNET_46_MODEL_ID))
+    provision.add_argument("--model", required=True, choices=(HAIKU_45_MODEL_ID, SONNET_46_MODEL_ID, OPUS_55_MODEL_ID))
     _add_semantic_mode_arg(provision, default=DEFAULT_MODE)
     return parser
 

@@ -451,6 +451,7 @@ class RuntimeAcceptanceTests(unittest.TestCase):
         self.assertEqual(12, len(boundary.model_requests),
                          "the deliberately unending model must reach the limit; an earlier unrelated failure is not budget proof")
         self.assertTrue(all(request.get("inferenceConfig", {}).get("maxTokens") == 64_000 for request in boundary.model_requests))
+        self.assertTrue(all("temperature" not in request.get("inferenceConfig", {}) for request in boundary.model_requests))
         row = self.run_row(boundary)
         self.assertNotEqual("complete", row["status"])
         self.assertNotIn("report", row)

@@ -525,7 +525,21 @@ class Phase18StrandsExperimentAcceptance(unittest.TestCase):
         try:
             result = json.loads(text)
         except json.JSONDecodeError:
-            result = json.loads(text.splitlines()[-1])
+            last_line = text.splitlines()[-1]
+            decoder = json.JSONDecoder()
+            parsed = []
+            for position, character in enumerate(last_line):
+                if character != "{":
+                    continue
+                try:
+                    value, end = decoder.raw_decode(last_line[position:])
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(value, dict):
+                    parsed.append((position + end, value))
+            if not parsed:
+                raise
+            result = max(parsed, key=lambda item: item[0])[1]
         return (0 if code is None else code), result
 
     def rescore_saved_execution(self, run_dir, output_root):

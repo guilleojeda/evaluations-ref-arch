@@ -39,7 +39,7 @@ ADAPTER_ARN = f"arn:aws:lambda:{REGION}:{ACCOUNT}:function:IncidentTriageDemoAla
 ALARM_ARN = f"arn:aws:cloudwatch:{REGION}:{ACCOUNT}:alarm:IncidentTriageDemoAppStage5xx"
 TABLE_NAME = "IncidentTriageDemoControllerRun"
 PUBLICATION_PK = "AGENT_PUBLICATION#faulty"
-MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+MODEL_ID = "us.anthropic.claude-opus-5-5"
 SOURCE_REVISION = "a" * 40
 
 
