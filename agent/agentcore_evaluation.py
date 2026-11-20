@@ -22,6 +22,17 @@ SINGLE_MODE = "single"
 DEFAULT_MODE = MULTI_MODE
 SINGLE_FINDING_NAME = "semantic_quality"
 
+# Keep these policy assertions byte-for-byte aligned with the exposed
+# calibration controls. They describe how to judge the session; reviewed case
+# facts are appended separately and never replace this policy.
+_GENERIC_JUDGMENT_ASSERTIONS = (
+    "Diagnosis support: assess whether the causal explanation and incident assessment follow from the captured observations at the exact task referenceTime; a correct recommendation cannot rescue an unsupported diagnosis.",
+    "Evidence grounding: assess material source claims throughout the report and match citations to source, resource, entity, value, event time, availability, query observation time and actual coverage.",
+    "Keep diagnosis support and evidence grounding independent. Unsupported causal inference alone does not fail grounding when all stated source facts are accurate. False source facts fail grounding even when the main diagnosis is supported.",
+    "The exact task referenceTime is the evidence cutoff. Preserve event time, log ingestion/availability time, metric bucket, per-record observation time, query observedAt and archive acquisition time as distinct. A historical record available by the cutoff remains usable when retrieved later, but later operational observations cannot establish facts available at the cutoff.",
+    "Partial or truncated coverage does not prove absence, exact full-window counts, sustained recovery, or complete configuration/change history.",
+)
+
 HAIKU_45_MODEL_ID = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
 SONNET_46_MODEL_ID = "us.anthropic.claude-sonnet-4-6"
 APPROVED_MODEL_IDS = frozenset({HAIKU_45_MODEL_ID, SONNET_46_MODEL_ID})
@@ -284,7 +295,9 @@ def case_assertions(loaded_case: Mapping[str, Any]) -> list[str]:
             f"{diagnosis.strip()!r}. Acceptable assessment labels are "
             f"{', '.join(item.strip() for item in assessments)}. Judge whether the "
             "candidate's causal explanation and any assessment are supported by the "
-            "session; action correctness is outside this assertion."
+            "session; action correctness is outside this assertion. An allowable "
+            "assessment label or independently supported diagnosis cannot excuse an "
+            "independently false or cutoff-ineligible source claim."
         ),
         (
             "Evidence reference meaning: reviewed observations expected to inform "
@@ -305,10 +318,47 @@ def case_assertions(loaded_case: Mapping[str, Any]) -> list[str]:
             "quote the report's actual material observation, citation, or coverage "
             "claim and the contradicting or missing eligible source fact or coverage "
             "bound; a causal explanation or its premise alone cannot establish what "
-            "a source showed. Evidence observed after the reviewed cutoff is outside "
-            "the eligible source scope."
+            "a source showed. Historical source records with event and native "
+            "ingestion/availability times at or before the reviewed cutoff remain "
+            "eligible when retrieved later; a later query observedAt or archive "
+            "acquisition time cannot make a later source observation eligible."
         ),
     ]
+
+
+def judgment_assertions(
+    loaded_case: Mapping[str, Any] | None = None,
+    *,
+    existing_policy: Sequence[str] = (),
+) -> list[str]:
+    """Build one deduplicated policy-plus-case assertion series.
+
+    ``existing_policy`` is used by calibration controls that already carry the
+    exposed generic policy. The canonical policy remains present exactly once;
+    a reviewed case, when supplied, contributes the same private case facts
+    used by normal scoring.
+    """
+
+    assertions: list[str] = []
+    for item in _GENERIC_JUDGMENT_ASSERTIONS:
+        if item not in assertions:
+            assertions.append(item)
+    for item in existing_policy:
+        if not isinstance(item, str) or not item.strip():
+            raise ValueError("judgment policy assertions must be non-empty strings")
+        # Calibration controls may carry the historical exact-cutoff fact in
+        # addition to the exposed five-policy series. Do not append legacy
+        # case guidance from a control; reviewed case facts enter only through
+        # the validated case object below.
+        if item not in _GENERIC_JUDGMENT_ASSERTIONS and not item.startswith("Exact task evidence cutoff: "):
+            continue
+        if item not in assertions:
+            assertions.append(item)
+    if loaded_case is not None:
+        for item in case_assertions(loaded_case):
+            if item not in assertions:
+                assertions.append(item)
+    return assertions
 
 
 def _empty_finding() -> dict[str, Any]:
@@ -620,6 +670,7 @@ __all__ = [
     "SINGLE_RUBRIC_ID",
     "SONNET_46_MODEL_ID",
     "case_assertions",
+    "judgment_assertions",
     "evaluator_config",
     "evaluator_config_digest",
     "rubric_digest",
