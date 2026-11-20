@@ -665,113 +665,9 @@ def _timing_gap_windows(value: Any) -> str:
                 if timestamp not in {"missing", "invalid"}:
                     bounds.append(f"{label} {timestamp}")
                 break
-        else:
-            if item == "reference time clips the requested log window" or item == "reference time clips the requested metric window" or item == "reference time clips the requested change window":
-                bounds.append("reference time clips requested window")
-            elif item == "requested log window is after the reference time" or item == "requested metric window is after the reference time" or item == "requested change window is after the reference time":
-                bounds.append("requested window is after reference time")
     if len(bounds) < len(value):
         bounds.append("additional gaps detailed in native result")
-    return "|".join(bounds) if bounds else ("none" if value == [] else "capture bounds missing")
-
-
-def _timing_epoch_ns(value: Any) -> int | None:
-    """Parse the bounded timestamp forms used by captured source results."""
-
-    if isinstance(value, bool) or not isinstance(value, (str, int, float)):
-        return None
-    try:
-        if isinstance(value, (int, float)):
-            number = float(value)
-            if not math.isfinite(number):
-                return None
-            if abs(number) >= 100_000_000_000:
-                number /= 1_000
-            return int(round(number * 1_000_000_000))
-        text = value.strip()
-        if re.fullmatch(r"[+-]?[0-9]+(?:\.[0-9]+)?", text):
-            number = float(text)
-            if not math.isfinite(number):
-                return None
-            if abs(number) >= 100_000_000_000:
-                number /= 1_000
-            return int(round(number * 1_000_000_000))
-        parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
-        if parsed.tzinfo is None or parsed.utcoffset() is None:
-            return None
-        delta = parsed.astimezone(timezone.utc) - datetime(1970, 1, 1, tzinfo=timezone.utc)
-        result = (delta.days * 86_400 + delta.seconds) * 1_000_000_000 + delta.microseconds * 1_000
-        fraction = re.search(r"[.,]([0-9]+)(?=Z$|[+-])", text)
-        if fraction is not None and len(fraction.group(1)) > 6:
-            result += int(fraction.group(1)[6:9].ljust(3, "0"))
-        return result
-    except (TypeError, ValueError, OverflowError, OSError):
-        return None
-
-
-def _timing_capture_end(value: Any) -> tuple[str, int | None]:
-    """Return the proven archive end, or an explicit unknown marker."""
-
-    if not isinstance(value, list):
-        return ("missing" if value is None else "invalid", None)
-    prefix = "capture coverage ends at "
-    candidates: list[tuple[str, int]] = []
-    for item in value:
-        if not isinstance(item, str) or not item.startswith(prefix):
-            continue
-        raw = item[len(prefix):].strip()
-        display = _timing_time(raw)
-        epoch = _timing_epoch_ns(raw)
-        if display in {"missing", "invalid"} or epoch is None:
-            return ("invalid", None)
-        candidates.append((display, epoch))
-    if not candidates:
-        return ("missing", None)
-    # Multiple source bounds are safest when interpreted as the earliest proven
-    # end; later rows cannot establish coverage beyond an earlier truncation.
-    display, epoch = min(candidates, key=lambda item: item[1])
-    return display, epoch
-
-
-def _timing_effective_upper_bound(result: Mapping[str, Any]) -> tuple[str, str]:
-    """Intersect request end, proven archive end, and the case cutoff.
-
-    A partial result without a structured archive end cannot establish an
-    effective upper bound.  Preserve that uncertainty instead of treating the
-    requested window as captured coverage.
-    """
-
-    window = result.get("window")
-    requested_value = window.get("end") if isinstance(window, Mapping) else None
-    requested_display = _timing_time(requested_value)
-    requested_ns = _timing_epoch_ns(requested_value)
-    reference_value = result.get("referenceTime")
-    reference_display = _timing_time(reference_value)
-    reference_ns = _timing_epoch_ns(reference_value)
-    archive_display, archive_ns = _timing_capture_end(result.get("gaps"))
-    if archive_ns is None and result.get("completeness") == "complete" and requested_ns is not None:
-        archive_display, archive_ns = requested_display, requested_ns
-    if requested_ns is None or reference_ns is None or archive_ns is None:
-        effective = "unknown"
-    else:
-        effective = min(
-            ((requested_ns, requested_display), (archive_ns, archive_display), (reference_ns, reference_display)),
-            key=lambda item: item[0],
-        )[1]
-    return archive_display, effective
-
-
-def _timing_list(value: Any) -> str:
-    """Render a bounded list of timestamps without inventing a missing bound."""
-
-    if value is None:
-        return "missing"
-    if not isinstance(value, list):
-        return "invalid"
-    rendered = [_timing_time(item) for item in value[:8]]
-    if len(value) > len(rendered):
-        rendered.append(f"omitted:{len(value) - len(rendered)}")
-    return ",".join(rendered) if rendered else "empty"
+    return "|".join(bounds) if bounds else "none"
 
 
 def _timing_coverage(result: Mapping[str, Any]) -> str:
@@ -786,92 +682,48 @@ def _timing_coverage(result: Mapping[str, Any]) -> str:
     completeness = _timing_token(result.get("completeness"))
     truncated = result.get("truncated")
     truncated_value = str(truncated).lower() if isinstance(truncated, bool) else "invalid"
-    archive_end, effective_end = _timing_effective_upper_bound(result)
     return (
         f"source={_timing_token(result.get('source'))} "
         f"scope={_timing_scope(result.get('scope'))} "
         f"windowStart={window_start} windowEnd={window_end} "
-        f"requestedWindowEnd={_timing_time(window.get('end') if isinstance(window, Mapping) else None)} "
-        f"archiveCoverageEnd={archive_end} effectiveUpperBound={effective_end} "
         f"referenceTime={_timing_time(result.get('referenceTime'))} "
-        f"sourceObservedAt={_timing_time(result.get('observedAt'))} "
-        f"sourceAcquiredAt={_timing_time(result.get('acquiredAt'))} "
         f"completeness={completeness} truncated={truncated_value} "
-        f"coverageGaps={_timing_gap_windows(result.get('gaps'))} "
-        f"gaps={_timing_count(result.get('gaps'))} errors={_timing_count(result.get('errors'))}"
+        f"gaps={_timing_count(result.get('gaps'))} errors={_timing_count(result.get('errors'))} "
+        f"coverageGaps={_timing_gap_windows(result.get('gaps'))}"
     )
 
 
-def _timing_row(index: int, row: Any, tool: str) -> str:
+def _timing_row(index: int, row: Any) -> str:
     if not isinstance(row, Mapping):
         return f"row[{index}]=invalid"
-
-    identity = row.get("eventId")
-    if identity is None:
-        identity = row.get("Id")
-    if identity is None:
-        identity = row.get("kind")
-    resource = row.get("resource")
-    if resource is None:
-        resource = row.get("function")
-    if resource is None:
-        configuration = row.get("configuration")
-        if isinstance(configuration, Mapping):
-            resource = configuration.get("FunctionName")
-    if resource is None:
-        resource = row.get("roleName")
-
-    parts = [
-        f"row[{index}] resource={_timing_token(resource)}",
-        f"rowId={_timing_token(identity)}",
-    ]
-    if tool == "search_logs":
-        # CloudWatch log occurrence is the event timestamp.  Ingestion and
-        # availability are intentionally separate fields below.
-        parts.append(f"eventTime={_timing_time(row.get('timestamp'))}")
-        parts.append(f"logStreamName={_timing_token(row.get('logStreamName'))}")
-    elif tool == "read_change_history":
-        parts.append(f"eventTime={_timing_time(row.get('EventTime'))}")
-    elif tool == "read_metrics":
-        parts.append(f"bucketStarts={_timing_list(row.get('Timestamps'))}")
-        parts.append(f"bucketAvailability={_timing_list(row.get('availability'))}")
-    else:
-        # Configuration rows are point-in-time snapshots, not event rows.
-        parts.append("eventTime=not-applicable")
-    parts.extend(
-        (
-            f"ingestionTime={_timing_time(row.get('ingestionTime'))}",
-            f"availableAt={_timing_time(row.get('availableAt'))}",
-            f"rowObservedAt={_timing_time(row.get('observedAt'))}",
-        )
+    return (
+        f"row[{index}] resource={_timing_token(row.get('resource'))} "
+        f"eventId={_timing_token(row.get('eventId'))} "
+        f"logStreamName={_timing_token(row.get('logStreamName'))} "
+        f"eventTime={_timing_time(row.get('timestamp'))} "
+        f"ingestionTime={_timing_time(row.get('ingestionTime'))} "
+        f"availableAt={_timing_time(row.get('availableAt'))}"
     )
-    return " ".join(parts)
 
 
 def timing_evidence_assertions(tool_calls: Sequence[Mapping[str, Any]]) -> list[str]:
-    """Project authenticated read results into judge-only effective-time facts.
+    """Project authenticated ``search_logs`` results into judge-only timing facts.
 
     The native spans remain the submitted execution evidence. These assertions
-    contain only bounded source/coverage metadata and row identity/timing fields
-    already returned by successful read calls. Every successful read is
-    represented, including an empty partial result. Free-form query text, log
-    messages, projected ``fields``, metric values, and configuration values are
-    intentionally not copied into evaluator reference inputs. Missing clocks or
-    coverage bounds remain explicitly marked as missing; they are never filled
-    from the requested window or reference time.
+    contain only the sanitized result fields already returned by successful log
+    calls: source/coverage metadata and row identity/timing fields. Free-form
+    query text, log messages, and projected ``fields`` are intentionally not
+    copied into evaluator reference inputs.
     """
 
     if not isinstance(tool_calls, Sequence) or isinstance(tool_calls, (str, bytes)):
         return []
     assertions: list[str] = []
     for call in tool_calls:
-        if not isinstance(call, Mapping) or call.get("tool") not in {
-            "search_logs", "read_metrics", "read_configuration", "read_change_history",
-        }:
+        if not isinstance(call, Mapping) or call.get("tool") != "search_logs":
             continue
         if call.get("status") != "success":
             continue
-        tool = str(call["tool"])
         result = call.get("result")
         if not isinstance(result, Mapping):
             continue
@@ -883,15 +735,14 @@ def timing_evidence_assertions(tool_calls: Sequence[Mapping[str, Any]]) -> list[
             observation_state = "empty"
             rows: list[Any] = []
         elif isinstance(observations, list):
-            observation_state = "present" if observations else "empty"
+            observation_state = "present"
             rows = observations
         else:
             observation_state = "invalid"
             rows = []
 
         base = (
-            "Source effective-time view: verified read timing projection "
-            f"tool={tool} "
+            "Source log view: verified search_logs timing projection "
             f"callId={_timing_token(call.get('callId'))} "
             f"{_timing_coverage(result)} "
             f"observations={observation_state} returnedRows={len(rows)}"
@@ -900,7 +751,7 @@ def timing_evidence_assertions(tool_calls: Sequence[Mapping[str, Any]]) -> list[
         row_parts: list[str] = []
         size = len(base.encode("utf-8"))
         for index, row in enumerate(rows[:_MAX_TIMING_ROWS]):
-            candidate = f"; {_timing_row(index, row, tool)}"
+            candidate = f"; {_timing_row(index, row)}"
             size += len(candidate.encode("utf-8"))
             if size > _MAX_TIMING_ASSERTION_BYTES:
                 break
@@ -912,195 +763,6 @@ def timing_evidence_assertions(tool_calls: Sequence[Mapping[str, Any]]) -> list[
             base += f" projectionOmittedRows={projection_omitted}"
         assertions.append(base + "".join(row_parts))
     return assertions
-
-
-def _timestamp(value: Any) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    text = value.strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        parsed = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        parsed = parsed.replace(tzinfo=timezone.utc)
-    return parsed.astimezone(timezone.utc)
-
-
-def _delta(value: Any, reference: Any) -> str:
-    actual = _timestamp(value)
-    cutoff = _timestamp(reference)
-    if actual is None or cutoff is None:
-        return "unknown"
-    return f"{(actual - cutoff).total_seconds():+.3f}s"
-
-
-def _structured_claim_facts_assertion(content: Mapping[str, Any]) -> str:
-    """Compact typed view: summary claims, temporal outliers, and source rows."""
-
-    import re
-
-    report = content.get("report") if isinstance(content.get("report"), Mapping) else {}
-    calls = content.get("toolCalls") if isinstance(content.get("toolCalls"), list) else []
-    reference = next(
-        (
-            result.get("referenceTime")
-            for call in calls
-            if isinstance(call, Mapping)
-            for result in [call.get("result")]
-            if isinstance(result, Mapping) and isinstance(result.get("referenceTime"), str)
-        ),
-        None,
-    )
-    cutoff = _timestamp(reference)
-    summary = report.get("summary") if isinstance(report.get("summary"), str) else ""
-    summary_claims = [item for item in re.split(r"(?<=[.!?])\s+", summary.strip()) if item]
-    evidence = report.get("evidence") if isinstance(report.get("evidence"), list) else []
-    temporal_outliers: list[dict[str, Any]] = []
-    citation_claims: list[dict[str, Any]] = []
-    for index, citation in enumerate(evidence):
-        if not isinstance(citation, Mapping):
-            continue
-        observed, window_end = citation.get("observedAt"), citation.get("windowEnd")
-        late = cutoff is not None and (
-            (_timestamp(observed) is not None and _timestamp(observed) > cutoff)
-            or (_timestamp(window_end) is not None and _timestamp(window_end) > cutoff)
-        )
-        item = {
-            "index": index,
-            "source": citation.get("source"),
-            "resource": citation.get("resource"),
-            "observedAt": observed,
-            "observedAtDeltaFromReferenceTime": _delta(observed, reference),
-            "windowEnd": window_end,
-            "windowEndDeltaFromReferenceTime": _delta(window_end, reference),
-            "finding": citation.get("finding"),
-        }
-        citation_claims.append(item)
-        if late:
-            temporal_outliers.append(item)
-    typed_rows: list[dict[str, Any]] = []
-    late_sources: list[dict[str, Any]] = []
-    for call in calls:
-        if not isinstance(call, Mapping) or call.get("status") != "success":
-            continue
-        result = call.get("result")
-        if not isinstance(result, Mapping):
-            continue
-        tool = call.get("tool")
-        observations = result.get("observations") if isinstance(result.get("observations"), list) else []
-        window = result.get("window") if isinstance(result.get("window"), Mapping) else {}
-        gaps = result.get("gaps") if isinstance(result.get("gaps"), list) else []
-        archive_end = next((item[len("capture coverage ends at "):].strip() for item in gaps if isinstance(item, str) and item.startswith("capture coverage ends at ")), None)
-        late = cutoff is not None and any(
-            _timestamp(value) is not None and _timestamp(value) > cutoff
-            for value in (result.get("observedAt"), archive_end, window.get("end"))
-        )
-        if late:
-            late_sources.append({
-                "tool": tool,
-                "source": result.get("source"),
-                "scope": result.get("scope"),
-                "referenceTime": result.get("referenceTime"),
-                "eligibleInterval": f"at or before {reference}",
-                "requestedWindowEnd": window.get("end"),
-                "archiveCoverageEnd": archive_end,
-                "sourceObservedAt": result.get("observedAt"),
-                "returnedRows": len(observations),
-                "completeness": result.get("completeness"),
-                "gaps": gaps,
-                "laterIntervalCapability": "none beyond referenceTime",
-            })
-        for row in observations[:80]:
-            if not isinstance(row, Mapping):
-                continue
-            if tool == "read_configuration":
-                cfg = row.get("configuration") if isinstance(row.get("configuration"), Mapping) else {}
-                concurrency = row.get("concurrency") if isinstance(row.get("concurrency"), Mapping) else {}
-                if row.get("kind") not in {"lambda", "lambda-version"}:
-                    continue
-                typed_row: dict[str, Any] = {
-                    "type": "lambda-config",
-                    "function": row.get("function") or cfg.get("FunctionName"),
-                    "version": cfg.get("Version"),
-                    "role": cfg.get("Role") or row.get("roleName"),
-                    "memoryMB": cfg.get("MemorySize"),
-                    "availableAt": row.get("availableAt"),
-                }
-                if "ReservedConcurrentExecutions" in concurrency:
-                    typed_row["reservedConcurrency"] = concurrency["ReservedConcurrentExecutions"]
-                elif concurrency.get("state") == "unreserved":
-                    typed_row["reservedConcurrency"] = "unreserved"
-                elif concurrency:
-                    # Preserve an unavailable or unsupported provider result;
-                    # it is not evidence of an unreserved function.
-                    typed_row["concurrency"] = dict(concurrency)
-                else:
-                    typed_row["concurrencyStatus"] = "missing"
-                typed_rows.append(typed_row)
-            elif tool == "search_logs":
-                fields = row.get("fields") if isinstance(row.get("fields"), Mapping) else {}
-                typed_rows.append({
-                    "type": "log",
-                    "resource": row.get("resource"),
-                    "eventId": row.get("eventId"),
-                    "eventTime": row.get("timestamp"),
-                    "ingestionTime": row.get("ingestionTime"),
-                    "availableAt": row.get("availableAt"),
-                    "fields": {key: fields.get(key) for key in (
-                        "requestId", "routeKey", "operation", "statusCode", "errorCode", "errorName",
-                        "inventoryExecutedVersion", "dependencyFailureReason", "dependencyThrottleReason",
-                    ) if key in fields},
-                })
-            elif tool == "read_metrics":
-                typed_rows.append({"type": "metric", "id": row.get("Id"), "bucketStarts": row.get("Timestamps"), "values": row.get("Values"), "availability": row.get("availability")})
-            elif tool == "read_change_history":
-                typed_rows.append({"type": "change", "eventId": row.get("eventId", row.get("EventId")), "eventTime": row.get("EventTime"), "eventName": row.get("EventName"), "resource": row.get("ResourceName", row.get("resource")), "availableAt": row.get("availableAt")})
-    lambda_rows = [row for row in typed_rows if row.get("type") == "lambda-config"]
-    joined_lambda_claims: list[dict[str, Any]] = []
-    for index, claim in enumerate(summary_claims):
-        lowered = claim.lower()
-        matched = [
-            row for row in lambda_rows
-            if isinstance(row.get("function"), str)
-            and row["function"].lower().replace("incidenttriagedemo", "") in lowered.replace(" ", "")
-        ]
-        if matched:
-            joined_lambda_claims.append({"summaryIndex": index, "claim": claim, "matchedLambdaConfiguration": matched})
-    payload = {
-        "referenceTime": reference,
-        "eligibleInterval": f"at or before {reference}",
-        "summaryClaims": [{"index": index, "claim": value} for index, value in enumerate(summary_claims)],
-        "joinedLambdaClaims": joined_lambda_claims,
-        "temporalOutliersFirst": temporal_outliers,
-        "citationClaims": citation_claims,
-        "lateOrPartialSourceFacts": late_sources,
-        "typedResourceFacts": typed_rows,
-        "uncertainties": report.get("uncertainties"),
-        "alternatives": report.get("alternatives"),
-    }
-    return "Structured authenticated report/source view (verified facts, no expected labels): " + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
-def evidence_assertions(content: Mapping[str, Any]) -> list[str]:
-    """Return the canonical authenticated evidence assertions for evaluation.
-
-    The reviewed case assertions remain separate.  This series is derived only
-    from the validated native session content so actual scoring, calibration,
-    and offline comparison use identical timing and report/source facts.
-    """
-
-    if not isinstance(content, Mapping):
-        raise ValueError("validated session content must be a mapping")
-    tool_calls = content.get("toolCalls")
-    if not isinstance(tool_calls, list):
-        raise ValueError("validated session content lacks tool calls")
-    return [
-        *timing_evidence_assertions(tool_calls),
-        _structured_claim_facts_assertion(content),
-    ]
 
 
 def interrupted_execution_content(
@@ -1749,7 +1411,10 @@ def score_execution(
     # reference facts. Keep these after the reviewed case criteria so the
     # evaluator sees the source view as supplemental, not as a replacement or
     # expected-label override.
-    assertions = [*assertions, *evidence_assertions(validated["content"])]
+    assertions = [
+        *assertions,
+        *timing_evidence_assertions(validated["content"]["toolCalls"]),
+    ]
 
     scoring_started = time.monotonic()
     try:
@@ -1795,6 +1460,5 @@ __all__ = [
     "execution_content",
     "interrupted_execution_content",
     "score_execution",
-    "evidence_assertions",
     "timing_evidence_assertions",
 ]

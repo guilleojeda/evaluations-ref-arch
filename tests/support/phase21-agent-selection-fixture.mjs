@@ -29,7 +29,7 @@ const faultyEnvironment = {
   AGENT_ARTIFACT_SHA256: faultyArtifact,
   AGENT_CANDIDATE_ID: 'faulty',
   AGENT_ENDPOINT_NAME: 'faulty',
-  AGENT_MODEL_ID: 'us.anthropic.claude-sonnet-4-6',
+  AGENT_MODEL_ID: 'us.anthropic.claude-opus-5-5',
   AGENT_REGION: region,
   AGENT_RUN_TABLE: 'IncidentTriageDemoAgentRun',
   AGENT_SOURCE_BUCKET: `incident-triage-demo-evidence-${account}-${region}`,
@@ -42,6 +42,7 @@ const repairedEnvironment = {
   AGENT_ARTIFACT_SHA256: repairedArtifact,
   AGENT_CANDIDATE_ID: 'repaired',
   AGENT_ENDPOINT_NAME: 'repaired',
+  AGENT_MODEL_ID: 'us.anthropic.claude-opus-5-5',
   AGENT_SOURCE_REVISION: '62236d0e8731242d5a6468cf931f003a323b5349',
 };
 
@@ -115,7 +116,7 @@ function publication(candidate) {
     promptSha256: repaired
       ? '0f8d10ce6f46302a00dbe60cb29ebfeb4212627000c78b3529e6e0c7696ff425'
       : '161aa4357b908cffe9691349d01da284411cd5d4689235717525d79e1073fffc',
-    modelId: 'us.anthropic.claude-sonnet-4-6',
+    modelId: 'us.anthropic.claude-opus-5-5',
     alarmArn,
     adapterArn,
     adapterCodeSha256: 'a88f40a6d780c0342f5aea5ad7e5eac3f7f270c28ed209c51543c1801a66da56',

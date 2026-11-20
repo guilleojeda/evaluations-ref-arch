@@ -376,6 +376,7 @@ Resources:
             Resource:
               - arn:aws:bedrock-agentcore:us-east-1:027224425948:evaluator/IncidentTriageSemanticSingle_35bc9bb6f79d8f15b8-T0jdxk8nzC
               - arn:aws:bedrock-agentcore:us-east-1:027224425948:evaluator/IncidentTriageSemanticSingle_19e82868f272303dbb-hCLeh6Dc1x
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:evaluator/IncidentOriginalOpus55_33d939080fa3a949bb-t6eO7tGuG6
           - Sid: InvokeReviewedModels
             Effect: Allow
             Action:
@@ -386,6 +387,10 @@ Resources:
               - arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-6
               - arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-6
               - arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-6
+              - arn:aws:bedrock:us-east-1:027224425948:inference-profile/us.anthropic.claude-opus-5-5
+              - arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-opus-5-5
+              - arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-opus-5-5
+              - arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-opus-5-5
           - Sid: ReadEvaluationLogQueries
             Effect: Allow
             Action:

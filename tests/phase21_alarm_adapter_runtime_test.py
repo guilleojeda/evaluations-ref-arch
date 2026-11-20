@@ -141,7 +141,7 @@ def _selection_tuple(candidate: str, *, version: str | None = None) -> dict[str,
         "sourceSha256": identity["sourceSha256"],
         "adapterCodeSha256": identity["adapterCodeSha256"],
         "alarmArn": ALARM_ARN,
-        "modelId": "us.anthropic.claude-sonnet-4-6",
+        "modelId": "us.anthropic.claude-opus-5-5",
         "adapterArn": "arn:aws:lambda:us-east-1:123456789012:function:IncidentTriageDemoAlarmAdapter",
         **{
             key: identity[key]

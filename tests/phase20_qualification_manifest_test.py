@@ -117,7 +117,7 @@ class QualificationManifestTests(unittest.TestCase):
             "experimentId": "synthetic-experiment",
             "status": "complete",
             "candidateId": "repaired",
-            "modelId": "us.anthropic.claude-sonnet-4-6",
+            "modelId": "us.anthropic.claude-opus-5-5",
             "sourceOrigin": {"kind": "runtime_zip", "zipSha256": self.package_sha},
             "runtimeOrigin": {
                 "kind": "runtime_zip", "zipSha256": self.package_sha,
@@ -134,7 +134,7 @@ class QualificationManifestTests(unittest.TestCase):
             "agentRuntimeArtifact": {"codeConfiguration": {"runtime": "PYTHON_3_13", "entryPoint": ["opentelemetry-instrument", "main.py"], "code": {"s3": {"bucket": "b", "prefix": "k", "versionId": "v"}}}},
             "environmentVariables": {
                 "AGENT_CANDIDATE_ID": "repaired", "AGENT_ENDPOINT_NAME": "repaired",
-                "AGENT_SOURCE_REVISION": "a" * 40, "AGENT_MODEL_ID": "us.anthropic.claude-sonnet-4-6",
+                "AGENT_SOURCE_REVISION": "a" * 40, "AGENT_MODEL_ID": "us.anthropic.claude-opus-5-5",
                 "AGENT_ALARM_ARN": "arn:alarm", "AGENT_ARTIFACT_SHA256": self.package_sha,
             },
         }

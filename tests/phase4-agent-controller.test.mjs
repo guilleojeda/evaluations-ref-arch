@@ -219,7 +219,7 @@ function run({ alarmArn: sourceAlarmArn = alarmArn, transitionAt, status = 'comp
     candidateId: 'faulty-v1',
     sourceRevision: 'a'.repeat(40),
     promptSha256: 'b'.repeat(64),
-    modelId: 'us.anthropic.claude-sonnet-4-6',
+    modelId: 'us.anthropic.claude-opus-5-5',
     runtimeArn: `arn:aws:bedrock-agentcore:${region}:${account}:runtime/IncidentTriageAgent-1234567890`,
     runtimeVersion: '1',
     endpointName: 'faulty',

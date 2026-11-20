@@ -49,7 +49,7 @@ function makeFixture() {
     sourceRevision,
     sourceSha256,
     promptSha256,
-    modelId: 'us.anthropic.claude-sonnet-4-6',
+    modelId: 'us.anthropic.claude-opus-5-5',
     reviewManifestSha256: manifestSha256,
     caseSetSha256: suiteSha256,
     reportIdentitiesSha256: reportSha256,

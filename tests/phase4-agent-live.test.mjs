@@ -5,7 +5,7 @@ import { test } from 'node:test';
 // Read-only checkpoints of the genuine hosted journey. Never creates alarms,
 // starts investigations, changes settings, or spends application allowance.
 const ALARM = 'arn:aws:cloudwatch:us-east-1:027224425948:alarm:IncidentTriageDemoAppStage5xx';
-const MODEL = 'us.anthropic.claude-sonnet-4-6';
+const MODEL = 'us.anthropic.claude-opus-5-5';
 const SHA = /^[0-9a-f]{40}$/i;
 const DIGEST = /^[0-9a-f]{64}$/i;
 const ACTIONS = ['Increase reserved concurrency', 'Increase memory', 'Restore inventory access', 'Other'];

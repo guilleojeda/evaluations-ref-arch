@@ -244,7 +244,8 @@ class ScriptedBedrock:
             arguments = {**(scope or {}), "start": task["incidentWindow"]["start"], "end": task["referenceTime"]}
         events = [{"messageStart": {"role": "assistant"}}]
         if name is None:
-            events.append({"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "I inspected the packaged evidence."}}})
+            text = json.dumps(report) if "outputConfig" in request else "I inspected the packaged evidence."
+            events.append({"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": text}}})
         else:
             events.extend((
                 {"contentBlockStart": {"contentBlockIndex": 0, "start": {"toolUse": {"toolUseId": f"tool-{len(self.requests)}", "name": name}}}},

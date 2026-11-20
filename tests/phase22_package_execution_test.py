@@ -30,6 +30,20 @@ from phase14_reviewed_cases_test import make_case, write_bundle
 from reviewed_cases import freeze_case
 
 
+class PackageEventFraming(unittest.TestCase):
+    def test_streamed_text_ends_before_each_child_record(self):
+        with patch("sys.stdout", new_callable=io.StringIO) as output:
+            for kind in ("progress", "result", "error"):
+                print("model output", end="")
+                captured_execution._print_package_event({"kind": kind})
+        lines = output.getvalue().splitlines()
+        self.assertEqual(lines[::2], ["model output"] * 3)
+        self.assertEqual(lines[1::2], [
+            captured_execution._PACKAGE_CHILD_PROGRESS_PREFIX + json.dumps({"kind": kind}, separators=(",", ":"))
+            for kind in ("progress", "result", "error")
+        ])
+
+
 class _FakeProcess:
     def __init__(self, output: str) -> None:
         self.stdout = io.StringIO(output)
