@@ -465,6 +465,23 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         )
         self.assertNotIn("Legacy case guidance", " ".join(legacy))
 
+        from evaluate_case import _calibration_assertions
+        historical = _calibration_assertions(
+            {"assertions": [policy[0], "Historical source fact retained by this control.", policy[0]]},
+            None,
+        )
+        self.assertEqual(
+            [*policy, "Historical source fact retained by this control."],
+            historical,
+        )
+        case_bound = _calibration_assertions(
+            {
+                "assertions": ["Legacy case guidance: use the old assessment label."],
+            },
+            self.loaded,
+        )
+        self.assertEqual(judgment_assertions(self.loaded), case_bound)
+
     def test_structured_claim_facts_joins_report_and_authenticated_rows_without_labels(self):
         from evaluation_telemetry import _structured_claim_facts_assertion
 
