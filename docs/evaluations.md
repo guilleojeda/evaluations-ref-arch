@@ -271,7 +271,7 @@ findings passing plus a complete advisory result—whether pass or fail—yields
 authority; exact Runtime ZIP qualification and human approval belong to the
 later S5 gate.
 
-The browser IDE workflow has been verified with the frozen denial case, an uncommitted prompt edit, matching CloudWatch content and the historical pinned Sonnet 4.6 evaluator. The verified Opus archived S4 workflow has native tool/report output and matching evaluator reasons; its original-production holdout recovery is complete at 2/2 correct-recipe responses, with two incompatible-recipe attempts incomplete and excluded. Rehearsal preparation checks session correlation, complete telemetry, reference mapping and exact result identities. Do not transfer historical Sonnet timing or scores to Opus.
+The browser IDE workflow has been verified with the Opus audience-case comparison and the native four-case S4 runs. The repaired denial rows pass the access action and semantic grounding; overload's semantic result fails on an earlier event grouped with later events, and recovery's semantic result fails because only one of two claimed searches used an error filter. These are advisory results, not release qualification. The archived Sonnet workflow and cutoff report remain historical and separate. Original-production holdout recovery is complete at 2/2 correct-recipe responses, with two incompatible-recipe attempts incomplete and excluded. Rehearsal preparation checks session correlation, complete telemetry, reference mapping and exact result identities.
 
 ## Offline cases and observed traffic
 
