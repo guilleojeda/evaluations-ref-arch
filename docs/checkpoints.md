@@ -47,7 +47,7 @@ conflicts with its remote counterpart, stop and inspect the discrepancy. A clean
 clone gives an independent comparison.
 
 ```sh
-export PHASE22_GENERATION="${PHASE22_GENERATION:?set the map generation, for example talk/v2}"
+export PHASE22_GENERATION="${PHASE22_GENERATION:?set the map generation, for example talk/v3}"
 generation="$PHASE22_GENERATION"
 git fetch origin "refs/tags/${generation}/*:refs/tags/${generation}/*"
 python3 - <<'PY'
@@ -77,14 +77,9 @@ for stage, source in sorted(stages.items()):
 PY
 ```
 
-The corrected checkpoint set uses `talk/v2`; `talk/v1` remains immutable
-historical evidence. The v2 map keeps S0, S1, S2 and the qualified S5 source
-identities unchanged, and carries the corrected local-capture runner through
-the repaired S3 and S4 checkpoints. S3 fixes the stale development manifest
-binding; S4 uses the same runner so its candidate baseline remains comparable.
-The S5 source keeps its historical v1-S2 regression helper; the v2 S2 tag must
-therefore be byte-equivalent to the v1 S2 peeled commit before publishing the
-new generation.
+The active `talk/v3` checkpoints use the US Opus 5.5 profile. S0–S2 carry the opening prompt. S3 and S4 carry the saved development repair, so you can open either workspace directly. S5 starts from the separately qualified serving repair on `demo-deploy`. The IDE and serving repairs have distinct prompt identities. The prepared S3 comparison pairs executions on the same evidence, and the S4 experiment uses that same development prompt. S5 verifies its own package and publication.
+
+The earlier `talk/v1` and `talk/v2` tags retain the original Sonnet sources and can still be opened to inspect earlier performances.
 
 ## Maintain a generation
 
