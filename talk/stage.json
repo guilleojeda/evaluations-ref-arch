@@ -5,10 +5,10 @@
   "candidateDefault": "repaired",
   "prompt": {
     "path": "agent/prompt.py",
-    "semanticId": "repaired-c3e568a",
-    "sourceRevision": "c3e568a90fbd2e17a787b8d2458ffea93d7fe15a",
-    "fileSha256": "c5b88c2e80f275bed1c5f83fc7d42d65a21ed040d4da9eb8d0b95527e4ac68e7",
-    "promptSha256": "69706e75a177b333c836430b58540fbb65d1063ab14d8e9e8c19d8f34034f4c4",
+    "semanticId": "repaired-opus55-development",
+    "sourceRevision": "62236d0e8731242d5a6468cf931f003a323b5349",
+    "fileSha256": "88b8b94f2da13263407aadc1301bc5b4c2345fcec3ac2bd148fead9835807bdd",
+    "promptSha256": "0f8d10ce6f46302a00dbe60cb29ebfeb4212627000c78b3529e6e0c7696ff425",
     "faultyStartingOption": {
       "semanticId": "faulty-phase19",
       "sourceRevision": "bd6f77df97933e3e675ee9c2a699db16e29ea1b6",
@@ -22,8 +22,8 @@
   },
   "scorerAnchor": {
     "revision": "3505ffb39504c07ac333501ec9b81e7ca98c018c",
-    "sourceRevision": "f91055235552c9b2c9cc6a853a016843ccfcfb84",
-    "model": "us.anthropic.claude-sonnet-4-6",
+    "sourceRevision": "c96fbe569ea41a99815ebe30a3c953111524d39d",
+    "model": "us.anthropic.claude-opus-5-5",
     "rubric": "single",
     "verdict": "advisory"
   },
@@ -38,7 +38,7 @@
     "sourceRevision": "62236d0e8731242d5a6468cf931f003a323b5349",
     "artifactSha256": "1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7",
     "lockSha256": "887c9bcf91ec028fe3b0939aac00a7d4c3dfbc68b2287e4469a15f3798651831",
-    "promptSourceSha256": "c5b88c2e80f275bed1c5f83fc7d42d65a21ed040d4da9eb8d0b95527e4ac68e7"
+    "promptSourceSha256": "88b8b94f2da13263407aadc1301bc5b4c2345fcec3ac2bd148fead9835807bdd"
   },
   "inputs": {
     "kind": "native-strands-experiment-with-reviewed-suite",

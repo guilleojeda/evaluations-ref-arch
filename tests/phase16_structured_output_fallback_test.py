@@ -27,7 +27,7 @@ from evaluation_telemetry import score_execution  # noqa: E402
 from reviewed_cases import freeze_case  # noqa: E402
 
 
-MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+MODEL_ID = "us.anthropic.claude-opus-5-5"
 EVALUATOR_ID = "IncidentTriageSemantic-0000000001"
 
 
@@ -144,8 +144,9 @@ class StructuredOutputFallbackAcceptance(unittest.TestCase):
             }]
             model_session = StructuredOutputFallbackBedrock(report)
 
-            # BedrockModel learns that the forced tool choice is unsupported.
-            # Keep that process cache isolated from other Phase 16 tests.
+            # Opus 5.5 is known to support native structured output but not
+            # forced tool choice. Keep the process cache isolated from other
+            # Phase 16 tests.
             with patch.dict(_native_output._UNSUPPORTED_MECHANISMS, clear=True), patch.dict(
                 _native_output._REJECTED_NATIVE_SCHEMAS, clear=True
             ):
@@ -158,23 +159,16 @@ class StructuredOutputFallbackAcceptance(unittest.TestCase):
                 record, loaded_case, native_spans = load_execution(run_dir)
 
                 self.assertEqual(record["status"], "complete", record)
-                self.assertEqual(len(model_session.requests), 4)
-                self.assertEqual(record["modelRequestCount"], 4)
+                self.assertEqual(len(model_session.requests), 3)
+                self.assertEqual(record["modelRequestCount"], 3)
                 self.assertEqual(record["modelResponseCount"], 3)
                 self.assertEqual(record["modelSpanCount"], 3)
-                self.assertEqual(len(record["modelRequestAttempts"]), 4)
+                self.assertEqual(len(record["modelRequestAttempts"]), 3)
                 self.assertEqual(
                     [item["status"] for item in record["modelRequestAttempts"]],
-                    ["stream_returned", "stream_returned", "error", "stream_returned"],
+                    ["stream_returned", "stream_returned", "stream_returned"],
                 )
-                rejected = record["modelRequestAttempts"][2]
-                self.assertEqual(rejected["error"]["Code"], "ValidationException")
-                self.assertIn("toolConfig.toolChoice", rejected["error"]["Message"])
-                self.assertEqual(
-                    rejected["request"]["toolConfig"]["toolChoice"]["tool"]["name"],
-                    "InvestigationReport",
-                )
-                self.assertIn("outputConfig", record["modelRequestAttempts"][3]["request"])
+                self.assertIn("outputConfig", record["modelRequestAttempts"][-1]["request"])
                 self.assertEqual(record["reportSource"], "assistant_chat")
                 self.assertEqual(record["ledger"]["reportSpanId"], record["ledger"]["modelCalls"][-1]["spanId"])
                 self.assertEqual(record["report"], report)
@@ -190,7 +184,7 @@ class StructuredOutputFallbackAcceptance(unittest.TestCase):
                 ]
                 self.assertEqual(
                     [fingerprint["ordinal"] for fingerprint in native_fingerprints],
-                    [1, 2, 3, 4],
+                    [1, 2, 3],
                 )
                 self.assertEqual(
                     {

@@ -39,7 +39,7 @@ TOOL_SPAN = "c" * 16
 REPORT_SPAN = "d" * 16
 FAILED_TOOL_SPAN = "e" * 16
 EVALUATOR_ID = "IncidentTriageSemantic-0000000001"
-MODEL_ID = "us.anthropic.claude-sonnet-4-6"
+MODEL_ID = "us.anthropic.claude-opus-5-5"
 SOURCE_DIGEST = "a" * 64
 PROMPT_DIGEST = "b" * 64
 LOCK_DIGEST = "c" * 64
@@ -103,7 +103,8 @@ class ScriptedBedrock:
             }
         events = [{"messageStart": {"role": "assistant"}}]
         if name is None:
-            events.append({"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": "I inspected the captured Inventory evidence."}}})
+            text = json.dumps(self.report) if "outputConfig" in request else "I inspected the captured Inventory evidence."
+            events.append({"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": text}}})
         else:
             events.extend((
                 {"contentBlockStart": {"contentBlockIndex": 0, "start": {"toolUse": {"toolUseId": call_id, "name": name}}}},
@@ -231,6 +232,82 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         self.source.write_text(json.dumps(self.case), encoding="utf-8")
         freeze_case(self.source, self.bundle, self.frozen)
         self.loaded = load_frozen_case(self.frozen, self.bundle)
+
+    def test_timing_projection_keeps_roles_and_coverage_distinct(self):
+        from evaluation_telemetry import timing_evidence_assertions
+
+        assertions = timing_evidence_assertions([
+            {
+                "callId": "logs-1",
+                "status": "success",
+                "tool": "search_logs",
+                "result": {
+                    "source": "logs",
+                    "scope": ["inventory"],
+                    "window": {
+                        "start": "2026-11-13T10:00:00.000Z",
+                        "end": "2026-11-13T10:05:00.000Z",
+                    },
+                    "referenceTime": "2026-11-13T10:05:00.000Z",
+                    "completeness": "partial",
+                    "truncated": True,
+                    "gaps": [
+                        "capture coverage ends at 2026-11-13T10:04:59.123456Z",
+                        "logs has no captured scope for gateway",
+                    ],
+                    "errors": [],
+                    "observations": [
+                        {
+                            "resource": "inventory",
+                            "eventId": "log-early",
+                            "timestamp": 1794564120000,
+                            "ingestionTime": "2026-11-13T10:02:01.123456Z",
+                            "fields": {"message": "ignore this free text"},
+                        },
+                    ],
+                },
+            },
+            {
+                "callId": "metrics-1",
+                "status": "success",
+                "tool": "read_metrics",
+                "result": {"observations": []},
+            },
+        ])
+
+        self.assertEqual(1, len(assertions))
+        projection = assertions[0]
+        self.assertIn("Source log view:", projection)
+        self.assertIn("eventTime=2026-11-13T10:02:00.000Z", projection)
+        self.assertIn("ingestionTime=2026-11-13T10:02:01.123456Z", projection)
+        self.assertIn("availableAt=missing", projection)
+        self.assertIn("referenceTime=2026-11-13T10:05:00.000Z", projection)
+        self.assertIn("capture coverage ends at 2026-11-13T10:04:59.123456Z", projection)
+        self.assertIn("additional gaps detailed in native result", projection)
+        self.assertIn("omittedRows=unknown", projection)
+        self.assertNotIn("ignore this free text", projection)
+
+    def test_snapshot_model_identity_accepts_only_current_or_retained_source_model(self):
+        from captured_execution import _snapshot_model_id
+
+        source = (ROOT / "agent" / "investigation.py").read_bytes()
+        self.assertEqual(MODEL_ID, _snapshot_model_id({"agent/investigation.py": source}))
+        historical = source.replace(
+            b'MODEL_ID = "us.anthropic.claude-opus-5-5"',
+            b'MODEL_ID = "us.anthropic.claude-sonnet-4-6"',
+            1,
+        )
+        self.assertEqual(
+            "us.anthropic.claude-sonnet-4-6",
+            _snapshot_model_id({"agent/investigation.py": historical}),
+        )
+        unsupported = source.replace(
+            b'MODEL_ID = "us.anthropic.claude-opus-5-5"',
+            b'MODEL_ID = "forged-model"',
+            1,
+        )
+        with self.assertRaisesRegex(ValueError, "unsupported model identity"):
+            _snapshot_model_id({"agent/investigation.py": unsupported})
 
     def test_valid_captured_run_records_real_tool_results_and_reopens_offline(self):
         # The future acquisition cannot make an earlier event retroactively visible.
