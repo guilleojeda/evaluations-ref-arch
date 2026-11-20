@@ -1640,10 +1640,10 @@ def score_execution(
         )
 
     try:
-        from agentcore_evaluation import case_assertions, score_session
+        from agentcore_evaluation import judgment_assertions, score_session
         from deterministic_checks import check_captured_report, check_report
 
-        assertions = case_assertions(loaded_case)
+        assertions = judgment_assertions(loaded_case)
         if not isinstance(assertions, list) or not assertions or not all(
             isinstance(item, str) and item.strip() for item in assertions
         ):

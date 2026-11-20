@@ -22,6 +22,7 @@ from botocore.exceptions import BotoCoreError, ClientError
 from agentcore_evaluation import (
     DEFAULT_MODE,
     HAIKU_45_MODEL_ID,
+    judgment_assertions,
     MULTI_MODE,
     SINGLE_MODE,
     SONNET_46_MODEL_ID,
@@ -368,6 +369,21 @@ def _validate_control(control: dict[str, Any]) -> None:
         raise ValueError("constructed calibration control lacks verified shape, provenance or human labels")
 
 
+def _reviewed_case_from_control(control: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """Return the optional loaded ``reviewedCase`` carried by a calibration control."""
+
+    if "reviewedCase" not in control:
+        return None
+    candidate = control["reviewedCase"]
+    if not isinstance(candidate, Mapping):
+        raise ValueError("calibration control reviewed case must be an object")
+    if isinstance(candidate.get("case"), Mapping):
+        return candidate
+    if all(isinstance(candidate.get(key), Mapping) for key in ("expectations", "evidence", "review")):
+        return {"case": candidate}
+    raise ValueError("calibration control reviewed case lacks expectations, evidence, or review")
+
+
 def _calibrate(
     source: Path,
     pin_path: Path,
@@ -377,7 +393,9 @@ def _calibrate(
     fixture = _read(source)
     _validate_control(fixture)
     observed = execution_content(fixture["sessionSpans"])
-    assertions = fixture["assertions"] + evidence_assertions(observed)
+    reviewed_case = _reviewed_case_from_control(fixture)
+    assertions = judgment_assertions(reviewed_case, existing_policy=fixture["assertions"])
+    assertions.extend(evidence_assertions(observed))
     pin = _read(pin_path)
     mode = pin.get("evaluatorMode", DEFAULT_MODE)
     if mode not in SEMANTIC_MODES:

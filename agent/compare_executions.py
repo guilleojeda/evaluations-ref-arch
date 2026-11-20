@@ -8,7 +8,7 @@ import json
 from pathlib import Path
 from typing import Any
 
-from agentcore_evaluation import _mapped_row, _row_identity_error, case_assertions
+from agentcore_evaluation import _mapped_row, _row_identity_error, judgment_assertions
 from captured_execution import load_execution
 from evaluation_telemetry import (
     evidence_assertions,
@@ -212,7 +212,7 @@ def _score_error(
     ):
         return "scoring source identity is missing"
     assertions = score.get("assertions")
-    expected_assertions = [*case_assertions(loaded_case), *evidence_assertions(validated["content"])]
+    expected_assertions = [*judgment_assertions(loaded_case), *evidence_assertions(validated["content"])]
     if assertions != expected_assertions:
         return "scoring assertions do not match the authenticated session"
     if not isinstance(assertions, list) or score.get("assertionsSha256") != _digest(assertions):

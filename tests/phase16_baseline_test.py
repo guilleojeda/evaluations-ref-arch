@@ -434,6 +434,37 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         changed_projection = timing_evidence_assertions(changed)
         self.assertNotEqual(assertions[0], changed_projection[0])
 
+    def test_generic_judgment_policy_is_shared_and_case_facts_are_deduplicated(self):
+        from agentcore_evaluation import judgment_assertions
+
+        policy = judgment_assertions()
+        combined = judgment_assertions(self.loaded, existing_policy=policy)
+
+        self.assertEqual([
+            "Diagnosis support: assess whether the causal explanation and incident assessment follow from the captured observations at the exact task referenceTime; a correct recommendation cannot rescue an unsupported diagnosis.",
+            "Evidence grounding: assess material source claims throughout the report and match citations to source, resource, entity, value, event time, availability, query observation time and actual coverage.",
+            "Keep diagnosis support and evidence grounding independent. Unsupported causal inference alone does not fail grounding when all stated source facts are accurate. False source facts fail grounding even when the main diagnosis is supported.",
+            "The exact task referenceTime is the evidence cutoff. Preserve event time, log ingestion/availability time, metric bucket, per-record observation time, query observedAt and archive acquisition time as distinct. A historical record available by the cutoff remains usable when retrieved later, but later operational observations cannot establish facts available at the cutoff.",
+            "Partial or truncated coverage does not prove absence, exact full-window counts, sustained recovery, or complete configuration/change history.",
+        ], policy)
+        self.assertEqual(policy, combined[:5])
+        self.assertEqual(len(combined), len(set(combined)))
+        self.assertIn("False source facts fail grounding even when the main diagnosis is supported.", " ".join(policy))
+        self.assertIn("A historical record available by the cutoff remains usable when retrieved later", " ".join(policy))
+        self.assertIn("cannot excuse an independently false or cutoff-ineligible source claim", " ".join(combined))
+
+        # A calibration control that already carries the five exposed policy
+        # strings must not receive a second copy when case facts are available.
+        from evaluate_case import _reviewed_case_from_control
+        control = {"reviewedCase": self.loaded}
+        self.assertEqual(self.loaded, _reviewed_case_from_control(control))
+        self.assertEqual(combined, judgment_assertions(_reviewed_case_from_control(control), existing_policy=policy))
+        legacy = judgment_assertions(
+            self.loaded,
+            existing_policy=[*policy, "Legacy case guidance: use the old assessment label."],
+        )
+        self.assertNotIn("Legacy case guidance", " ".join(legacy))
+
     def test_structured_claim_facts_joins_report_and_authenticated_rows_without_labels(self):
         from evaluation_telemetry import _structured_claim_facts_assertion
 
@@ -598,14 +629,14 @@ class CapturedBaselineAcceptance(unittest.TestCase):
         self.assertEqual(scored["status"], "complete", scored)
         self.assertEqual(len(evaluate.calls), 1)
         self.assertEqual(evaluate.calls[0]["evaluationInput"]["sessionSpans"], native_spans)
-        from agentcore_evaluation import case_assertions
+        from agentcore_evaluation import judgment_assertions
         from evaluation_telemetry import (
             evidence_assertions,
             execution_content,
         )
         observed = execution_content(native_spans)
         expected_assertions = [
-            *case_assertions(reopened_case),
+            *judgment_assertions(reopened_case),
             *evidence_assertions(observed),
         ]
         self.assertEqual(expected_assertions, scored["assertions"])
