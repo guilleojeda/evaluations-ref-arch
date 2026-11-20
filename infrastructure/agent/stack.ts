@@ -16,7 +16,10 @@ const RUNTIME_NAME = "IncidentTriageDemoAgent";
 const ADAPTER_NAME = "IncidentTriageDemoAlarmAdapter";
 const ALARM_ARN = `arn:aws:cloudwatch:${REGION}:${ACCOUNT}:alarm:IncidentTriageDemoAppStage5xx`;
 const EVIDENCE_BUCKET = `incident-triage-demo-evidence-${ACCOUNT}-${REGION}`;
-const MODEL_ID = "us.anthropic.claude-sonnet-4-6";
+// The active Runtime candidate is Opus 5.5. The immutable faulty reference
+// remains archived with its original Sonnet identity in scripts/faulty-reference.json.
+const MODEL_ID = "us.anthropic.claude-opus-5-5";
+const HISTORICAL_MODEL_ID = "us.anthropic.claude-sonnet-4-6";
 export class AgentStack extends DemoStack {
   constructor(scope: Construct, props: StackProps) {
     super(scope, "agent", props);
@@ -91,6 +94,8 @@ export class AgentStack extends DemoStack {
     const grant = (sid: string, actions: string[], resources: string[], conditions?: Record<string, Record<string, string>>) => runtimeRole.addToPolicy(new iam.PolicyStatement({ sid, actions, resources, conditions }));
     grant("SelectedModel", ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"], [
       `arn:aws:bedrock:${REGION}:${ACCOUNT}:inference-profile/${MODEL_ID}`,
+      ...["us-east-1", "us-east-2", "us-west-2"].map((region) => `arn:aws:bedrock:${region}::foundation-model/anthropic.claude-opus-5-5`),
+      `arn:aws:bedrock:${REGION}:${ACCOUNT}:inference-profile/${HISTORICAL_MODEL_ID}`,
       ...["us-east-1", "us-east-2", "us-west-2"].map((region) => `arn:aws:bedrock:${region}::foundation-model/anthropic.claude-sonnet-4-6`),
     ]);
     grant("OwnInvestigationRecords", ["dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem"], [runs.tableArn]);
