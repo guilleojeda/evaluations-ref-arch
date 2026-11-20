@@ -326,38 +326,12 @@ def case_assertions(loaded_case: Mapping[str, Any]) -> list[str]:
     ]
 
 
-def judgment_assertions(
-    loaded_case: Mapping[str, Any] | None = None,
-    *,
-    existing_policy: Sequence[str] = (),
-) -> list[str]:
-    """Build one deduplicated policy-plus-case assertion series.
+def judgment_assertions(loaded_case: Mapping[str, Any] | None = None) -> list[str]:
+    """Build the canonical generic policy, then optional reviewed case facts."""
 
-    ``existing_policy`` is used by calibration controls that already carry the
-    exposed generic policy. The canonical policy remains present exactly once;
-    a reviewed case, when supplied, contributes the same private case facts
-    used by normal scoring.
-    """
-
-    assertions: list[str] = []
-    for item in _GENERIC_JUDGMENT_ASSERTIONS:
-        if item not in assertions:
-            assertions.append(item)
-    for item in existing_policy:
-        if not isinstance(item, str) or not item.strip():
-            raise ValueError("judgment policy assertions must be non-empty strings")
-        # Calibration controls may carry the historical exact-cutoff fact in
-        # addition to the exposed five-policy series. Do not append legacy
-        # case guidance from a control; reviewed case facts enter only through
-        # the validated case object below.
-        if item not in _GENERIC_JUDGMENT_ASSERTIONS and not item.startswith("Exact task evidence cutoff: "):
-            continue
-        if item not in assertions:
-            assertions.append(item)
+    assertions = list(_GENERIC_JUDGMENT_ASSERTIONS)
     if loaded_case is not None:
-        for item in case_assertions(loaded_case):
-            if item not in assertions:
-                assertions.append(item)
+        assertions.extend(case_assertions(loaded_case))
     return assertions
 
 
