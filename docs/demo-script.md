@@ -4,6 +4,8 @@ The complete talk is 60 minutes, including presentation, live operation, code ed
 
 The [slides plan](slides-plan.md) records slide numbers, content, purposes, and transitions between slides and actual screens. This cue sheet owns presenter prompts and operating steps.
 
+The verified active target is `us.anthropic.claude-opus-5-5` in `us-east-1` through the ACTIVE US profile. The native agent tool/report path works; the selected original single AgentCore rubric uses `maxTokens: 2000` with `temperature` omitted, and evaluator `IncidentOriginalOpus55_33d939080fa3a949bb-t6eO7tGuG6` is actual. On exact archived S4, Opus rejected all three normal cases while frozen Sonnet produced the false pass; 7/7 exposed controls completed with overlapping evidence and matching reasons. Original-production holdout recovery is complete at 2/2 correct-recipe responses: bounded successful checkout passed, while the sustained/complete claim failed after coverage ended at 18:02:54Z despite the requested end 18:04:05Z. Two incompatible-recipe attempts had no raw result and remain incomplete. Do not claim deployment or general accuracy from these facts. Frozen Sonnet runs remain historical and must not be relabeled as Opus evidence.
+
 ## Before the room opens
 
 - [ ] Confirm the correct AWS target and presenter controller access.
@@ -92,7 +94,7 @@ Treat the response as discussion, not measured judge agreement, a new calibratio
 
 #### Judge model selection
 
-During calibration, use one sentence for model selection: “AgentCore built-in judges have fixed models, and where you can choose a judge model separately from your agent, use the least expensive supported model that meets your quality requirements on human-reviewed examples.” Keep model comparisons and configuration details for appendix slide 37. Keep the judge and rubric fixed for the agent comparison.
+During calibration, use one sentence for model selection: “The active target is `us.anthropic.claude-opus-5-5` through the ACTIVE US profile, using the selected single rubric and evaluator; the original-production holdout has two complete correct-recipe responses.” Keep model comparisons and configuration details for appendix slide 37. Keep the active judge and rubric fixed for the agent comparison. Any Sonnet 4.6 material shown is historical and does not establish Opus behavior. The two incompatible-recipe attempts remain incomplete and are excluded.
 
 ### The developer experience of evals
 

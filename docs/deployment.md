@@ -260,7 +260,7 @@ For **Reset**, close old checkout pages and confirm quiet traffic, destructive o
 
 ## Evaluation stages
 
-S1 freezes reviewed cases. S2 scores a captured faulty investigation. S3 runs a saved prompt edit from the IDE. S4 runs the native Strands experiment across the reviewed cases. S5 runs that experiment on the checked Runtime ZIP and adds a protected publication decision. All use the same report contract and captured evidence rules. The agent and advisory judge use Sonnet 4.6. [Evaluation policy](evaluations.md#release-decisions)
+S1 freezes reviewed cases. S2 scores a captured faulty investigation. S3 runs a saved prompt edit from the IDE. S4 runs the native Strands experiment across the reviewed cases. S5 runs that experiment on the checked Runtime ZIP and adds a protected publication decision. All use the same report contract and captured evidence rules. The checked historical implementation used Sonnet 4.6. The verified active agent and advisory judge target is `us.anthropic.claude-opus-5-5` in `us-east-1` through the ACTIVE US profile, using evaluator `IncidentOriginalOpus55_33d939080fa3a949bb-t6eO7tGuG6`; no Sonnet qualification transfers automatically, and no deployment state is implied. [Evaluation policy](evaluations.md#release-decisions)
 
 ## Review a repaired agent release
 
