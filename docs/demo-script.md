@@ -110,7 +110,7 @@ While the candidate comparison is pending, use the 36–39 measurements block to
 
 #### Candidate comparison and release decision
 
-Compare the repaired candidate with the matching captured S2 baseline under the same reviewed cases and criteria. Pair the two actual repaired findings: denied reads plus the observed alias/version/role/policy support selecting the healthy Inventory version at the current memory, and throttling under a reserved-concurrency cap supports raising the Inventory cap. Show the evidence behind each action and label any saved run recorded. Keep the recommendation findings separate from application remedy outcomes. Before pushing, verify and show the passing S4 local Strands experiment and reviewed policy result for the exact candidate. If the comparison is ready while the S4 result is pending, show the findings and leave the release decision pending.
+Compare the repaired candidate with the matching captured S2 baseline under the same reviewed cases and criteria. Pair the two actual repaired findings: denied reads plus the observed alias/version/role/policy support selecting the healthy Inventory version at the current memory, and throttling under a reserved-concurrency cap supports raising the Inventory cap. Show the evidence behind each action and label any saved run recorded. Keep the recommendation findings separate from application remedy outcomes. Before pushing, verify and show the complete S4 advisory result and its per-case grounding findings; do not call `review_required` a release qualification. If the comparison is ready while the S4 result is pending, show the findings and leave the release decision pending.
 
 #### CI and recurring cost
 
