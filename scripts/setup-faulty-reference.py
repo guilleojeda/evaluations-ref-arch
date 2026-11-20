@@ -928,6 +928,11 @@ def _verify_rotated_precondition(
     if existing_endpoint.get("agentRuntimeArn") != runtime_arn or existing_endpoint.get("agentRuntimeEndpointArn") != expected_endpoint_arn:
         raise RuntimeError("rotated faulty reference endpoint identity differs from the intended Runtime")
 
+    endpoint_identity = {
+        key: existing_endpoint[key]
+        for key in ("agentRuntimeArn", "agentRuntimeEndpointArn", "status", "liveVersion", "targetVersion")
+        if key in existing_endpoint
+    }
     if not existing_item:
         try:
             serving = control.get_agent_runtime(agentRuntimeId=runtime_id, agentRuntimeVersion=live_version)
@@ -940,7 +945,7 @@ def _verify_rotated_precondition(
             return {
                 "mode": "endpoint-advanced-empty",
                 "predecessorSnapshot": copy.deepcopy(dict(predecessor)),
-                "observedEndpoint": copy.deepcopy(dict(existing_endpoint)),
+                "observedEndpoint": endpoint_identity,
                 "observedPublication": {},
             }
         raise RuntimeError("rotated faulty reference endpoint exists without a reviewed publication row")
@@ -974,7 +979,7 @@ def _verify_rotated_precondition(
     return {
         "mode": mode,
         "predecessorSnapshot": copy.deepcopy(dict(predecessor)),
-        "observedEndpoint": copy.deepcopy(dict(existing_endpoint)),
+        "observedEndpoint": endpoint_identity,
         "observedPublication": existing_publication,
     }
 
