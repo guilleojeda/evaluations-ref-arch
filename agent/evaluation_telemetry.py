@@ -914,6 +914,195 @@ def timing_evidence_assertions(tool_calls: Sequence[Mapping[str, Any]]) -> list[
     return assertions
 
 
+def _timestamp(value: Any) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _delta(value: Any, reference: Any) -> str:
+    actual = _timestamp(value)
+    cutoff = _timestamp(reference)
+    if actual is None or cutoff is None:
+        return "unknown"
+    return f"{(actual - cutoff).total_seconds():+.3f}s"
+
+
+def _structured_claim_facts_assertion(content: Mapping[str, Any]) -> str:
+    """Compact typed view: summary claims, temporal outliers, and source rows."""
+
+    import re
+
+    report = content.get("report") if isinstance(content.get("report"), Mapping) else {}
+    calls = content.get("toolCalls") if isinstance(content.get("toolCalls"), list) else []
+    reference = next(
+        (
+            result.get("referenceTime")
+            for call in calls
+            if isinstance(call, Mapping)
+            for result in [call.get("result")]
+            if isinstance(result, Mapping) and isinstance(result.get("referenceTime"), str)
+        ),
+        None,
+    )
+    cutoff = _timestamp(reference)
+    summary = report.get("summary") if isinstance(report.get("summary"), str) else ""
+    summary_claims = [item for item in re.split(r"(?<=[.!?])\s+", summary.strip()) if item]
+    evidence = report.get("evidence") if isinstance(report.get("evidence"), list) else []
+    temporal_outliers: list[dict[str, Any]] = []
+    citation_claims: list[dict[str, Any]] = []
+    for index, citation in enumerate(evidence):
+        if not isinstance(citation, Mapping):
+            continue
+        observed, window_end = citation.get("observedAt"), citation.get("windowEnd")
+        late = cutoff is not None and (
+            (_timestamp(observed) is not None and _timestamp(observed) > cutoff)
+            or (_timestamp(window_end) is not None and _timestamp(window_end) > cutoff)
+        )
+        item = {
+            "index": index,
+            "source": citation.get("source"),
+            "resource": citation.get("resource"),
+            "observedAt": observed,
+            "observedAtDeltaFromReferenceTime": _delta(observed, reference),
+            "windowEnd": window_end,
+            "windowEndDeltaFromReferenceTime": _delta(window_end, reference),
+            "finding": citation.get("finding"),
+        }
+        citation_claims.append(item)
+        if late:
+            temporal_outliers.append(item)
+    typed_rows: list[dict[str, Any]] = []
+    late_sources: list[dict[str, Any]] = []
+    for call in calls:
+        if not isinstance(call, Mapping) or call.get("status") != "success":
+            continue
+        result = call.get("result")
+        if not isinstance(result, Mapping):
+            continue
+        tool = call.get("tool")
+        observations = result.get("observations") if isinstance(result.get("observations"), list) else []
+        window = result.get("window") if isinstance(result.get("window"), Mapping) else {}
+        gaps = result.get("gaps") if isinstance(result.get("gaps"), list) else []
+        archive_end = next((item[len("capture coverage ends at "):].strip() for item in gaps if isinstance(item, str) and item.startswith("capture coverage ends at ")), None)
+        late = cutoff is not None and any(
+            _timestamp(value) is not None and _timestamp(value) > cutoff
+            for value in (result.get("observedAt"), archive_end, window.get("end"))
+        )
+        if late:
+            late_sources.append({
+                "tool": tool,
+                "source": result.get("source"),
+                "scope": result.get("scope"),
+                "referenceTime": result.get("referenceTime"),
+                "eligibleInterval": f"at or before {reference}",
+                "requestedWindowEnd": window.get("end"),
+                "archiveCoverageEnd": archive_end,
+                "sourceObservedAt": result.get("observedAt"),
+                "returnedRows": len(observations),
+                "completeness": result.get("completeness"),
+                "gaps": gaps,
+                "laterIntervalCapability": "none beyond referenceTime",
+            })
+        for row in observations[:80]:
+            if not isinstance(row, Mapping):
+                continue
+            if tool == "read_configuration":
+                cfg = row.get("configuration") if isinstance(row.get("configuration"), Mapping) else {}
+                concurrency = row.get("concurrency") if isinstance(row.get("concurrency"), Mapping) else {}
+                if row.get("kind") not in {"lambda", "lambda-version"}:
+                    continue
+                typed_row: dict[str, Any] = {
+                    "type": "lambda-config",
+                    "function": row.get("function") or cfg.get("FunctionName"),
+                    "version": cfg.get("Version"),
+                    "role": cfg.get("Role") or row.get("roleName"),
+                    "memoryMB": cfg.get("MemorySize"),
+                    "availableAt": row.get("availableAt"),
+                }
+                if "ReservedConcurrentExecutions" in concurrency:
+                    typed_row["reservedConcurrency"] = concurrency["ReservedConcurrentExecutions"]
+                elif concurrency.get("state") == "unreserved":
+                    typed_row["reservedConcurrency"] = "unreserved"
+                elif concurrency:
+                    # Preserve an unavailable or unsupported provider result;
+                    # it is not evidence of an unreserved function.
+                    typed_row["concurrency"] = dict(concurrency)
+                else:
+                    typed_row["concurrencyStatus"] = "missing"
+                typed_rows.append(typed_row)
+            elif tool == "search_logs":
+                fields = row.get("fields") if isinstance(row.get("fields"), Mapping) else {}
+                typed_rows.append({
+                    "type": "log",
+                    "resource": row.get("resource"),
+                    "eventId": row.get("eventId"),
+                    "eventTime": row.get("timestamp"),
+                    "ingestionTime": row.get("ingestionTime"),
+                    "availableAt": row.get("availableAt"),
+                    "fields": {key: fields.get(key) for key in (
+                        "requestId", "routeKey", "operation", "statusCode", "errorCode", "errorName",
+                        "inventoryExecutedVersion", "dependencyFailureReason", "dependencyThrottleReason",
+                    ) if key in fields},
+                })
+            elif tool == "read_metrics":
+                typed_rows.append({"type": "metric", "id": row.get("Id"), "bucketStarts": row.get("Timestamps"), "values": row.get("Values"), "availability": row.get("availability")})
+            elif tool == "read_change_history":
+                typed_rows.append({"type": "change", "eventId": row.get("eventId", row.get("EventId")), "eventTime": row.get("EventTime"), "eventName": row.get("EventName"), "resource": row.get("ResourceName", row.get("resource")), "availableAt": row.get("availableAt")})
+    lambda_rows = [row for row in typed_rows if row.get("type") == "lambda-config"]
+    joined_lambda_claims: list[dict[str, Any]] = []
+    for index, claim in enumerate(summary_claims):
+        lowered = claim.lower()
+        matched = [
+            row for row in lambda_rows
+            if isinstance(row.get("function"), str)
+            and row["function"].lower().replace("incidenttriagedemo", "") in lowered.replace(" ", "")
+        ]
+        if matched:
+            joined_lambda_claims.append({"summaryIndex": index, "claim": claim, "matchedLambdaConfiguration": matched})
+    payload = {
+        "referenceTime": reference,
+        "eligibleInterval": f"at or before {reference}",
+        "summaryClaims": [{"index": index, "claim": value} for index, value in enumerate(summary_claims)],
+        "joinedLambdaClaims": joined_lambda_claims,
+        "temporalOutliersFirst": temporal_outliers,
+        "citationClaims": citation_claims,
+        "lateOrPartialSourceFacts": late_sources,
+        "typedResourceFacts": typed_rows,
+        "uncertainties": report.get("uncertainties"),
+        "alternatives": report.get("alternatives"),
+    }
+    return "Structured authenticated report/source view (verified facts, no expected labels): " + json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def evidence_assertions(content: Mapping[str, Any]) -> list[str]:
+    """Return the canonical authenticated evidence assertions for evaluation.
+
+    The reviewed case assertions remain separate.  This series is derived only
+    from the validated native session content so actual scoring, calibration,
+    and offline comparison use identical timing and report/source facts.
+    """
+
+    if not isinstance(content, Mapping):
+        raise ValueError("validated session content must be a mapping")
+    tool_calls = content.get("toolCalls")
+    if not isinstance(tool_calls, list):
+        raise ValueError("validated session content lacks tool calls")
+    return [
+        *timing_evidence_assertions(tool_calls),
+        _structured_claim_facts_assertion(content),
+    ]
+
+
 def interrupted_execution_content(
     spans: Sequence[Mapping[str, Any]],
     *,
@@ -1560,10 +1749,7 @@ def score_execution(
     # reference facts. Keep these after the reviewed case criteria so the
     # evaluator sees the source view as supplemental, not as a replacement or
     # expected-label override.
-    assertions = [
-        *assertions,
-        *timing_evidence_assertions(validated["content"]["toolCalls"]),
-    ]
+    assertions = [*assertions, *evidence_assertions(validated["content"])]
 
     scoring_started = time.monotonic()
     try:
@@ -1609,5 +1795,6 @@ __all__ = [
     "execution_content",
     "interrupted_execution_content",
     "score_execution",
+    "evidence_assertions",
     "timing_evidence_assertions",
 ]
