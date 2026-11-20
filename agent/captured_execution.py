@@ -590,6 +590,13 @@ def run_captured_case(
 _PACKAGE_CHILD_PROGRESS_PREFIX = "__CAPTURED_PACKAGE_PROGRESS__ "
 
 
+def _print_package_event(event: Mapping[str, Any]) -> None:
+    # Strands can stream ordinary text without a trailing newline. The
+    # parent's reader recognizes control records only at the start of a line.
+    payload = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    print(f"\n{_PACKAGE_CHILD_PROGRESS_PREFIX}{payload}", flush=True)
+
+
 def _package_child_main() -> int:
     """Bootstrap the package child from this trusted runner source file."""
 
@@ -615,44 +622,13 @@ def _package_child_main() -> int:
         Thread(target=watch_parent, name="captured-parent-watchdog", daemon=True).start()
 
     def progress(run_dir: Path, record: Mapping[str, Any]) -> None:
-        print(
-            _PACKAGE_CHILD_PROGRESS_PREFIX
-            + json.dumps(
-                {
-                    "kind": "progress",
-                    "runDirectory": str(run_dir),
-                    "record": record,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-            flush=True,
-        )
+        _print_package_event({"kind": "progress", "runDirectory": str(run_dir), "record": record})
 
     try:
         run_dir = _run_packaged_case_child(request, progress_callback=progress)
-        print(
-            _PACKAGE_CHILD_PROGRESS_PREFIX
-            + json.dumps(
-                {"kind": "result", "runDirectory": str(run_dir)},
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-            flush=True,
-        )
+        _print_package_event({"kind": "result", "runDirectory": str(run_dir)})
     except BaseException as exc:
-        print(
-            _PACKAGE_CHILD_PROGRESS_PREFIX
-            + json.dumps(
-                {"kind": "error", "type": type(exc).__name__, "message": str(exc)[:500]},
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ),
-            flush=True,
-        )
+        _print_package_event({"kind": "error", "type": type(exc).__name__, "message": str(exc)[:500]})
         raise
     return 0
 
