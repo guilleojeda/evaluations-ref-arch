@@ -375,6 +375,7 @@ Resources:
               - bedrock-agentcore:GetEvaluator
             Resource:
               - arn:aws:bedrock-agentcore:us-east-1:027224425948:evaluator/IncidentTriageSemanticSingle_35bc9bb6f79d8f15b8-T0jdxk8nzC
+              - arn:aws:bedrock-agentcore:us-east-1:027224425948:evaluator/IncidentTriageSemanticSingle_19e82868f272303dbb-hCLeh6Dc1x
           - Sid: InvokeReviewedModels
             Effect: Allow
             Action:
