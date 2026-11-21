@@ -15,16 +15,28 @@
   },
   "runtime": {
     "descriptor": "scripts/faulty-reference.json",
-    "sourceRevision": "bd6f77df97933e3e675ee9c2a699db16e29ea1b6",
-    "artifactSha256": "e5ac2ee20d8f3947eb95ceb74094e882a3d8a4a010f2a8e7bf96700dd5906b33",
+    "kind": "archived-hosted-faulty-reference",
+    "sourceRevision": "6254cf488e39195f21c48bb0f1383f54b3ba1fd6",
+    "artifactSha256": "3a9e3abfaa9d9c6e4f6e0705ff6d058c482aef74053567cc67cb42d485798ddb",
+    "runtimeVersion": "32",
     "lockSha256": "887c9bcf91ec028fe3b0939aac00a7d4c3dfbc68b2287e4469a15f3798651831",
-    "promptSourceSha256": "3d21155b9f9465a0ac11eb9fcaf761bfd19549cf6454ae3ac20c20044d57a9eb"
+    "promptSourceSha256": "3d21155b9f9465a0ac11eb9fcaf761bfd19549cf6454ae3ac20c20044d57a9eb",
+    "note": "Opening faulty publication remains archived and unchanged; opening the stage does not redeploy it."
   },
   "inputs": {
     "kind": "hosted-faulty-publication-and-live-alarm",
     "privateIndexEnv": "PHASE22_INPUT_INDEX",
-    "requires": ["hosted controller access", "faulty READY publication", "native alarm OK before trigger"],
-    "forbidden": ["reviewed case", "score", "evaluator", "release gate"]
+    "requires": [
+      "hosted controller access",
+      "faulty READY publication",
+      "native alarm OK before trigger"
+    ],
+    "forbidden": [
+      "reviewed case",
+      "score",
+      "evaluator",
+      "release gate"
+    ]
   },
   "entry": {
     "offlineSmoke": "uv run --offline --project agent --locked python -m py_compile agent/prompt.py agent/main.py agent/investigation.py",
