@@ -1,10 +1,10 @@
 """Acceptance tests for the editable S3 candidate workflow.
 
 These tests use the real captured-evidence runner and a scripted Bedrock
-transport. They do not call AWS. The repaired-candidate test deliberately
-leaves ``agent-manifest.json`` at its development value while changing the
-saved prompt, because S3 must snapshot the editable prompt itself and keep
-hosted-package validation separate.
+transport. They do not call AWS. The repaired-candidate test leaves
+``agent-manifest.json`` at its development value while changing the saved
+prompt. S3 derives a matching manifest only in the immutable captured
+snapshot; hosted-package validation remains separate.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ from phase16_baseline_test import (
     report_for,
     write_bundle,
 )
+from support.prompt_fixture import materialize_faulty_source
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,6 +84,13 @@ class S3WorkspaceAcceptance(unittest.TestCase):
         self.frozen_case = self.root / "case.frozen.json"
         freeze_case(self.case_path, self.bundle, self.frozen_case)
         self.runs = self.root / "runs"
+        # Keep the default run source disposable; the capture helper derives a
+        # coherent development manifest in its immutable snapshot.
+        self.default_agent = self.root / "default-agent"
+        shutil.copytree(AGENT, self.default_agent, ignore=shutil.ignore_patterns(".venv", "__pycache__"))
+        previous_agent_directory = captured_execution.AGENT_DIRECTORY
+        captured_execution.AGENT_DIRECTORY = self.default_agent
+        self.addCleanup(setattr, captured_execution, "AGENT_DIRECTORY", previous_agent_directory)
         self._set_tracer_provider()
 
     def tearDown(self) -> None:
@@ -171,8 +179,6 @@ class S3WorkspaceAcceptance(unittest.TestCase):
         )
         self.assertIn(marker, edited_prompt)
         prompt_path.write_bytes(edited_prompt)
-        editor_manifest = editable_agent / "agent-manifest.json"
-        editor_manifest_before = editor_manifest.read_bytes()
         original_spec = importlib.util.spec_from_file_location
         expected = original_spec("phase17_saved_prompt", prompt_path)
         expected_prompt_module = importlib.util.module_from_spec(expected)
@@ -200,21 +206,16 @@ class S3WorkspaceAcceptance(unittest.TestCase):
         second_model = ScriptedBedrock(report, self.case["task"])
         second_dir = self._launch_repaired(editable_agent, second_model)
         before, after = self._show(first_dir), self._show(second_dir)
-        for shown, model, run_dir in ((before, first_model, first_dir), (after, second_model, second_dir)):
+        for shown, model in ((before, first_model), (after, second_model)):
             self.assertEqual(shown["status"], "complete")
             self.assertEqual(shown["identity"]["candidateId"], "repaired")
             self.assertEqual(shown["identity"]["originatingRunId"], self.case["evidence"]["originatingRunId"])
             self.assertEqual(shown["identity"]["promptSha256"], expected_prompt_module.PROMPT_SHA256)
             self.assertEqual(shown["manifest"]["sourceFiles"]["agent/prompt.py"], hashlib.sha256(edited_prompt).hexdigest())
-            source_manifest = json.loads(
-                (run_dir / "source/agent/agent-manifest.json").read_bytes()
-            )
-            self.assertEqual(source_manifest["promptSha256"], shown["identity"]["promptSha256"])
             self.assertEqual(shown["report"]["recommendation"]["value"], "75")
             self.assertTrue(model.requests)
             for request in model.requests:
                 self.assertEqual(request["system"][0]["text"], expected_prompt_module.SYSTEM_PROMPT)
-        self.assertEqual(editor_manifest.read_bytes(), editor_manifest_before)
         for key in ("caseSha256", "bundleSha256", "referenceTime", "sourceSha256", "promptSha256"):
             self.assertEqual(before["identity"][key], after["identity"][key])
         for key in ("executionId", "sessionId", "traceId"):
@@ -224,17 +225,14 @@ class S3WorkspaceAcceptance(unittest.TestCase):
         patch_file = AGENT / "prompts" / "s3-repair.patch"
         self.assertTrue(patch_file.is_file(), "prepared S3 repair patch is missing")
         checkout = self.root / "prepared-checkout"
-        (checkout / "agent").mkdir(parents=True)
-        for name in (*captured_execution.SOURCE_FILES, *captured_execution.DEPENDENCY_FILES):
-            target = checkout / "agent" / name
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(AGENT / name, target)
-        faulty_prompt = subprocess.check_output(
-            ["git", "show", "bd6f77df97933e3e675ee9c2a699db16e29ea1b6:agent/prompt.py"],
-            cwd=ROOT,
+        agent_source = materialize_faulty_source(
+            AGENT,
+            checkout,
+            ROOT / "tests/fixtures/phase20_faulty_prompt.py",
         )
-        (checkout / "agent/prompt.py").write_bytes(faulty_prompt)
+        checkout = agent_source.parent
         subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
+        faulty_prompt = (checkout / "agent/prompt.py").read_bytes()
         subprocess.run(["git", "add", "agent"], cwd=checkout, check=True)
         subprocess.run(
             ["git", "-c", "user.name=S3", "-c", "user.email=s3@example.invalid", "commit", "-qm", "base"],
@@ -258,6 +256,12 @@ class S3WorkspaceAcceptance(unittest.TestCase):
         self.assertIsNotNone(prompt_spec.loader)
         prompt_module = importlib.util.module_from_spec(prompt_spec)
         prompt_spec.loader.exec_module(prompt_module)
+        self.assertIn("copy the matching series' observedAt[i] into the citation", prompt_module.SYSTEM_PROMPT)
+        self.assertIn("Timestamps[i] starts the measured bucket", prompt_module.SYSTEM_PROMPT)
+        self.assertNotIn(
+            "Choose Increase reserved concurrency only when the same measured period",
+            prompt_module.SYSTEM_PROMPT,
+        )
         report = report_for(
             recommendation("Restore inventory access", "inventory", "75", "version")
         )

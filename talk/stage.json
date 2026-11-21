@@ -5,10 +5,10 @@
   "candidateDefault": "repaired",
   "prompt": {
     "path": "agent/prompt.py",
-    "semanticId": "repaired-opus55-development",
-    "sourceRevision": "62236d0e8731242d5a6468cf931f003a323b5349",
-    "fileSha256": "88b8b94f2da13263407aadc1301bc5b4c2345fcec3ac2bd148fead9835807bdd",
-    "promptSha256": "0f8d10ce6f46302a00dbe60cb29ebfeb4212627000c78b3529e6e0c7696ff425",
+    "semanticId": "repaired-opus55-metric-development",
+    "sourceRevision": "5c033892948f27740f61adbbc057564b3d83720b",
+    "fileSha256": "96e3fe13ecc8ddc04140ce15b25d48c7b2b210ac8b2dba29df9d915c82fe1249",
+    "promptSha256": "e6408fad078c329756849a5c3279b49472fc9fc387d959696287b87bf93db0c5",
     "faultyStartingOption": {
       "semanticId": "faulty-phase19",
       "sourceRevision": "bd6f77df97933e3e675ee9c2a699db16e29ea1b6",
@@ -21,18 +21,19 @@
     "description": "Phase 17 fresh editable candidate execution, scoring, and offline comparison"
   },
   "scorerAnchor": {
-    "revision": "3505ffb39504c07ac333501ec9b81e7ca98c018c",
-    "sourceRevision": "c96fbe569ea41a99815ebe30a3c953111524d39d",
+    "sourceRevision": "5c033892948f27740f61adbbc057564b3d83720b",
     "model": "us.anthropic.claude-opus-5-5",
     "rubric": "single",
-    "verdict": "advisory"
+    "verdict": "advisory",
+    "evaluatorId": "IncidentTriageSemanticSingle_584b1b2b228fbf141f-MqPN3HHgez",
+    "configSha256": "584b1b2b228fbf141f50eb780df5d51c75b56b0ed720fe7717d247527069b5c1",
+    "note": "The private selected gate supplies the exact descriptor; source metric bucket, observation and availability clocks are distinct."
   },
   "runtime": {
-    "descriptor": "scripts/faulty-reference.json",
-    "sourceRevision": "62236d0e8731242d5a6468cf931f003a323b5349",
-    "artifactSha256": "1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7",
+    "kind": "editable-development-source",
+    "hostedFaultyDescriptor": "scripts/faulty-reference.json",
     "lockSha256": "887c9bcf91ec028fe3b0939aac00a7d4c3dfbc68b2287e4469a15f3798651831",
-    "promptSourceSha256": "88b8b94f2da13263407aadc1301bc5b4c2345fcec3ac2bd148fead9835807bdd"
+    "note": "Fresh captures authenticate this worktree source; hosted publication identity belongs to the private verified live-release binding."
   },
   "inputs": {
     "kind": "fresh-repaired-candidate-against-matching-reviewed-case",
@@ -58,11 +59,19 @@
     "carriedCaseId": "phase14.denied-inventory-read.session-draft",
     "carriedCaseSha256": "e53d6af51b41ccc4c8056b101f879a19a1e06d5e580cd5658198ddf4cc187266",
     "bundleSha256": "8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8",
-    "baselineExecutionId": "e3f934af-6af9-42aa-ac78-b315133e1571",
-    "recordedRepairedExecutionId": "295cd070-07e8-4f69-b8ce-c588a74fab42",
-    "recordedRepairedArchiveSha256": "5c019966694520efb4ce989f0581d1adb56c012bbb0ce216849caf3d0acd256f",
-    "requires": ["matching case/bundle", "matching cutoff", "same model/tools/report contract", "pinned evaluator descriptor", "unique output root"],
-    "forbidden": ["reusing the S2 execution as fresh S3", "relaxing comparator identity checks", "release publication"]
+    "requires": [
+      "matching case/bundle",
+      "matching cutoff",
+      "same model/tools/report contract",
+      "pinned evaluator descriptor",
+      "unique output root"
+    ],
+    "forbidden": [
+      "reusing the S2 execution as fresh S3",
+      "relaxing comparator identity checks",
+      "release publication"
+    ],
+    "recordedEvidence": "Exact execution/experiment/score identities come from the authenticated private session roster; historical results retain their original evaluator and source identities."
   },
   "entry": {
     "offlineSmoke": "uv run --offline --project agent --locked python -m py_compile agent/prompt.py agent/evaluate_case.py agent/compare_executions.py",

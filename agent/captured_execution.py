@@ -9,6 +9,7 @@ for verification and execution.
 from __future__ import annotations
 
 from contextlib import contextmanager
+from collections import deque
 import ast
 import fcntl
 import hashlib
@@ -16,13 +17,16 @@ import importlib.util
 import json
 import os
 import re
+import signal
+import subprocess
 import sys
+import sysconfig
 import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from threading import Event, Timer
+from threading import Event, Thread, Timer
 from typing import Any, Iterator, Mapping, Sequence
 
 
@@ -204,14 +208,54 @@ def _development_manifest_bytes(manifest_raw: bytes, prompt_sha256: str) -> byte
         raise ValueError("development agent manifest must be an object")
     if manifest.get("sourceRevision") != "development":
         # Published and historical source snapshots are already immutable
-        # identities. Never reinterpret their manifest bytes as an editor
-        # template.
+        # identities. Do not reinterpret their manifest bytes as a local
+        # editor template.
         return manifest_raw
     if manifest.get("promptSha256") == prompt_sha256:
         return manifest_raw
     generated_manifest = dict(manifest)
     generated_manifest["promptSha256"] = prompt_sha256
     return json.dumps(generated_manifest, ensure_ascii=False, sort_keys=True, indent=2).encode("utf-8") + b"\n"
+
+
+def _prepare_development_source(source_files: Mapping[str, bytes]) -> dict[str, bytes]:
+    """Authenticate an editable prompt and derive its manifest in memory.
+
+    The browser IDE can save ``prompt.py`` without touching the checked-in
+    development manifest.  A local capture must therefore bind the manifest
+    to the exact bytes copied into its immutable source snapshot, rather than
+    editing the user's workspace.  Runtime ZIP captures do not call this
+    helper: their package manifest is authenticated by the package boundary
+    and must remain byte-for-byte unchanged.
+    """
+
+    prompt_raw = source_files.get("agent/prompt.py")
+    manifest_raw = source_files.get("agent/agent-manifest.json")
+    if prompt_raw is None or manifest_raw is None:
+        raise ValueError("development source prompt or manifest is missing")
+    module_name = f"_captured_development_prompt_{uuid.uuid4().hex}"
+    with tempfile.TemporaryDirectory(prefix="incident-triage-prompt-") as temporary_name:
+        prompt_path = Path(temporary_name) / "prompt.py"
+        prompt_path.write_bytes(prompt_raw)
+        spec = importlib.util.spec_from_file_location(module_name, prompt_path)
+        if spec is None or spec.loader is None:
+            raise ValueError("development prompt cannot be loaded")
+        module = importlib.util.module_from_spec(spec)
+        try:
+            spec.loader.exec_module(module)
+            system_prompt = module.SYSTEM_PROMPT
+            declared_digest = module.PROMPT_SHA256
+        except Exception as exc:
+            raise ValueError("development prompt cannot be authenticated") from exc
+    if not isinstance(system_prompt, str) or not isinstance(declared_digest, str):
+        raise ValueError("development prompt must define SYSTEM_PROMPT and PROMPT_SHA256")
+    computed_digest = _sha256(system_prompt.encode("utf-8"))
+    if declared_digest != computed_digest:
+        raise ValueError("development prompt declared digest differs from its computed digest")
+    generated_manifest = _development_manifest_bytes(manifest_raw, computed_digest)
+    prepared = dict(source_files)
+    prepared["agent/agent-manifest.json"] = generated_manifest
+    return prepared
 
 
 def _parse_headers(value: str) -> dict[str, str]:
@@ -287,24 +331,159 @@ def _verify_exporter_setup() -> Any:
     return provider
 
 
-@contextmanager
-def _snapshot_imports(agent_source: Path) -> Iterator[None]:
-    """Load runtime dependencies from the captured files, then restore callers."""
+def _configure_packaged_exporter(launcher_provider: Any) -> Any:
+    """Install the signed ADOT exporter using the Runtime ZIP's OTel modules.
 
-    old_modules = {name: sys.modules.pop(name, None) for name in SNAPSHOT_MODULES}
-    sys.path.insert(0, str(agent_source))
+    The ``opentelemetry-instrument`` launcher necessarily initializes a
+    trusted driver provider before the package ZIP is loaded.  Reusing that
+    provider after the package dependency scope is installed is unsafe: its
+    exporter encoder keys the driver's ``SpanKind`` enum, while candidate
+    spans carry the packaged enum.  The resulting ``KeyError`` drops every
+    span before CloudWatch/X-Ray sees it.  Keep the launcher preflight as the
+    authentication boundary, then construct the same AWS OTLP exporter from
+    the package's own OTel modules so encoder and span types are identical.
+    """
+
+    # These imports intentionally resolve inside _snapshot_imports, where the
+    # extracted Runtime ZIP is first on sys.path and ambient site-packages have
+    # been removed.  Never use the launcher's driver OTel classes here.
+    from amazon.opentelemetry.distro.aws_opentelemetry_configurator import AwsOpenTelemetryConfigurator
+
+    # Use the signed package configurator rather than reconstructing ADOT's
+    # exporter/resource/sampler settings. This keeps AWS auth, endpoint,
+    # headers, resource detectors and BatchSpanProcessor behavior identical to
+    # the production ``opentelemetry-instrument`` path, but with package-owned
+    # OTel classes. The launcher provider is only the already-authenticated
+    # preflight boundary; it is never mutated or shut down here.
+    try:
+        AwsOpenTelemetryConfigurator().configure()
+        return _verify_exporter_setup()
+    except BaseException:
+        # The ADOT configurator may install a provider before a later
+        # validation/import fails. Close only that package-owned provider;
+        # the authenticated launcher provider belongs to the outer process.
+        try:
+            from opentelemetry import trace
+
+            partial_provider = trace.get_tracer_provider()
+            if partial_provider is not launcher_provider:
+                try:
+                    partial_provider.force_flush(timeout_millis=30_000)
+                except Exception:
+                    pass
+                try:
+                    partial_provider.shutdown()
+                except Exception:
+                    pass
+        finally:
+            raise
+
+
+@contextmanager
+def _snapshot_imports(
+    agent_source: Path,
+    *,
+    dependency_root: Path | None = None,
+    dependency_modules: Sequence[str] = (),
+) -> Iterator[None]:
+    """Load candidate code and, when selected, its packaged dependencies.
+
+    The normal development path only snapshots the candidate source modules.
+    Package qualification additionally supplies the extracted Runtime root and
+    the top-level modules it contains.  Those modules are removed from the
+    ambient interpreter for the duration of the task so a trusted driver
+    installation cannot satisfy a missing candidate dependency.  All module
+    identities are restored before the evaluator continues.
+    """
+
+    names = set(SNAPSHOT_MODULES)
+    if dependency_root is not None:
+        for name in dependency_modules:
+            if isinstance(name, str) and name and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                names.add(name)
+    old_modules: dict[str, Any] = {}
+    for loaded_name in list(sys.modules):
+        if any(loaded_name == name or loaded_name.startswith(f"{name}.") for name in names):
+            old_modules[loaded_name] = sys.modules.pop(loaded_name)
+    if dependency_root is not None:
+        # Keep the trusted Strands Evals SDK object alive; the native driver
+        # already owns its Experiment class and the ZIP intentionally carries
+        # only serving dependencies.  Every other ambient site distribution
+        # is removed, including modules that are not present in the ZIP, so a
+        # missing candidate import cannot be rescued by the driver cache.
+        for loaded_name in list(sys.modules):
+            if loaded_name.startswith("strands_evals") or loaded_name in old_modules:
+                continue
+            module = sys.modules.get(loaded_name)
+            module_path = getattr(module, "__file__", None)
+            if isinstance(module_path, str) and ("site-packages" in module_path or "dist-packages" in module_path):
+                old_modules[loaded_name] = sys.modules.pop(loaded_name)
+    old_path = list(sys.path)
+    if dependency_root is None:
+        sys.path.insert(0, str(agent_source))
+    else:
+        # The extracted Runtime root must win over the staging copy for
+        # package qualification.  Remove ambient site-packages entirely: a
+        # missing ZIP dependency must fail import rather than being silently
+        # satisfied by the trusted driver's installation.  Standard-library
+        # paths remain available for the trusted captured support closure.
+        standard_library_paths = [
+            path for path in old_path
+            if "site-packages" not in path and "dist-packages" not in path
+        ]
+        sys.path[:] = [str(dependency_root), str(agent_source), *standard_library_paths]
     try:
         yield
     finally:
-        try:
-            sys.path.remove(str(agent_source))
-        except ValueError:
-            pass
-        for name in SNAPSHOT_MODULES:
-            sys.modules.pop(name, None)
-            old = old_modules[name]
-            if old is not None:
-                sys.modules[name] = old
+        sys.path[:] = old_path
+        for loaded_name in list(sys.modules):
+            if any(loaded_name == name or loaded_name.startswith(f"{name}.") for name in names):
+                sys.modules.pop(loaded_name, None)
+        sys.modules.update(old_modules)
+
+
+def _standard_library_paths(initial_path: Sequence[str]) -> list[str]:
+    """Return standard-library search paths, excluding ambient packages."""
+
+    paths: list[str] = []
+    for key in ("stdlib", "platstdlib"):
+        value = sysconfig.get_path(key)
+        if isinstance(value, str) and value and value not in paths:
+            paths.append(value)
+    value = sysconfig.get_config_var("DESTSHARED")
+    if isinstance(value, str) and value and value not in paths:
+        paths.append(value)
+    # The -S child normally already has the standard-library zip or dynamic
+    # module directory in sys.path. Preserve those entries, excluding the
+    # current directory and any ambient third-party installation.
+    for path in initial_path:
+        if path and "site-packages" not in path and "dist-packages" not in path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+@contextmanager
+def _package_process_imports(
+    agent_source: Path,
+    *,
+    dependency_root: Path,
+) -> Iterator[None]:
+    """Expose only the checked package, trusted support and standard library.
+
+    This context is used only in the fresh package-case interpreter.  That
+    interpreter has no trusted third-party modules to evict, and the package
+    ADOT provider is configured before the task starts.  Keeping modules alive
+    for the whole process avoids the import-lock race that can occur when a
+    background exporter imports a module while ``_snapshot_imports`` removes
+    it from a live instrumented parent.
+    """
+
+    old_path = list(sys.path)
+    sys.path[:] = [str(dependency_root), str(agent_source), *_standard_library_paths(old_path)]
+    try:
+        yield
+    finally:
+        sys.path[:] = old_path
 
 
 def _private_directory(path: Path) -> Path:
@@ -365,6 +544,9 @@ def run_captured_case(
     model_session: Any = None,
     candidate_id: str | None = None,
     source_directory: str | Path | None = None,
+    dependency_root: str | Path | None = None,
+    dependency_modules: Sequence[str] = (),
+    runtime_origin: Mapping[str, Any] | None = None,
     trusted_runner: bool = False,
     progress_callback: Any = None,
 ) -> Path:
@@ -384,6 +566,7 @@ def run_captured_case(
     case_bytes = _read_input(case_path, "frozen case")
     bundle_bytes = _read_input(bundle_path, "source bundle")
     source_files, dependency_files = _read_source_bytes(source_directory)
+    selected_dependency_root = Path(dependency_root).resolve() if dependency_root is not None else None
 
     with tempfile.TemporaryDirectory(prefix="incident-triage-captured-snapshot-") as temporary_name:
         staging = Path(temporary_name)
@@ -393,6 +576,20 @@ def run_captured_case(
         staged_bundle = staging / "bundle.json"
         _write_bytes(staged_case, case_bytes)
         _write_bytes(staged_bundle, bundle_bytes)
+
+        # Authenticate the copied, immutable inputs before any telemetry
+        # exporter preflight or model/client construction.  In particular,
+        # callers must see a frozen ``caseSha256`` mismatch even when the
+        # production ADOT environment is not configured.
+        from reviewed_cases import load_frozen_case
+
+        load_frozen_case(staged_case, staged_bundle)
+        if model_session is None:
+            # ``opentelemetry-instrument`` installs the trusted ADOT provider
+            # before this function starts. Validate it while its host modules
+            # are still available, then preserve that provider while the
+            # package dependency scope is swapped.
+            provider = _verify_exporter_setup()
 
         if trusted_runner:
             # The development driver itself is already executing an accepted
@@ -411,6 +608,28 @@ def run_captured_case(
                 raise ValueError("captured execution snapshot cannot be loaded")
             snapshot_module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(snapshot_module)
+        if selected_dependency_root is not None and model_session is None:
+            # The checked Runtime ZIP must never be loaded by mutating the
+            # trusted instrumented evaluator process.  A fresh child owns the
+            # package dependency graph and its exporter threads; the native
+            # Strands experiment and scorer remain in this parent.
+            return _run_packaged_case_process(
+                staging=staging,
+                staged_case=staged_case,
+                staged_bundle=staged_bundle,
+                output_root=Path(output_root),
+                candidate_id=selected_candidate,
+                strict_manifest=strict_manifest,
+                dependency_root=selected_dependency_root,
+                dependency_modules=dependency_modules,
+                runtime_origin=runtime_origin,
+                progress_callback=progress_callback,
+                runner_source=(
+                    Path(__file__).read_bytes()
+                    if trusted_runner
+                    else (agent_source / "captured_execution.py").read_bytes()
+                ),
+            )
         return Path(snapshot_module._run_snapshot(
             staging=staging,
             staged_case=staged_case,
@@ -423,6 +642,252 @@ def run_captured_case(
             candidate_id=selected_candidate,
             strict_manifest=strict_manifest,
             progress_callback=progress_callback,
+            dependency_root=selected_dependency_root,
+            dependency_modules=dependency_modules,
+            runtime_origin=runtime_origin,
+        ))
+
+
+_PACKAGE_CHILD_PROGRESS_PREFIX = "__CAPTURED_PACKAGE_PROGRESS__ "
+
+
+def _print_package_event(event: Mapping[str, Any]) -> None:
+    # Strands can stream ordinary text without a trailing newline. The
+    # parent's reader recognizes control records only at the start of a line.
+    payload = json.dumps(event, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    print(f"\n{_PACKAGE_CHILD_PROGRESS_PREFIX}{payload}", flush=True)
+
+
+def _package_child_main() -> int:
+    """Bootstrap the package child from this trusted runner source file."""
+
+    request_path = Path(sys.argv[1])
+    request = json.loads(request_path.read_bytes())
+    staging = Path(request["staging"])
+    agent_source = staging / "source" / "agent"
+    dependency_root = Path(request["dependencyRoot"])
+    sys.path[:] = [str(dependency_root), str(agent_source), *_standard_library_paths(sys.path)]
+
+    parent_watchdog_fd = request.get("parentWatchdogFd")
+    if type(parent_watchdog_fd) is int and parent_watchdog_fd >= 0:
+        def watch_parent() -> None:
+            try:
+                with os.fdopen(parent_watchdog_fd, "rb", closefd=True) as parent_pipe:
+                    if parent_pipe.read(1) == b"":
+                        os.kill(os.getpid(), signal.SIGINT)
+            except (OSError, ValueError):
+                # The child is already terminating or the parent pipe was
+                # closed during process startup; no second failure is needed.
+                return
+
+        Thread(target=watch_parent, name="captured-parent-watchdog", daemon=True).start()
+
+    def progress(run_dir: Path, record: Mapping[str, Any]) -> None:
+        _print_package_event({"kind": "progress", "runDirectory": str(run_dir), "record": record})
+
+    try:
+        run_dir = _run_packaged_case_child(request, progress_callback=progress)
+        _print_package_event({"kind": "result", "runDirectory": str(run_dir)})
+    except BaseException as exc:
+        _print_package_event({"kind": "error", "type": type(exc).__name__, "message": str(exc)[:500]})
+        raise
+    return 0
+
+
+def _stop_package_child(process: subprocess.Popen[str]) -> None:
+    """Ask a package child to persist its interrupted execution before exit."""
+
+    if process.poll() is not None:
+        return
+    try:
+        process.send_signal(signal.SIGINT)
+        process.wait(timeout=10)
+        return
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    if process.poll() is None:
+        try:
+            process.terminate()
+            process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+
+
+def _run_packaged_case_process(
+    *,
+    staging: Path,
+    staged_case: Path,
+    staged_bundle: Path,
+    output_root: Path,
+    candidate_id: str,
+    strict_manifest: bool,
+    dependency_root: Path,
+    dependency_modules: Sequence[str],
+    runtime_origin: Mapping[str, Any] | None,
+    progress_callback: Any,
+    runner_source: bytes,
+) -> Path:
+    """Run one checked package case in a fresh interpreter process."""
+
+    request_path = staging / "package-child-request.json"
+    runner_path = staging / "trusted-package-runner.py"
+    _write_bytes(runner_path, runner_source)
+    environment = os.environ.copy()
+    # -S below excludes the parent virtualenv's site-packages.  Keep the
+    # production telemetry variables, but do not inherit a workspace path that
+    # could satisfy a missing package dependency.
+    environment["PYTHONPATH"] = ""
+    environment["PYTHONNOUSERSITE"] = "1"
+    parent_watchdog_read, parent_watchdog_write = os.pipe()
+    try:
+        _write_json_atomic(
+            request_path,
+            {
+                "staging": str(staging),
+                "stagedCase": str(staged_case),
+                "stagedBundle": str(staged_bundle),
+                "outputRoot": str(output_root),
+                "candidateId": candidate_id,
+                "strictManifest": strict_manifest,
+                "dependencyRoot": str(dependency_root),
+                "dependencyModules": list(dependency_modules),
+                "runtimeOrigin": dict(runtime_origin) if runtime_origin is not None else None,
+                "parentWatchdogFd": parent_watchdog_read,
+            },
+        )
+        process = subprocess.Popen(
+            [sys.executable, "-S", str(runner_path), str(request_path)],
+            cwd=str(staging),
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            pass_fds=(parent_watchdog_read,),
+        )
+    except BaseException:
+        os.close(parent_watchdog_read)
+        os.close(parent_watchdog_write)
+        raise
+    os.close(parent_watchdog_read)
+    output_lines: deque[str] = deque(maxlen=20)
+    result_directory: Path | None = None
+    previous_sigterm = None
+    sigterm_installed = False
+
+    def forward_sigterm(_signum: int, _frame: Any) -> None:
+        _stop_package_child(process)
+        raise SystemExit(128 + signal.SIGTERM)
+
+    try:
+        try:
+            previous_sigterm = signal.signal(signal.SIGTERM, forward_sigterm)
+            sigterm_installed = True
+        except ValueError:
+            # A caller may execute a case from a worker thread.  Python only
+            # allows signal handlers on the main thread; normal cancellation
+            # and KeyboardInterrupt still use the cleanup path below.
+            previous_sigterm = None
+        assert process.stdout is not None
+        for line in process.stdout:
+            line = line.rstrip("\n")
+            if not line.startswith(_PACKAGE_CHILD_PROGRESS_PREFIX):
+                output_lines.append(line)
+                continue
+            payload = line[len(_PACKAGE_CHILD_PROGRESS_PREFIX):]
+            try:
+                event = json.loads(payload)
+            except (TypeError, ValueError):
+                output_lines.append(line)
+                continue
+            if not isinstance(event, Mapping):
+                output_lines.append(line)
+                continue
+            kind = event.get("kind")
+            if kind == "progress":
+                run_directory = event.get("runDirectory")
+                record = event.get("record")
+                if isinstance(run_directory, str) and isinstance(record, dict) and callable(progress_callback):
+                    progress_callback(Path(run_directory), record)
+            elif kind == "result":
+                run_directory = event.get("runDirectory")
+                if isinstance(run_directory, str):
+                    result_directory = Path(run_directory)
+            elif kind == "error":
+                output_lines.append(f"{event.get('type', 'ChildError')}: {event.get('message', '')}")
+    except BaseException:
+        _stop_package_child(process)
+        raise
+    finally:
+        if sigterm_installed:
+            signal.signal(signal.SIGTERM, previous_sigterm)
+        if process.stdout is not None:
+            process.stdout.close()
+        os.close(parent_watchdog_write)
+    return_code = process.wait()
+    if return_code != 0:
+        details = "\n".join(output_lines).strip()
+        message = f"packaged case child exited with status {return_code}"
+        if details:
+            message += f": {details[:2000]}"
+        raise ValueError(message)
+    if result_directory is None:
+        details = "\n".join(output_lines).strip()
+        message = "packaged case child did not return an execution directory"
+        if details:
+            message += f": {details[:2000]}"
+        raise ValueError(message)
+    return result_directory
+
+
+def _run_packaged_case_child(request: Mapping[str, Any], *, progress_callback: Any = None) -> Path:
+    """Execute a parent-snapshotted package case inside the package process."""
+
+    staging = Path(request["staging"])
+    staged_case = Path(request["stagedCase"])
+    staged_bundle = Path(request["stagedBundle"])
+    output_root = Path(request["outputRoot"])
+    dependency_root = Path(request["dependencyRoot"])
+    agent_source = staging / "source" / "agent"
+    source_files: dict[str, bytes] = {}
+    dependency_files: dict[str, bytes] = {}
+    for name in SOURCE_FILES:
+        path = agent_source / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"selected agent source is unavailable: {name}")
+        source_files[f"agent/{name}"] = path.read_bytes()
+    for name in DEPENDENCY_FILES:
+        path = agent_source / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"locked dependency input is unavailable: {name}")
+        dependency_files[f"agent/{name}"] = path.read_bytes()
+    runtime_origin = request.get("runtimeOrigin")
+    if runtime_origin is not None and not isinstance(runtime_origin, Mapping):
+        raise ValueError("package child Runtime origin is malformed")
+    with _package_process_imports(agent_source, dependency_root=dependency_root):
+        # This child has no inherited trusted provider.  Configure the signed
+        # package exporter after its exact dependency path is established.
+        provider = _configure_packaged_exporter(None)
+        return Path(_run_snapshot(
+            staging=staging,
+            staged_case=staged_case,
+            staged_bundle=staged_bundle,
+            output_root=output_root,
+            source_files=source_files,
+            dependency_files=dependency_files,
+            model_session=None,
+            provider=provider,
+            candidate_id=request["candidateId"],
+            strict_manifest=bool(request["strictManifest"]),
+            progress_callback=progress_callback,
+            dependency_root=dependency_root,
+            dependency_modules=request.get("dependencyModules", ()),
+            runtime_origin=dict(runtime_origin) if runtime_origin is not None else None,
+            package_process=True,
         ))
 
 
@@ -658,6 +1123,43 @@ def _snapshot_manifest(
     }
 
 
+def _module_origins(
+    names: Sequence[str],
+    *,
+    dependency_root: Path,
+    agent_source: Path,
+) -> dict[str, dict[str, Any]]:
+    """Return stable source/content identities for modules used by the task."""
+
+    origins: dict[str, dict[str, Any]] = {}
+    package_root = dependency_root.resolve()
+    support_root = agent_source.resolve()
+    for name in names:
+        module = sys.modules.get(name)
+        path_value = getattr(module, "__file__", None) if module is not None else None
+        if not isinstance(path_value, str):
+            origins[name] = {"loaded": False}
+            continue
+        path = Path(path_value)
+        try:
+            resolved = path.resolve()
+            if resolved.is_relative_to(package_root):
+                relative = resolved.relative_to(package_root).as_posix()
+                origin = {"kind": "runtime_zip", "path": relative}
+            elif resolved.is_relative_to(support_root):
+                relative = resolved.relative_to(support_root).as_posix()
+                origin = {"kind": "trusted_support_snapshot", "path": relative}
+            else:
+                origin = {"kind": "ambient", "path": str(resolved)}
+            if resolved.is_file():
+                origin["sha256"] = _sha256(resolved.read_bytes())
+        except (OSError, ValueError):
+            origin = {"kind": "unavailable", "path": str(path)}
+        origin["loaded"] = True
+        origins[name] = origin
+    return origins
+
+
 def _persist_interrupted(
     run_dir: Path,
     record: dict[str, Any],
@@ -686,9 +1188,22 @@ def _run_snapshot(
     candidate_id: str,
     strict_manifest: bool,
     progress_callback: Any,
+    dependency_root: Path | None,
+    dependency_modules: Sequence[str],
+    runtime_origin: Mapping[str, Any] | None,
+    package_process: bool = False,
 ) -> Path:
     agent_source = staging / "source" / "agent"
-    with _snapshot_imports(agent_source):
+    import_scope = (
+        _package_process_imports(agent_source, dependency_root=dependency_root)
+        if package_process and dependency_root is not None
+        else _snapshot_imports(
+            agent_source,
+            dependency_root=dependency_root,
+            dependency_modules=dependency_modules,
+        )
+    )
+    with import_scope:
         from captured_evidence import CapturedEvidenceTools
         from deterministic_checks import check_captured_report, check_report
         from evaluation_telemetry import execution_content, interrupted_execution_content
@@ -703,7 +1218,7 @@ def _run_snapshot(
             raise ValueError("prompt digest does not match the saved system prompt")
         manifest_path = agent_source / "agent-manifest.json"
         manifest_raw = manifest_path.read_bytes()
-        if not strict_manifest:
+        if not strict_manifest and dependency_root is None:
             generated_manifest = _development_manifest_bytes(manifest_raw, actual_prompt_sha256)
             if generated_manifest != manifest_raw:
                 source_files = dict(source_files)
@@ -718,12 +1233,25 @@ def _run_snapshot(
         ):
             raise ValueError("packaged prompt digest does not match the source snapshot")
 
+        task_runtime_origin = dict(runtime_origin) if runtime_origin is not None else None
+        if dependency_root is not None:
+            # Import these distributions while the ambient site-packages paths
+            # are removed.  The captured task does not call Runtime ``main``,
+            # but boto3 remains part of the package's serving dependency set
+            # and is therefore included in the origin receipt.
+            for dependency_name in ("main", "strands", "boto3", "botocore", "pydantic", "opentelemetry"):
+                __import__(dependency_name)
+            if task_runtime_origin is not None:
+                task_runtime_origin["moduleOrigins"] = _module_origins(
+                    ("main", "investigation", "evidence", "prompt", "strands", "boto3", "botocore", "pydantic", "opentelemetry"),
+                    dependency_root=dependency_root,
+                    agent_source=agent_source,
+                )
+
         # Validate both inputs from the copied bytes before creating a run
         # directory or constructing a model/client.
         loaded_case = load_frozen_case(staged_case, staged_bundle)
         task = loaded_case["task"]
-        if model_session is None:
-            provider = _verify_exporter_setup()
         output_directory = _private_directory(output_root)
         execution_id = str(uuid.uuid4())
         session_id = f"incident-triage-eval-{execution_id}"
@@ -761,6 +1289,8 @@ def _run_snapshot(
             "dependencySha256": dependency_sha256,
             "reportSha256": None,
         }
+        if task_runtime_origin is not None:
+            identity["runtimeOrigin"] = task_runtime_origin
         ledger: dict[str, Any] = {
             "agentSpanId": None,
             "modelCalls": [],
@@ -783,6 +1313,8 @@ def _run_snapshot(
             "evidenceProviderCallCount": 0,
             "usage": {},
         }
+        if task_runtime_origin is not None:
+            record["runtimeOrigin"] = task_runtime_origin
         _write_json_atomic(run_dir / "execution.json", record)
         if callable(progress_callback):
             progress_callback(run_dir, record)
@@ -790,16 +1322,32 @@ def _run_snapshot(
         timer: Timer | None = None
         cancel_signal = Event()
         observer: Any = None
+        packaged_provider = package_process and provider is not None and model_session is None
         try:
-            if provider is None:
-                # Tests inject a fake session; production passes the provider
-                # already verified before the source snapshot was loaded.
-                from opentelemetry import trace
-                from opentelemetry.sdk.trace import TracerProvider
+            # Tests inject a fake session; production normally passes the
+            # provider already verified before the package snapshot loaded.
+            from opentelemetry import trace
+            from opentelemetry.sdk.trace import TracerProvider
 
+            if provider is not None and model_session is None and dependency_root is not None and not package_process:
+                # The launcher provider was authenticated before package
+                # imports. Rebuild its exporter with the package's own OTel
+                # classes to keep SpanKind/resource/encoder identities
+                # consistent across the genuine Runtime dependency scope.
+                provider = _configure_packaged_exporter(provider)
+                packaged_provider = True
+            elif provider is None:
                 provider = trace.get_tracer_provider()
                 if not isinstance(provider, TracerProvider):
-                    raise ValueError("captured run has no installed ADOT tracer provider")
+                    if model_session is None:
+                        raise ValueError("captured run has no installed ADOT tracer provider")
+                    # Package tests intentionally load the candidate's OTel
+                    # distribution in isolation from the trusted driver. A
+                    # scripted transport does not need ADOT export, so give
+                    # that isolated SDK a local provider just as the normal
+                    # development harness does for its host SDK.
+                    provider = TracerProvider()
+                    trace.set_tracer_provider(provider)
             observer = _span_observer()
             provider.add_span_processor(observer)
             tool_budget = _ToolBudget()
@@ -981,6 +1529,19 @@ def _run_snapshot(
         finally:
             if timer is not None:
                 timer.cancel()
+            if packaged_provider:
+                # The package provider owns package OTel modules and must be
+                # drained and closed before _snapshot_imports restores the
+                # trusted driver modules. Never flush or shut down the shared
+                # launcher provider here.
+                try:
+                    provider.force_flush(timeout_millis=30_000)
+                except Exception:
+                    pass
+                try:
+                    provider.shutdown()
+                except Exception:
+                    pass
             if observer is not None:
                 observer.shutdown()
             release_operation_lock(operation_lock)
@@ -1152,6 +1713,25 @@ def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any],
         raise ValueError("execution identity is incomplete")
     if identity.get("candidateId") not in VALID_CANDIDATE_IDS or identity.get("modelId") not in _CAPTURED_MODEL_IDS:
         raise ValueError("execution candidate or model identity is unsupported")
+    runtime_origin = identity.get("runtimeOrigin")
+    if runtime_origin is not None:
+        if not isinstance(runtime_origin, Mapping) or runtime_origin.get("kind") != "runtime_zip":
+            raise ValueError("execution Runtime package origin is malformed")
+        for key in ("zipSha256", "manifestSha256", "runtimeSourceSha256", "dependencySha256"):
+            if not isinstance(runtime_origin.get(key), str) or re.fullmatch(r"[0-9a-f]{64}", runtime_origin[key]) is None:
+                raise ValueError("execution Runtime package origin identity is malformed")
+        module_origins = runtime_origin.get("moduleOrigins")
+        if not isinstance(module_origins, Mapping):
+            raise ValueError("execution Runtime package module origins are missing")
+        for module_name in ("main", "investigation", "evidence", "prompt", "strands", "boto3"):
+            module_origin = module_origins.get(module_name)
+            if (
+                not isinstance(module_origin, Mapping)
+                or module_origin.get("kind") != "runtime_zip"
+                or module_origin.get("loaded") is not True
+                or not isinstance(module_origin.get("sha256"), str)
+            ):
+                raise ValueError(f"execution Runtime package module origin is invalid: {module_name}")
 
     manifest = record.get("manifest")
     if not isinstance(manifest, Mapping) or manifest.get("schemaVersion") != 1:
@@ -1279,3 +1859,7 @@ def load_execution(run_dir: str | Path) -> tuple[dict[str, Any], dict[str, Any],
                 raise ValueError("interrupted native Strands span digest does not match the execution record")
             native_spans = native["spans"]
     return record, loaded_case, native_spans
+
+
+if __name__ == "__main__":
+    raise SystemExit(_package_child_main())
