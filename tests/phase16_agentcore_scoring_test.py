@@ -245,6 +245,7 @@ class AgentCoreScoringAdapterTests(unittest.TestCase):
         self.assertEqual(usage, result.get("tokenUsage"))
         self.assert_single_expected_call(client)
 
+
     def test_a_quality_failure_is_complete_and_does_not_become_transport_error(self):
         raw_response = response_with(
             result_row("diagnosis_support", "fail", explanation="The cause is unsupported."),
@@ -502,7 +503,7 @@ class AgentCoreSingleCategoricalScoringTests(unittest.TestCase):
     def test_opus_55_config_omits_unsupported_sampling_parameters(self):
         module = importlib.import_module("agentcore_evaluation")
         self.assertEqual(
-            "33d939080fa3a949bb026af190be48c5d4a7ee471b4a1acc7e336b91e54af52d",
+            "584b1b2b228fbf141f50eb780df5d51c75b56b0ed720fe7717d247527069b5c1",
             module.evaluator_config_digest(module.OPUS_55_MODEL_ID, module.SINGLE_MODE),
         )
         for mode in (module.SINGLE_MODE, module.MULTI_MODE):

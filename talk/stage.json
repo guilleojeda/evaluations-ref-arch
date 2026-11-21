@@ -5,10 +5,10 @@
   "candidateDefault": "repaired",
   "prompt": {
     "path": "agent/prompt.py",
-    "semanticId": "repaired-opus55-development",
-    "sourceRevision": "62236d0e8731242d5a6468cf931f003a323b5349",
-    "fileSha256": "88b8b94f2da13263407aadc1301bc5b4c2345fcec3ac2bd148fead9835807bdd",
-    "promptSha256": "0f8d10ce6f46302a00dbe60cb29ebfeb4212627000c78b3529e6e0c7696ff425",
+    "semanticId": "repaired-opus55-metric-development",
+    "sourceRevision": "5c033892948f27740f61adbbc057564b3d83720b",
+    "fileSha256": "96e3fe13ecc8ddc04140ce15b25d48c7b2b210ac8b2dba29df9d915c82fe1249",
+    "promptSha256": "e6408fad078c329756849a5c3279b49472fc9fc387d959696287b87bf93db0c5",
     "faultyStartingOption": {
       "semanticId": "faulty-phase19",
       "sourceRevision": "bd6f77df97933e3e675ee9c2a699db16e29ea1b6",
@@ -21,24 +21,24 @@
     "description": "Phase 18 native Strands experiment with captured execution and advisory evaluators"
   },
   "scorerAnchor": {
-    "revision": "3505ffb39504c07ac333501ec9b81e7ca98c018c",
-    "sourceRevision": "c96fbe569ea41a99815ebe30a3c953111524d39d",
+    "sourceRevision": "5c033892948f27740f61adbbc057564b3d83720b",
     "model": "us.anthropic.claude-opus-5-5",
     "rubric": "single",
-    "verdict": "advisory"
+    "verdict": "advisory",
+    "evaluatorId": "IncidentTriageSemanticSingle_584b1b2b228fbf141f-MqPN3HHgez",
+    "configSha256": "584b1b2b228fbf141f50eb780df5d51c75b56b0ed720fe7717d247527069b5c1",
+    "note": "The private selected gate supplies the exact descriptor; source metric bucket, observation and availability clocks are distinct."
   },
   "experimentAnchor": {
-    "revision": "296830da7d24c6484514f1641ab8c9a9c8f5966e",
-    "comparisonRepairRevision": "0328aa2",
-    "focusedRevision": "3a6b7a9",
-    "sdk": "strands-agents-evals==1.9.0"
+    "sourceRevision": "5c033892948f27740f61adbbc057564b3d83720b",
+    "sdk": "strands-agents-evals==1.9.0",
+    "note": "Native experiment driver from maintained main; current immutable captured source may be continued from S3."
   },
   "runtime": {
-    "descriptor": "scripts/faulty-reference.json",
-    "sourceRevision": "62236d0e8731242d5a6468cf931f003a323b5349",
-    "artifactSha256": "1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7",
+    "kind": "editable-development-source",
+    "hostedFaultyDescriptor": "scripts/faulty-reference.json",
     "lockSha256": "887c9bcf91ec028fe3b0939aac00a7d4c3dfbc68b2287e4469a15f3798651831",
-    "promptSourceSha256": "88b8b94f2da13263407aadc1301bc5b4c2345fcec3ac2bd148fead9835807bdd"
+    "note": "Fresh captures authenticate this worktree source; hosted publication identity belongs to the private verified live-release binding."
   },
   "inputs": {
     "kind": "native-strands-experiment-with-reviewed-suite",
@@ -76,15 +76,20 @@
         "stock": "64e81d8ac825154dd49ee36ca750aca81bb4a07ab1612d1d00e6c28dba0a7bfe",
         "carried": "4617201adf7d4c8c3df80b52892312cbe516d2064783545762b6297c5a55b178"
       },
-      "evaluatorSha256": "d153bfdc9551255516a565f8363eeea8f6c4962c7807ce015082d0edd907261f"
+      "evaluatorSha256": "de0be6c2d9a9a5ccca438f4f2a576919f4abe08dc4ef55d46785e855eeabd1e1"
     },
-    "caseIds": ["phase14.denied-inventory-read.prepared", "phase14.inventory-capacity-overload.prepared", "phase14.recovery-with-old-alert.prepared"],
-    "carriedCaseIds": ["phase14.denied-inventory-read.prepared", "phase14.inventory-capacity-overload.prepared", "phase14.recovery-with-old-alert.prepared", "phase14.denied-inventory-read.session-draft"],
-    "baselineExperimentRevision": "296830d",
-    "repairedExperimentRevision": "0328aa2",
-    "focusedExperimentRevision": "3a6b7a9",
-    "requires": ["full suite", "matching candidate/tool/evaluator snapshots", "unique output root", "same reviewed case meaning"],
-    "forbidden": ["focused run standing in for full suite", "mutable source imports from another workspace", "release publication"]
+    "requires": [
+      "full suite",
+      "matching candidate/tool/evaluator snapshots",
+      "unique output root",
+      "same reviewed case meaning"
+    ],
+    "forbidden": [
+      "focused run standing in for full suite",
+      "mutable source imports from another workspace",
+      "release publication"
+    ],
+    "recordedEvidence": "Exact execution/experiment/score identities come from the authenticated private session roster; historical results retain their original evaluator and source identities."
   },
   "entry": {
     "offlineSmoke": "uv run --offline --project agent --locked python -m py_compile agent/prompt.py agent/development_experiment.py agent/strands_evaluators.py",

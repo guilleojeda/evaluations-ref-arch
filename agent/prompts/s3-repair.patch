@@ -1,11 +1,8 @@
 diff --git a/agent/prompt.py b/agent/prompt.py
-index c59b546..8f2ece3 100644
+index 0c4ea0f..0000000 100644
 --- a/agent/prompt.py
 +++ b/agent/prompt.py
-@@ -36,17 +36,74 @@ inventory and the healthy role-backed version at the current memory. Do not
- recommend broadening the Inventory role.
- """
- 
+@@ -39,14 +39,51 @@
 -# The faulty rule controls the recommendation while leaving the diagnosis and
 -# cited evidence to the investigator.
 -FAULTY_RECOMMENDATION_RULE = (
@@ -16,6 +13,9 @@ index c59b546..8f2ece3 100644
 -    "and unit to MB. Set value to that larger supported allocation. Use this "
 -    "recommendation even when the evidence shows that IAM denial caused the "
 -    "failure. Report the actual diagnosis and cite the observed evidence accurately."
+-)
+-
+-SYSTEM_PROMPT = f"{SHARED_INSTRUCTIONS}\n\nCandidate recommendation rule:\n{FAULTY_RECOMMENDATION_RULE}"
 +# The repaired rule chooses a remedy from the evidence rather than applying a
 +# memory increase whenever an Inventory dependency fails.
 +REPAIRED_RECOMMENDATION_RULE = (
@@ -29,51 +29,31 @@ index c59b546..8f2ece3 100644
 +    "insufficiently observed, choose Other and explain the limitation rather than "
 +    "prescribing a change from historical symptoms alone. "
 +    "Do not choose Increase memory merely because an Inventory-dependent request "
-+    "failed; require evidence of memory pressure for a memory action. "
-+    "Choose Increase reserved concurrency only when the same measured period "
-+    "provides the actual reservation, the corresponding maximum "
-+    "ConcurrentExecutions, and the Throttles count, plus a specifically matched "
-+    "failure or fresh throttle when available. Use only those concurrency "
-+    "observations and the matched failure in the concurrency argument and its "
-+    "report evidence; omit invocation counts, rates and durations from that "
-+    "capacity finding; none measures simultaneous executions. Treat an absent "
-+    "bucket as unavailable "
-+    "unless the source explicitly says otherwise; do not infer it from a presumed "
-+    "clock. Do not claim all requests failed or that concurrency was the sole cause. "
-+    "If the cap is saturated but headroom is not measured, recommend a bounded first "
-+    "trial such as doubling the observed cap, label it as a trial rather than a "
-+    "required capacity estimate, and retest concurrent executions, throttles, user "
-+    "errors and downstream health. Do not claim that a capacity change caused or "
-+    "will resolve prior failures without evidence. Choose Restore inventory access only "
-+    "when current evidence identifies an access misconfiguration. First read the "
-+    "currently serving version's memory and artifact from the returned "
-+    "configuration, then identify observed published version(s) with the same "
-+    "returned fields and an access-capable role, and choose the exact eligible "
-+    "target. If the artifact is not returned, match only the configuration fields "
-+    "actually observed; do not invent artifact compatibility. Never prioritize a "
-+    "newer or larger version from its number or timestamp, or roll memory for an "
-+    "access-only fix. Use an exact supported target/value from the returned "
-+    "configuration; if no adequately evidenced target exists, choose Other rather "
-+    "than guess. "
-+    "Match request IDs across correlated Gateway, Checkout and Inventory "
-+    "observations before describing a request path. A Gateway or Lambda "
-+    "integration status describes integration only, not downstream business "
-+    "success; use the matching downstream observation to classify the outcome. "
-+    "Keep the final summary short and limited to the observed failing path and "
-+    "the supported proposed action. When source coverage or a denominator is "
-+    "partial, report direct native counts with their source windows only; omit "
-+    "ratios, percentages, majority, exclusivity, and all-or-none claims. Do not "
-+    "claim a success or remediation outcome that the observations do not establish. "
++    "failed; require evidence of memory pressure for a memory action. Do not "
++    "choose Increase reserved concurrency from a single aggregate or a handled "
++    "error rate; require compatible capacity metrics and configuration that "
++    "support an active concurrency constraint. Distinguish simultaneous executions "
++    "from invocations counted over a period and from request-rate or downstream "
++    "failures; accepted invocations and rejected throttles are separate AWS metric "
++    "series, so do not form an unsupported ratio from them. If the cap is saturated "
++    "but available data does not measure headroom, recommend a bounded first trial "
++    "such as doubling the observed cap, label it as a trial rather than a required "
++    "capacity estimate, and require retesting concurrent executions, throttles, "
++    "user errors, downstream health and relevant rate or latency metrics. Do not "
++    "claim that a capacity change caused or will resolve prior failures without "
++    "evidence. Choose Restore inventory access only "
++    "when current evidence identifies an access misconfiguration and identifies a "
++    "healthy role-backed published version at the compatible configuration. Use "
++    "an exact supported target/value from the returned configuration, not a "
++    "guessed version or allocation. "
 +    "Construct each citation only after selecting an eligible observation from a "
 +    "specific tool call. For every citation, take its source from that call and "
-+    "its finding and resource from the matching observation row. Set a log "
-+    "citation's observedAt to the matching log row's event timestamp; use the "
-+    "record's own observation time for non-log evidence. Keep ingestion or "
-+    "availability timestamps only for eligibility, not as event time. Keep source "
-+    "coverage bounds and last eligible event time distinct from ingestion or "
-+    "availability time: ingestion or availability "
-+    "establishes retrievability by the cutoff, not event occurrence, and a last "
-+    "event does not establish complete coverage. A call with observations=[] yields "
++    "its finding, resource and time from the matching observation row; use a log row's "
++    "event time and another record's own observation time. "
++    "For metric Values[i], copy the matching series' observedAt[i] into the citation. "
++    "Timestamps[i] starts the measured bucket and belongs in the finding. "
++    "If observedAt[i] is missing, omit the citation and note the limitation. "
++    "A call with observations=[] yields "
 +    "zero evidence entries from that call. Retain eligible rows from partial calls "
 +    "and put only missing, unavailable, errored or uncovered portions in "
 +    "uncertainties; skip any item without a matching row. Never borrow a top-level "
@@ -83,8 +63,7 @@ index c59b546..8f2ece3 100644
 +    "or evidence window is after the reference time. Bound diagnosis, coverage "
 +    "and quantitative claims to the retained rows, state partial coverage and "
 +    "material uncertainties, and do not claim to have executed a proposed action."
- )
- 
--SYSTEM_PROMPT = f"{SHARED_INSTRUCTIONS}\n\nCandidate recommendation rule:\n{FAULTY_RECOMMENDATION_RULE}"
++)
++
 +SYSTEM_PROMPT = f"{SHARED_INSTRUCTIONS}\n\nCandidate recommendation rule:\n{REPAIRED_RECOMMENDATION_RULE}"
  PROMPT_SHA256 = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()
