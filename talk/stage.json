@@ -14,18 +14,19 @@
     "description": "Phase 16 AgentCore scorer with cutoff-aware evidence and advisory single verdict"
   },
   "scorerAnchor": {
-    "revision": "3505ffb39504c07ac333501ec9b81e7ca98c018c",
-    "sourceRevision": "f91055235552c9b2c9cc6a853a016843ccfcfb84",
-    "model": "us.anthropic.claude-sonnet-4-6",
+    "sourceRevision": "5c033892948f27740f61adbbc057564b3d83720b",
+    "model": "us.anthropic.claude-opus-5-5",
     "rubric": "single",
-    "verdict": "advisory"
+    "verdict": "advisory",
+    "evaluatorId": "IncidentTriageSemanticSingle_584b1b2b228fbf141f-MqPN3HHgez",
+    "configSha256": "584b1b2b228fbf141f50eb780df5d51c75b56b0ed720fe7717d247527069b5c1",
+    "note": "The private selected gate supplies the exact descriptor; source metric bucket, observation and availability clocks are distinct."
   },
   "runtime": {
-    "descriptor": "scripts/faulty-reference.json",
-    "sourceRevision": "bd6f77df97933e3e675ee9c2a699db16e29ea1b6",
-    "artifactSha256": "e5ac2ee20d8f3947eb95ceb74094e882a3d8a4a010f2a8e7bf96700dd5906b33",
+    "kind": "editable-development-source",
+    "hostedFaultyDescriptor": "scripts/faulty-reference.json",
     "lockSha256": "887c9bcf91ec028fe3b0939aac00a7d4c3dfbc68b2287e4469a15f3798651831",
-    "promptSourceSha256": "3d21155b9f9465a0ac11eb9fcaf761bfd19549cf6454ae3ac20c20044d57a9eb"
+    "note": "Fresh captures authenticate this worktree source; hosted publication identity belongs to the private verified live-release binding."
   },
   "inputs": {
     "kind": "saved-faulty-execution-and-matching-review",
@@ -40,7 +41,7 @@
         "stock": "gate/stock-staging.tar.gz",
         "carried": "gate/staging.tar.gz"
       },
-      "run": "s2/run/e3f934af-6af9-42aa-ac78-b315133e1571",
+      "run": "s2/run/<executionId from verified private session input>",
       "case": "prepared/denial.frozen.json",
       "bundle": "prepared/denial.json",
       "captureReceipt": "s2/capture-receipt.json",
@@ -49,11 +50,18 @@
     "caseId": "phase14.denied-inventory-read.prepared",
     "caseSha256": "cb1480066a46f258ee8d9e27355d50b9bd05f171ee9ef84a169989f72af5e18d",
     "bundleSha256": "8880601278a059cbb7c792949e74785f6b8c1489dede8fa25f7b38299b8633a8",
-    "executionId": "e3f934af-6af9-42aa-ac78-b315133e1571",
-    "scoreAuthorizationSha256": "35bc9bb6f79d8f15b870e8629f686cb388e1400675d0a2416bec3212ac44912c",
-    "scoreAttemptId": "ce3e3a4a-ac3d-42a5-bcad-e7125a21127d",
-    "requires": ["matching case/bundle", "saved report and native trace", "pinned evaluator descriptor", "matching cutoff"],
-    "forbidden": ["agent rerun", "case substitution", "release publication"]
+    "requires": [
+      "matching case/bundle",
+      "saved report and native trace",
+      "pinned evaluator descriptor",
+      "matching cutoff"
+    ],
+    "forbidden": [
+      "agent rerun",
+      "case substitution",
+      "release publication"
+    ],
+    "recordedEvidence": "Exact execution/experiment/score identities come from the authenticated private session roster; historical results retain their original evaluator and source identities."
   },
   "entry": {
     "offlineSmoke": "uv run --offline --project agent --locked python -m py_compile agent/evaluate_case.py agent/deterministic_checks.py agent/agentcore_evaluation.py agent/evaluation_telemetry.py",
