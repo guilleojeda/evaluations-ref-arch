@@ -47,7 +47,7 @@ conflicts with its remote counterpart, stop and inspect the discrepancy. A clean
 clone gives an independent comparison.
 
 ```sh
-export PHASE22_GENERATION="${PHASE22_GENERATION:?set the map generation, for example talk/v3}"
+export PHASE22_GENERATION="${PHASE22_GENERATION:?set the map generation, for example talk/v4}"
 generation="$PHASE22_GENERATION"
 git fetch origin "refs/tags/${generation}/*:refs/tags/${generation}/*"
 python3 - <<'PY'
@@ -77,9 +77,9 @@ for stage, source in sorted(stages.items()):
 PY
 ```
 
-The active `talk/v3` checkpoints use the US Opus 5.5 profile. S0–S2 carry the opening prompt. S3 and S4 carry the saved development repair, so you can open either workspace directly. S5 starts from the separately qualified serving repair on `demo-deploy`. The IDE and serving repairs have distinct prompt identities. The prepared S3 comparison pairs executions on the same evidence, and the S4 experiment uses that same development prompt. S5 verifies its own package and publication.
+The active `talk/v4` checkpoints use the US Opus 5.5 profile. S2–S4 use the calibrated metric-aware evaluator supplied by their authenticated private inputs. Metric bucket starts, source observation times and availability times remain distinct. S0–S2 carry the opening prompt. S3 and S4 carry the saved development repair, so you can open either workspace directly. S5 starts from the separately qualified serving repair on `demo-deploy`. The IDE and serving repairs have distinct prompt identities. The prepared S3 comparison pairs executions on the same evidence, and the S4 experiment uses that same development prompt. S5 verifies its own package and publication.
 
-The earlier `talk/v1` and `talk/v2` tags retain the original Sonnet sources and can still be opened to inspect earlier performances.
+The earlier `talk/v1` and `talk/v2` tags retain the original Sonnet sources. The `talk/v3` tags retain the original Opus evaluator and recorded performances. Every prior generation remains available under its original identity.
 
 ## Maintain a generation
 
