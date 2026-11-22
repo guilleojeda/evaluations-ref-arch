@@ -1558,6 +1558,8 @@ class EvidenceTools:
         for key in ("EventId", "EventName", "EventSource", "EventTime", "ReadOnly"):
             if key in event:
                 output[key] = event[key]
+        if "EventTime" in output:
+            output["EventTime"] = self._normalize_cloudtrail_timestamp(output["EventTime"])
         resources = event.get("Resources")
         if isinstance(resources, list):
             output["Resources"] = [
@@ -1566,6 +1568,21 @@ class EvidenceTools:
                 if isinstance(item, Mapping) and self._is_app_resource(str(item.get("ResourceName", "")))
             ]
         return output or None
+
+    @staticmethod
+    def _normalize_cloudtrail_timestamp(value: Any) -> Any:
+        if isinstance(value, datetime):
+            return value.isoformat() if value.tzinfo is not None and value.utcoffset() is not None else value
+        if not isinstance(value, str) or value[10:11] != " ":
+            return value
+        # Frozen CloudTrail rows can carry more fractional digits than datetime.
+        # Validate the instant, then return the spelling with its original precision.
+        candidate = value[:10] + "T" + value[11:]
+        try:
+            parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+        except ValueError:
+            return value
+        return candidate if parsed.tzinfo is not None and parsed.utcoffset() is not None else value
 
     @staticmethod
     def _is_app_resource(value: str) -> bool:
