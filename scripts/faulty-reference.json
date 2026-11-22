@@ -1,25 +1,98 @@
 {
   "adapter": {
-    "codeSha256": "cd5d91757eaf9f98fa5e36c837f607d390f7d2405d276696dc9080fc0e4e2135",
+    "codeSha256": "09bac8027724348cf8b38c3d457a8755f5554f8f5e56a2f1b0086a8c29b7a27b",
     "functionArn": "arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter",
-    "functionName": "IncidentTriageDemoAlarmAdapter",
-    "status": "verified",
     "tracingMode": "Active"
   },
   "alarmArn": "arn:aws:cloudwatch:us-east-1:027224425948:alarm:IncidentTriageDemoAppStage5xx",
+  "archiveReview": {
+    "adapter": {
+      "codeSha256": "09bac8027724348cf8b38c3d457a8755f5554f8f5e56a2f1b0086a8c29b7a27b",
+      "codeSha256Base64": "CbrIAnckNIz4s4w9RXqHVfVVT49eVqLxsAhqjCm3ons=",
+      "functionArn": "arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter",
+      "readbackPath": ".work/cloudtrail-faulty-refresh/release/live-readback.json",
+      "status": "verified",
+      "tracingMode": "Active",
+      "zipSha256": null
+    },
+    "checkedSourceHashes": {
+      "evidence.py": "0b11f9e0c62afb5722cb324f0d394d1efb7911df56aee52119f7a0304a387345",
+      "investigation.py": "b545b48177ba0a9e3b6363dc223ef205da089c7b69bab39269129326616f9188",
+      "main.py": "2747c33715719c7ad77c6385148831932d1edfcd3d5a8ba22d0ec0022bd3b277",
+      "prompt.py": "3d21155b9f9465a0ac11eb9fcaf761bfd19549cf6454ae3ac20c20044d57a9eb"
+    },
+    "checkedSourceRevision": "f25e116b08cdac6887566637714c5159beafdc5a",
+    "dependencyVersions": {
+      "locked": {
+        "aws-opentelemetry-distro": "0.18.0",
+        "bedrock-agentcore": "1.25.3",
+        "boto3": "1.43.125",
+        "strands-agents": "1.64.0"
+      },
+      "packaged": {
+        "aws-opentelemetry-distro": "0.18.0",
+        "bedrock-agentcore": "1.25.3",
+        "boto3": "1.43.125",
+        "strands-agents": "1.64.0"
+      }
+    },
+    "developmentInputsExcluded": true,
+    "githubActions": {
+      "artifactName": "agent-runtime-f25e116b08cdac6887566637714c5159beafdc5a",
+      "checkedJob": "Check agent (ARM64)",
+      "repository": "guilleojeda/evaluations-ref-arch",
+      "runId": "45040797201"
+    },
+    "lockSha256": "887c9bcf91ec028fe3b0939aac00a7d4c3dfbc68b2287e4469a15f3798651831",
+    "nativeArm64Smoke": {
+      "path": ".work/cloudtrail-faulty-refresh/release/native-arm64-smoke.json",
+      "receipt": {
+        "artifactBytes": 39747613,
+        "artifactPath": ".artifacts/agent/runtime.zip",
+        "artifactSha256": "c529a34e991caba2f28ccd6f6b27600b4c190bcfbde2e99aea7989132ae31e31",
+        "command": "uv run --project agent --locked python agent/native_smoke.py .artifacts/agent/runtime.zip",
+        "evidence": {
+          "artifactName": "agent-runtime-f25e116b08cdac6887566637714c5159beafdc5a",
+          "jobUrl": "https://github.com/guilleojeda/evaluations-ref-arch/actions/runs/45040797201/job/137264607963",
+          "runUrl": "https://github.com/guilleojeda/evaluations-ref-arch/actions/runs/45040797201"
+        },
+        "jobConclusion": "success",
+        "jobId": 137264607963,
+        "jobName": "Check agent (ARM64)",
+        "result": "native ARM64 Runtime and adapter ZIP imports, invalid-event rejection, and /ping smoke passed",
+        "runId": 45040797201,
+        "runnerImage": "ubuntu-24.04-arm",
+        "schemaVersion": 1,
+        "sourceRevision": "f25e116b08cdac6887566637714c5159beafdc5a",
+        "status": "passed",
+        "step": "Run the locked native ARM64 smoke command",
+        "stepConclusion": "success",
+        "workflow": "Incident Triage Demo Deploy"
+      },
+      "status": "passed"
+    },
+    "runtimeDependencySet": [
+      "aws-opentelemetry-distro",
+      "bedrock-agentcore",
+      "boto3",
+      "strands-agents"
+    ],
+    "sourceManifestSha256": "d4535b121a044ebeca9d42cee5feab8683b635d5046431d74f8bc3c95d4de74d",
+    "sourceTree": "/Users/gojeda/ideas/evaluations-ref-arch/.work/cloudtrail-citation/source/agent"
+  },
   "artifact": {
     "bucket": "cdk-evaltalk-assets-027224425948-us-east-1",
-    "bytes": 39747008,
-    "key": "agent-reference/3a9e3abfaa9d9c6e4f6e0705ff6d058c482aef74053567cc67cb42d485798ddb.zip",
-    "sha256": "3a9e3abfaa9d9c6e4f6e0705ff6d058c482aef74053567cc67cb42d485798ddb",
-    "versionId": "xWUeDj0olCNIn1czKibar5fKfAowZCYm"
+    "bytes": 39747613,
+    "key": "agent-reference/c529a34e991caba2f28ccd6f6b27600b4c190bcfbde2e99aea7989132ae31e31.zip",
+    "sha256": "c529a34e991caba2f28ccd6f6b27600b4c190bcfbde2e99aea7989132ae31e31",
+    "versionId": "_4Day2InKToSKvNWk7ZHeZKXf.zP1EsQ"
   },
   "candidateId": "faulty",
   "configuration": {
     "bucket": "cdk-evaltalk-assets-027224425948-us-east-1",
-    "key": "agent-reference/8128392c1e4909fcbceb1f2cee39906c97c86c105b8142c9f7d0a191786a1372.json",
-    "sha256": "8128392c1e4909fcbceb1f2cee39906c97c86c105b8142c9f7d0a191786a1372",
-    "versionId": "y.P5FLO8byy4M9CmHtGS8OAJ29RjvIjR"
+    "key": "agent-reference/89df126e9bf07a4b19bbd77b6f786e9932fd3d126772bc3f860262766358c5c8.json",
+    "sha256": "89df126e9bf07a4b19bbd77b6f786e9932fd3d126772bc3f860262766358c5c8",
+    "versionId": "tiBkdkAQMkD2QQfgGfMTxmOlZKMch5qd"
   },
   "controller": {
     "pk": "AGENT_PUBLICATION#faulty",
@@ -33,9 +106,17 @@
     "versionId": "nSjwMZ6dvG2xnvHKroASw.VzOvsfACaV"
   },
   "modelId": "us.anthropic.claude-opus-5-5",
+  "modelProfile": {
+    "adapterModelId": "us.anthropic.claude-opus-5-5",
+    "maxTokens": 64000,
+    "modelId": "us.anthropic.claude-opus-5-5",
+    "source": "agent/investigation.py:create_agent",
+    "temperature": "not-set",
+    "topP": "not-set"
+  },
   "packagedModules": {
     "evidence.py": {
-      "sha256": "4f92d63895646b30a321677c9ff6131040235069cdb2c9a0c6148d45fed51a29"
+      "sha256": "0b11f9e0c62afb5722cb324f0d394d1efb7911df56aee52119f7a0304a387345"
     },
     "investigation.py": {
       "sha256": "b545b48177ba0a9e3b6363dc223ef205da089c7b69bab39269129326616f9188"
@@ -51,53 +132,54 @@
     "endpoint": {
       "agentRuntimeArn": "arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-7VWTOWDIs4",
       "agentRuntimeEndpointArn": "arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-7VWTOWDIs4/runtime-endpoint/faulty",
-      "liveVersion": "19",
+      "liveVersion": "32",
       "status": "READY"
     },
     "publication": {
       "adapterArn": "arn:aws:lambda:us-east-1:027224425948:function:IncidentTriageDemoAlarmAdapter",
-      "adapterCodeSha256": "a88f40a6d780c0342f5aea5ad7e5eac3f7f270c28ed209c51543c1801a66da56",
-      "adapterRevisionId": "37dc80ad-ecf6-4b76-ae17-247423dea554",
+      "adapterCodeSha256": "cd5d91757eaf9f98fa5e36c837f607d390f7d2405d276696dc9080fc0e4e2135",
+      "adapterRevisionId": "637fc909-d9c5-4e44-a0af-9b3a5a21ab88",
       "alarmArn": "arn:aws:cloudwatch:us-east-1:027224425948:alarm:IncidentTriageDemoAppStage5xx",
-      "artifactSha256": "e5ac2ee20d8f3947eb95ceb74094e882a3d8a4a010f2a8e7bf96700dd5906b33",
-      "artifactVersionId": "cfbeR.PYCX2qc8g9xWBJUzqWmTBXCyaw",
-      "buildSha256": "e5ac2ee20d8f3947eb95ceb74094e882a3d8a4a010f2a8e7bf96700dd5906b33",
+      "artifactSha256": "3a9e3abfaa9d9c6e4f6e0705ff6d058c482aef74053567cc67cb42d485798ddb",
+      "artifactVersionId": "xWUeDj0olCNIn1czKibar5fKfAowZCYm",
+      "buildSha256": "3a9e3abfaa9d9c6e4f6e0705ff6d058c482aef74053567cc67cb42d485798ddb",
       "candidateId": "faulty",
-      "configurationSha256": "7febe979fa1365360983d886f9d1dc78b55d9bde91a6fe7357e5f9fd97d2d7a7",
-      "configurationVersionId": "BbCtgPF2Do16.BJ0oetJvN09pSFvW6fI",
+      "configurationSha256": "8128392c1e4909fcbceb1f2cee39906c97c86c105b8142c9f7d0a191786a1372",
+      "configurationVersionId": "y.P5FLO8byy4M9CmHtGS8OAJ29RjvIjR",
       "endpointArn": "arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-7VWTOWDIs4/runtime-endpoint/faulty",
       "endpointName": "faulty",
       "lockSha256": "887c9bcf91ec028fe3b0939aac00a7d4c3dfbc68b2287e4469a15f3798651831",
       "lockVersionId": "nSjwMZ6dvG2xnvHKroASw.VzOvsfACaV",
-      "modelId": "us.anthropic.claude-sonnet-4-6",
-      "originalRevision": "bd6f77df97933e3e675ee9c2a699db16e29ea1b6",
+      "modelId": "us.anthropic.claude-opus-5-5",
+      "originalRevision": "6254cf488e39195f21c48bb0f1383f54b3ba1fd6",
       "pk": "AGENT_PUBLICATION#faulty",
       "promptSha256": "161aa4357b908cffe9691349d01da284411cd5d4689235717525d79e1073fffc",
       "runtimeArn": "arn:aws:bedrock-agentcore:us-east-1:027224425948:runtime/IncidentTriageDemoAgent-7VWTOWDIs4",
-      "runtimeVersion": "19",
-      "sourceManifestSha256": "2b1eccde2e92799fd24d21572576680a856c7aba9f0b3495831f2f76a34e0bab",
-      "sourceManifestVersionId": "kAXS5epKZpPAXJiMMrlm3YqRJaMGJ29h",
-      "sourceRevision": "bd6f77df97933e3e675ee9c2a699db16e29ea1b6",
+      "runtimeVersion": "32",
+      "sourceManifestSha256": "a9666e6287d8b03adebd73ad6a710c47cd3e0cf1ed5afff24b02ecf51d81d730",
+      "sourceManifestVersionId": "H9z7g6j1IqIMCyh9GhGK4MK13R31P2lo",
+      "sourceRevision": "6254cf488e39195f21c48bb0f1383f54b3ba1fd6",
       "sourceSha256": "3d21155b9f9465a0ac11eb9fcaf761bfd19549cf6454ae3ac20c20044d57a9eb",
       "sourceVersionId": "RcFNyZj1D4791YmYdFFf7FgezDDr7BUS",
       "status": "reference"
     },
-    "publicationSha256": "89f47724c64c5f82fe47d1866b86ddc6393a56e0ee79ae0e181b599bb12540b3"
+    "publicationSha256": "1148d09dc06607557907fec370a864010b827117990f1c9105dfe0e58671c596"
   },
   "promptSha256": "161aa4357b908cffe9691349d01da284411cd5d4689235717525d79e1073fffc",
   "provenance": {
-    "buildSha256": "3a9e3abfaa9d9c6e4f6e0705ff6d058c482aef74053567cc67cb42d485798ddb",
+    "buildSha256": "c529a34e991caba2f28ccd6f6b27600b4c190bcfbde2e99aea7989132ae31e31",
     "lockSha256": "887c9bcf91ec028fe3b0939aac00a7d4c3dfbc68b2287e4469a15f3798651831",
-    "originalRevision": "6254cf488e39195f21c48bb0f1383f54b3ba1fd6"
+    "originalRevision": "f25e116b08cdac6887566637714c5159beafdc5a"
   },
+  "roleArn": "arn:aws:iam::027224425948:role/IncidentTriageDemoAgentRuntimeRole",
   "runtimeConfiguration": {
     "agentRuntimeArtifact": {
       "codeConfiguration": {
         "code": {
           "s3": {
             "bucket": "cdk-evaltalk-assets-027224425948-us-east-1",
-            "prefix": "agent-reference/3a9e3abfaa9d9c6e4f6e0705ff6d058c482aef74053567cc67cb42d485798ddb.zip",
-            "versionId": "xWUeDj0olCNIn1czKibar5fKfAowZCYm"
+            "prefix": "agent-reference/c529a34e991caba2f28ccd6f6b27600b4c190bcfbde2e99aea7989132ae31e31.zip",
+            "versionId": "_4Day2InKToSKvNWk7ZHeZKXf.zP1EsQ"
           }
         },
         "entryPoint": [
@@ -111,7 +193,7 @@
       "AGENT_ACCOUNT_ID": "027224425948",
       "AGENT_ALARM_ARN": "arn:aws:cloudwatch:us-east-1:027224425948:alarm:IncidentTriageDemoAppStage5xx",
       "AGENT_APP_HTTP_API_ID": "404scbghri",
-      "AGENT_ARTIFACT_SHA256": "3a9e3abfaa9d9c6e4f6e0705ff6d058c482aef74053567cc67cb42d485798ddb",
+      "AGENT_ARTIFACT_SHA256": "c529a34e991caba2f28ccd6f6b27600b4c190bcfbde2e99aea7989132ae31e31",
       "AGENT_CANDIDATE_ID": "faulty",
       "AGENT_ENDPOINT_NAME": "faulty",
       "AGENT_MODEL_ID": "us.anthropic.claude-opus-5-5",
@@ -120,7 +202,7 @@
       "AGENT_RUN_TABLE": "IncidentTriageDemoAgentRun",
       "AGENT_SOURCE_BUCKET": "incident-triage-demo-evidence-027224425948-us-east-1",
       "AGENT_SOURCE_PREFIX": "agent-source/",
-      "AGENT_SOURCE_REVISION": "6254cf488e39195f21c48bb0f1383f54b3ba1fd6",
+      "AGENT_SOURCE_REVISION": "f25e116b08cdac6887566637714c5159beafdc5a",
       "AWS_GENAI_CONTENT_EXTRACTION_OPT_OUT": "true",
       "OTEL_AWS_APPLICATION_SIGNALS_ENABLED": "false",
       "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
@@ -153,7 +235,7 @@
     "AGENT_ACCOUNT_ID": "027224425948",
     "AGENT_ALARM_ARN": "arn:aws:cloudwatch:us-east-1:027224425948:alarm:IncidentTriageDemoAppStage5xx",
     "AGENT_APP_HTTP_API_ID": "404scbghri",
-    "AGENT_ARTIFACT_SHA256": "3a9e3abfaa9d9c6e4f6e0705ff6d058c482aef74053567cc67cb42d485798ddb",
+    "AGENT_ARTIFACT_SHA256": "c529a34e991caba2f28ccd6f6b27600b4c190bcfbde2e99aea7989132ae31e31",
     "AGENT_CANDIDATE_ID": "faulty",
     "AGENT_ENDPOINT_NAME": "faulty",
     "AGENT_MODEL_ID": "us.anthropic.claude-opus-5-5",
@@ -162,7 +244,7 @@
     "AGENT_RUN_TABLE": "IncidentTriageDemoAgentRun",
     "AGENT_SOURCE_BUCKET": "incident-triage-demo-evidence-027224425948-us-east-1",
     "AGENT_SOURCE_PREFIX": "agent-source/",
-    "AGENT_SOURCE_REVISION": "6254cf488e39195f21c48bb0f1383f54b3ba1fd6",
+    "AGENT_SOURCE_REVISION": "f25e116b08cdac6887566637714c5159beafdc5a",
     "AWS_GENAI_CONTENT_EXTRACTION_OPT_OUT": "true",
     "OTEL_AWS_APPLICATION_SIGNALS_ENABLED": "false",
     "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
@@ -187,9 +269,10 @@
   },
   "sourceManifest": {
     "bucket": "cdk-evaltalk-assets-027224425948-us-east-1",
-    "key": "agent-reference/a9666e6287d8b03adebd73ad6a710c47cd3e0cf1ed5afff24b02ecf51d81d730.json",
-    "sha256": "a9666e6287d8b03adebd73ad6a710c47cd3e0cf1ed5afff24b02ecf51d81d730",
-    "versionId": "H9z7g6j1IqIMCyh9GhGK4MK13R31P2lo"
+    "key": "agent-reference/d4535b121a044ebeca9d42cee5feab8683b635d5046431d74f8bc3c95d4de74d.json",
+    "sha256": "d4535b121a044ebeca9d42cee5feab8683b635d5046431d74f8bc3c95d4de74d",
+    "versionId": "bZWpOQ2VG3_85Xa3g11UFkrdQdLR8P6Q"
   },
-  "sourceRevision": "6254cf488e39195f21c48bb0f1383f54b3ba1fd6"
+  "sourceRevision": "f25e116b08cdac6887566637714c5159beafdc5a"
 }
+
