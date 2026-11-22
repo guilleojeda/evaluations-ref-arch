@@ -138,7 +138,7 @@ test('app publishes a static denied role with the existing exact-table policy', 
     'the manifest uses the existing CDK asset bucket, not a new bucket');
 });
 
-test('controller evidence is private and the worker can only read the prepared pair and update its alias', () => {
+test('controller evidence is private and the worker can only read approved configurations and update its alias', () => {
   const { Resources } = template('controller', 'IncidentTriageDemoController');
   const bucket = resourcesOf(Resources, 'AWS::S3::Bucket')
     .find(([, resource]) => resource.Properties.BucketName === evidenceName);
@@ -176,6 +176,7 @@ test('controller evidence is private and the worker can only read the prepared p
   const approvedAgentConfigurations = [
     `${assetBucketArn}/agent-reference/7febe979fa1365360983d886f9d1dc78b55d9bde91a6fe7357e5f9fd97d2d7a7.json`,
     `${assetBucketArn}/agent-reference/8128392c1e4909fcbceb1f2cee39906c97c86c105b8142c9f7d0a191786a1372.json`,
+    `${assetBucketArn}/agent-reference/89df126e9bf07a4b19bbd77b6f786e9932fd3d126772bc3f860262766358c5c8.json`,
     `arn:aws:s3:::${evidenceName}/agent-evaluation/phase20/${'?'.repeat(64)}/runtime-configuration.json`,
   ];
   const manifestReads = grants(worker, 's3:GetObject');
