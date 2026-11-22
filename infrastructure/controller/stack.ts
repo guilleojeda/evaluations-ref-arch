@@ -37,6 +37,7 @@ const EVIDENCE_BUCKET_NAME = `incident-triage-demo-evidence-${ACCOUNT}-${REGION}
 const FAULTY_CONFIGURATION_OBJECTS = [
   `arn:aws:s3:::${INVENTORY_VARIANTS_MANIFEST_BUCKET}/agent-reference/7febe979fa1365360983d886f9d1dc78b55d9bde91a6fe7357e5f9fd97d2d7a7.json`,
   `arn:aws:s3:::${INVENTORY_VARIANTS_MANIFEST_BUCKET}/agent-reference/8128392c1e4909fcbceb1f2cee39906c97c86c105b8142c9f7d0a191786a1372.json`,
+  `arn:aws:s3:::${INVENTORY_VARIANTS_MANIFEST_BUCKET}/agent-reference/89df126e9bf07a4b19bbd77b6f786e9932fd3d126772bc3f860262766358c5c8.json`,
 ];
 // Qualification stages are immutable under the artifact SHA-256 directory.
 // IAM's single-character wildcard keeps that directory depth and the final

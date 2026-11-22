@@ -24,12 +24,15 @@ const selectedKey = 'AGENT_SELECTION';
 const publicationKeys = ['AGENT_PUBLICATION#faulty', 'AGENT_PUBLICATION#repaired'];
 const ordinaryControllerKeys = ['STATE', 'ACTION#00000000-0000-4000-8000-000000000000', 'RUN#00000000-0000-4000-8000-000000000000'];
 const faultyArtifactDigest = '7febe979fa1365360983d886f9d1dc78b55d9bde91a6fe7357e5f9fd97d2d7a7';
+const currentFaultyArtifactDigest = '89df126e9bf07a4b19bbd77b6f786e9932fd3d126772bc3f860262766358c5c8';
 const oldRepairedArtifactDigest = '1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7';
 const newRepairedArtifactDigest = 'f263f9ca70549c399cfc786963de693899bf4f8881e7904d3c704df72fb38fe8';
 const configurationResource = (digest) =>
   `arn:aws:s3:::incident-triage-demo-evidence-${account}-${region}/agent-evaluation/phase20/${digest}/runtime-configuration.json`;
 const faultyConfigurationResource =
   `arn:aws:s3:::cdk-evaltalk-assets-${account}-${region}/agent-reference/${faultyArtifactDigest}.json`;
+const currentFaultyConfigurationResource =
+  `arn:aws:s3:::cdk-evaltalk-assets-${account}-${region}/agent-reference/${currentFaultyArtifactDigest}.json`;
 
 // This is a deliberately bounded policy probe, not a replacement for IAM's
 // evaluator. It models only the exact actions, ARNs, and DynamoDB leading keys
@@ -356,6 +359,7 @@ test('HTTP effective permissions read both publication/native bindings, avoid se
 
   const configurationObjects = [
     faultyConfigurationResource,
+    currentFaultyConfigurationResource,
     configurationResource(oldRepairedArtifactDigest),
     configurationResource(newRepairedArtifactDigest),
   ];
@@ -395,6 +399,7 @@ test('repaired configuration reads allow old, current, and future package digest
     configurationResource(newRepairedArtifactDigest).replace('/runtime-configuration.json', '/qualification.json'),
     configurationResource(newRepairedArtifactDigest).replace('/runtime-configuration.json', '/reports/runtime-configuration.json'),
     faultyConfigurationResource.replace(`/${faultyArtifactDigest}.json`, `/${newRepairedArtifactDigest}.zip`),
+    currentFaultyConfigurationResource.replace(`/${currentFaultyArtifactDigest}.json`, `/${currentFaultyArtifactDigest}.zip`),
     `arn:aws:s3:::incident-triage-demo-evidence-${account}-${region}/agent-evaluation/other/${newRepairedArtifactDigest}/runtime-configuration.json`,
   ];
 
@@ -424,7 +429,7 @@ test('repaired configuration reads allow old, current, and future package digest
           `${owner} must deny ${action} for the out-of-scope configuration object ${resource}`);
       }
     }
-    for (const resource of [configurationResource(newRepairedArtifactDigest), faultyConfigurationResource]) {
+    for (const resource of [configurationResource(newRepairedArtifactDigest), faultyConfigurationResource, currentFaultyConfigurationResource]) {
       for (const action of ['s3:PutObject', 's3:DeleteObject', 's3:ListBucket']) {
         const target = action === 's3:ListBucket'
           ? resource.split('/agent-')[0]
@@ -485,9 +490,9 @@ test('action worker owns selection writes while retaining ordinary controller st
         `worker must retain ${action} for current application configuration`);
     }
   }
-  const faultyConfiguration = faultyConfigurationResource;
+  const faultyConfigurations = [faultyConfigurationResource, currentFaultyConfigurationResource];
   const repairedConfiguration = configurationResource(newRepairedArtifactDigest);
-  for (const resource of [faultyConfiguration, repairedConfiguration]) {
+  for (const resource of [...faultyConfigurations, repairedConfiguration]) {
     for (const action of ['s3:GetObject', 's3:GetObjectVersion']) {
       assert.equal(effectiveAllows(statements, boundary, controller, action, resource), true,
         `worker must read the exact candidate-bound runtime configuration object ${resource} through ${action}`);
@@ -495,6 +500,7 @@ test('action worker owns selection writes while retaining ordinary controller st
   }
   for (const resource of [
     `arn:aws:s3:::cdk-evaltalk-assets-${account}-${region}/agent-reference/e5ac2ee20d8f3947eb95ceb74094e882a3d8a4a010f2a8e7bf96700dd5906b33.zip`,
+    `arn:aws:s3:::cdk-evaltalk-assets-${account}-${region}/agent-reference/${currentFaultyArtifactDigest}.zip`,
     `arn:aws:s3:::incident-triage-demo-evidence-${account}-${region}/agent-evaluation/phase20/1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7/runtime.zip`,
     `arn:aws:s3:::incident-triage-demo-evidence-${account}-${region}/agent-evaluation/phase20/1f8e45fedee78cc9cc60c8b777c2b3ef51eee53ac00909a3bbf499c78de28cf7/qualification.json`,
     `arn:aws:s3:::cdk-evaltalk-assets-${account}-${region}/agent-reference/DEFAULT.json`,
