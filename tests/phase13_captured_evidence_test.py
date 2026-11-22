@@ -24,6 +24,7 @@ if str(AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(AGENT_DIR))
 
 from evidence import EvidenceTools
+from investigation import EvidenceCitation
 
 
 START = "2026-11-13T10:00:00.000Z"
@@ -397,6 +398,70 @@ class CapturedEvidenceTests(unittest.TestCase):
             # The late CloudTrail event has an old EventTime, so filtering only
             # on event time would incorrectly expose it at the first cutoff.
             self.assertIn("EventTime", rendered(second_history))
+
+    def test_cloudtrail_replay_normalizes_event_time_without_changing_frozen_cutoff_data(self):
+        sources = fixture_sources()
+        sources["changeHistory"]["window"] = {
+            "start": "2026-11-21T22:51:00Z",
+            "end": "2026-11-21T22:52:00Z",
+        }
+        def event(event_id, event_time, available_at):
+            return {
+                "EventId": event_id,
+                "EventName": "AssumeRole",
+                "EventSource": "sts.amazonaws.com",
+                "EventTime": event_time,
+                "availableAt": available_at,
+                "Resources": [{"ResourceName": "IncidentTriageDemoInventory"}],
+            }
+
+        sources["changeHistory"]["observations"] = [
+            event("before-boundary", "2026-11-21 22:51:09.999999999+00:00", "2026-11-21T22:51:09.999999999Z"),
+            event("incident-literal", "2026-11-21 22:51:10+00:00", "2026-11-21T22:51:10Z"),
+            event("late-availability", "2026-11-21 22:51:09.999999998+00:00", "2026-11-21T22:51:10.000000001Z"),
+            event("after-boundary", "2026-11-21 22:51:10.000000001+00:00", "2026-11-21T22:51:10.000000001Z"),
+        ]
+
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / "capture.json"
+            write_fixture(path, sources)
+            frozen = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(
+                "2026-11-21 22:51:10+00:00",
+                frozen["sources"]["changeHistory"]["observations"][1]["EventTime"],
+            )
+
+            after_cutoff = self.load(path, "2026-11-21T22:51:11Z").read_change_history(
+                resource="inventory",
+                start="2026-11-21T22:51:09.999999998Z",
+                end="2026-11-21T22:51:10.000000002Z",
+            )
+            exact = next(row for row in after_cutoff["observations"] if row["EventId"] == "incident-literal")
+            self.assertEqual("2026-11-21T22:51:10+00:00", exact["EventTime"])
+            self.assertIn("late-availability", {row["EventId"] for row in after_cutoff["observations"]})
+            EvidenceCitation.model_validate({
+                "source": "cloudtrail",
+                "resource": "inventory",
+                "windowStart": "2026-11-21T22:51:09.999999998Z",
+                "windowEnd": "2026-11-21T22:51:10.000000002Z",
+                "observedAt": exact["EventTime"],
+                "finding": "CloudTrail event timestamp is a valid citation instant.",
+            })
+
+            at_cutoff = self.load(path, "2026-11-21T22:51:10.000000000Z").read_change_history(
+                resource="inventory",
+                start="2026-11-21T22:51:09.999999998Z",
+                end="2026-11-21T22:51:10.000000002Z",
+            )
+            self.assertEqual(["before-boundary"], [row["EventId"] for row in at_cutoff["observations"]])
+            self.assertEqual(
+                "2026-11-21T22:51:09.999999999+00:00",
+                at_cutoff["observations"][0]["EventTime"],
+            )
+            self.assertEqual(
+                "2026-11-21 22:51:10+00:00",
+                json.loads(path.read_text(encoding="utf-8"))["sources"]["changeHistory"]["observations"][1]["EventTime"],
+            )
 
     def test_replay_omits_later_archive_metadata_only_from_model_results(self):
         sources = fixture_sources()

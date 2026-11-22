@@ -6,6 +6,7 @@ import json
 import sys
 import time
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 from botocore.exceptions import ClientError
@@ -15,6 +16,7 @@ if str(AGENT_DIR) not in sys.path:
     sys.path.insert(0, str(AGENT_DIR))
 
 from evidence import EvidenceTools
+from investigation import EvidenceCitation
 from support.phase4_agent_fakes import (
     ALARM_ARN,
     SECRET_SENTINELS,
@@ -337,6 +339,45 @@ class EvidenceProviderTests(unittest.TestCase):
         self.assertEqual("partial", combined["completeness"])
         self.assertIn("metrics", " ".join(combined["gaps"]))
         self.assertIn("queryResultsKey", combined)
+
+    def test_cloudtrail_model_projection_uses_iso_event_times(self):
+        boundary = FakeAWSBoundary()
+        boundary.responses[("cloudtrail", "lookup_events")] = {
+            "Events": [
+                {
+                    "EventId": "incident-literal",
+                    "EventName": "UpdateFunctionConfiguration",
+                    "EventSource": "lambda.amazonaws.com",
+                    "EventTime": datetime(2026, 11, 21, 22, 51, 10, tzinfo=timezone.utc),
+                    "Resources": [{"ResourceName": "IncidentTriageDemoInventory"}],
+                },
+                {
+                    "EventId": "incident-precise",
+                    "EventName": "UpdateFunctionConfiguration",
+                    "EventSource": "lambda.amazonaws.com",
+                    "EventTime": datetime(2026, 11, 21, 22, 51, 10, 123456, tzinfo=timezone.utc),
+                    "Resources": [{"ResourceName": "IncidentTriageDemoInventory"}],
+                },
+            ]
+        }
+        tools, _, _ = self.make_tools(boundary)
+
+        result = tools.read_change_history(
+            resource="inventory",
+            start="2026-11-21T22:51:00Z",
+            end="2026-11-21T22:52:00Z",
+        )
+        exact, precise = result["observations"]
+        self.assertEqual("2026-11-21T22:51:10+00:00", exact["EventTime"])
+        self.assertEqual("2026-11-21T22:51:10.123456+00:00", precise["EventTime"])
+        EvidenceCitation.model_validate({
+            "source": "cloudtrail",
+            "resource": "inventory",
+            "windowStart": "2026-11-21T22:51:00Z",
+            "windowEnd": "2026-11-21T22:52:00Z",
+            "observedAt": exact["EventTime"],
+            "finding": "CloudTrail event timestamp is a valid citation instant.",
+        })
 
     def test_cloudtrail_continuation_after_page_cap_is_marked_partial(self):
         boundary = FakeAWSBoundary()

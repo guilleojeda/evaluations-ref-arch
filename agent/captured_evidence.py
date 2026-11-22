@@ -853,7 +853,8 @@ class CapturedEvidenceTools(EvidenceTools):
                 if available_at_ns is None or available_at_ns > reference_ns:
                     unavailable_match = True
                     continue
-                records.append(dict(item))
+                # Format the copy after checking the original event and availability clocks.
+                records.append({**item, "EventTime": self._normalize_cloudtrail_timestamp(item["EventTime"])})
                 if len(records) > limit:
                     break
         if unavailable_match:
