@@ -13,6 +13,7 @@ import {
 } from "aws-cdk-lib";
 import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import { AccessLogField, AccessLogFormat } from "aws-cdk-lib/aws-apigateway";
 import * as cloudfront from "aws-cdk-lib/aws-cloudfront";
 import * as origins from "aws-cdk-lib/aws-cloudfront-origins";
@@ -21,6 +22,8 @@ import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
+import * as route53 from "aws-cdk-lib/aws-route53";
+import * as route53Targets from "aws-cdk-lib/aws-route53-targets";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import { Construct } from "constructs";
 import { DemoStack } from "../src/stacks.js";
@@ -47,6 +50,8 @@ const INVENTORY_RESERVED_CONCURRENCY = 16;
 const SUPPORTED_INVENTORY_MEMORY_MB = [BASELINE_MEMORY_MB, 512];
 const CHECKOUT_TIMEOUT_SECONDS = 12;
 const INVENTORY_TIMEOUT_SECONDS = 6;
+const FRIENDLY_SITE_DOMAIN = "store.riv2026.guilleojeda.com";
+const FRIENDLY_ZONE_ID = "Z02003753BQ2Y0J10MTK1";
 
 /**
  * The product stack owns only the app's named resources. The workflow passes
@@ -328,9 +333,32 @@ export class AppStack extends DemoStack {
       protocolPolicy: cloudfront.OriginProtocolPolicy.HTTPS_ONLY,
       originSslProtocols: [cloudfront.OriginSslPolicy.TLS_V1_2],
     });
+    // Keep the certificate request in this stack and in us-east-1, which is
+    // the only ACM region CloudFront accepts. CloudFormation manages the DNS
+    // validation CNAME directly in the already delegated hosted zone.
+    const friendlySiteCertificate = new acm.CfnCertificate(this, "FriendlySiteCertificate", {
+      domainName: FRIENDLY_SITE_DOMAIN,
+      tags: [
+        { key: "Project", value: "IncidentTriageDemo" },
+        { key: "Component", value: "app" },
+      ],
+      validationMethod: "DNS",
+      domainValidationOptions: [{
+        domainName: FRIENDLY_SITE_DOMAIN,
+        hostedZoneId: FRIENDLY_ZONE_ID,
+      }],
+    });
+    const cloudFrontCertificate = acm.Certificate.fromCertificateArn(
+      this,
+      "FriendlySiteCertificateReference",
+      friendlySiteCertificate.ref,
+    );
     const distribution = new cloudfront.Distribution(this, "WebDistribution", {
       comment: "Incident Triage Demo private S3 site and uncached API origin",
       defaultRootObject: "index.html",
+      domainNames: [FRIENDLY_SITE_DOMAIN],
+      certificate: cloudFrontCertificate,
+      minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
       defaultBehavior: {
         origin: webOrigin,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -358,6 +386,18 @@ export class AppStack extends DemoStack {
         ttl: Duration.seconds(0),
       })),
     });
+    for (const [recordType, id] of [["A", "FriendlySiteAliasA"], ["AAAA", "FriendlySiteAliasAAAA"]] as const) {
+      new route53.CfnRecordSet(this, id, {
+        hostedZoneId: FRIENDLY_ZONE_ID,
+        name: FRIENDLY_SITE_DOMAIN,
+        type: recordType,
+        aliasTarget: {
+          dnsName: distribution.distributionDomainName,
+          hostedZoneId: route53Targets.CloudFrontTarget.CLOUDFRONT_ZONE_ID,
+          evaluateTargetHealth: false,
+        },
+      });
+    }
 
     // CI publishes hashed assets first, then index.html with revalidation
     // headers. The bucket is versioned and never pruned so older pages remain
@@ -377,6 +417,7 @@ export class AppStack extends DemoStack {
     new CfnOutput(this, "WebBucketName", { value: webBucket.bucketName });
     new CfnOutput(this, "DistributionId", { value: distribution.distributionId });
     new CfnOutput(this, "SiteUrl", { value: `https://${distribution.distributionDomainName}` });
+    new CfnOutput(this, "FriendlySiteUrl", { value: `https://${FRIENDLY_SITE_DOMAIN}` });
     new CfnOutput(this, "ApiUrl", { value: api.apiEndpoint });
     new CfnOutput(this, "CheckoutFunctionName", { value: checkoutFunction.functionName });
     new CfnOutput(this, "InventoryFunctionName", { value: inventoryFunction.functionName });

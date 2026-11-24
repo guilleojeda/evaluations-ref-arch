@@ -3,11 +3,13 @@ import { resolve } from "node:path";
 import { CfnCondition, CfnOutput, CfnParameter, Duration, Fn, RemovalPolicy, Tags, type StackProps } from "aws-cdk-lib";
 import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
 import * as integrations from "aws-cdk-lib/aws-apigatewayv2-integrations";
+import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import { AccessLogField, AccessLogFormat } from "aws-cdk-lib/aws-apigateway";
 import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
 import * as iam from "aws-cdk-lib/aws-iam";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import * as logs from "aws-cdk-lib/aws-logs";
+import * as route53 from "aws-cdk-lib/aws-route53";
 import * as s3 from "aws-cdk-lib/aws-s3";
 import { Construct } from "constructs";
 import { DemoStack } from "../src/stacks.js";
@@ -48,6 +50,8 @@ const REPAIRED_ARTIFACT_DIGEST_PATTERN = "?".repeat(64);
 const REPAIRED_CONFIGURATION_OBJECT = `arn:aws:s3:::${EVIDENCE_BUCKET_NAME}/agent-evaluation/phase20/${REPAIRED_ARTIFACT_DIGEST_PATTERN}/runtime-configuration.json`;
 const STAGE_ALARM_NAME = "IncidentTriageDemoAppStage5xx";
 const STAGE_ALARM_ARN = `arn:aws:cloudwatch:${REGION}:${ACCOUNT}:alarm:${STAGE_ALARM_NAME}`;
+const FRIENDLY_SITE_DOMAIN = "controller.riv2026.guilleojeda.com";
+const FRIENDLY_ZONE_ID = "Z02003753BQ2Y0J10MTK1";
 
 export class ControllerStack extends DemoStack {
   constructor(scope: Construct, props: StackProps) {
@@ -144,10 +148,52 @@ export class ControllerStack extends DemoStack {
     api.addRoutes({ path: "/{proxy+}", methods: [apigatewayv2.HttpMethod.ANY], integration });
     api.addRoutes({ path: "/", methods: [apigatewayv2.HttpMethod.ANY], integration });
     const stage = api.addStage("DefaultStage", { stageName: "$default", autoDeploy: true, accessLogSettings: { destination: new apigatewayv2.LogGroupLogDestination(gatewayLogGroup), format: AccessLogFormat.custom(JSON.stringify({ requestId: AccessLogField.contextRequestId(), routeKey: AccessLogField.contextRouteKey(), status: AccessLogField.contextStatus(), responseLatency: AccessLogField.contextResponseLatency(), integrationLatency: AccessLogField.contextIntegrationLatency(), integrationStatus: AccessLogField.contextIntegrationStatus(), integrationError: AccessLogField.contextIntegrationErrorMessage() })) } });
+    // Keep the certificate exact-name and validate it through the delegated
+    // Route 53 zone without a lookup or a custom-resource provider.
+    const friendlySiteCertificate = new acm.CfnCertificate(this, "FriendlySiteCertificate", {
+      domainName: FRIENDLY_SITE_DOMAIN,
+      tags: [
+        { key: "Project", value: "IncidentTriageDemo" },
+        { key: "Component", value: "controller" },
+      ],
+      validationMethod: "DNS",
+      domainValidationOptions: [{
+        domainName: FRIENDLY_SITE_DOMAIN,
+        hostedZoneId: FRIENDLY_ZONE_ID,
+      }],
+    });
+    const friendlyDomain = new apigatewayv2.CfnDomainName(this, "FriendlyDomain", {
+      domainName: FRIENDLY_SITE_DOMAIN,
+      domainNameConfigurations: [{
+        certificateArn: friendlySiteCertificate.ref,
+        endpointType: "REGIONAL",
+        ipAddressType: "ipv4",
+        securityPolicy: "TLS_1_2",
+      }],
+    });
+    const stageResource = stage.node.defaultChild as apigatewayv2.CfnStage;
+    const friendlyMapping = new apigatewayv2.CfnApiMapping(this, "FriendlyDomainMapping", {
+      apiId: api.apiId,
+      domainName: friendlyDomain.ref,
+      stage: stageResource.stageName,
+    });
+    friendlyMapping.addResourceDependency(stageResource);
+    friendlyMapping.addResourceDependency(friendlyDomain);
+    new route53.CfnRecordSet(this, "FriendlySiteAliasA", {
+      hostedZoneId: FRIENDLY_ZONE_ID,
+      name: FRIENDLY_SITE_DOMAIN,
+      type: "A",
+      aliasTarget: {
+        dnsName: friendlyDomain.attrRegionalDomainName,
+        hostedZoneId: friendlyDomain.attrRegionalHostedZoneId,
+        evaluateTargetHealth: false,
+      },
+    });
 
     new CfnOutput(this, "AgentAlarmArns", { value: agentAlarmArns.valueAsString });
     new CfnOutput(this, "SourceRevision", { value: sourceRevision.valueAsString });
     new CfnOutput(this, "SiteUrl", { value: api.apiEndpoint });
+    new CfnOutput(this, "FriendlySiteUrl", { value: `https://${FRIENDLY_SITE_DOMAIN}` });
     new CfnOutput(this, "ApiId", { value: api.httpApiId });
     new CfnOutput(this, "HttpFunctionName", { value: http.functionName });
     new CfnOutput(this, "WorkerFunctionName", { value: worker.functionName });
