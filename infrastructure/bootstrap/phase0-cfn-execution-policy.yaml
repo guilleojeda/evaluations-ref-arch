@@ -503,6 +503,195 @@ Resources:
               StringEquals:
                 iam:PassedToService: lambda.amazonaws.com
 
+  # Custom-domain grants live in their own policies because the existing app
+  # execution policy is at the customer-managed 6,144-character limit.  Keep
+  # these policies in the normal CDK bootstrap execution-policy list.
+  IncidentTriageDemoAppCustomDomainCfnExecution:
+    Type: AWS::IAM::ManagedPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ManagedPolicyName: IncidentTriageDemoAppCustomDomainCfnExecution
+      Description: >-
+        Scoped custom-domain certificate and delegated DNS permissions for the
+        Incident Triage Demo app stack.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: RequestAppCustomDomainCertificate
+            Effect: Allow
+            Action: acm:RequestCertificate
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: us-east-1
+                acm:ValidationMethod: DNS
+              ForAllValues:StringEquals:
+                acm:DomainNames:
+                  - store.riv2026.guilleojeda.com
+
+          - Sid: TagAppCustomDomainCertificate
+            Effect: Allow
+            Action: acm:AddTagsToCertificate
+            Resource: arn:aws:acm:us-east-1:027224425948:certificate/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/Project: IncidentTriageDemo
+                aws:RequestTag/Component: app
+
+          - Sid: ReadAppCustomDomainCertificateTags
+            Effect: Allow
+            Action: acm:ListTagsForCertificate
+            Resource: arn:aws:acm:us-east-1:027224425948:certificate/*
+
+          - Sid: ManageAppCustomDomainCertificate
+            Effect: Allow
+            Action:
+              - acm:DeleteCertificate
+              - acm:DescribeCertificate
+            Resource: arn:aws:acm:us-east-1:027224425948:certificate/*
+            Condition:
+              StringEquals:
+                aws:ResourceTag/Project: IncidentTriageDemo
+                aws:ResourceTag/Component: app
+
+          # ACM DNS validation and the CloudFront alias are the only records
+          # that the app may change.  ACM generates the leading validation
+          # label; the delegated zone and host suffix remain exact.
+          - Sid: ReadAppCustomDomainZone
+            Effect: Allow
+            Action:
+              - route53:GetHostedZone
+              - route53:ListResourceRecordSets
+            Resource: arn:aws:route53:::hostedzone/Z02003753BQ2Y0J10MTK1
+
+          - Sid: ChangeAppCustomDomainRecords
+            Effect: Allow
+            Action: route53:ChangeResourceRecordSets
+            Resource: arn:aws:route53:::hostedzone/Z02003753BQ2Y0J10MTK1
+            Condition:
+              ForAllValues:StringLike:
+                route53:ChangeResourceRecordSetsNormalizedRecordNames:
+                  - store.riv2026.guilleojeda.com
+                  - '_*.store.riv2026.guilleojeda.com'
+              ForAllValues:StringEquals:
+                route53:ChangeResourceRecordSetsRecordTypes:
+                  - A
+                  - AAAA
+                  - CNAME
+                route53:ChangeResourceRecordSetsActions:
+                  - CREATE
+                  - UPSERT
+                  - DELETE
+
+          - Sid: ReadAppCustomDomainChanges
+            Effect: Allow
+            Action: route53:GetChange
+            Resource: arn:aws:route53:::change/*
+
+  IncidentTriageDemoControllerCustomDomainCfnExecution:
+    Type: AWS::IAM::ManagedPolicy
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      ManagedPolicyName: IncidentTriageDemoControllerCustomDomainCfnExecution
+      Description: >-
+        Scoped custom-domain certificate, API Gateway mapping, and delegated
+        DNS permissions for the Incident Triage Demo controller stack.
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: CreateControllerCustomDomain
+            Effect: Allow
+            Action:
+              - apigateway:POST
+              - apigateway:PUT
+            Resource: arn:aws:apigateway:us-east-1::/domainnames
+            Condition:
+              StringEquals:
+                apigateway:Request/EndpointType: REGIONAL
+                apigateway:Request/SecurityPolicy: TLS_1_2
+
+          - Sid: ManageControllerCustomDomain
+            Effect: Allow
+            Action:
+              - apigateway:DELETE
+              - apigateway:GET
+              - apigateway:PATCH
+              - apigateway:POST
+              - apigateway:PUT
+            Resource:
+              - arn:aws:apigateway:us-east-1::/domainnames/controller.riv2026.guilleojeda.com
+              - arn:aws:apigateway:us-east-1::/domainnames/controller.riv2026.guilleojeda.com/apimappings
+              - arn:aws:apigateway:us-east-1::/domainnames/controller.riv2026.guilleojeda.com/apimappings/*
+
+          - Sid: RequestControllerCustomDomainCertificate
+            Effect: Allow
+            Action: acm:RequestCertificate
+            Resource: '*'
+            Condition:
+              StringEquals:
+                aws:RequestedRegion: us-east-1
+                acm:ValidationMethod: DNS
+              ForAllValues:StringEquals:
+                acm:DomainNames:
+                  - controller.riv2026.guilleojeda.com
+
+          - Sid: TagControllerCustomDomainCertificate
+            Effect: Allow
+            Action: acm:AddTagsToCertificate
+            Resource: arn:aws:acm:us-east-1:027224425948:certificate/*
+            Condition:
+              StringEquals:
+                aws:RequestTag/Project: IncidentTriageDemo
+                aws:RequestTag/Component: controller
+
+          - Sid: ReadControllerCustomDomainCertificateTags
+            Effect: Allow
+            Action: acm:ListTagsForCertificate
+            Resource: arn:aws:acm:us-east-1:027224425948:certificate/*
+
+          - Sid: ManageControllerCustomDomainCertificate
+            Effect: Allow
+            Action:
+              - acm:DeleteCertificate
+              - acm:DescribeCertificate
+            Resource: arn:aws:acm:us-east-1:027224425948:certificate/*
+            Condition:
+              StringEquals:
+                aws:ResourceTag/Project: IncidentTriageDemo
+                aws:ResourceTag/Component: controller
+
+          - Sid: ReadControllerCustomDomainZone
+            Effect: Allow
+            Action:
+              - route53:GetHostedZone
+              - route53:ListResourceRecordSets
+            Resource: arn:aws:route53:::hostedzone/Z02003753BQ2Y0J10MTK1
+
+          - Sid: ChangeControllerCustomDomainRecords
+            Effect: Allow
+            Action: route53:ChangeResourceRecordSets
+            Resource: arn:aws:route53:::hostedzone/Z02003753BQ2Y0J10MTK1
+            Condition:
+              ForAllValues:StringLike:
+                route53:ChangeResourceRecordSetsNormalizedRecordNames:
+                  - controller.riv2026.guilleojeda.com
+                  - '_*.controller.riv2026.guilleojeda.com'
+              ForAllValues:StringEquals:
+                route53:ChangeResourceRecordSetsRecordTypes:
+                  - A
+                  - CNAME
+                route53:ChangeResourceRecordSetsActions:
+                  - CREATE
+                  - UPSERT
+                  - DELETE
+
+          - Sid: ReadControllerCustomDomainChanges
+            Effect: Allow
+            Action: route53:GetChange
+            Resource: arn:aws:route53:::change/*
+
   IncidentTriageDemoControllerHttpRuntimeBoundary:
     Type: AWS::IAM::ManagedPolicy
     DeletionPolicy: Retain
@@ -1186,3 +1375,11 @@ Outputs:
     Description: Scoped agent stack execution policy.
     Value:
       Ref: IncidentTriageDemoAgentCfnExecution
+  AppCustomDomainPolicyArn:
+    Description: Scoped app custom-domain execution policy.
+    Value:
+      Ref: IncidentTriageDemoAppCustomDomainCfnExecution
+  ControllerCustomDomainPolicyArn:
+    Description: Scoped controller custom-domain execution policy.
+    Value:
+      Ref: IncidentTriageDemoControllerCustomDomainCfnExecution
