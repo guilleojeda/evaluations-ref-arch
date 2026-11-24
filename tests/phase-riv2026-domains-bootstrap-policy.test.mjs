@@ -98,11 +98,8 @@ test('Riv2026 controller bootstrap grants map only its API custom domain', () =>
   const statements = policy('IncidentTriageDemoControllerCustomDomainCfnExecution');
   const create = statement(statements, 'CreateControllerCustomDomain');
   assert.deepEqual(create.Resource, `arn:aws:apigateway:${region}::/domainnames`);
-  assert.deepEqual(actions(create), new Set(['apigateway:POST', 'apigateway:PUT']));
-  assert.deepEqual(create.Condition.StringEquals, {
-    'apigateway:Request/EndpointType': 'REGIONAL',
-    'apigateway:Request/SecurityPolicy': 'TLS_1_2',
-  });
+  assert.deepEqual(actions(create), new Set(['apigateway:POST']));
+  assert.equal(create.Condition, undefined, 'observed V2 CloudFormation create supplies no request condition or tag context');
 
   const manage = statement(statements, 'ManageControllerCustomDomain');
   assert.deepEqual(manage.Resource, [
