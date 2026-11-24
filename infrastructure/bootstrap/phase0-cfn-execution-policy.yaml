@@ -539,16 +539,18 @@ Resources:
                 aws:RequestTag/Project: IncidentTriageDemo
                 aws:RequestTag/Component: app
 
+          # CloudFormation calls DescribeCertificate immediately after
+          # RequestCertificate, before it has applied the ownership tags.
           - Sid: ReadAppCustomDomainCertificateTags
             Effect: Allow
-            Action: acm:ListTagsForCertificate
+            Action:
+              - acm:DescribeCertificate
+              - acm:ListTagsForCertificate
             Resource: arn:aws:acm:us-east-1:027224425948:certificate/*
 
           - Sid: ManageAppCustomDomainCertificate
             Effect: Allow
-            Action:
-              - acm:DeleteCertificate
-              - acm:DescribeCertificate
+            Action: acm:DeleteCertificate
             Resource: arn:aws:acm:us-east-1:027224425948:certificate/*
             Condition:
               StringEquals:
@@ -646,16 +648,17 @@ Resources:
                 aws:RequestTag/Project: IncidentTriageDemo
                 aws:RequestTag/Component: controller
 
+          # Keep this read unconditioned for the same read-before-tag sequence.
           - Sid: ReadControllerCustomDomainCertificateTags
             Effect: Allow
-            Action: acm:ListTagsForCertificate
+            Action:
+              - acm:DescribeCertificate
+              - acm:ListTagsForCertificate
             Resource: arn:aws:acm:us-east-1:027224425948:certificate/*
 
           - Sid: ManageControllerCustomDomainCertificate
             Effect: Allow
-            Action:
-              - acm:DeleteCertificate
-              - acm:DescribeCertificate
+            Action: acm:DeleteCertificate
             Resource: arn:aws:acm:us-east-1:027224425948:certificate/*
             Condition:
               StringEquals:
