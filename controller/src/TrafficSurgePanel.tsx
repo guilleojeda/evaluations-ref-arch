@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { Action, TrafficContext, TrafficProfileSnapshot } from "./types";
 import type { TrafficMetricsResponse } from "./metrics";
+import "./surge.css";
+import { uiText } from "./ui-text";
 
 interface TrafficSurgePanelProps {
   bearer: string;
@@ -20,6 +22,8 @@ interface Observation<T> {
 }
 
 type ObservationMap<T> = Record<string, Observation<T>>;
+
+const ACTIVE_ACTIONS = new Set(["queued", "running", "draining"]);
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -49,12 +53,7 @@ function timeLabel(value: string | undefined): string {
 }
 
 function countLabel(value: number | undefined): string {
-  return typeof value === "number" && Number.isSafeInteger(value) ? value.toLocaleString() : "Not observed";
-}
-
-function requestOutcomeLabel(value: string | undefined): string {
-  if (value === "not_sent") return "Not sent · admission closed";
-  return value ? value.replaceAll("_", " ") : "Outcome pending";
+  return typeof value === "number" && Number.isFinite(value) ? value.toLocaleString() : "Not observed";
 }
 
 function durationLabel(milliseconds: number | undefined): string {
@@ -62,20 +61,35 @@ function durationLabel(milliseconds: number | undefined): string {
   return `${(milliseconds / 1_000).toFixed(1)} s`;
 }
 
+function statusLabel(value: string): string {
+  return value.charAt(0).toUpperCase() + value.slice(1).replaceAll("_", " ");
+}
+
+function requestOutcomeLabel(value: string | undefined): string {
+  if (value === "not_sent") return "Not sent: admission closed";
+  return value ? statusLabel(value) : "Outcome pending";
+}
+
 function catalogProfileLabel(profile: TrafficProfileSnapshot): string {
-  if (profile.version === 1) return `catalog ${profile.catalog.ratePerSecond}/s, max ${profile.catalog.maxAttempts.toLocaleString()}`;
-  return `${profile.catalog.batchSize} catalog GETs every ${profile.catalog.batchIntervalMs} ms (${profile.catalog.ratePerSecond}/s average), max ${profile.catalog.maxAttempts.toLocaleString()}`;
+  if (profile.version === 1) return `Catalog ${profile.catalog.ratePerSecond}/s, max ${profile.catalog.maxAttempts.toLocaleString()}`;
+  return `${profile.catalog.batchSize} catalog GETs every ${profile.catalog.batchIntervalMs} ms, ${profile.catalog.ratePerSecond}/s average, max ${profile.catalog.maxAttempts.toLocaleString()}`;
 }
 
 function admissionLatenessLabel(profile: TrafficProfileSnapshot): string {
-  if (profile.version === 3) return " · 150 ms late-admission allowance";
-  if (profile.version === 4) return ` · ${profile.admissionLatenessMs} ms late-admission allowance`;
+  if (profile.version === 3) return "150 ms late admission allowance";
+  if (profile.version === 4) return `${profile.admissionLatenessMs} ms late admission allowance`;
   return "";
 }
 
 function profileLabel(profile: TrafficProfileSnapshot | undefined): string {
   if (!profile) return "Profile not recorded";
-  return `${profile.durationMs / 1_000} s · ${catalogProfileLabel(profile)}${admissionLatenessLabel(profile)} · checkout every ${profile.checkout.intervalMs / 1_000} s, max ${profile.checkout.maxAttempts}`;
+  const admission = admissionLatenessLabel(profile);
+  return [
+    `${profile.durationMs / 1_000} second run`,
+    catalogProfileLabel(profile),
+    admission,
+    `checkout every ${profile.checkout.intervalMs / 1_000} s, max ${profile.checkout.maxAttempts}`,
+  ].filter(Boolean).join(" | ");
 }
 
 function isCurrentInventorySurgeProfile(profile: TrafficProfileSnapshot | undefined): boolean {
@@ -92,48 +106,43 @@ function actionProductionDuration(action: Action | undefined): number | undefine
   const started = Date.parse(window.startedAt);
   const recordedEnd = window.producerStoppedAt ?? window.settledAt ?? action?.finishedAt;
   const ended = recordedEnd ? Date.parse(recordedEnd)
-    : action && (action.status === "queued" || action.status === "running" || action.status === "draining") ? Date.now()
+    : action && ACTIVE_ACTIONS.has(action.status) ? Date.now()
       : Date.parse(window.scheduledEndAt);
   return Number.isFinite(started) && Number.isFinite(ended) && ended >= started ? ended - started : undefined;
 }
 
 function catalogStartsLabel(action: Action): string {
   const observation = action.catalogObservation;
-  if (!observation) return "Unknown · no saved catalog snapshot";
+  if (!observation) return "Not observed";
   const starts = countLabel(action.traffic?.catalog?.submitted);
-  if (observation.status === "complete") return `${starts} final observed starts`;
-  const terminal = ["completed", "incomplete", "failed", "stopped", "discarded"].includes(action.status);
-  return `${starts} starts through ${timeLabel(observation.observedThrough)}${terminal ? " · final totals unknown" : " · checkpoint only"}`;
-}
-
-function catalogTotalsLabel(action: Action): string {
-  const observation = action.catalogObservation;
-  if (!observation) return "Unknown · no saved catalog snapshot";
-  const counters = action.traffic?.catalog;
-  const totals = `${countLabel(counters?.submitted)} started · ${countLabel(counters?.completed)} settled · ${countLabel(counters?.succeeded)} succeeded · ${countLabel(counters?.skipped)} skipped`;
-  if (observation.status === "complete") return `${totals} · final snapshot through ${timeLabel(observation.observedThrough)}`;
-  const terminal = ["completed", "incomplete", "failed", "stopped", "discarded"].includes(action.status);
-  return `${totals} · counts through ${timeLabel(observation.observedThrough)}${terminal ? " · final totals unknown after interruption" : " · current totals may have advanced"}`;
-}
-
-function catalogInFlightLabel(action: Action): string {
-  const observation = action.catalogObservation;
-  if (!observation) return "Unknown · no saved catalog snapshot";
-  const inFlight = countLabel(action.traffic?.catalog?.inFlight);
-  return observation.status === "complete" ? `${inFlight} at final drain` : `${inFlight} at snapshot ${timeLabel(observation.observedThrough)} · current in-flight count unknown`;
+  if (observation.status === "complete") return `${starts} final starts`;
+  return `${starts} starts through ${timeLabel(observation.observedThrough)}`;
 }
 
 function catalogOutcomeTotalLabel(action: Action): string {
   const observation = action.catalogObservation;
-  if (!observation) return "Unknown · no saved catalog snapshot";
+  if (!observation) return "Not observed";
   const successes = countLabel(observation.outcomes.success);
-  return observation.status === "complete" ? `${successes} final successful responses` : `${successes} successful responses through ${timeLabel(observation.observedThrough)}`;
+  return observation.status === "complete" ? `${successes} final successes` : `${successes} successes through ${timeLabel(observation.observedThrough)}`;
+}
+
+function catalogSnapshotLabel(action: Action): string {
+  const observation = action.catalogObservation;
+  if (!observation) return "No snapshot";
+  return observation.status === "complete" ? "Final snapshot" : "Partial snapshot";
+}
+
+function catalogInFlightLabel(action: Action): string {
+  const observation = action.catalogObservation;
+  if (!observation) return "Not observed";
+  const inFlight = countLabel(action.traffic?.catalog?.inFlight);
+  return observation.status === "complete" ? `${inFlight} at drain` : `${inFlight} at snapshot`;
 }
 
 function metricsSummary(response: TrafficMetricsResponse | undefined): string {
-  if (!response) return "No native metric response";
-  if (response.status === "pending") return "Pending · no settled metric window";
-  return `${response.status === "partial" ? "Partial" : "Available"} · ${response.metrics.length} series · ${response.window ? `${timeLabel(response.window.start)}–${timeLabel(response.window.end)}` : "window unavailable"}`;
+  if (!response) return "Not loaded";
+  if (response.status === "pending") return "Pending";
+  return response.status === "partial" ? "Partial data" : "Available";
 }
 
 function readAction(value: unknown): Action {
@@ -179,134 +188,18 @@ function contextMatchesExceptInventoryCap(previous: TrafficContext | undefined, 
   return previous.inventory.cap === 16 && current.inventory.cap === 32 &&
     previous.appRevision === current.appRevision && previous.productVersion === current.productVersion &&
     previous.inventory.aliasVersion === current.inventory.aliasVersion && previous.inventory.access === current.inventory.access &&
-    previous.inventory.memoryMb === current.inventory.memoryMb &&
-    previous.checkout.cap === current.checkout.cap && previous.checkout.aliasVersion === current.checkout.aliasVersion &&
-    previous.checkout.memoryMb === current.checkout.memoryMb;
+    previous.inventory.memoryMb === current.inventory.memoryMb && previous.checkout.cap === current.checkout.cap &&
+    previous.checkout.aliasVersion === current.checkout.aliasVersion && previous.checkout.memoryMb === current.checkout.memoryMb;
 }
 
-function NativeMetrics({ action, observation, onRefresh }: { action: Action; observation?: Observation<TrafficMetricsResponse>; onRefresh: () => void }) {
-  const response = observation?.value;
-  const byResource = ["Inventory", "Checkout", "Gateway", "Account"] as const;
-  return <section className="surge-metrics" aria-label={`Native metrics for surge ${action.id}`}>
-    <div className="surge-section-heading">
-      <h5>Native CloudWatch observations</h5>
-      <span className="surge-metric-status" role="status">
-        {observation?.error && response ? "Refresh failed · showing last good observation" :
-          observation?.error ? "Unavailable" : observation?.loading && !response ? "Loading" : response ? metricsSummary(response) :
-            !action.trafficWindow?.startedAt && ["queued", "running", "draining"].includes(action.status) ? "Pending · waiting for producer start" : "No observation yet"}
-      </span>
-    </div>
-    <button className="surge-refresh-button" type="button" onClick={onRefresh} disabled={observation?.loading}>
-      {observation?.loading ? "Refreshing native metrics…" : "Refresh native metrics"}
-    </button>
-    {observation?.error && !response && <p className="surge-muted" role="status">{observation.error}</p>}
-    {observation?.error && response && <p className="surge-muted" role="status">The last good observation is retained from {timeLabel(response.observedAt)}. Refresh failed: {observation.error}</p>}
-    {!response && !observation?.error && !action.trafficWindow?.startedAt && ["queued", "running", "draining"].includes(action.status) &&
-      <p className="surge-muted">Native queries remain pending until the worker records an actual producer start.</p>}
-    {response?.window && <p className="surge-muted">Fixed 60-second native periods · window {timeLabel(response.window.start)}–{timeLabel(response.window.end)} · observed {timeLabel(response.observedAt)}. These are operational signals, not health certification.</p>}
-    {response?.status === "pending" && <p className="surge-muted">The action has not produced a settled metric window. Pending remains unavailable, not zero.</p>}
-    {response && response.status !== "pending" && <div className="native-metric-grid">
-      {byResource.map((resource) => {
-        const metrics = response.metrics.filter((metric) => metric.resource === resource);
-        return <article className="native-metric-card" key={resource}>
-          <h6>{resource}</h6>
-          {metrics.length ? <ul>{metrics.map((metric, index) => {
-            const points = metric.values.map((sample, pointIndex) => `${timeLabel(metric.timestamps[pointIndex])}: ${sample}`).join(" · ");
-            const dimensionSummary = Object.entries(metric.dimensions).map(([name, value]) => `${name}=${value}`).join(", ");
-            return <li key={`${metric.name}-${index}`}>
-              <strong>{metric.name} · {metric.statistic}</strong>
-              <span>{points || "No datapoints observed"}</span>
-              <small>{metric.statusCode} · {metric.namespace}{dimensionSummary ? ` · ${dimensionSummary}` : " · account scope"}</small>
-            </li>;
-          })}</ul> : <p className="surge-muted">No series returned for this resource.</p>}
-        </article>;
-      })}
-    </div>}
-    {observation?.failedAt && <p className="surge-muted">Last failed refresh {timeLabel(observation.failedAt)}.</p>}
-  </section>;
+interface ComparisonCheck {
+  headline: string;
+  checks: string[];
+  ready: boolean;
 }
 
-function CatalogCohorts({ action }: { action: Action }) {
-  const observation = action.catalogObservation;
-  if (!observation) return <p className="surge-muted">No catalog cohort observation is recorded yet.</p>;
-  return <details className="surge-details">
-    <summary>Catalog outcomes and 15 one-second start cohorts</summary>
-    <p className="surge-muted">Cohorts group requests by start time. A cohort's completions belong to requests started in that second; unobserved future time is not measured zero.</p>
-    <dl className="surge-outcome-grid">
-      {(["success", "http4xx", "http5xx", "invalidResponse", "noResponse"] as const).map((name) => <div key={name}><dt>{name}</dt><dd>{countLabel(observation.outcomes[name])}</dd></div>)}
-      {(["late", "full", "checkpoint"] as const).map((name) => <div key={name}><dt>Skipped · {name}</dt><dd>{countLabel(observation.skips[name])}</dd></div>)}
-    </dl>
-    <div className="surge-table-scroll" role="region" aria-label="Catalog start cohorts" tabIndex={0}>
-      <table className="surge-cohort-table"><thead><tr><th>Offset</th><th>Observed</th><th>Started</th><th>Settled</th><th>Success</th><th>Skipped</th><th>Unsuccessful</th></tr></thead>
-        <tbody>{observation.bins.map((bin) => { const measured = bin.observedDurationMs > 0; return <tr key={bin.offsetMs}>
-          <th scope="row">{(bin.offsetMs / 1_000).toFixed(0)} s</th>
-          <td>{(bin.observedDurationMs / 1_000).toFixed(1)} s</td><td>{measured ? countLabel(bin.submitted) : "—"}</td><td>{measured ? countLabel(bin.completed) : "—"}</td>
-          <td>{measured ? countLabel(bin.succeeded) : "—"}</td><td>{measured ? countLabel(bin.skipped) : "—"}</td>
-          <td>{measured ? countLabel(bin.outcomes.http4xx + bin.outcomes.http5xx + bin.outcomes.invalidResponse + bin.outcomes.noResponse) : "—"}</td>
-        </tr>; })}</tbody>
-      </table>
-    </div>
-    <p className="surge-muted">Samples: {observation.samples.length} of at most 24 · {observation.sampleRule.replaceAll("_", " ")} · {observation.samplesTruncated ? "sample set truncated" : "sample set retained"} · observed through {timeLabel(observation.observedThrough)}.</p>
-    {observation.samples.length > 0 && <ul className="surge-sample-list">{observation.samples.map((sample, index) => <li key={`${sample.id}-${index}`}>
-      <span>{requestOutcomeLabel(sample.outcome)} · {sample.statusCode === undefined ? "no HTTP status" : `HTTP ${sample.statusCode}`}</span>
-      <strong>{sample.durationMs === undefined ? "No duration" : `${sample.durationMs} ms`}</strong>
-      <small>{sample.requestId ?? sample.id}{sample.errorCode ? ` · ${sample.errorCode}` : ""}</small>
-    </li>)}</ul>}
-  </details>;
-}
-
-function TrafficActionObservation({ action, observation, label, onMetricsRefresh }: { action: Action; observation?: Observation<TrafficMetricsResponse>; label: string; onMetricsRefresh: () => void }) {
-  const catalog = action.traffic?.catalog;
-  const checkout = action.traffic?.checkout;
-  const profile = action.trafficProfile;
-  const window = action.trafficWindow;
-  const productionDuration = actionProductionDuration(action);
-  const requested = action.stopRequested === true;
-  const closed = Boolean(window?.producerStoppedAt);
-  const settled = Boolean(window?.settledAt) && action.status !== "draining" && action.catalogObservation?.status === "complete";
-  const admissionState = closed ? `Closed at ${timeLabel(window?.producerStoppedAt)}`
-    : requested ? "Awaiting admission closure" : window ? "Open" : "No producer window recorded";
-  const drainState = settled ? `Settled at ${timeLabel(window?.settledAt)}`
-    : action.status === "incomplete" || action.status === "failed" ? `Incomplete · catalog final counts unknown${action.catalogObservation ? `; last snapshot ${timeLabel(action.catalogObservation.observedThrough)}` : "; no catalog snapshot saved"} · checkout ${countLabel(checkout?.inFlight)} in flight`
-      : action.status === "draining" || requested ? `Draining · catalog ${catalogInFlightLabel(action)} · checkout ${countLabel(checkout?.inFlight)} in flight`
-        : `Catalog ${catalogInFlightLabel(action)} · checkout ${countLabel(checkout?.inFlight)} in flight`;
-  const checkoutRequests = action.requests.filter((request) => request.kind === "checkout");
-  return <article className="surge-action-record">
-    <div className="surge-action-heading">
-      <div><p className="eyebrow">{label}</p><h4>{action.status}</h4></div>
-      <span className={`incident-badge ${action.status === "failed" || action.status === "incomplete" || action.status === "stopped" ? "badge-warning" : "badge-neutral"}`}>{action.catalogObservation?.status ?? "No catalog snapshot"}</span>
-    </div>
-    <dl className="surge-facts">
-      <div><dt>Action ID</dt><dd className="mono">{action.id}</dd></div>
-      <div><dt>Requested profile</dt><dd>{profileLabel(profile)}{profile ? ` · v${profile.version} · max ${profile.catalog.maxInFlight} catalog / ${profile.checkout.maxInFlight} checkout in flight · ${profile.catalog.requestTimeoutMs / 1_000} s request timeouts` : ""}</dd></div>
-      <div><dt>Profile requested vs observed</dt><dd>{profile ? `${catalogProfileLabel(profile)} requested · ${catalogStartsLabel(action)}` : "No profile snapshot"}</dd></div>
-      <div><dt>Production duration</dt><dd>{window ? `${durationLabel(productionDuration)} · scheduled ${timeLabel(window.startedAt)}–${timeLabel(window.scheduledEndAt)}` : ["queued", "running", "draining"].includes(action.status) ? "Preparing · producer window not yet recorded" : "No producer window recorded"}</dd></div>
-      <div><dt>Catalog totals</dt><dd>{action.catalogObservation ? `${catalogTotalsLabel(action)} · ${catalogInFlightLabel(action)}` : "No saved catalog snapshot; catalog start, outcome, and in-flight counts are unknown"}</dd></div>
-      <div><dt>Checkout totals</dt><dd>{countLabel(checkout?.submitted)} sent · {countLabel(checkout?.completed)} settled · {countLabel(checkout?.succeeded)} succeeded · {countLabel(checkout?.skipped)} skipped · {countLabel(checkout?.inFlight)} in flight</dd></div>
-      <div><dt>Catalog sample fidelity</dt><dd>{action.catalogObservation ? `${action.catalogObservation.status} · ${action.catalogObservation.samples.length} bounded samples · ${action.catalogObservation.samplesTruncated ? "truncated" : "not truncated"}` : "No catalog observation yet"}</dd></div>
-      <div><dt>Stop request receipt</dt><dd>{requested ? "Recorded" : window?.stopReason === "duration" ? "Not requested · planned duration ended" : "No Stop request observed"}</dd><small>{window?.stopObservedAt ? `Worker observed Stop at ${timeLabel(window.stopObservedAt)}` : requested ? "Awaiting worker observation" : ""}</small></div>
-      <div><dt>Producer admissions</dt><dd>{admissionState}</dd></div>
-      <div><dt>Accepted work drain</dt><dd>{drainState}</dd></div>
-      <div><dt>Stop reason</dt><dd>{window?.stopReason ?? "Not recorded"}</dd></div>
-      <div><dt>App generation / product</dt><dd>{action.trafficContext ? `${action.trafficContext.appRevision} · ${action.trafficContext.productVersion}` : "Awaiting worker preflight"}</dd></div>
-      <div><dt>Resolved Inventory</dt><dd>{action.trafficContext ? `cap ${action.trafficContext.inventory.cap} · alias v${action.trafficContext.inventory.aliasVersion} · ${action.trafficContext.inventory.access} · ${action.trafficContext.inventory.memoryMb} MB` : "Awaiting worker preflight"}</dd></div>
-      <div><dt>Resolved Checkout</dt><dd>{action.trafficContext ? `cap ${action.trafficContext.checkout.cap} · alias v${action.trafficContext.checkout.aliasVersion} · ${action.trafficContext.checkout.memoryMb} MB` : "Awaiting worker preflight"}</dd></div>
-    </dl>
-    <details className="surge-details">
-      <summary>Durable checkout request outcomes and durations ({checkoutRequests.length})</summary>
-      {checkoutRequests.length ? <ul className="surge-sample-list">{checkoutRequests.map((request, index) => <li key={`${request.id}-${index}`}>
-        <span>{requestOutcomeLabel(request.outcome)} · {request.statusCode === undefined ? "no HTTP status" : `HTTP ${request.statusCode}`}</span>
-        <strong>{request.durationMs === undefined ? "No duration" : `${request.durationMs} ms`}</strong>
-        <small>{request.requestId ?? request.checkoutId ?? request.id}{request.dependencyReason ? ` · ${request.dependencyReason}` : request.errorCode ? ` · ${request.errorCode}` : ""}</small>
-      </li>)}</ul> : <p className="surge-muted">No checkout request records are available yet.</p>}
-    </details>
-    <CatalogCohorts action={action} />
-    <NativeMetrics action={action} observation={observation} onRefresh={onMetricsRefresh} />
-  </article>;
-}
-
-function comparisonCheck(previous: Action | undefined, current: Action | undefined): string {
-  if (!previous || !current) return "Waiting for both saved surge action records.";
+function comparisonCheck(previous: Action | undefined, current: Action | undefined): ComparisonCheck {
+  if (!previous || !current) return { headline: "Waiting for both saved runs", checks: [], ready: false };
   const profile = sameProfile(previous.trafficProfile, current.trafficProfile);
   const context = contextMatchesExceptInventoryCap(previous.trafficContext, current.trafficContext);
   const previousDuration = actionProductionDuration(previous);
@@ -322,17 +215,206 @@ function comparisonCheck(previous: Action | undefined, current: Action | undefin
   const previousBins = previous.catalogObservation?.bins;
   const currentBins = current.catalogObservation?.bins;
   const cohortComparison = previousBins?.length === 15 && currentBins?.length === 15
-    ? `${completeCatalogPair ? "Final" : "Checkpointed"} cohorts: ${currentBins.filter((bin, index) => bin.submitted >= previousBins[index].submitted).length}/15 one-second periods have at least as many starts`
-    : "one-second cohort comparison unavailable";
-  const profileText = profile === undefined ? "profile identity unavailable" : profile ? "requested profile matches" : "requested profile differs";
-  const contextText = context === undefined ? "resolved context unavailable" : context ? "only Inventory cap changed from 16 to 32" : "resolved app/Inventory/Checkout context does not match the required 16→32 pair";
-  const demandText = actualDemand === undefined ? "catalog start totals unavailable without both saved snapshots"
-    : !completeCatalogPair ? `checkpointed start totals ${actualDemand ? "are at least as high" : "are lower"} at the recorded observation times; final demand is unknown`
-      : actualDemand ? "repeat recorded at least as many final catalog starts" : "repeat recorded fewer final catalog starts";
-  const durationText = sameDuration ? `production durations match (${durationLabel(currentDuration)})` : "production durations differ or are unavailable";
-  const settleText = settledPair ? "both catalog snapshots are complete and accepted work drained"
-    : "complete snapshots and settled drains are not confirmed for both episodes";
-  return `${profileText}; ${contextText}; ${durationText}; ${demandText}; ${cohortComparison}; ${settleText}.`;
+    ? `${currentBins.filter((bin, index) => bin.submitted >= previousBins[index].submitted).length} of 15 one second cohorts meet or exceed prior starts`
+    : "One second cohort comparison unavailable";
+  const startsComparison = actualDemand === undefined ? "Catalog start totals unavailable"
+    : !completeCatalogPair ? `Checkpoint starts ${actualDemand ? "meet or exceed" : "are below"} prior starts. Final demand is unknown`
+      : actualDemand ? "Final catalog starts meet or exceed prior starts" : "Final catalog starts are below prior starts";
+  const checks = [
+    profile === undefined ? "Profile identity unavailable" : profile ? "Profile matches" : "Profile differs",
+    context === undefined ? "Resolved context unavailable" : context ? "Only Inventory capacity changed from 16 to 32" : "Resolved context differs from the 16 to 32 pair",
+    sameDuration ? `Production duration matches at ${durationLabel(currentDuration)}` : "Production duration differs or is unavailable",
+    startsComparison,
+    cohortComparison,
+    settledPair ? "Both runs have complete snapshots and settled drains" : "Complete snapshots and settled drains are not confirmed for both runs",
+  ];
+  const ready = profile === true && context === true && sameDuration && actualDemand === true && completeCatalogPair && settledPair;
+  return {
+    headline: ready ? "Same profile pair is ready to compare" : profile === true && context === true ? "Pair recorded with evidence still pending" : "Comparison needs review",
+    checks,
+    ready,
+  };
+}
+
+function metricSeries(response: TrafficMetricsResponse | undefined, resource: string, name: string) {
+  return response?.metrics.find((metric) => metric.resource === resource && metric.name === name);
+}
+
+function nativeMetricValue(observation: Observation<TrafficMetricsResponse> | undefined, resource: string, name: string): string {
+  const response = observation?.value;
+  if (!response) return observation?.loading ? "Loading" : "Not available";
+  if (response.status === "pending") return "Pending";
+  const metric = metricSeries(response, resource, name);
+  if (!metric || metric.values.length === 0) return "No data";
+  const value = metric.statistic === "Maximum" ? Math.max(...metric.values) : metric.values.reduce((total, sample) => total + sample, 0);
+  return `${countLabel(value)}${metric.statusCode === "Complete" ? "" : " (partial)"}`;
+}
+
+function NativeMetrics({ action, observation, onRefresh }: { action: Action; observation?: Observation<TrafficMetricsResponse>; onRefresh: () => void }) {
+  const response = observation?.value;
+  const resources = ["Inventory", "Checkout", "Gateway", "Account"] as const;
+  return <details className="surge-disclosure surge-native-metrics">
+    <summary>
+      <span>Native CloudWatch metrics</span>
+      <span className="surge-summary-status" role="status">{observation?.error && response ? "Last good data" : observation?.error ? "Unavailable" : metricsSummary(response)}</span>
+    </summary>
+    <div className="surge-disclosure-body">
+      <div className="surge-inline-controls">
+        <span className="surge-muted">Fixed 60 second periods</span>
+        <button className="surge-refresh-button" type="button" onClick={onRefresh} disabled={observation?.loading}>
+          {observation?.loading ? "Refreshing" : "Refresh metrics"}
+        </button>
+      </div>
+      {observation?.error && !response && <p className="surge-state surge-state-error" role="status">{observation.error}</p>}
+      {observation?.error && response && <p className="surge-state surge-state-warning" role="status">Last good snapshot from {timeLabel(response.observedAt)}. Refresh failed: {observation.error}</p>}
+      {!response && !observation?.error && ACTIVE_ACTIONS.has(action.status) && <p className="surge-muted">Metrics wait for an actual producer start.</p>}
+      {response?.window && <p className="surge-muted">Window {timeLabel(response.window.start)} to {timeLabel(response.window.end)}. Observed {timeLabel(response.observedAt)}.</p>}
+      {response?.status === "pending" && <p className="surge-muted">No settled metric window yet. Pending is not zero.</p>}
+      {response && response.status !== "pending" && <div className="native-metric-grid">
+        {resources.map((resource) => {
+          const metrics = response.metrics.filter((metric) => metric.resource === resource);
+          return <article className="native-metric-card" key={resource}>
+            <h6>{resource}</h6>
+            {metrics.length ? <ul>{metrics.map((metric, index) => {
+              const points = metric.values.map((sample, pointIndex) => `${timeLabel(metric.timestamps[pointIndex])}: ${sample}`).join(", ");
+              const dimensions = Object.entries(metric.dimensions).map(([name, value]) => `${name}=${value}`).join(", ");
+              return <li key={`${metric.name}-${index}`}>
+                <strong>{metric.name} | {metric.statistic}</strong>
+                <span>{points || "No datapoints observed"}</span>
+                <small>{metric.statusCode} | {metric.namespace}{dimensions ? ` | ${dimensions}` : " | account scope"}</small>
+              </li>;
+            })}</ul> : <p className="surge-muted">No series returned.</p>}
+          </article>;
+        })}
+      </div>}
+      {observation?.failedAt && <p className="surge-muted">Last failed refresh {timeLabel(observation.failedAt)}.</p>}
+    </div>
+  </details>;
+}
+
+function CatalogCohorts({ action }: { action: Action }) {
+  const observation = action.catalogObservation;
+  return <details className="surge-disclosure">
+    <summary>
+      <span>Catalog snapshot</span>
+      <span className="surge-summary-status">{catalogSnapshotLabel(action)}</span>
+    </summary>
+    <div className="surge-disclosure-body">
+      {!observation ? <p className="surge-muted">No catalog snapshot is recorded.</p> : <>
+        <p className="surge-muted">Observed through {timeLabel(observation.observedThrough)}. Future intervals are not measured as zero.</p>
+        <dl className="surge-outcome-grid">
+          {(["success", "http4xx", "http5xx", "invalidResponse", "noResponse"] as const).map((name) => <div key={name}><dt>{name}</dt><dd>{countLabel(observation.outcomes[name])}</dd></div>)}
+          {(["late", "full", "checkpoint"] as const).map((name) => <div key={name}><dt>Skipped {name}</dt><dd>{countLabel(observation.skips[name])}</dd></div>)}
+        </dl>
+        <div className="surge-table-scroll" role="region" aria-label="Catalog start cohorts" tabIndex={0}>
+          <table className="surge-cohort-table"><thead><tr><th>Offset</th><th>Observed</th><th>Started</th><th>Settled</th><th>Success</th><th>Skipped</th><th>Unsuccessful</th></tr></thead>
+            <tbody>{observation.bins.map((bin) => {
+              const measured = bin.observedDurationMs > 0;
+              return <tr key={bin.offsetMs}>
+                <th scope="row">{(bin.offsetMs / 1_000).toFixed(0)} s</th>
+                <td>{(bin.observedDurationMs / 1_000).toFixed(1)} s</td>
+                <td>{measured ? countLabel(bin.submitted) : "Not measured"}</td>
+                <td>{measured ? countLabel(bin.completed) : "Not measured"}</td>
+                <td>{measured ? countLabel(bin.succeeded) : "Not measured"}</td>
+                <td>{measured ? countLabel(bin.skipped) : "Not measured"}</td>
+                <td>{measured ? countLabel(bin.outcomes.http4xx + bin.outcomes.http5xx + bin.outcomes.invalidResponse + bin.outcomes.noResponse) : "Not measured"}</td>
+              </tr>;
+            })}</tbody>
+          </table>
+        </div>
+        <p className="surge-muted">Samples {observation.samples.length} of 24. {observation.samplesTruncated ? "Sample set truncated." : "Sample set retained."}</p>
+        {observation.samples.length > 0 && <ul className="surge-sample-list">{observation.samples.map((sample, index) => <li key={`${sample.id}-${index}`}>
+          <span>{requestOutcomeLabel(sample.outcome)} | {sample.statusCode === undefined ? "No HTTP status" : `HTTP ${sample.statusCode}`}</span>
+          <strong>{sample.durationMs === undefined ? "No duration" : `${sample.durationMs} ms`}</strong>
+          <small>{sample.requestId ?? sample.id}{sample.errorCode ? ` | ${sample.errorCode}` : ""}</small>
+        </li>)}</ul>}
+      </>}
+    </div>
+  </details>;
+}
+
+function TrafficActionObservation({ action, observation, label, onMetricsRefresh }: { action: Action; observation?: Observation<TrafficMetricsResponse>; label: string; onMetricsRefresh: () => void }) {
+  const catalog = action.traffic?.catalog;
+  const checkout = action.traffic?.checkout;
+  const profile = action.trafficProfile;
+  const window = action.trafficWindow;
+  const productionDuration = actionProductionDuration(action);
+  const requested = action.stopRequested === true;
+  const closed = Boolean(window?.producerStoppedAt);
+  const settled = Boolean(window?.settledAt) && action.status !== "draining" && action.catalogObservation?.status === "complete";
+  const admissionState = closed ? `Closed at ${timeLabel(window?.producerStoppedAt)}`
+    : requested ? "Awaiting admission closure" : window ? "Open" : "No producer window";
+  const drainState = settled ? `Settled at ${timeLabel(window?.settledAt)}`
+    : action.status === "incomplete" || action.status === "failed" ? "Incomplete. Final catalog counts are unknown."
+      : action.status === "draining" || requested ? `Draining. Catalog ${catalogInFlightLabel(action)}. Checkout ${countLabel(checkout?.inFlight)} in flight.`
+        : `Catalog ${catalogInFlightLabel(action)}. Checkout ${countLabel(checkout?.inFlight)} in flight.`;
+  const checkoutRequests = action.requests.filter((request) => request.kind === "checkout");
+  const warning = ["failed", "incomplete", "stopped", "discarded"].includes(action.status);
+  return <article className="surge-action-record">
+    <div className="surge-run-heading">
+      <div>
+        <p className="eyebrow">{label}</p>
+        <h4>{statusLabel(action.status)}</h4>
+      </div>
+      <span className={`incident-badge ${warning ? "badge-warning" : "badge-neutral"}`}>{catalogSnapshotLabel(action)}</span>
+    </div>
+    <dl className="surge-key-metrics" aria-label={`${label} key metrics`}>
+      <div><dt>Catalog started</dt><dd>{countLabel(catalog?.submitted)}</dd></div>
+      <div><dt>Catalog succeeded</dt><dd>{countLabel(catalog?.succeeded)}</dd></div>
+      <div><dt>Checkout sent</dt><dd>{countLabel(checkout?.submitted)}</dd></div>
+      <div><dt>Checkout succeeded</dt><dd>{countLabel(checkout?.succeeded)}</dd></div>
+    </dl>
+    <div className="surge-run-status-grid">
+      <div><span>Admissions</span><strong>{admissionState}</strong></div>
+      <div><span>Drain</span><strong>{drainState}</strong></div>
+    </div>
+    <details className="surge-disclosure">
+      <summary>Run details</summary>
+      <div className="surge-disclosure-body">
+        <dl className="surge-detail-grid">
+          <div><dt>Action ID</dt><dd className="mono">{action.id}</dd></div>
+          <div><dt>Requested profile</dt><dd>{profileLabel(profile)}</dd></div>
+          <div><dt>Profile requested and observed</dt><dd>{profile ? `${catalogProfileLabel(profile)} requested. ${catalogStartsLabel(action)}. In flight ${profile.catalog.maxInFlight} catalog and ${profile.checkout.maxInFlight} checkout. Timeout ${profile.catalog.requestTimeoutMs / 1_000} s.` : "No profile snapshot."}</dd></div>
+          <div><dt>Production duration</dt><dd>{window ? `${durationLabel(productionDuration)}. Scheduled ${timeLabel(window.startedAt)} to ${timeLabel(window.scheduledEndAt)}.` : ACTIVE_ACTIONS.has(action.status) ? "Preparing. Producer window not recorded." : "No producer window recorded."}</dd></div>
+          <div><dt>Catalog totals</dt><dd>{catalog ? `${catalogStartsLabel(action)}. ${countLabel(catalog.completed)} settled. ${countLabel(catalog.succeeded)} succeeded. ${countLabel(catalog.skipped)} skipped.` : "No saved catalog counters."}</dd></div>
+          <div><dt>Checkout totals</dt><dd>{countLabel(checkout?.submitted)} sent. {countLabel(checkout?.completed)} settled. {countLabel(checkout?.succeeded)} succeeded. {countLabel(checkout?.skipped)} skipped. {countLabel(checkout?.inFlight)} in flight.</dd></div>
+          <div><dt>Snapshot fidelity</dt><dd>{action.catalogObservation ? `${statusLabel(action.catalogObservation.status)}. ${action.catalogObservation.samples.length} bounded samples. ${action.catalogObservation.samplesTruncated ? "Truncated." : "Retained."}` : "No catalog snapshot."}</dd></div>
+          <div><dt>Stop request</dt><dd>{requested ? "Recorded" : window?.stopReason === "duration" ? "Not requested. Planned duration ended." : "Not observed"}{window?.stopObservedAt ? ` at ${timeLabel(window.stopObservedAt)}` : ""}</dd></div>
+          <div><dt>Stop reason</dt><dd>{window?.stopReason ?? "Not recorded"}</dd></div>
+          <div><dt>Application</dt><dd>{action.trafficContext ? `${action.trafficContext.appRevision} | ${action.trafficContext.productVersion}` : "Awaiting worker preflight"}</dd></div>
+          <div><dt>Inventory</dt><dd>{action.trafficContext ? `Capacity ${action.trafficContext.inventory.cap} | alias ${action.trafficContext.inventory.aliasVersion} | ${action.trafficContext.inventory.access} | ${action.trafficContext.inventory.memoryMb} MB` : "Awaiting worker preflight"}</dd></div>
+          <div><dt>Checkout</dt><dd>{action.trafficContext ? `Capacity ${action.trafficContext.checkout.cap} | alias ${action.trafficContext.checkout.aliasVersion} | ${action.trafficContext.checkout.memoryMb} MB` : "Awaiting worker preflight"}</dd></div>
+        </dl>
+      </div>
+    </details>
+    <details className="surge-disclosure">
+      <summary><span>Checkout outcomes</span><span className="surge-summary-status">{checkoutRequests.length} records</span></summary>
+      <div className="surge-disclosure-body">
+        {checkoutRequests.length ? <ul className="surge-sample-list">{checkoutRequests.map((request, index) => <li key={`${request.id}-${index}`}>
+          <span>{requestOutcomeLabel(request.outcome)} | {request.statusCode === undefined ? "No HTTP status" : `HTTP ${request.statusCode}`}</span>
+          <strong>{request.durationMs === undefined ? "No duration" : `${request.durationMs} ms`}</strong>
+          <small>{request.requestId ?? request.checkoutId ?? request.id}{request.dependencyReason ? ` | ${request.dependencyReason}` : request.errorCode ? ` | ${request.errorCode}` : ""}</small>
+        </li>)}</ul> : <p className="surge-muted">No checkout request records are available.</p>}
+      </div>
+    </details>
+    <CatalogCohorts action={action} />
+    <NativeMetrics action={action} observation={observation} onRefresh={onMetricsRefresh} />
+  </article>;
+}
+
+function ThrottlingComparison({ previous, current }: { previous?: Observation<TrafficMetricsResponse>; current?: Observation<TrafficMetricsResponse> }) {
+  const rows = ["Inventory", "Checkout"] as const;
+  const hasSeries = rows.some((resource) => metricSeries(previous?.value, resource, "Throttles") || metricSeries(current?.value, resource, "Throttles"));
+  return <section className="surge-throttle-comparison" aria-label="Observed throttles comparison">
+    <div className="surge-subheading">
+      <h4>Observed throttles</h4>
+    </div>
+    {hasSeries ? <div className="surge-table-scroll">
+      <table className="surge-cohort-table"><thead><tr><th>Resource</th><th>Prior run</th><th>Latest run</th></tr></thead>
+        <tbody>{rows.map((resource) => <tr key={resource}><th scope="row">{resource}</th><td>{nativeMetricValue(previous, resource, "Throttles")}</td><td>{nativeMetricValue(current, resource, "Throttles")}</td></tr>)}</tbody>
+      </table>
+    </div> : <p className="surge-muted">No native throttle series is available for either run.</p>}
+  </section>;
 }
 
 export function TrafficSurgePanel({ bearer, currentAction, latestSurgeActionId, disabled, disabledReason, onStart, onRepeat }: TrafficSurgePanelProps) {
@@ -351,15 +433,15 @@ export function TrafficSurgePanel({ bearer, currentAction, latestSurgeActionId, 
   const comparison = comparisonCheck(previousAction, latestAction);
   const showRepeat = isCurrentInventorySurgeProfile(latestAction?.trafficProfile);
   const repeatUnavailableReason = latestAction?.trafficProfile?.version === 1
-    ? "Latest surge is historical profile v1 (240/s); it is not a same-profile repeat of the current v4 workload."
+    ? "Latest run used historical profile v1, not the current v4 workload."
     : latestAction?.trafficProfile?.version === 2
-      ? "Latest surge profile v2 used 30 catalog GETs every 500 ms (60/s average, max 900); current v4 uses 30 every 1,000 ms (30/s average, max 450), so same-profile repeat is unavailable."
+      ? "Latest run used historical profile v2 at 60/s, not the current v4 profile at 30/s."
       : latestAction?.trafficProfile?.version === 3
-        ? "Latest surge is historical profile v3 with a 150 ms late-admission allowance; current v4 uses 300 ms, so same-profile repeat is unavailable."
+        ? "Latest run used historical profile v3 with a 150 ms allowance, not the current v4 profile at 300 ms."
         : latestId && latestAction && !latestAction.trafficProfile
-          ? "The latest surge action has no saved profile snapshot; same-profile repeat cannot be confirmed."
+          ? "Latest run has no saved profile. Same profile cannot be confirmed."
           : latestId && latestAction && latestAction.trafficProfile && !showRepeat
-            ? "Latest surge v4 parameters differ from the current v4 profile; same-profile repeat is unavailable."
+            ? "Latest v4 parameters differ from the current v4 profile. Same profile is unavailable."
             : undefined;
 
   const loadAction = useCallback(async (id: string) => {
@@ -376,7 +458,7 @@ export function TrafficSurgePanel({ bearer, currentAction, latestSurgeActionId, 
       if (action.id !== id) throw new Error("The controller returned a different action record");
       setLoadedActions((previous) => ({ ...previous, [id]: { value: action, loading: false } }));
     } catch (error) {
-      setLoadedActions((previous) => ({ ...previous, [id]: { ...previous[id], loading: false, failedAt: new Date().toISOString(), error: error instanceof Error ? error.message : "The surge action could not be read" } }));
+      setLoadedActions((previous) => ({ ...previous, [id]: { ...previous[id], loading: false, failedAt: new Date().toISOString(), error: error instanceof Error ? uiText(error.message) : "The surge action could not be read" } }));
     } finally {
       inFlightActions.current.delete(id);
     }
@@ -399,7 +481,7 @@ export function TrafficSurgePanel({ bearer, currentAction, latestSurgeActionId, 
       const metrics = readMetrics(await responseJson(response), id);
       setMetricObservations((previous) => ({ ...previous, [id]: { value: metrics, loading: false } }));
     } catch (error) {
-      setMetricObservations((previous) => ({ ...previous, [id]: { ...previous[id], loading: false, failedAt: new Date().toISOString(), error: error instanceof Error ? error.message : "Native metrics could not be read" } }));
+      setMetricObservations((previous) => ({ ...previous, [id]: { ...previous[id], loading: false, failedAt: new Date().toISOString(), error: error instanceof Error ? uiText(error.message) : "Native metrics could not be read" } }));
     } finally {
       inFlightMetrics.current.delete(id);
       if (queuedMetricReads.current.delete(id)) window.setTimeout(() => { void loadMetrics(id); }, 0);
@@ -438,38 +520,57 @@ export function TrafficSurgePanel({ bearer, currentAction, latestSurgeActionId, 
 
   return <section className="card surge-panel" aria-label="Inventory surge and comparison">
     <div className="card-heading">
-      <div><p className="eyebrow">Finite capacity scenario</p><h3>Inventory surge</h3></div>
-      <span className="incident-badge badge-neutral">Read only comparison</span>
+      <h2>Inventory surge</h2>
+      <span className="surge-summary-status">15 seconds</span>
     </div>
-    <p className="surge-intro">Start the fixed 15-second Inventory workload. Stop closes new admissions and drains accepted requests. Set Inventory capacity to 32 in the capacity control, then explicitly repeat the same v4 profile. Recover restores the original release capacity.</p>
-    <div className="surge-start-row">
-      <button className="button button-secondary" type="button" onClick={onStart} disabled={disabled}>Start Inventory surge · v4 · 15 s</button>
-      {showRepeat && <button className="button button-primary" type="button" onClick={onRepeat} disabled={disabled}>Repeat same Inventory surge v4 profile</button>}
+    <div className="surge-action-bar">
+      <button className="button button-secondary" type="button" onClick={onStart} disabled={disabled}>Start surge</button>
+      {showRepeat && <button className="button button-primary" type="button" onClick={onRepeat} disabled={disabled}>Repeat same profile</button>}
     </div>
-    <p className="surge-muted" role="status">{disabledReason ?? "Current profile v4: 30 catalog GETs every 1,000 ms (30/s average), with a 300 ms late-admission allowance, maximum 450 attempts in 15 seconds, up to 30 in flight; checkout every 1 second, maximum 15, up to 1 in flight. Starting or repeating sends no capacity, code, memory, access, alias, or Checkout setting change."}</p>
-    {repeatUnavailableReason && <p className="surge-muted" role="status">{repeatUnavailableReason}</p>}
+    {disabledReason && <p className="surge-guardrail surge-guardrail-blocked" role="status">{uiText(disabledReason)}</p>}
+    <details className="surge-disclosure surge-workload-details">
+      <summary><span>Workload details</span><span className="surge-summary-status">v4</span></summary>
+      <div className="surge-disclosure-body">
+        <dl className="surge-outcome-grid surge-workload-grid">
+          <div><dt>Duration</dt><dd>15 s</dd></div>
+          <div><dt>Catalog</dt><dd>30 GETs every 1,000 ms</dd></div>
+          <div><dt>Catalog cap</dt><dd>450 attempts, 30 in flight</dd></div>
+          <div><dt>Late admission</dt><dd>300 ms</dd></div>
+          <div><dt>Checkout</dt><dd>Every 1 s, max 15</dd></div>
+          <div><dt>Side effects</dt><dd>No capacity or release change</dd></div>
+        </dl>
+      </div>
+    </details>
+    {repeatUnavailableReason && <p className="surge-muted surge-guardrail-note" role="status">{repeatUnavailableReason}</p>}
     {latestId ? <>
-      {latestAction ? <TrafficActionObservation action={latestAction} observation={metricObservations[latestId]} label="Latest surge" onMetricsRefresh={() => void loadMetrics(latestId)} /> :
-        <div className="surge-read-error" role="status">
-          <span>{loadedActions[latestId]?.error ? `Could not read the latest saved surge: ${loadedActions[latestId]?.error}` : "Loading the latest saved surge action…"}</span>
-          {loadedActions[latestId]?.error && <button type="button" onClick={() => void loadAction(latestId)} disabled={loadedActions[latestId]?.loading}>Retry latest action read</button>}
+      {latestAction ? <TrafficActionObservation action={latestAction} observation={metricObservations[latestId]} label="Latest run" onMetricsRefresh={() => void loadMetrics(latestId)} /> :
+        <div className="surge-state-message" role="status">
+          <span>{loadedActions[latestId]?.error ? `Could not read latest saved run: ${loadedActions[latestId]?.error}` : "Loading latest saved run"}</span>
+          {loadedActions[latestId]?.error && <button className="surge-refresh-button" type="button" onClick={() => void loadAction(latestId)} disabled={loadedActions[latestId]?.loading}>Retry run read</button>}
         </div>}
-      {previousId && previousAction && latestAction && <section className="surge-comparison" aria-label="Previous surge comparison">
-        <div className="surge-section-heading"><div><p className="eyebrow">Prior action · {previousAction.id}</p><h4>Same-profile comparison</h4></div></div>
-        <p className="surge-comparison-result" role="status">{comparison}</p>
-        <p className="surge-muted">A matching profile does not prove equivalent delivered demand or a capacity effect; compare actual counts, one-second starts, pacing/skips, metric periods, fresh checkout effects, source-arrival evidence, and the independent alarm/report.</p>
-        <div className="surge-comparison-grid">
-          <div><strong>Prior catalog starts</strong><span>{catalogStartsLabel(previousAction)} · duration {durationLabel(actionProductionDuration(previousAction))}</span></div>
-          <div><strong>Current catalog starts</strong><span>{catalogStartsLabel(latestAction)} · duration {durationLabel(actionProductionDuration(latestAction))}</span></div>
-          <div><strong>Prior catalog successes</strong><span>{catalogOutcomeTotalLabel(previousAction)}</span></div>
-          <div><strong>Current catalog successes</strong><span>{catalogOutcomeTotalLabel(latestAction)}</span></div>
+      {previousId && latestAction && <section className="surge-comparison" aria-label="Previous surge comparison">
+        <div className="surge-subheading">
+          <h4>Capacity comparison</h4>
         </div>
-        <TrafficActionObservation action={previousAction} observation={metricObservations[previousId]} label="Previous surge" onMetricsRefresh={() => void loadMetrics(previousId)} />
+        {!previousAction ? <div className="surge-state-message" role="status">
+          <span>{loadedActions[previousId]?.error ? `Could not read prior saved run: ${loadedActions[previousId]?.error}` : "Loading prior saved run"}</span>
+          {loadedActions[previousId]?.error && <button className="surge-refresh-button" type="button" onClick={() => void loadAction(previousId)} disabled={loadedActions[previousId]?.loading}>Retry prior run read</button>}
+        </div> : <>
+          <p className="surge-comparison-result" role="status">{comparison.headline}</p>
+          <div className="surge-comparison-grid">
+            <div><strong>Prior run</strong><span>{catalogStartsLabel(previousAction)} | {catalogOutcomeTotalLabel(previousAction)} | duration {durationLabel(actionProductionDuration(previousAction))}</span></div>
+            <div><strong>Latest run</strong><span>{catalogStartsLabel(latestAction)} | {catalogOutcomeTotalLabel(latestAction)} | duration {durationLabel(actionProductionDuration(latestAction))}</span></div>
+          </div>
+          <details className="surge-disclosure">
+            <summary><span>Comparison checks</span><span className="surge-summary-status">{comparison.checks.length} checks</span></summary>
+            <div className="surge-disclosure-body"><ul className="surge-check-list">{comparison.checks.map((check) => <li key={check}>{check}</li>)}</ul></div>
+          </details>
+          <ThrottlingComparison previous={metricObservations[previousId]} current={metricObservations[latestId]} />
+          <details className="surge-disclosure"><summary>Previous surge details</summary>
+            <TrafficActionObservation action={previousAction} observation={metricObservations[previousId]} label="Prior run" onMetricsRefresh={() => void loadMetrics(previousId)} />
+          </details>
+        </>}
       </section>}
-      {previousId && latestAction && !previousAction && <div className="surge-read-error" role="status">
-        <span>{loadedActions[previousId]?.error ? `Could not read the previous surge ${previousId}: ${loadedActions[previousId]?.error}` : "Loading the previous surge action for comparison…"}</span>
-        {loadedActions[previousId]?.error && <button type="button" onClick={() => void loadAction(previousId)} disabled={loadedActions[previousId]?.loading}>Retry previous action read</button>}
-      </div>}
-    </> : <p className="surge-muted" role="status">No Inventory surge action has been recorded in this run.</p>}
+    </> : <p className="surge-empty" role="status">No previous surge.</p>}
   </section>;
 }
