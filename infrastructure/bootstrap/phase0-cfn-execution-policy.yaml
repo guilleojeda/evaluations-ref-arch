@@ -605,14 +605,11 @@ Resources:
         Statement:
           - Sid: CreateControllerCustomDomain
             Effect: Allow
-            Action:
-              - apigateway:POST
-              - apigateway:PUT
+            # The observed API Gateway V2 CloudFormation request uses POST on
+            # this collection and supplies no request condition or tag
+            # context, so keep the provider-supported collection grant plain.
+            Action: apigateway:POST
             Resource: arn:aws:apigateway:us-east-1::/domainnames
-            Condition:
-              StringEquals:
-                apigateway:Request/EndpointType: REGIONAL
-                apigateway:Request/SecurityPolicy: TLS_1_2
 
           - Sid: ManageControllerCustomDomain
             Effect: Allow
