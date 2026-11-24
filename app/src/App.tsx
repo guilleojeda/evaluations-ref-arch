@@ -321,9 +321,12 @@ function App() {
   const refreshCatalog = useCallback(
     async (activeCredential: string, reason: "login" | "refresh" | "after-order") => {
       setBusy(reason === "after-order" ? "stock-refresh" : "catalog");
+      setCatalogError(null);
+      setStockRefreshError(null);
       const result = await callApi<CatalogResponse>("GET", "/api/products", activeCredential);
       setBusy(null);
       if (result.networkError) {
+        setCatalogReady(false);
         const message = reason === "after-order" ? "Order confirmed. Stock refresh failed. Refresh stock to try again." : "Catalog unavailable. Refresh to try again.";
         if (reason === "after-order") setStockRefreshError(message);
         else {
@@ -345,6 +348,7 @@ function App() {
         return false;
       }
       if (result.status !== 200 || !applyCatalog(result.body)) {
+        setCatalogReady(false);
         const message = errorText(result.body, "Catalog unavailable. Refresh to try again.");
         if (reason === "after-order") setStockRefreshError(`Order confirmed, but ${message.toLowerCase()}`);
         else {
@@ -496,7 +500,7 @@ function App() {
   const isCheckoutBusy = busy === "checkout";
   const isStockRefreshBusy = busy === "stock-refresh";
   const orderReady = product !== null && catalogReady && product.availableQuantity >= quantity && busy === null && pending === null;
-  const orderStatus = orderReady ? "Ready" : product && catalogReady && product.availableQuantity < quantity ? "Insufficient stock" : "Unavailable";
+  const catalogLoading = busy === "catalog" || isStockRefreshBusy;
 
   return (
     <main className="page-shell">
@@ -525,21 +529,29 @@ function App() {
       ) : (
         <>
           <section className="card purchase-card" aria-labelledby="checkout-heading">
-            <div className="section-heading"><h2 id="checkout-heading">{product ? displayCopy(product.name) : "Storefront"}</h2>{!pending && <span className={`status-dot ${orderReady ? "status-dot-neutral" : "status-dot-warning"}`}>{orderStatus}</span>}</div>
+            <div className="section-heading"><h2 id="checkout-heading">{product ? displayCopy(product.name) : "Catalog"}</h2>{orderReady && <span className="status-dot status-dot-neutral">Ready</span>}</div>
             {product ? (
               <div className="product-layout">
                 <div><p className="sku">SKU <code>{product.sku}</code></p><p className="price">{formatMoney(product.unitPriceCents, product.currency)} <span>per unit</span></p></div>
                 <dl className="stats"><div><dt>Stock</dt><dd>{product.availableQuantity.toLocaleString()}</dd></div><div><dt>Updated</dt><dd>{formatTime(observedAt)}</dd></div></dl>
               </div>
-            ) : <div className="empty-state"><p>Catalog unavailable.</p><p className="muted">Refresh stock to try again.</p></div>}
-            <div className="card-actions"><button className="button button-secondary" type="button" onClick={refresh} disabled={busy !== null}>{busy === "catalog" || isStockRefreshBusy ? "Refreshing stock" : "Refresh stock"}</button>{catalogError && <span className="inline-error" role="alert">{catalogError}</span>}</div>
+            ) : null}
+            {!product && catalogLoading && <p role="status">Loading catalog...</p>}
+            {(product || !catalogLoading) && <div className="card-actions">
+              <button className="button button-secondary" type="button" onClick={refresh} disabled={busy !== null}>
+                {catalogLoading ? "Refreshing stock" : "Refresh stock"}
+              </button>
+              {catalogError && <span className="inline-error" role="alert">{catalogError}</span>}
+            </div>}
             {stockRefreshError && <p className="callout callout-warning" role="status">{stockRefreshError}</p>}
-            <form className="checkout-form" onSubmit={placeOrder}>
+            {product && <form className="checkout-form" onSubmit={placeOrder}>
               <div className="quantity-control"><label htmlFor="quantity">Quantity</label><select id="quantity" value={quantity} onChange={(event) => setQuantity(Number(event.target.value))} disabled={!product || busy !== null || Boolean(pending)}>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value} {value === 1 ? "unit" : "units"}</option>)}</select></div>
               <div className="order-total"><span>Total</span><strong>{product ? formatMoney(total, product.currency) : "-"}</strong></div>
               <button className="button button-primary button-large" type="submit" disabled={!orderReady}>{isStockRefreshBusy ? "Refreshing stock" : isCheckoutBusy ? "Placing order" : "Place order"}</button>
-            </form>
-            {product && catalogReady && product.availableQuantity < quantity && !pending && <p className="callout callout-warning" role="alert">Not enough stock. Choose a smaller quantity.</p>}
+            </form>}
+            {product && catalogReady && product.availableQuantity < quantity && !pending && <p className="callout callout-warning" role="alert">
+              {product.availableQuantity === 0 ? "Out of stock." : "Choose a smaller quantity."}
+            </p>}
             {checkoutMessage && <p className={`callout callout-${checkoutMessageTone}`} role={checkoutMessageTone === "error" ? "alert" : "status"}>{checkoutMessage}</p>}
             {pending && <div className="pending-panel" role="status"><div><h3>Order not confirmed</h3><details className="pending-details"><summary>Attempt details</summary><div className="pending-meta"><span>ID <code>{pending.checkoutId}</code></span><span>{pending.quantity} {pending.quantity === 1 ? "unit" : "units"}</span><span>Started <time dateTime={pending.startedAt}>{formatTime(pending.startedAt)}</time></span></div></details>{pendingMessage && <p>{pendingMessage}</p>}{failedCheckout && <div className="pending-evidence"><span><code>{failedCheckout.method} {failedCheckout.path}</code></span><span className={failedCheckout.tone === "error" ? "table-error" : "table-warning"}>{displayCopy(failedCheckout.outcome)}</span>{failedCheckout.requestId && <span>Server ID <code>{failedCheckout.requestId}</code></span>}</div>}</div><div className="pending-actions"><button className="button button-secondary" type="button" onClick={lookupStatus} disabled={busy !== null}>{busy === "status" ? "Looking up" : "Look up status"}</button><button className="button button-primary" type="button" onClick={retryOrder} disabled={busy !== null}>{busy === "retry" ? "Retrying" : "Retry same checkout"}</button></div></div>}
           </section>
