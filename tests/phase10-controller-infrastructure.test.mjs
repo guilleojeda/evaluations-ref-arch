@@ -262,3 +262,105 @@ test('released application keeps Inventory reservation 16 and Checkout unreserve
   assert.equal(app.Outputs.CheckoutReservedConcurrency.Value, 'unreserved',
     'Checkout remains unreserved in the release output');
 });
+
+test('store binds its friendly hostname to CloudFront with A and AAAA aliases', () => {
+  const app = appTemplate();
+  const zoneId = 'Z02003753BQ2Y0J10MTK1';
+  const domain = 'store.riv2026.guilleojeda.com';
+  const [certificateId, certificate] = findOne(
+    resourcesOf(app.Resources, 'AWS::CertificateManager::Certificate'),
+    (resource) => resource.Properties.DomainName === domain,
+    'app needs one exact-name ACM certificate',
+  );
+  assert.equal(certificate.Properties.ValidationMethod, 'DNS');
+  assert.deepEqual(certificate.Properties.DomainValidationOptions, [{
+    DomainName: domain,
+    HostedZoneId: zoneId,
+  }]);
+  assert.deepEqual([...certificate.Properties.Tags].sort((left, right) => left.Key.localeCompare(right.Key)), [
+    { Key: 'Project', Value: 'IncidentTriageDemo' },
+    { Key: 'Component', Value: 'app' },
+  ].sort((left, right) => left.Key.localeCompare(right.Key)));
+
+  const [, distribution] = findOne(
+    resourcesOf(app.Resources, 'AWS::CloudFront::Distribution'),
+    (resource) => resource.Properties.DistributionConfig?.Aliases?.includes(domain),
+    'app CloudFront distribution must include the store hostname',
+  );
+  const config = distribution.Properties.DistributionConfig;
+  assert.deepEqual(config.Aliases, [domain]);
+  assert.deepEqual(config.ViewerCertificate, {
+    AcmCertificateArn: { Ref: certificateId },
+    MinimumProtocolVersion: 'TLSv1.2_2021',
+    SslSupportMethod: 'sni-only',
+  });
+
+  const records = resourcesOf(app.Resources, 'AWS::Route53::RecordSet')
+    .map(([, resource]) => resource.Properties)
+    .filter(({ Name }) => Name === domain);
+  assert.deepEqual(records.map(({ Type }) => Type).sort(), ['A', 'AAAA']);
+  for (const record of records) {
+    assert.equal(record.HostedZoneId, zoneId);
+    assert.equal(record.AliasTarget.HostedZoneId, 'Z2FDTNDATAQYW2');
+    assert.equal(record.AliasTarget.EvaluateTargetHealth, false);
+  }
+
+  assert.ok(app.Outputs.SiteUrl, 'app must retain its raw SiteUrl output');
+  assert.ok(app.Outputs.ApiUrl, 'app must retain its raw ApiUrl output');
+  assert.equal(app.Outputs.FriendlySiteUrl.Value, `https://${domain}`);
+});
+
+test('controller maps its friendly hostname to the existing regional IPv4 API at root', () => {
+  const controller = controllerTemplate();
+  const zoneId = 'Z02003753BQ2Y0J10MTK1';
+  const domain = 'controller.riv2026.guilleojeda.com';
+  const [certificateId, certificate] = findOne(
+    resourcesOf(controller.Resources, 'AWS::CertificateManager::Certificate'),
+    (resource) => resource.Properties.DomainName === domain,
+    'controller needs one exact-name ACM certificate',
+  );
+  assert.equal(certificate.Properties.ValidationMethod, 'DNS');
+  assert.deepEqual(certificate.Properties.DomainValidationOptions, [{
+    DomainName: domain,
+    HostedZoneId: zoneId,
+  }]);
+  assert.deepEqual([...certificate.Properties.Tags].sort((left, right) => left.Key.localeCompare(right.Key)), [
+    { Key: 'Project', Value: 'IncidentTriageDemo' },
+    { Key: 'Component', Value: 'controller' },
+  ].sort((left, right) => left.Key.localeCompare(right.Key)));
+
+  const [, friendlyDomain] = findOne(
+    resourcesOf(controller.Resources, 'AWS::ApiGatewayV2::DomainName'),
+    (resource) => resource.Properties.DomainName === domain,
+    'controller needs a custom API domain',
+  );
+  assert.deepEqual(friendlyDomain.Properties.DomainNameConfigurations, [{
+    CertificateArn: { Ref: certificateId },
+    EndpointType: 'REGIONAL',
+    IpAddressType: 'ipv4',
+    SecurityPolicy: 'TLS_1_2',
+  }]);
+
+  const [, mapping] = findOne(
+    resourcesOf(controller.Resources, 'AWS::ApiGatewayV2::ApiMapping'),
+    (resource) => resource.Properties.DomainName?.Ref === 'FriendlyDomain',
+    'controller must map the friendly hostname',
+  );
+  assert.equal(mapping.Properties.ApiMappingKey, undefined,
+    'controller mapping must stay at the hostname root');
+  assert.equal(mapping.Properties.Stage, '$default');
+
+  const records = resourcesOf(controller.Resources, 'AWS::Route53::RecordSet')
+    .map(([, resource]) => resource.Properties)
+    .filter(({ Name }) => Name === domain);
+  assert.deepEqual(records.map(({ Type }) => Type), ['A']);
+  assert.equal(records[0].HostedZoneId, zoneId);
+  assert.deepEqual(records[0].AliasTarget, {
+    DNSName: { 'Fn::GetAtt': ['FriendlyDomain', 'RegionalDomainName'] },
+    EvaluateTargetHealth: false,
+    HostedZoneId: { 'Fn::GetAtt': ['FriendlyDomain', 'RegionalHostedZoneId'] },
+  });
+
+  assert.ok(controller.Outputs.SiteUrl, 'controller must retain its raw SiteUrl output');
+  assert.equal(controller.Outputs.FriendlySiteUrl.Value, `https://${domain}`);
+});

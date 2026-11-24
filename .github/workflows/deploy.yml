@@ -255,6 +255,7 @@ jobs:
           node --test tests/phase6-controller-recovery.test.mjs tests/phase6-controller-recovery-display.test.mjs tests/phase6-controller-recovery-infrastructure.test.mjs tests/phase7-controller-request-limits.test.mjs tests/phase8-controller-reset.test.mjs tests/phase8-controller-reset-infrastructure.test.mjs
           node --test tests/phase9-controller-capacity.test.mjs
           node --test tests/phase10-controller-surge.test.mjs tests/phase10-controller-metrics.test.mjs tests/phase10-controller-infrastructure.test.mjs
+          node --test tests/phase-riv2026-domains-bootstrap-policy.test.mjs
           node --test tests/phase11-controller-credential-rotation.test.mjs
           node --test --test-name-pattern="^controller evidence" tests/phase3-inventory-denial-infrastructure.test.mjs
           node --test tests/phase4-agent-controller.test.mjs
