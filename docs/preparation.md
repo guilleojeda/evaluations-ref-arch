@@ -67,10 +67,16 @@ before preparing another full session.
 - [ ] Verify `faulty` remains pinned and `repaired` has an exact-package
   qualification. Reuse intact publications; qualify a missing or rebuilt
   publication normally.
-- [ ] In the hosted controller, after the baseline is healthy, actions are
-  settled and the alarm is freshly **OK**, select exactly **Faulty** or
-  **Repaired** and submit it. Verify the strong readback; selection sends no
-  traffic or inference and never falls back automatically.
+- [ ] In the hosted controller's **Incident** tab, after the baseline is healthy,
+  actions are settled and the alarm is freshly **OK**, choose **Faulty**
+  or **Repaired** under **Agent** and click **Apply agent**. Use **Check readiness**, **Activate Inventory
+  denial**, **Inventory memory**, **Select memory**, **Restore Inventory access**
+  and **Recover** on Incident. Find **Recommendation**, **Open native
+  CloudWatch trace** and **View full report** under **Current investigation**.
+  If the alarm has cleared, expand **Last investigation** and check its transition time. Use **Traffic** for
+  healthy traffic, surge and capacity, and **History** for **Reset demo** and
+  previous runs. Verify the strong readback; selection sends no traffic or
+  inference and never falls back automatically.
 - [ ] Verify tracing, complete-session telemetry, sanitized source capture,
   captured providers, evaluation permissions and reference times. Missing
   evidence remains visible.
@@ -477,12 +483,15 @@ fallback labeled with its input and execution identity:
 - [ ] Rehearse selecting repaired with endpoint/version/artifact readback, then
   a new incident after native alarm **OK**. Match the new event/run; do not
   relabel an old report or clear deduplication records.
-- [ ] Reopen the controller from a replacement authenticated browser and read
-  the same selected tuple and prior investigation identities. Interrupt one
+- [ ] Reopen the controller from a replacement authenticated browser. Start on
+  **Incident**, read the same selected tuple and prior investigation identities,
+  and use **View full report** when detailed evidence is needed. Interrupt one
   later state/alarm refresh during rehearsal: confirm the UI marks the last
   successful selection stale/unavailable, preserves its earlier observation
   time, and leaves the candidate unchanged until explicit selection succeeds.
-- [ ] For the capacity rehearsal, use the approved finite profile and compare
+- [ ] For the capacity rehearsal, use the **Traffic** tab and its **Inventory
+  surge**, **Stop traffic**, healthy traffic and capacity controls. Use the
+  approved finite profile and compare
   actual starts, skips, native arrivals, caller outcomes, metric windows and
   checkout effects. Preserve app code, memory, aliases, access, productVersion
   and prior data across the pair. Use the [capacity cue](demo-script.md#phase-10-capacity-overload-and-separate-remedy-observation)
@@ -744,11 +753,13 @@ the private archive, version receipts and credentials off the public repo.
 ### Final live readiness
 
 Before a full performance, stop and drain producers, reconcile unresolved
-checkout identities, close old checkout pages, and verify the current app and
-controller release. Confirm the fresh native alarm is **OK**, the intended
+checkout identities on the **Storefront**, close old checkout pages, and verify
+the current app and controller release. Confirm the fresh native alarm is
+**OK**, the intended
 candidate tuple is read back, and no action can still submit traffic. Use the
-controller's normal Reset once with a fresh `productVersion` only for a whole-
-talk restart after prior work is settled; captured-only direct entry does not
+controller's **History** tab and use **Reset demo** once with a fresh
+`productVersion` only for a whole-talk restart after prior work is settled;
+captured-only direct entry does not
 need a business reset. Keep traffic stopped until the scripted start.
 
 Record account/region, app/controller URLs, current source and manifest,

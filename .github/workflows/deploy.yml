@@ -239,6 +239,8 @@ jobs:
         run: npm run check -- ${{ matrix.component }}
       - name: Verify component routing
         run: node --test tests/phase0-routing.test.mjs tests/phase12-demo-deploy-routing.test.mjs
+      - name: Check presenter interface copy
+        run: node --test tests/presenter-ui-copy.test.mjs
       - name: Run app release acceptance checks
         if: matrix.component == 'app'
         run: |

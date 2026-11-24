@@ -1,4 +1,4 @@
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useMemo, useState } from "react";
 
 const PENDING_STORAGE_KEY = "incident-triage.pending-checkout.v1";
 const HISTORY_LIMIT = 12;
@@ -60,6 +60,7 @@ type RequestHistoryEntry = {
   id: string;
   method: string;
   path: string;
+  checkoutId?: string;
   startedAt: string;
   durationMs: number;
   outcome: string;
@@ -182,9 +183,15 @@ function formatDuration(value: number): string {
   return `${value.toLocaleString()} ms`;
 }
 
+function displayCopy(value: string): string {
+  return value
+    .replace(/\u00b7/g, " - ")
+    .replace(/\p{Dash}/gu, "-");
+}
+
 function errorText(body: unknown, fallback: string): string {
-  if (isRecord(body) && typeof body.message === "string" && body.message.trim()) return body.message;
-  return fallback;
+  if (isRecord(body) && typeof body.message === "string" && body.message.trim()) return displayCopy(body.message);
+  return displayCopy(fallback);
 }
 
 function responseCode(body: unknown): string | undefined {
@@ -246,10 +253,11 @@ function App() {
           id: historyId,
           method,
           path,
+          checkoutId: body?.checkoutId,
           startedAt,
           durationMs: Math.max(0, Math.round(performance.now() - started)),
           tone: response.ok ? "success" : status >= 500 ? "error" : "warning",
-          outcome: response.ok ? "success" : `${status}${code ? ` · ${code}` : " · request failed"}`,
+          outcome: response.ok ? "success" : `${status}${code ? ` - ${displayCopy(code)}` : " - request failed"}`,
           requestId,
         });
         return { status, body: parsed as T, requestId };
@@ -259,6 +267,7 @@ function App() {
           id: historyId,
           method,
           path,
+          checkoutId: body?.checkoutId,
           startedAt,
           durationMs: Math.max(0, Math.round(performance.now() - started)),
           tone: "warning",
@@ -276,6 +285,7 @@ function App() {
     setCredential(null);
     setCredentialInput("");
     setProduct(null);
+    setReceipt(null);
     setCatalogReady(false);
     setObservedAt(undefined);
     setCatalogError(null);
@@ -289,13 +299,14 @@ function App() {
     (body: CatalogResponse) => {
       const nextProduct = body.products?.length === 1 && isProduct(body.products[0]) ? body.products[0] : null;
       if (!nextProduct) {
-        setCatalogError("The catalog response was incomplete. Try again.");
+        setCatalogError("Catalog unavailable. Refresh to try again.");
         return false;
       }
       if (pending && pending.productVersion !== nextProduct.productVersion) {
         clearPendingCheckout();
         setPending(null);
-        setPendingMessage("The catalog changed. The older checkout attempt was cleared; choose a new quantity.");
+        setCheckoutMessage("New catalog version. Choose a quantity for a new checkout.");
+        setCheckoutMessageTone("success");
       }
       setProduct(nextProduct);
       setCatalogReady(true);
@@ -313,7 +324,7 @@ function App() {
       const result = await callApi<CatalogResponse>("GET", "/api/products", activeCredential);
       setBusy(null);
       if (result.networkError) {
-        const message = reason === "after-order" ? "Order confirmed, but the stock refresh could not be completed." : "The catalog could not be loaded.";
+        const message = reason === "after-order" ? "Order confirmed. Stock refresh failed. Refresh stock to try again." : "Catalog unavailable. Refresh to try again.";
         if (reason === "after-order") setStockRefreshError(message);
         else {
           setCatalogReady(false);
@@ -325,16 +336,16 @@ function App() {
         if (reason === "after-order") {
           setCatalogReady(false);
           setProduct(null);
-          setCatalogError("Catalog access expired. Sign in again to refresh stock.");
-          setStockRefreshError("Order confirmed, but the stock refresh was not authorized.");
+          setCatalogError("Catalog access expired. Sign in again.");
+          setStockRefreshError("Order confirmed. Stock refresh was not authorized. Sign in again.");
           return false;
         }
         signOut();
-        setAuthError("That credential was not accepted.");
+        setAuthError("Credential not accepted.");
         return false;
       }
       if (result.status !== 200 || !applyCatalog(result.body)) {
-        const message = errorText(result.body, "The catalog could not be loaded.");
+        const message = errorText(result.body, "Catalog unavailable. Refresh to try again.");
         if (reason === "after-order") setStockRefreshError(`Order confirmed, but ${message.toLowerCase()}`);
         else {
           setCatalogReady(false);
@@ -355,23 +366,23 @@ function App() {
       return;
     }
     setAuthError(null);
+    if (pending) setPendingMessage(null);
     setCredential(nextCredential);
     await refreshCatalog(nextCredential, "login");
   };
 
   const settleReceipt = useCallback(
-    async (body: OrderResponse, status: number, activeCredential: string, source: "checkout" | "status" | "retry") => {
+    async (body: OrderResponse, activeCredential: string) => {
       if (!body.order || !isOrder(body.order)) {
-        setCheckoutMessage("The server did not return a complete receipt. Keep the attempt pending and look up its status.");
         setCheckoutMessageTone("error");
-        setPendingMessage("The result could not be confirmed. The original checkout remains unresolved.");
+        setPendingMessage("Receipt unavailable. Check status.");
         return;
       }
       setReceipt(body.order);
       clearPendingCheckout();
       setPending(null);
       setPendingMessage(null);
-      setCheckoutMessage(source === "checkout" && status === 201 ? "Order confirmed." : "Saved order confirmed; no second stock decrement was made.");
+      setCheckoutMessage(null);
       setCheckoutMessageTone("success");
       await refreshCatalog(activeCredential, "after-order");
     },
@@ -380,7 +391,7 @@ function App() {
 
   const placeOrder = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!credential || !product || pending || busy) return;
+    if (!credential || !product || !catalogReady || product.availableQuantity < quantity || pending || busy) return;
     const payload: CheckoutPayload = {
       checkoutId: newCheckoutId(),
       sku: product.sku,
@@ -389,32 +400,33 @@ function App() {
     };
     const pendingPayload: PendingCheckout = { ...payload, startedAt: new Date().toISOString() };
     if (!savePendingCheckout(pendingPayload)) {
-      setCheckoutMessage("This browser could not save the checkout safely, so no order was submitted. Check that session storage is available and try again.");
+      setCheckoutMessage("Checkout not saved. No order sent. Enable session storage and try again.");
       setCheckoutMessageTone("error");
       return;
     }
     setCheckoutMessageTone("success");
+    setReceipt(null);
     setPending(pendingPayload);
-    setPendingMessage("This checkout is being reconciled. Keep this page open if the response is delayed.");
+    setPendingMessage(null);
     setCheckoutMessage(null);
     setBusy("checkout");
     const result = await callApi<OrderResponse>("POST", "/api/checkout", credential, payload);
     setBusy(null);
     if (result.networkError) {
-      setPendingMessage("The response was not received. The order may have committed; look up its status or retry the same ID.");
+      setPendingMessage("No response. Check status or retry the same ID.");
       return;
     }
     if (result.status === 200 || result.status === 201) {
-      await settleReceipt(result.body, result.status, credential, "checkout");
+      await settleReceipt(result.body, credential);
       return;
     }
     if (result.status === 401) {
-      setPendingMessage("The credential expired before this result was confirmed. Sign in again to reconcile it.");
+      setPendingMessage("Credential expired. Sign in again to reconcile.");
       signOut();
       return;
     }
     if (result.status >= 500 || result.status === 404) {
-      setPendingMessage(`The checkout remains unresolved (${responseCode(result.body) ?? "service failure"}). Look up its status or retry the same ID.`);
+      setPendingMessage(null);
       return;
     }
     clearPendingCheckout();
@@ -430,23 +442,23 @@ function App() {
     const result = await callApi<OrderResponse>("GET", `/api/orders/${encodeURIComponent(pending.checkoutId)}`, credential);
     setBusy(null);
     if (result.networkError) {
-      setPendingMessage("Status could not be read. The original checkout remains unresolved.");
+      setPendingMessage("Status unavailable. Check again.");
       return;
     }
     if (result.status === 200) {
-      await settleReceipt(result.body, result.status, credential, "status");
+      await settleReceipt(result.body, credential);
       return;
     }
     if (result.status === 401) {
-      setPendingMessage("Sign in again to reconcile this checkout.");
+      setPendingMessage("Sign in again to reconcile.");
       signOut();
       return;
     }
     if (result.status === 404) {
-      setPendingMessage("No order is visible yet. The earlier attempt remains uncertain; retry with the same ID when ready.");
+      setPendingMessage("No order found for this checkout yet.");
       return;
     }
-    setPendingMessage(`Status is still unresolved (${responseCode(result.body) ?? "service failure"}). Retry the status lookup or the same checkout.`);
+    setPendingMessage(`Status unresolved (${displayCopy(responseCode(result.body) ?? "service failure")}). Retry status or the same ID.`);
   };
 
   const retryOrder = async () => {
@@ -455,19 +467,19 @@ function App() {
     const result = await callApi<OrderResponse>("POST", "/api/checkout", credential, wirePayload(pending));
     setBusy(null);
     if (result.networkError) {
-      setPendingMessage("The retry response was not received. The same checkout ID remains unresolved.");
+      setPendingMessage("Retry had no response. Check status.");
       return;
     }
     if (result.status === 200 || result.status === 201) {
-      await settleReceipt(result.body, result.status, credential, "retry");
+      await settleReceipt(result.body, credential);
       return;
     }
     if (result.status === 401) {
-      setPendingMessage("Sign in again to retry this checkout.");
+      setPendingMessage("Sign in again to retry.");
       signOut();
       return;
     }
-    setPendingMessage(`The retry did not settle the earlier attempt (${responseCode(result.body) ?? "request rejected"}). Keep it pending until status or a confirmed receipt resolves it.`);
+    setPendingMessage(result.status >= 500 || result.status === 404 ? null : `Retry unresolved (${displayCopy(responseCode(result.body) ?? "request rejected")}). Check status before retrying.`);
   };
 
   const refresh = async () => {
@@ -475,22 +487,22 @@ function App() {
     await refreshCatalog(credential, "refresh");
   };
 
-  useEffect(() => {
-    if (!credential && pending) setPendingMessage("A saved checkout is waiting for reconciliation. Sign in to look up its status.");
-  }, [credential, pending]);
-
   const total = useMemo(() => (product ? product.unitPriceCents * quantity : 0), [product, quantity]);
+  const failedCheckout = useMemo(
+    () => pending ? history.find((entry) => entry.method === "POST" && entry.path === "/api/checkout" && entry.checkoutId === pending.checkoutId && entry.tone !== "success") : undefined,
+    [history, pending],
+  );
   const isAuthenticated = credential !== null;
   const isCheckoutBusy = busy === "checkout";
   const isStockRefreshBusy = busy === "stock-refresh";
+  const orderReady = product !== null && catalogReady && product.availableQuantity >= quantity && busy === null && pending === null;
+  const orderStatus = orderReady ? "Ready" : product && catalogReady && product.availableQuantity < quantity ? "Insufficient stock" : "Unavailable";
 
   return (
     <main className="page-shell">
       <header className="page-header">
         <div>
-          <p className="eyebrow">Incident triage demo</p>
-          <h1>Authenticated checkout</h1>
-          <p className="lede">Place one durable order and keep its outcome visible, even when a response or stock refresh is uncertain.</p>
+          <h1>Storefront</h1>
         </div>
         {isAuthenticated && <button className="button button-secondary" type="button" onClick={signOut} disabled={busy !== null}>Sign out</button>}
       </header>
@@ -498,53 +510,44 @@ function App() {
       {!isAuthenticated ? (
         <section className="card auth-card" aria-labelledby="sign-in-heading">
           <div className="section-heading">
-            <div><p className="eyebrow">Presenter access</p><h2 id="sign-in-heading">Sign in to view the catalog</h2></div>
-            <span className="status-dot status-dot-neutral">Signed out</span>
+            <h2 id="sign-in-heading">Sign in</h2>
           </div>
-          <p className="muted">Your credential stays in page memory and is never written to browser storage.</p>
           <form className="auth-form" onSubmit={onSignIn}>
             <label htmlFor="credential">Presenter credential</label>
             <div className="inline-form">
               <input id="credential" name="credential" type="password" autoComplete="current-password" value={credentialInput} onChange={(event) => setCredentialInput(event.target.value)} placeholder="Enter credential" />
-              <button className="button button-primary" type="submit" disabled={busy === "catalog"}>{busy === "catalog" ? "Loading…" : "Sign in"}</button>
+              <button className="button button-primary" type="submit" disabled={busy === "catalog"}>{busy === "catalog" ? "Loading" : "Sign in"}</button>
             </div>
           </form>
           {authError && <p className="callout callout-error" role="alert">{authError}</p>}
-          {pending && <p className="callout callout-warning">{pendingMessage ?? "A saved checkout is waiting for reconciliation."}</p>}
+          {pending && <p className="callout callout-warning" role="status">Sign in to check your saved checkout.</p>}
         </section>
       ) : (
         <>
-          <section className="card product-card" aria-labelledby="catalog-heading">
-            <div className="section-heading">
-              <div><p className="eyebrow">Catalog</p><h2 id="catalog-heading">Current product</h2></div>
-              <span className={`status-dot ${catalogReady ? "status-dot-success" : "status-dot-warning"}`}>{catalogReady ? "Authenticated" : "Catalog unavailable"}</span>
-            </div>
+          <section className="card purchase-card" aria-labelledby="checkout-heading">
+            <div className="section-heading"><h2 id="checkout-heading">{product ? displayCopy(product.name) : "Storefront"}</h2>{!pending && <span className={`status-dot ${orderReady ? "status-dot-neutral" : "status-dot-warning"}`}>{orderStatus}</span>}</div>
             {product ? (
               <div className="product-layout">
-                <div><h3>{product.name}</h3><p className="sku">SKU {product.sku}</p><p className="price">{formatMoney(product.unitPriceCents, product.currency)} <span>per unit</span></p></div>
-                <dl className="stats"><div><dt>Available stock</dt><dd>{product.availableQuantity.toLocaleString()}</dd></div><div><dt>Last refreshed</dt><dd>{formatTime(observedAt)}</dd></div></dl>
+                <div><p className="sku">SKU <code>{product.sku}</code></p><p className="price">{formatMoney(product.unitPriceCents, product.currency)} <span>per unit</span></p></div>
+                <dl className="stats"><div><dt>Stock</dt><dd>{product.availableQuantity.toLocaleString()}</dd></div><div><dt>Updated</dt><dd>{formatTime(observedAt)}</dd></div></dl>
               </div>
-            ) : <div className="empty-state"><p>Catalog unavailable.</p><p className="muted">Refresh when the service is ready.</p></div>}
-            <div className="card-actions"><button className="button button-secondary" type="button" onClick={refresh} disabled={busy !== null}>{busy === "catalog" || isStockRefreshBusy ? "Refreshing stock…" : "Refresh stock"}</button>{catalogError && <span className="inline-error" role="alert">{catalogError}</span>}</div>
-            {stockRefreshError && <p className="callout callout-warning" role="status">{stockRefreshError} The confirmed receipt below is unchanged.</p>}
-          </section>
-
-          <section className="card checkout-card" aria-labelledby="checkout-heading">
-            <div className="section-heading"><div><p className="eyebrow">Checkout</p><h2 id="checkout-heading">Choose a quantity</h2></div>{pending ? <span className="status-dot status-dot-warning">Unresolved</span> : <span className="status-dot status-dot-neutral">Ready</span>}</div>
+            ) : <div className="empty-state"><p>Catalog unavailable.</p><p className="muted">Refresh stock to try again.</p></div>}
+            <div className="card-actions"><button className="button button-secondary" type="button" onClick={refresh} disabled={busy !== null}>{busy === "catalog" || isStockRefreshBusy ? "Refreshing stock" : "Refresh stock"}</button>{catalogError && <span className="inline-error" role="alert">{catalogError}</span>}</div>
+            {stockRefreshError && <p className="callout callout-warning" role="status">{stockRefreshError}</p>}
             <form className="checkout-form" onSubmit={placeOrder}>
               <div className="quantity-control"><label htmlFor="quantity">Quantity</label><select id="quantity" value={quantity} onChange={(event) => setQuantity(Number(event.target.value))} disabled={!product || busy !== null || Boolean(pending)}>{[1, 2, 3, 4, 5].map((value) => <option key={value} value={value}>{value} {value === 1 ? "unit" : "units"}</option>)}</select></div>
-              <div className="order-total"><span>Total</span><strong>{product ? formatMoney(total, product.currency) : "—"}</strong></div>
-              <button className="button button-primary button-large" type="submit" disabled={!product || busy !== null || Boolean(pending)}>{isStockRefreshBusy ? "Refreshing stock…" : isCheckoutBusy ? "Placing order…" : pending ? "Resolve saved checkout first" : "Place order"}</button>
+              <div className="order-total"><span>Total</span><strong>{product ? formatMoney(total, product.currency) : "-"}</strong></div>
+              <button className="button button-primary button-large" type="submit" disabled={!orderReady}>{isStockRefreshBusy ? "Refreshing stock" : isCheckoutBusy ? "Placing order" : "Place order"}</button>
             </form>
+            {product && catalogReady && product.availableQuantity < quantity && !pending && <p className="callout callout-warning" role="alert">Not enough stock. Choose a smaller quantity.</p>}
             {checkoutMessage && <p className={`callout callout-${checkoutMessageTone}`} role={checkoutMessageTone === "error" ? "alert" : "status"}>{checkoutMessage}</p>}
-            {pending && <div className="pending-panel" role="status"><div><p className="eyebrow">Saved attempt</p><h3>Checkout response needs reconciliation</h3><p className="muted">ID <code>{pending.checkoutId}</code> · {pending.quantity} {pending.quantity === 1 ? "unit" : "units"} · Started <time dateTime={pending.startedAt}>{formatTime(pending.startedAt)}</time></p><p>{pendingMessage ?? "The original request may have committed. Check its durable status before starting another order."}</p></div><div className="pending-actions"><button className="button button-secondary" type="button" onClick={lookupStatus} disabled={busy !== null}>{busy === "status" ? "Looking up…" : "Look up status"}</button><button className="button button-primary" type="button" onClick={retryOrder} disabled={busy !== null}>{busy === "retry" ? "Retrying…" : "Retry same checkout"}</button></div></div>}
+            {pending && <div className="pending-panel" role="status"><div><h3>Order not confirmed</h3><details className="pending-details"><summary>Attempt details</summary><div className="pending-meta"><span>ID <code>{pending.checkoutId}</code></span><span>{pending.quantity} {pending.quantity === 1 ? "unit" : "units"}</span><span>Started <time dateTime={pending.startedAt}>{formatTime(pending.startedAt)}</time></span></div></details>{pendingMessage && <p>{pendingMessage}</p>}{failedCheckout && <div className="pending-evidence"><span><code>{failedCheckout.method} {failedCheckout.path}</code></span><span className={failedCheckout.tone === "error" ? "table-error" : "table-warning"}>{displayCopy(failedCheckout.outcome)}</span>{failedCheckout.requestId && <span>Server ID <code>{failedCheckout.requestId}</code></span>}</div>}</div><div className="pending-actions"><button className="button button-secondary" type="button" onClick={lookupStatus} disabled={busy !== null}>{busy === "status" ? "Looking up" : "Look up status"}</button><button className="button button-primary" type="button" onClick={retryOrder} disabled={busy !== null}>{busy === "retry" ? "Retrying" : "Retry same checkout"}</button></div></div>}
           </section>
 
-          {receipt && <section className="card receipt-card" aria-labelledby="receipt-heading"><div className="section-heading"><div><p className="eyebrow">Confirmed receipt</p><h2 id="receipt-heading">Order placed</h2></div><span className="status-dot status-dot-success">Saved</span></div><dl className="receipt-grid"><div><dt>Checkout ID</dt><dd><code>{receipt.checkoutId}</code></dd></div><div><dt>Quantity</dt><dd>{receipt.quantity}</dd></div><div><dt>Total</dt><dd>{formatMoney(receipt.totalPriceCents, receipt.currency)}</dd></div><div><dt>Created</dt><dd>{formatTime(receipt.createdAt)}</dd></div></dl><p className="muted">This receipt is durable. A later stock refresh failure does not undo the order.</p></section>}
+          {receipt && <section className="card receipt-card" aria-labelledby="receipt-heading"><div className="section-heading"><h2 id="receipt-heading">Order placed</h2></div><dl className="receipt-grid"><div><dt>Checkout ID</dt><dd><code>{receipt.checkoutId}</code></dd></div><div><dt>Quantity</dt><dd>{receipt.quantity}</dd></div><div><dt>Total</dt><dd>{formatMoney(receipt.totalPriceCents, receipt.currency)}</dd></div><div><dt>Created</dt><dd>{formatTime(receipt.createdAt)}</dd></div></dl></section>}
 
-          <section className="card history-card" aria-labelledby="history-heading">
-            <div className="section-heading"><div><p className="eyebrow">Request evidence</p><h2 id="history-heading">Recent page requests</h2></div><span className="history-count">{history.length} / {HISTORY_LIMIT}</span></div>
-            {history.length === 0 ? <p className="muted">Requests from this page will appear here with timing and server correlation IDs.</p> : <div className="history-table-wrap"><table><thead><tr><th scope="col">Started</th><th scope="col">Request</th><th scope="col">Outcome</th><th scope="col">Duration</th><th scope="col">Server ID</th></tr></thead><tbody>{history.map((entry) => <tr key={entry.id}><td>{formatTime(entry.startedAt)}</td><td><code>{entry.method} {entry.path}</code></td><td><span className={`table-${entry.tone}`}>{entry.outcome}</span></td><td>{formatDuration(entry.durationMs)}</td><td>{entry.requestId ? <code>{entry.requestId}</code> : <span className="muted">—</span>}</td></tr>)}</tbody></table></div>}
+          <section className="card history-card" aria-label="Request history">
+            <details className="history-details"><summary>Request history ({history.length})</summary>{history.length === 0 ? <p className="muted">No requests yet.</p> : <div className="history-table-wrap"><table><thead><tr><th scope="col">Started</th><th scope="col">Request</th><th scope="col">Outcome</th><th scope="col">Duration</th><th scope="col">Server ID</th></tr></thead><tbody>{history.map((entry) => <tr key={entry.id}><td>{formatTime(entry.startedAt)}</td><td><code>{entry.method} {entry.path}</code></td><td><span className={`table-${entry.tone}`}>{displayCopy(entry.outcome)}</span></td><td>{formatDuration(entry.durationMs)}</td><td>{entry.requestId ? <code>{entry.requestId}</code> : <span className="muted">-</span>}</td></tr>)}</tbody></table></div>}</details>
           </section>
         </>
       )}
