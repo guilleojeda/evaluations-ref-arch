@@ -55,10 +55,16 @@ test('Riv2026 app bootstrap grants stay on the storefront certificate and delega
     'aws:RequestTag/Project': 'IncidentTriageDemo',
     'aws:RequestTag/Component': 'app',
   });
-  assert.deepEqual(statement(statements, 'ReadAppCustomDomainCertificateTags').Resource, certificateArn);
+  const readCertificate = statement(statements, 'ReadAppCustomDomainCertificateTags');
+  assert.deepEqual(readCertificate.Resource, certificateArn);
+  assert.deepEqual(actions(readCertificate), new Set([
+    'acm:DescribeCertificate',
+    'acm:ListTagsForCertificate',
+  ]));
+  assert.equal(readCertificate.Condition, undefined, 'certificate metadata reads must work before ownership tags exist');
   const certificate = statement(statements, 'ManageAppCustomDomainCertificate');
   assert.deepEqual(certificate.Resource, certificateArn);
-  assert.deepEqual(actions(certificate), new Set(['acm:DeleteCertificate', 'acm:DescribeCertificate']));
+  assert.deepEqual(actions(certificate), new Set(['acm:DeleteCertificate']));
   assert.deepEqual(certificate.Condition.StringEquals, {
     'aws:ResourceTag/Project': 'IncidentTriageDemo',
     'aws:ResourceTag/Component': 'app',
@@ -122,13 +128,20 @@ test('Riv2026 controller bootstrap grants map only its API custom domain', () =>
     'aws:RequestTag/Project': 'IncidentTriageDemo',
     'aws:RequestTag/Component': 'controller',
   });
-  assert.deepEqual(statement(statements, 'ReadControllerCustomDomainCertificateTags').Resource, certificateArn);
+  const readCertificate = statement(statements, 'ReadControllerCustomDomainCertificateTags');
+  assert.deepEqual(readCertificate.Resource, certificateArn);
+  assert.deepEqual(actions(readCertificate), new Set([
+    'acm:DescribeCertificate',
+    'acm:ListTagsForCertificate',
+  ]));
+  assert.equal(readCertificate.Condition, undefined, 'certificate metadata reads must work before ownership tags exist');
   const certificate = statement(statements, 'ManageControllerCustomDomainCertificate');
   assert.deepEqual(certificate.Condition.StringEquals, {
     'aws:ResourceTag/Project': 'IncidentTriageDemo',
     'aws:ResourceTag/Component': 'controller',
   });
   assert.deepEqual(certificate.Resource, certificateArn);
+  assert.deepEqual(actions(certificate), new Set(['acm:DeleteCertificate']));
 
   const readZone = statement(statements, 'ReadControllerCustomDomainZone');
   assert.deepEqual(readZone.Resource, zoneArn);
