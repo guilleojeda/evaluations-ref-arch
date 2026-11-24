@@ -63,6 +63,7 @@ type RequestHistoryEntry = {
   startedAt: string;
   durationMs: number;
   outcome: string;
+  tone: "success" | "warning" | "error";
   requestId?: string;
 };
 
@@ -247,6 +248,7 @@ function App() {
           path,
           startedAt,
           durationMs: Math.max(0, Math.round(performance.now() - started)),
+          tone: response.ok ? "success" : status >= 500 ? "error" : "warning",
           outcome: response.ok ? "success" : `${status}${code ? ` · ${code}` : " · request failed"}`,
           requestId,
         });
@@ -259,6 +261,7 @@ function App() {
           path,
           startedAt,
           durationMs: Math.max(0, Math.round(performance.now() - started)),
+          tone: "warning",
           outcome: reason,
         });
         return { status, body: {} as T, networkError: reason };
@@ -541,7 +544,7 @@ function App() {
 
           <section className="card history-card" aria-labelledby="history-heading">
             <div className="section-heading"><div><p className="eyebrow">Request evidence</p><h2 id="history-heading">Recent page requests</h2></div><span className="history-count">{history.length} / {HISTORY_LIMIT}</span></div>
-            {history.length === 0 ? <p className="muted">Requests from this page will appear here with timing and server correlation IDs.</p> : <div className="history-table-wrap"><table><thead><tr><th scope="col">Started</th><th scope="col">Request</th><th scope="col">Outcome</th><th scope="col">Duration</th><th scope="col">Server ID</th></tr></thead><tbody>{history.map((entry) => <tr key={entry.id}><td>{formatTime(entry.startedAt)}</td><td><code>{entry.method} {entry.path}</code></td><td><span className={entry.outcome === "success" ? "table-success" : "table-warning"}>{entry.outcome}</span></td><td>{formatDuration(entry.durationMs)}</td><td>{entry.requestId ? <code>{entry.requestId}</code> : <span className="muted">—</span>}</td></tr>)}</tbody></table></div>}
+            {history.length === 0 ? <p className="muted">Requests from this page will appear here with timing and server correlation IDs.</p> : <div className="history-table-wrap"><table><thead><tr><th scope="col">Started</th><th scope="col">Request</th><th scope="col">Outcome</th><th scope="col">Duration</th><th scope="col">Server ID</th></tr></thead><tbody>{history.map((entry) => <tr key={entry.id}><td>{formatTime(entry.startedAt)}</td><td><code>{entry.method} {entry.path}</code></td><td><span className={`table-${entry.tone}`}>{entry.outcome}</span></td><td>{formatDuration(entry.durationMs)}</td><td>{entry.requestId ? <code>{entry.requestId}</code> : <span className="muted">—</span>}</td></tr>)}</tbody></table></div>}
           </section>
         </>
       )}

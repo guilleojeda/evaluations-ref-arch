@@ -1114,7 +1114,7 @@ export function App() {
   const stopTraffic = () => currentAction && void sendAction(crypto.randomUUID(), { kind: "stop", targetActionId: currentAction.id });
   const discardAction = () => { const target = currentAction?.status === "incomplete" ? currentAction : configurationAction?.status === "incomplete" ? configurationAction : undefined; if (target) void sendAction(crypto.randomUUID(), { kind: "discard", targetActionId: target.id }); };
   const retryPending = (pending: PendingCommand) => void sendAction(pending.id, pending.command);
-  const actionLabel = currentAction ? `${currentAction.kind} · ${currentAction.status}` : resetAction ? `${resetAction.kind} · ${resetAction.status}` : "No action running";
+  const actionLabel = currentAction ? `${currentAction.kind.replaceAll("_", " ")} · ${currentAction.status}` : resetAction ? `${resetAction.kind.replaceAll("_", " ")} · ${resetAction.status}` : "No action running";
   // Only this locally retained value is display-trusted. Dashboard rows can
   // carry a prior run's pointer, while the current alarm response can be HTTP
   // 200 with an unavailable or mismatched native observation.
