@@ -139,11 +139,17 @@ checks. See
 
 ## 1. Provision the scoped execution policy
 
-Run this as the verified administrator. The explicit stack name and named IAM
-capability are intentional:
+The policy template exceeds CloudFormation’s 51,200-byte inline limit. Let
+the AWS CLI upload it to the private CDK asset bucket in the talk account.
+For a first bootstrap, set `CFN_TEMPLATE_BUCKET` to a private CloudFormation
+staging bucket you own in the same account and Region before running this
+command. The CLI reuses existing stack parameter values on updates.
 
 ```sh
+CFN_TEMPLATE_BUCKET=${CFN_TEMPLATE_BUCKET:-cdk-evaltalk-assets-027224425948-us-east-1}
 aws cloudformation deploy \
+  --s3-bucket "$CFN_TEMPLATE_BUCKET" \
+  --s3-prefix incident-triage/bootstrap \
   --profile "$AWS_PROFILE" \
   --region "$AWS_REGION" \
   --stack-name IncidentTriageDemoBootstrapPolicy \
