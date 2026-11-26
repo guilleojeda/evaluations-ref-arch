@@ -1,30 +1,30 @@
 # Talk plan
 
-**Ship Reliable AI Agents with Strands Evaluation and AgentCore Evaluations** is a 60-minute Code Talk for engineers and architects building agents on AWS. The audience knows prompts, models, and tools. They need a practical way to decide whether an agent change is safe to release.
+**Ship Reliable AI Agents with Strands Evaluation and AgentCore Evaluations** is a 60-minute Code Talk for engineers and architects building agents on AWS. Assume the room knows prompts, models, and tools. Give them a practical way to decide whether an agent change is safe to release.
 
-The [attendee guide](attendee-guide.md) is the canonical public denial-to-CI account. This plan owns the narrative and timing; [demo progression](demo-progression.md) owns the capability checkpoints, [demo script](demo-script.md) owns presenter actions, and [slides plan](slides-plan.md) owns the slide storyboard.
+The [demo cue sheet](demo-script.md) has the commands and screen changes. Use the [slides plan](slides-plan.md) for slide numbers and [demo progression](demo-progression.md) for the code at each stage. Give attendees the [guide to the incident and the rejected push](attendee-guide.md).
 
 ## Audience and intended outcome
 
-Attendees should leave able to:
+Show the room how to:
 
 1. Turn an observed failure into a reviewed, repeatable case.
 2. Check actions and evidence separately from prose quality.
 3. Use a release gate that protects a known-good candidate when a later prompt change regresses.
 
-The active v5 rehearsal uses one calibrated native AgentCore semantic judge with US Opus 5.5 for advisory feedback. The judge returns one semantic verdict with a reason. Older model results are historical. They are not relabeled or used as current release evidence. S5 uses deterministic requirements and human semantic review against the exact package being proposed.
+Opus 5.5 supplies the AgentCore judge’s verdict and reason. In S5, code checks the proposed remedy and a reviewer decides whether to publish the package.
 
 ## Incident story
 
-The opening incident is a real Inventory access denial. The faulty candidate recommends increasing Inventory memory. The presenter applies that action independently, then submits one fresh checkout from the already-open signed-in storefront. The memory readback succeeds, but the denied role and exact-table Deny remain, so the checkout fails before an order or stock write. This separates a configuration result from an application result.
+Open with the Inventory access denial. The faulty agent recommends more memory. Apply the increase, then try one checkout from the storefront that’s already open. Show the dashboard reading 512 MB and checkout still returning 502. The role still lacks permission to read the table. No order was created and no stock was deducted.
 
-After the failed checkout, ask once: **"Did the agent miss the clue, or did it see the clue and still recommend the wrong fix?"** Start Recover privately and open the matched original trace. Do not add a mandatory constructor tour. The trace and preserved source evidence become the basis for a reviewed case.
+After the failed checkout, ask once: **"Did the agent miss the clue, or did it see the clue and still recommend the wrong fix?"** Start Recover privately and open the matched original trace. Use the trace and preserved source evidence as the basis for a reviewed case.
 
-The case expectation is **Restore inventory access** by selecting the healthy role-backed Inventory version at the current memory. A capacity case remains useful as the second mechanism: observed Inventory throttling supports a higher Inventory cap. The live flow shows a new access-denied incident after the repaired endpoint is selected and the alarm is confirmed OK. The recovered/stale-alert condition is a temporal control case, not a third injected incident.
+Ask what the agent should have recommended. For this case, **Restore inventory access** means selecting the healthy Inventory version at the same memory. Later, contrast it with throttling, where raising the cap can help. For the live repair, select the repaired agent, wait for alarm OK and trigger a fresh denial. The recovered case uses an earlier alert after the service is healthy.
 
 ## Code transformation
 
-The six checkpoints add evaluation capability around a mostly stable agent. They do not imply that a result is complete merely because the next checkpoint is open.
+Each checkpoint adds a way to test the same agent. If you skip to a later checkpoint, tell the audience which result came from the live edit and which came from a saved run.
 
 | Stage | What changes | What stays fixed |
 | --- | --- | --- |
@@ -35,7 +35,7 @@ The six checkpoints add evaluation capability around a mostly stable agent. They
 | S4 - Developer experiment | Run the repaired development candidate through the native Strands experiment and compare cases. | Reviewed case meaning and the single advisory judge. |
 | S5 - Release gate | Bind deterministic requirements and human semantic review to the exact candidate package before publication. | The qualified repaired serving package remains in place until replacement passes. |
 
-The S3/S4 development edit is intentionally separate from the exact v5 package qualified for serving and used for the repaired live incident. The participant's S5 prompt-only regression is another candidate. It is pushed to `demo-deploy` by 35:00 while S4 continues, and the current gate callback is shown at 50:00. There is no S6.
+S3 and S4 test the edit the audience saw. The repaired endpoint runs a version qualified before the talk. While S4 runs, have the participant push the S5 regression to `demo-deploy` by 35:00. Show that commit’s gate result at 50:00.
 
 ## Run of show
 
@@ -45,7 +45,7 @@ The S3/S4 development edit is intentionally separate from the exact v5 package q
 | 5-11 | S0 | Introduce the store, show the genuine alarm and faulty report, apply the memory recommendation, and make the one failed checkout. |
 | 11-15 | S0 | Show the failed request and Server ID, ask the diagnostic question, Recover privately, and open the matched original trace. |
 | 15-18 | S0 | Inspect the trace and source evidence. An optional Logs or configuration choice changes only the viewing order. |
-| 18-23 | S1 | Review one complete case with the audience. Keep the accepted access-restoration expectation visible. |
+| 18-23 | S1 | Review one complete case. Keep the accepted access-restoration expectation visible. |
 | 23-28 | S2 | Introduce the deterministic action/target check and one advisory diagnosis check. Ask the single vote, show the actual action and judge verdict once, then show one clock-calibration pair. |
 | 28-29 | S3 | Make the short prompt-only development edit and start the fresh candidate. |
 | 29-35 | S4 and S5 | Start authenticated S4 as soon as the S3 source is ready, aiming for 30:00. Hand the participant the S5 terminal immediately. The participant edits, predicts, commits, and pushes by 35:00. |
@@ -58,7 +58,7 @@ The S3/S4 development edit is intentionally separate from the exact v5 package q
 | 54-55 | S5 | Deliver the closing. |
 | 55-60 | S5 | Questions and buffer. |
 
-The timeline is a handoff schedule, not a prerequisite chain. A late operation stays pending; a matching recorded result may fill the screen without being presented as a fresh execution.
+Treat the timeline as a handoff schedule, not a prerequisite chain. A late operation stays pending. A matching recorded result may fill the screen, but label it as recorded rather than a fresh execution.
 
 ## Audience participation
 
@@ -68,27 +68,27 @@ Use three bounded interactions:
 - Vote once on whether the logs support the diagnosis in S2.
 - Have the prepared participant type only the prompt regression in S5, predict the gate result, and push it by 35:00.
 
-The vote is discussion, not a calibration label or release authority. Audience wording is normalized into the reviewed case; it is not inserted into the agent prompt or judge instructions. The participant's push is independent of S4 and does not wait for its result.
+The vote is discussion, not a calibration label or release authority. Normalize audience wording into the reviewed case. Do not insert it into the agent prompt or judge instructions. The participant's push is independent of S4 and does not wait for its result.
 
 ## Browser IDE and live evals
 
-The browser IDE shows a real source edit, Source Control diff, terminal receipt, and result identity. S1 makes the case visible. S2 scores the saved session without rerunning the agent. S3 runs a fresh development candidate. S4 runs the native Strands experiment. S5 shows the participant's one-file prompt diff and the exact callback for the pushed candidate.
+In the browser IDE, show the real source edit, Source Control diff, terminal receipt, and result identity. Make the case visible in S1. Score the saved session in S2 without rerunning the agent. Run a fresh development candidate in S3 and the native Strands experiment in S4. In S5, show the participant's one-file prompt diff and the exact callback for the pushed candidate.
 
-Keep the short S3/S4 development result, the separately qualified exact serving package, the live alarm/run, and the S5 gate result as separate identities. A saved trace cannot prove that an edited candidate ran. A judge verdict cannot authorize publication. A deployment or configuration readback cannot prove application recovery.
+When the screen changes, identify the run the audience is looking at. Name the edited prompt in S4, the alarm that reached the repaired endpoint, or the commit under review in CI. For the live repair, the successful checkout is what shows the store recovered.
 
 ## Capacity scenario
 
-The capacity comparison is a separate presenter sequence, not a prompt repair. Start healthy at Inventory cap 16, run the current finite `inventory_surge` profile, stop and drain it, raise Inventory to 32, repeat the same saved profile, and Recover to 16. Compare actual starts, skipped waves, request arrivals, native throttle metrics, caller outcomes, and settled business effects. The configured profile is not delivered-demand evidence. An empty or incomplete metric series remains unknown.
+Run the capacity comparison as a separate presenter sequence, not a prompt repair. Start healthy at Inventory cap 16, run the current finite `inventory_surge` profile, stop and drain it, raise Inventory to 32, repeat the same saved profile, and Recover to 16. Compare actual starts, skipped waves, request arrivals, native throttle metrics, caller outcomes, and settled business effects. A configured profile is not delivered-demand evidence. An empty or incomplete metric series remains unknown.
 
-The [scenario contracts](demo-scenarios.md) own the detailed invariants. Keep memory, code, aliases, access, and product version unchanged across the two capacity episodes. The capacity action changes configuration only; it does not start traffic or claim recovery.
+Use the [scenario contracts](demo-scenarios.md) for the detailed invariants. Keep memory, code, aliases, access, and product version unchanged across the two capacity episodes. The capacity action changes configuration only. It does not start traffic or claim recovery.
 
 ## Reliability and recovery
 
-Before each opening or new live incident, verify the current generation, healthy baseline, settled work, and native alarm OK. Match the genuine alarm transition to its durable agent run. Recover preserves business data; Reset is the separate whole-session operation that creates a new product version after work is stopped and settled. Never reuse an interrupted reset or restore an old baseline over a newer deployment.
+Before each opening or new live incident, verify the current generation, healthy baseline, settled work, and native alarm OK. Match the genuine alarm transition to its durable agent run. Recover preserves business data. Reset is the separate whole-session operation that creates a new product version after work is stopped and settled. Never reuse an interrupted reset or restore an old baseline over a newer deployment.
 
 If a live step is late, show a matching recorded run and say so. Keep the original status and provenance visible. Never fabricate an alarm, invoke the agent manually as a substitute for the alarm path, retry the audience checkout, or call a development result a release qualification.
 
-See the [attendee guide](attendee-guide.md), [evaluation contract](evaluations.md), [preparation](preparation.md), [cleanup](cleanup.md), and [scenario contracts](demo-scenarios.md) for public maintainer and reference-run material.
+For the live sequence, use [preparation](preparation.md), [cleanup](cleanup.md) and the [incident scenarios](demo-scenarios.md). For questions about judging or CI, use the [evaluation guide](evaluations.md) and the [attendee guide](attendee-guide.md).
 
 ## Closing
 

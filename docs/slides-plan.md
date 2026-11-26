@@ -1,18 +1,18 @@
 # Slides plan
 
-Open the [14-page audience deck](slides/audience.pdf) to follow the projected slides. This outline also covers the live handoffs. It keeps the current physical slide IDs and does not add numbered chapters. The [talk plan](talk-plan.md) owns the story and timing, the [demo cue sheet](demo-script.md) owns live operation, and the [attendee guide](attendee-guide.md) owns the public denial-to-CI account.
+The [14-page audience PDF](slides/audience.pdf) contains the projected slides. The numbers below refer to the full presenter deck, including its hidden slides. See the [talk plan](talk-plan.md) for timing, the [cue sheet](demo-script.md) for commands and the [attendee guide](attendee-guide.md) for the public walkthrough.
 
-The deck has 14 projected audience slides, 22 hidden reference or backup slides, and five appendix slides. Hidden slides occupy time already assigned to a live block. They are not projected during normal playback or used as a substitute for matching live evidence.
+The deck has 14 projected audience slides, 22 hidden reference or backup slides, and five appendix slides. Hidden slides use time already assigned to a live block. Do not project them during normal playback or use them as substitutes for matching live evidence.
 
 ## What the talk should achieve
 
 The central question is: **What evidence would justify shipping this change to my agent?**
 
-Attendees should learn to define acceptable behavior from a real failure, review a repeatable case, assess action and evidence separately, repair a candidate, and stop a later regression before publication. The active v5 flow uses one calibrated native AgentCore semantic judge with US Opus 5.5 for advisory feedback. S5 uses deterministic requirements and human semantic review on the exact candidate package. Cost and historical model comparisons belong in the appendix or questions.
+Follow the access denial. Capture what the agent saw, decide which remedy would be acceptable, edit the prompt and show CI catching a later regression. In v5, the Opus 5.5 judge assesses the diagnosis and its evidence. The code checks and human review in S5 decide what ships. Keep cost and historical model comparisons for the appendix or Q&A.
 
 ## Sequence at a glance
 
-Time ranges identify the talk block. A hidden slide explains the live screen or code that occupies that block; it does not add a new block.
+Time ranges identify the talk block. A hidden slide explains the live screen or code in that block. It does not add a new block.
 
 | # | Use | Time | Stage | Title or reference |
 | --- | --- | --- | --- | --- |
@@ -66,34 +66,34 @@ Keep the title slide up for the magic box and two visibly different paper planes
 
 ### 03-12: opening incident and trace
 
-The audience sees the store, alarm, report, configuration readback and failed checkout, not a private controller setup. Keep the one checkout's POST status, error and Server ID separate from its business-state card. Slide 08 states the result: the memory change completed, but the fresh request still failed. After the diagnostic question, Recover is private and the matched original trace is the next meaningful screen. Slides 09-10 are optional backups; slide 11 is an optional question card.
+Show the store, alarm, report, configuration readback and failed checkout. Keep the private controller setup off screen. Keep the one checkout's POST status, error and Server ID separate from its business-state card. Slide 08 states the result: the memory change completed, but the fresh request still failed. After the diagnostic question, run Recover privately and move to the matched original trace. Slides 09-10 are optional backups. Slide 11 is an optional question card.
 
 ### 13-22: case, checks and current judge
 
-Slide 13 asks what acceptable behavior should do. Slide 14 shows the complete case with reference time and evidence provenance. Slide 15 introduces the deterministic action/target check and one advisory semantic check. Slide 17 asks once, "Do the logs support the diagnosis?" Slide 18 shows one clock-calibration pair: bucket-start citation fails, source-observation citation passes. Show the matching actual action and current judge verdict once, then move to the prompt edit. S2 scores the saved faulty session once and never reruns the agent.
+Use slide 13 to ask what acceptable behavior should do. Slide 14 shows the complete case with reference time and evidence provenance. Slide 15 introduces the deterministic action/target check and one advisory semantic check. Ask once on slide 17, "Do the logs support the diagnosis?" Slide 18 shows one clock-calibration pair: bucket-start citation fails, source-observation citation passes. Show the matching actual action and current judge verdict once, then move to the prompt edit. Score the saved faulty session once and never rerun the agent.
 
 ### 23-27: development edit and experiment
 
-Slide 23 introduces the short S3/S4 development edit. The fresh candidate uses the same reviewed case and current calibrated judge; results are advisory. Slide 24 shows the native Strands experiment. Slide 25 keeps the denial row first and the throttling row second. Slide 27 distinguishes those development results from the exact package that was qualified before the talk. Start S4 around 30:00, hand the S5 terminal to the participant immediately, and push by 35:00 while S4 continues.
+Use slide 23 to introduce the short S3/S4 development edit. The fresh candidate uses the same reviewed case and current calibrated judge, with advisory results. Slide 24 shows the native Strands experiment. Slide 25 keeps the denial row first and the throttling row second. Slide 27 distinguishes those development results from the exact package qualified before the talk. Start S4 around 30:00, hand the S5 terminal to the participant immediately, and push by 35:00 while S4 continues.
 
 ### 28-30: repaired serving incident and regression
 
-Slide 28 repeats the opening question for the repaired serving candidate. After the participant returns the keyboard, privately verify the qualified endpoint and fresh alarm OK, then trigger the new denial once. Slide 29 shows the new alarm/run, independent access restoration, and settled successful checkout. Slide 30 is the participant's prompt-only regression; its edit and gate are independent of S4.
+Use slide 28 to repeat the opening question for the repaired serving candidate. After the participant returns the keyboard, verify the qualified endpoint and fresh alarm OK privately, then trigger the new denial once. Slide 29 shows the new alarm/run, independent access restoration, and settled successful checkout. Slide 30 is the participant's prompt-only regression. Its edit and gate are independent of S4.
 
 ### 31-36: gate and close
 
-Slide 31 explains when CI blocks publication. Slide 32 shows the same experiment and policy in CI. Slide 33 shows the exact callback at 50:00: commit, candidate package, reviewed case, deterministic findings, human review state, and publication status. A failed deterministic requirement rejects automatically and leaves the qualified repaired package serving. Slide 34 summarizes the path, slide 35 gives the public repository and documentation entry point, and slide 36 is Thank You. Use a recorded rejection only as an exact, labeled fallback if the current callback is still pending at 53:15.
+Use slide 31 to explain when CI blocks publication. Slide 32 shows the same experiment and policy in CI. Slide 33 shows the exact callback at 50:00: commit, candidate package, reviewed case, deterministic findings, human review state, and publication status. A failed deterministic requirement rejects automatically and leaves the qualified repaired package serving. Slide 34 summarizes the path, slide 35 gives the public repository and documentation entry point, and slide 36 is Thank You. Use a recorded rejection only as an exact, labeled fallback if the current callback is still pending at 53:15.
 
 ## Appendix guidance
 
 - **A1 - Architecture:** show the alarm-to-runtime path, four read-only tools, captured-evidence regression path, and independent presenter actions. Keep live and captured sources distinct.
 - **A2 - Case:** show the reference time, evidence references, expected healthy role-backed version, unacceptable memory or concurrency actions, and deterministic and semantic checks.
-- **A3 - Judge:** explain that one calibrated judge is fixed for the current comparison. A judge or rubric change changes the measurement and requires recalibration. Historical model results stay historical.
+- **A3 - Judge:** explain that one calibrated judge is fixed for the current comparison. A judge or rubric change changes the measurement and requires recalibration.
 - **A4 - Measurement:** show only a measurement with its workload, candidate, case count, judge, region, pricing basis and included costs. Do not use stale numbers or an unmeasured duration in the normal path.
 - **A5 - Release policy:** show required behavior, incomplete-result handling, human review, and coverage limits. Passing this scoped gate does not establish general production accuracy.
 
 ## Authoring and evidence rules
 
-Live screens supply observations and code supplies mechanism. Use actual code, reports, traces, judge reasons and gate results. A conceptual diagram must be labeled conceptual. A recorded exhibit must retain its candidate, case, evidence, judge, package and run identity. A pending result stays pending.
+Label diagrams as diagrams. When showing a recording, name the case, candidate and run. Keep the evidence, judge and package references available for questions. If the live run is pending, say so before switching to the recording.
 
-The published [audience deck](slides/audience.pdf) is the audience-facing artifact. The [attendee guide](attendee-guide.md), [evaluation contract](evaluations.md), [demo scenarios](demo-scenarios.md), [preparation](preparation.md), and [cleanup](cleanup.md) are the public maintainer and reference-run entry points. Do not put private credentials, raw authentication configuration, hidden runbook links or private artifact identities in this storyboard.
+Share the [audience slides](slides/audience.pdf) and [attendee guide](attendee-guide.md). For technical questions, use the [evaluation guide](evaluations.md) and [demo scenarios](demo-scenarios.md). Keep the [preparation](preparation.md) and [cleanup](cleanup.md) commands on the private display, along with credentials and private run links.

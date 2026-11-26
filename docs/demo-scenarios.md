@@ -1,18 +1,18 @@
 # Demonstration scenario contracts
 
-The selected incidents are **inventory-access-denied** and **inventory-capacity-overload**. Both use unchanged healthy application code. **recovered-stale-alarm** is a time and evidence condition reached through recovery, not a third injected fault. The [attendee guide](attendee-guide.md) gives the public denial-to-CI story; this document keeps the scenario invariants.
+Run two incidents: **inventory-access-denied** and **inventory-capacity-overload**. Both use unchanged healthy application code. **recovered-stale-alarm** is a time and evidence condition reached through recovery, not a third injected fault. For the public denial-to-CI story, see the [attendee guide](attendee-guide.md). Keep the invariants in this file.
 
-The [application](components/application.md) owns API and business semantics. The [controller specification](components/failure-controller-behavior.md) owns actions, traffic, and records. The [operations agent](components/operations-agent.md) investigates and recommends. [Evaluations](evaluations.md) assess the candidate against reviewed expectations.
+For API and business semantics, see the [application](components/application.md). For actions, traffic, and records, see the [controller specification](components/failure-controller-behavior.md). For investigation and recommendations, see the [operations agent](components/operations-agent.md). For candidate assessment, see [evaluations](evaluations.md).
 
 ## Common contract
 
-Record the trusted deployment generation and artifact identity, healthy and denied Inventory versions, memory allocations, aliases, execution roles, exact policy state, Inventory's release-owned reserved-concurrency baseline of **16**, Checkout's unreserved setting, and the normal catalog and business baseline. The healthy and denied baseline-memory variants share checked code and non-role settings; only the execution role differs. A baseline belongs to its deployment generation and must not restore old settings over a newer or uncertain deployment.
+Record the trusted deployment generation and artifact identity, healthy and denied Inventory versions, memory allocations, aliases, execution roles, exact policy state, Inventory's release-owned reserved-concurrency baseline of **16**, Checkout's unreserved setting, and the normal catalog and business baseline. The healthy and denied baseline-memory variants share checked code and non-role settings. Only the execution role differs. Tie each baseline to its deployment generation and never restore old settings over a newer or uncertain deployment.
 
-The presenter controls activation, targeted fixes, traffic, recovery, and reset separately. The agent proposes exactly one of **Increase reserved concurrency**, **Increase memory**, **Restore inventory access**, or **Other** with a reason. The agent cannot call the controller. A targeted configuration action changes and reads back only the selected setting; it does not send application traffic or establish recovery.
+Control activation, targeted fixes, traffic, recovery, and reset separately. The agent proposes exactly one of **Increase reserved concurrency**, **Increase memory**, **Restore inventory access**, or **Other** with a reason. The agent cannot call the controller. A targeted configuration action changes and reads back only the selected setting. It does not send application traffic or establish recovery.
 
-Normal traffic is bounded and separately recorded. Checkout inputs use fresh immutable IDs, SKU, quantity, and product version. Stop prevents new submissions but does not cancel accepted work. Settle and reconcile uncertain checkouts before Reset. Never queue catch-up work or count catalog responses as orders.
+Bound and record normal traffic separately. Checkout inputs use fresh immutable IDs, SKU, quantity, and product version. Stop prevents new submissions but does not cancel accepted work. Settle and reconcile uncertain checkouts before Reset. Never queue catch-up work or count catalog responses as orders.
 
-The current `inventory_surge` profile requests 30 catalog reads every 1,000 ms for 15 seconds, at most 450 attempts and 30 in flight, with a bounded launch allowance and request timeout. It also reserves sparse quantity-one checkout probes. These are requested bounds, not delivered-demand guarantees. Use a new action ID for each phase and the same saved profile for both capacity episodes. Compare actual starts, skips, cohorts, arrivals, outcomes, native metric windows, and business effects. Empty or incomplete metric series remain unknown.
+The `inventory_surge` profile requests 30 catalog reads every 1,000 ms for 15 seconds, at most 450 attempts and 30 in flight, with a bounded launch allowance and request timeout. It also reserves sparse quantity-one checkout probes. Treat these as requested bounds, not delivered-demand guarantees. Use a new action ID for each capacity phase and the same saved profile for both episodes. Compare actual starts, skips, cohorts, arrivals, outcomes, native metric windows, and business effects. Empty or incomplete metric series remain unknown.
 
 Retain four evidence layers:
 
@@ -21,9 +21,9 @@ Retain four evidence layers:
 3. **Monitoring:** alarm ARN, originating ALARM transition, current state and reason, read times, and freshness.
 4. **Agent:** genuine alarm identity, matching run and trace, status, report, and result.
 
-An alarm or dashboard poll does not establish an invocation. A saved trace is evidence of that execution, not evidence that a later candidate ran.
+An alarm or dashboard poll does not establish an invocation. A saved trace proves that execution only. It does not prove that a later candidate ran.
 
-Both incidents use the native stage-level HTTP API 5xx alarm: Sum >= 1 over 60 seconds, 1 of 1, missing data notBreaching. It includes catalog failures and is not checkout-only. The two causes produce dependency-failure 502 responses when the Inventory lookup fails before a transaction. Keep ambiguous writes and unrelated timeouts separate.
+Use the native stage-level HTTP API 5xx alarm for both incidents: Sum >= 1 over 60 seconds, 1 of 1, missing data notBreaching. It includes catalog failures and is not checkout-only. Both causes produce dependency-failure 502 responses when the Inventory lookup fails before a transaction. Keep ambiguous writes and unrelated timeouts separate.
 
 Agent evidence may include ordinary current caps, alias/version metadata, role and relevant policy, management history, logs, and metrics. Private scenario labels, controller intent, expected answers, credentials, and raw authentication configuration are not agent inputs. Local and CI regressions use one coherent captured view for all four tools at the case reference time, with no live fallback.
 
@@ -36,13 +36,13 @@ Agent evidence may include ordinary current caps, alias/version metadata, role a
 | Current requests support recovery in the investigated scope | Other, with the scope of the no-change conclusion | Apply a remedy only because an old alarm remains ALARM |
 | Evidence cannot establish a supported action | Other, with the uncertainty and next useful investigation | Invent a cause, target, or recovery claim |
 
-The known faulty behavior is **Increase memory on Inventory for inventory-access-denied**. The corrected behavior must handle both mechanisms. A deterministic action check can reject a wrong recommendation even when its prose diagnosis sounds plausible.
+The known faulty behavior is **Increase memory on Inventory for inventory-access-denied**. The corrected behavior must handle both mechanisms. Use a deterministic action check to reject a wrong recommendation even when its prose diagnosis sounds plausible.
 
 ## inventory-capacity-overload
 
 ### Cause and baseline
 
-At ordinary demand, the application is healthy. Inventory starts at release cap **16**, Checkout is unreserved, and healthy aliases, access, code, memory, and product version remain unchanged. Record ordinary baseline behavior before the finite surge.
+Start from ordinary healthy demand. Inventory starts at release cap **16**, Checkout is unreserved, and healthy aliases, access, code, memory, and product version remain unchanged. Record ordinary baseline behavior before the finite surge.
 
 ### Activation
 
@@ -50,19 +50,19 @@ Run the saved finite surge with sparse checkout probes. Increase demand without 
 
 ### Fix and comparison
 
-The appropriate recommendation is to increase Inventory reserved concurrency to a permitted higher limit. The controller's first higher target is **32** and its supported input range is 16 through 64. The capacity action reads back configuration only.
+Recommend increasing Inventory reserved concurrency to a permitted higher limit. The controller's first higher target is **32** and its supported input range is 16 through 64. The capacity action reads back configuration only.
 
 After the cap-16 episode settles, apply the Inventory-only 16 to 32 action and explicitly repeat the same saved surge profile. Compare actual demand over the same production duration, request arrivals, skips, native windows, caller outcomes, and upstream headroom. At 32, every observed catalog read must succeed and every submitted checkout probe must settle with its matching order and stock decrement. A profile label or quiet request is not proof of serving the original demand.
 
 ### Close
 
-Recover returns Inventory to 16, restores healthy current-generation settings, preserves the product version, orders, and history, verifies a fresh order and stock decrement, observes alarm OK, and leaves traffic stopped. It does not reset business data.
+Recover Inventory to 16, restore healthy current-generation settings, preserve the product version, orders, and history, verify a fresh order and stock decrement, observe alarm OK, and leave traffic stopped. Do not reset business data.
 
 ## inventory-access-denied
 
 ### Cause and baseline
 
-Normal traffic works through the healthy Inventory version at baseline memory and sufficient capacity. The denied version has the same checked code and non-role settings but a role with a permanent exact-table `dynamodb:GetItem` Deny. Keep the overload producer stopped.
+Use the healthy Inventory version at baseline memory and sufficient capacity for normal traffic. The denied version has the same checked code and non-role settings but a role with a permanent exact-table `dynamodb:GetItem` Deny. Keep the overload producer stopped.
 
 ### Activation
 
@@ -80,14 +80,14 @@ Observe the genuine new request outcome separately from the alias readback. Reco
 
 ## recovered-stale-alarm
 
-This condition uses a genuine originating event, retained incident evidence, and timestamped post-recovery requests. An alarm may remain ALARM while requests succeed. Ordinary success does not prove that a prior capacity surge was served.
+Use a genuine originating event, retained incident evidence, and timestamped post-recovery requests for this condition. An alarm may remain ALARM while requests succeed. Ordinary success does not prove that a prior capacity surge was served.
 
 Do not fabricate an alert, manipulate alarm state, reapply a fault, or invoke the agent manually. A qualifying investigation must have seen the post-recovery evidence. If no qualifying live run exists, use a reviewed replay with the original event and an explicit later reference time supported by captured post-recovery evidence. Label it replay. Do not add future evidence to the earlier report or rejudge it as if it knew the future. Use **Other** when the later evidence supports no change or when it cannot support a conclusion.
 
 ## Recovery, reset, and acceptance
 
-Keep activation, observed incident, action result, separate remedy outcome, alarm delivery, and agent evaluation as separate facts. Missing post-fix traffic means effect unobserved, not failed or proven. Contradictory business effects fail application verification. Missing evidence, unsettled work, or an interrupted Reset remains incomplete.
+Record activation, observed incident, action result, separate remedy outcome, alarm delivery, and agent evaluation as separate facts. Missing post-fix traffic means effect unobserved, not failed or proven. Contradictory business effects fail application verification. Missing evidence, unsettled work, or an interrupted Reset remains incomplete.
 
-Recover stops producers, settles accepted work, restores current-generation caps and healthy aliases at baseline memory, verifies catalog, checkout, order and stock behavior, and preserves data. Reset is the separate destructive whole-session operation: reconcile the current successful release, create a new product version, replace stock at 1,000, delete old Orders after quiescence, verify one baseline order and stock 999, and leave traffic stopped. Replace an interrupted Reset with a new confirmed action after its execution and drain window; never resume or reuse it.
+Recover stops producers, settles accepted work, restores current-generation caps and healthy aliases at baseline memory, verifies catalog, checkout, order and stock behavior, and preserves data. Reset is the separate destructive whole-session operation. Reconcile the current successful release, create a new product version, replace stock at 1,000, delete old Orders after quiescence, verify one baseline order and stock 999, and leave traffic stopped. Replace an interrupted Reset with a new confirmed action after its execution and drain window. Never resume or reuse it.
 
 If deployment overlaps a run, stop new controller work, settle accepted work, reconcile the new trusted generation, and verify readiness before resuming. Never restore a superseded baseline over a newer release. See [deployment](deployment.md#deployment-and-controller-baseline), [preparation](preparation.md), and [cleanup](cleanup.md).

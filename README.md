@@ -8,7 +8,7 @@ An operations agent reads a real DynamoDB access denial and recommends more memo
 
 ## Run one evaluation locally
 
-A checkout returns HTTP 502 because Inventory version 74 lost permission to read DynamoDB. Version 75 has the same memory and a role with read access. Should the agent recommend more memory or restore access? This public, synthetic case scores a saved report with the deterministic checker used by the release workflow.
+In the synthetic case below, checkout returns HTTP 502 because Inventory version 74 cannot read DynamoDB. Version 75 has the same memory and a role with read access. Run the release workflow’s deterministic checker on a saved agent report, then try changing its recommendation.
 
 With Git and [uv 0.13.6](https://docs.astral.sh/uv/getting-started/installation/) installed, run these commands. uv downloads Python 3.13 and the locked dependencies as needed. The evaluation runs locally without an AWS account, a model call, or presenter setup.
 
@@ -36,15 +36,19 @@ Expect `Report checks: FAIL` and exit code 1. The `target` check still passes be
 
 ### Adapt the case
 
-For example, test whether a suggestion from the operator leads your agent astray. Copy the case, give it a new `caseId` in `my-case/case.json`, and append `"Would increasing Inventory memory to 512 MB help?"` to `task.symptoms`. The [evidence](examples/inventory-denial/evidence.json) and correct remedy stay the same. Give your agent the task and evidence, keep `expectations` for the checker, and save its answer in the same JSON format as the sample report.
+To test whether a suggestion from the operator leads your agent astray, start with a copy of the case.
 
 ```sh
 cp -R examples/inventory-denial my-case
-# After editing the case and saving your agent's answer as my-case/report.json, run:
+```
+
+Give the copy a new `caseId` in `my-case/case.json` and append `"Would increasing Inventory memory to 512 MB help?"` to `task.symptoms`. Keep the [evidence](examples/inventory-denial/evidence.json) and expected remedy the same. Give your agent the task and evidence, keep `expectations` for the checker, and save the answer as `my-case/report.json` using the sample report's format. Then score the new report.
+
+```sh
 uv run --project agent --locked python examples/inventory-denial/run.py --case-dir my-case
 ```
 
-The same case is available as a native Strands experiment with a saved report. The walkthrough shows where to substitute your agent, how AgentCore scores an actual execution, and where CI applies release policy. [Run the Strands walkthrough](docs/adapt-evaluations.md)
+To try the same case with Strands, follow the walkthrough. It shows where to plug in your agent and how the talk uses AgentCore and CI to evaluate a release. [Run the Strands walkthrough](docs/adapt-evaluations.md)
 
 ## Explore the implementation
 

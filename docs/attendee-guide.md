@@ -2,7 +2,7 @@
 
 [Audience slides (PDF, 14 pages)](slides/audience.pdf) | [Stage checkpoints](checkpoints.md) | [Audience questions](questions.md)
 
-A customer tries to place an order. Checkout returns HTTP 502. The operations agent finds the denied Inventory read and recommends increasing memory. The presenter switches Inventory to 512 MB and tries one fresh checkout. It still returns 502. The larger function runs with the same denied permission.
+A customer tries to place an order. Checkout returns HTTP 502. The operations agent finds the denied Inventory read and recommends increasing memory. The presenter switches Inventory to 512 MB and tries one fresh checkout. It still returns 502. Both versions still use a role that cannot read the Inventory table.
 
 **Did the agent miss the clue, or did it see the clue and still recommend the wrong fix?** Open the investigation trace. Its log query returned the DynamoDB `GetItem` denial. That gives us a requirement we can test on the next prompt edit.
 
@@ -12,14 +12,14 @@ A customer tries to place an order. Checkout returns HTTP 502. The operations ag
 
 | Stage | What happens | Code you can open |
 | --- | --- | --- |
-| S0 | A CloudWatch alarm starts the agent. Its trace records the queries, results and report. A presenter applies the proposed change and observes checkout separately. | [Agent and read tools](https://github.com/guilleojeda/evaluations-ref-arch/tree/7d559ffcb9a9224458f52bceab33b5bb0b45c417/agent) |
-| S1 | Reviewers capture the evidence available by the investigation cutoff and record acceptable behavior. The candidate gets the task and can query the evidence. The expected remedy stays with the evaluator. | [Reviewed case and candidate input](https://github.com/guilleojeda/evaluations-ref-arch/blob/2db0797ed6c51f79aa66679b460b6f47e98e79fa/agent/reviewed_cases.py) |
+| S0 | A CloudWatch alarm starts the agent. Its trace records the queries, results and report. The presenter increases memory and tries checkout again. | [Agent and read tools](https://github.com/guilleojeda/evaluations-ref-arch/tree/7d559ffcb9a9224458f52bceab33b5bb0b45c417/agent) |
+| S1 | Reviewers capture the evidence available by the investigation cutoff and record acceptable behavior. The agent gets the task and can query the captured evidence. Only the evaluator sees the expected remedy. | [Reviewed case and candidate input](https://github.com/guilleojeda/evaluations-ref-arch/blob/2db0797ed6c51f79aa66679b460b6f47e98e79fa/agent/reviewed_cases.py) |
 | S2 | Score the faulty report. Picking Inventory is correct. Choosing a memory increase fails the action check. A separate AgentCore verdict assesses whether the diagnosis and factual claims are supported. | [Required checks](https://github.com/guilleojeda/evaluations-ref-arch/blob/53167e225b87fe1993ee45c657ad40a00b59a403/agent/deterministic_checks.py) and [judge rubric](https://github.com/guilleojeda/evaluations-ref-arch/blob/53167e225b87fe1993ee45c657ad40a00b59a403/agent/agentcore_evaluation.py) |
 | S3 | Edit the prompt in the IDE and run a fresh investigation against the same captured incident. Compare the recommended action with the faulty run while keeping the expected answer fixed. | [Development prompt](https://github.com/guilleojeda/evaluations-ref-arch/blob/9fc1a230c5d40252c54111f1045d8ab85c96be6b/agent/prompt.py) |
 | S4 | Read the denial row first in the native Strands experiment. Inspect the proposed remedy and check whether the same edit still handles throttling, where a capacity increase can be appropriate. | [Strands experiment](https://github.com/guilleojeda/evaluations-ref-arch/blob/1f67f305104e9d9c74a7919cf0f968622d1d0c01/agent/development_experiment.py) |
 | S5 | A participant pushes the memory-first prompt to the release branch. CI runs the candidate package against the reviewed suite. Which check will stop the push from reaching the repaired endpoint? | [Release decision](https://github.com/guilleojeda/evaluations-ref-arch/blob/ee87d88276bad79647eafc48d43f681c5b99f846/agent/release_gate.py) |
 
-The IDE run gives feedback on the short development edit. During the talk, the controller switches the next alarm to a previously published repaired agent. That agent has its own prompt and qualified ZIP. Publishing a new repaired version requires the exact candidate ZIP to pass the required checks, complete the advisory evaluation, and receive human approval.
+The S4 result tells you how the prompt you edited performed. For the next live alarm, the presenter selects an already published repair in the controller. Its prompt and ZIP went through the S5 gate before the talk. A new ZIP has to pass the required checks, finish advisory scoring and receive human approval before it can replace that version.
 
 ## The rejected push
 

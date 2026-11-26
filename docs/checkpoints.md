@@ -2,39 +2,24 @@
 
 A checkpoint identifies the source you can open and edit in the browser IDE. The hosted controller selects the agent that will receive the next alarm. The two choices are independent. Opening S3 leaves the live selection alone.
 
-The public map in `talk/checkpoints.json` records the six intended tag names and
-their **peeled commits**, the commits the tags point to. The active generation
-is `talk/v5`. Use the map from maintained `main`. A map entry is a source
-identity, not proof that its tag has been published or that the source is a
-qualified release. The private session index identifies the actual prepared
-case, candidate and result for each entry. See [talk preparation](preparation.md)
-and [cleanup](cleanup.md).
+The [map on `main`](../talk/checkpoints.json) lists each annotated tag in `talk/v5` and the commit it points to. The private session index records the cases, candidates and results prepared for each workspace. See [talk preparation](preparation.md) and [cleanup](cleanup.md).
 
 The READMEs at the frozen tags still describe the release gate as future work. Follow the table below for the current talk. S4 runs the development experiment. S5 qualifies the exact ZIP for release.
 
 | Stage | Source link | What you open | What you do |
 | --- | --- | --- |
-| S0 | [talk/v5/S0](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S0) | Instrumented faulty agent | Inspect or edit the source. Separately select the deployed faulty agent for a genuine alarm. |
+| S0 | [talk/v5/S0](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S0) | Instrumented faulty agent | Inspect the source. Select the faulty endpoint in the controller to send the next alarm to that agent. |
 | S1 | [talk/v5/S1](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S1) | Captured incident, case draft and case tools | Review and freeze a case, then inspect the prepared suite. |
-| S2 | [talk/v5/S2](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S2) | Faulty candidate and the recorded denial execution | Run the checks and open the actual advisory judgment and source review. |
-| S3 | [talk/v5/S3](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S3) | Repaired prompt and captured execution runner | Edit and execute directly, or explicitly start from the faulty prompt for the live repair. |
-| S4 | [talk/v5/S4](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S4) | Native Strands experiment | Run the saved workspace candidate or explicitly use the immutable candidate captured by S3. |
-| S5 | [frozen talk/v5/S5](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S5); [dated verified demo-deploy example at `52dbc79`](https://github.com/guilleojeda/evaluations-ref-arch/commit/52dbc79ea249b92c43490390a769f73a035fcdae) | Frozen S5 source and separately qualified repaired serving source | Inspect the frozen source checkpoint and the separately qualified `demo-deploy` source. They are separate identities. |
+| S2 | [talk/v5/S2](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S2) | Faulty candidate and the recorded denial execution | Run the checks, then read the judge’s reason alongside the source evidence. |
+| S3 | [talk/v5/S3](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S3) | Repaired prompt and captured execution runner | Run the prepared repair, or start with the faulty prompt and make the edit live. |
+| S4 | [talk/v5/S4](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S4) | Native Strands experiment | Test the prompt saved in this workspace or select the exact candidate from the S3 run. |
+| S5 | [talk/v5/S5](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S5) | Release gate | Inspect the frozen gate code. Make the participant's edit in the prepared `demo-deploy` workspace. |
 
 For the streaming IDE edit and Strands experiment, use the v5 S3 and S4 sources with their own lockfiles. Both pin `strands-agents==1.65.0`. The saved-report example on `main` uses the dependency lock from its own checkout. [S4 dependencies](https://github.com/guilleojeda/evaluations-ref-arch/blob/1f67f305104e9d9c74a7919cf0f968622d1d0c01/agent/pyproject.toml)
 
-S0-S4 start at the mapped commits. S5 has both a frozen source reference and an
-editable checkout on the long-lived release branch. Its current qualified
-starting commit can be newer than the S5 tag; a source checkpoint never replaces
-the separate live qualification binding. The private per-performance readback
-is the authority for the current qualification; the `52dbc79` link is a dated
-verified example from 2026-11-25, not a permanent branch guarantee. The public
-source map does not direct changes to a contributor branch. Follow the private
-preparation and cleanup instructions for any live rehearsal or regression.
+For S0-S4, start each workspace at its mapped commit. For S5, verify which `demo-deploy` commit supplied the repaired ZIP now serving. On November 25, 2026, that was [`52dbc79`](https://github.com/guilleojeda/evaluations-ref-arch/commit/52dbc79ea249b92c43490390a769f73a035fcdae). Read the publication again for each performance. Use the presenter workspace for the regression.
 
-Before the maintainer publishes a generation, check only the map's shape and
-commit identities. Do not create, push, or claim the tags from a presenter or
-from a preparation checkout:
+Before a maintainer publishes a generation, you can check the proposed map locally. This command checks that all six stages have a tag name and a commit ID. Publishing tags is a separate maintainer step.
 
 ```sh
 jq -e '
@@ -48,10 +33,7 @@ jq -e '
 
 ## Check the published generation
 
-Run from the maintained repository only after the checkpoint maintainer has
-published the generation. The fetch below allows new tags. If a local tag
-conflicts with its remote counterpart, stop and inspect the discrepancy. A clean
-clone gives an independent comparison.
+After publication, run this from `main` to compare the local tags, the remote tags and the map. If a local tag conflicts with the remote, compare them from a clean clone before proceeding.
 
 ```sh
 export PHASE22_GENERATION="${PHASE22_GENERATION:?set the map generation, for example talk/v5}"
@@ -84,25 +66,14 @@ for stage, source in sorted(stages.items()):
 PY
 ```
 
-The active `talk/v5` checkpoints use the US Opus 5.5 profile. S2-S4 use the calibrated metric-aware evaluator supplied by their authenticated private inputs. Metric bucket starts, source observation times and availability times remain distinct. S0-S2 carry the opening prompt. S3 and S4 carry the saved development repair, so you can open either workspace directly. S5 starts from the separately qualified serving repair on `demo-deploy`. The IDE and serving repairs have distinct prompt identities. The prepared S3 comparison pairs executions on the same evidence, and the S4 experiment uses that same development prompt. S5 verifies its own package and publication.
+The v5 checkpoints use the US Opus 5.5 profile. S0-S2 have the opening prompt. S3 and S4 each include the development repair so you can start at either stage. S3 compares the prompts on the same captured incident. S4 tries the edited prompt across cases. Their prepared inputs select the calibrated judge, which distinguishes a metric's bucket start, observation time and availability time. For S5, verify the package and approval for the serving prompt.
 
-The earlier `talk/v1` and `talk/v2` tags retain the original Sonnet sources. The `talk/v3` tags retain the original Opus evaluator and recorded performances. Every prior generation remains available under its original identity.
+The `talk/v1` and `talk/v2` tags preserve the original Sonnet sources. Use `talk/v3` for recordings made with the original Opus evaluator.
 
 ## Maintain a generation
 
-Keep one reviewed set of candidate commits. Check each stage's default prompt,
-locked dependencies, executable commands and private input references before
-freezing it. Keep raw captures, scores, credentials and user edits outside the
-public Git objects. S5's tag is a source checkpoint; its qualified starting
-commit and publication come from the successful repaired release and its
-separate live binding. Inspect the package and review for that exact revision.
+Before freezing a generation, run each stage with its default prompt, locked dependencies and intended private inputs. Check the S5 release commit against the approved package. Keep raw captures, scores, credentials and rehearsal edits out of the public tags.
 
-In the repository's **Settings -> Rules -> Rulesets**, check the active tag rules
-for `refs/tags/talk/v*/*`. The rules restrict updates and deletions and allow
-creating new generation tags. Confirm that no routine bypass applies. Only the
-checkpoint maintainer, after the source and S5 live binding are approved, should
-create annotated tags and push the six explicit refs with `git push --atomic`.
-Verify all six peeled identities from another clone, then record the reviewed
-mapping on maintained `main`.
+In **Settings -> Rules -> Rulesets**, check that the rules for `refs/tags/talk/v*/*` allow creation and restrict updates and deletions without a routine bypass. Once the stage sources and the S5 publication have been approved, the checkpoint maintainer creates the six annotated tags and pushes those six refs together with `git push --atomic`. Verify the commits behind all six tags from a second clone, then record the map on `main`.
 
-Use a new generation name for changed checkpoint source. Preserve older maps through Git history. Rehearsals use the existing checkpoints and retain the two deployed endpoints. A rehearsal source edit or a recorded eval does not change either publication.
+Use a new generation name when the checkpoint source changes. Earlier maps remain in Git history. For repeat performances, reuse the same tags and the two prepared endpoints.
