@@ -3,6 +3,7 @@ agent/.venv/
 __pycache__/
 *.py[cod]
 .artifacts/
+/.work/
 .DS_Store
 *.tsbuildinfo
 .env
