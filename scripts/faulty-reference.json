@@ -78,7 +78,7 @@
       "strands-agents"
     ],
     "sourceManifestSha256": "d4535b121a044ebeca9d42cee5feab8683b635d5046431d74f8bc3c95d4de74d",
-    "sourceTree": "/Users/gojeda/ideas/evaluations-ref-arch/.work/cloudtrail-citation/source/agent"
+    "sourceTree": "agent"
   },
   "artifact": {
     "bucket": "cdk-evaltalk-assets-027224425948-us-east-1",
