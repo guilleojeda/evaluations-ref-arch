@@ -78,7 +78,9 @@ Hand the participant the pre-opened S5 terminal immediately after S4 starts, eve
 
 At 35:05 show status only. When the keyboard returns and health allows, privately select/read back the already qualified repaired endpoint, confirm fresh **OK**, and trigger the second access denial exactly once. Reveal that new incident at 40:00, apply the healthy-version access action independently, and show the successful settled checkout by 45:30.
 
-At 50:00 run `python3 gate_packet.py --callback` from the Case and results terminal for the pushed commit and exact candidate package. Show the same denial case identity, required action, separate advisory result, deterministic findings, human review state, and publication status. A failed deterministic requirement rejects without waiting for semantic review. If the current callback is pending at 53:15, use only an exact recorded rejection with its own provenance and say that it is recorded. Keep the qualified repaired package serving throughout.
+At 50:00 run `python3 gate_packet.py --callback` from the Case and results terminal in the private presenter kit. Use the pushed commit and exact candidate package. Show the same denial case identity, required action, separate advisory result, deterministic findings, human review state, and publication status. A failed deterministic requirement rejects without waiting for semantic review. If the current callback is pending at 53:15, use only an exact recorded rejection with its own provenance and say that it is recorded. Keep the qualified repaired package serving throughout.
+
+From a public clone, [inspect the rejected CI run](attendee-guide.md#the-rejected-push) or [run the denial regression locally](../README.md#try-a-regression).
 
 ## Prepared stage workspaces
 

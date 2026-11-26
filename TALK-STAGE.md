@@ -6,6 +6,8 @@ peeled commits in [talk/checkpoints.json](talk/checkpoints.json). These public
 links are read-only source references from maintained `main`. Private session
 inputs, captures, evaluations and credentials are prepared separately.
 
+The READMEs at the frozen tags still describe the release gate as future work. Follow the table below for the current talk. S4 runs the development experiment. S5 qualifies the exact ZIP for release.
+
 | Stage | Public source | Purpose |
 | --- | --- | --- |
 | S0 | [talk/v5/S0](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S0) | Inspect the instrumented faulty agent. |

@@ -10,6 +10,8 @@ qualified release. The private session index identifies the actual prepared
 case, candidate and result for each entry. See [talk preparation](preparation.md)
 and [cleanup](cleanup.md).
 
+The READMEs at the frozen tags still describe the release gate as future work. Follow the table below for the current talk. S4 runs the development experiment. S5 qualifies the exact ZIP for release.
+
 | Stage | Source link | What you open | What you do |
 | --- | --- | --- |
 | S0 | [talk/v5/S0](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S0) | Instrumented faulty agent | Inspect or edit the source. Separately select the deployed faulty agent for a genuine alarm. |
