@@ -1,0 +1,2 @@
+# The reviewed case pins the SHA-256 of the exact evidence file.
+evidence.json text eol=lf

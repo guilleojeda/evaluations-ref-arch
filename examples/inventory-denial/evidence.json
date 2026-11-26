@@ -1,0 +1,189 @@
+{
+  "manifest": {
+    "schemaVersion": 1,
+    "sourceNames": [
+      "logs",
+      "metrics",
+      "configuration",
+      "changeHistory"
+    ],
+    "sources": {
+      "changeHistory": {
+        "completeness": "unavailable",
+        "recordCount": 0,
+        "scope": [
+          "inventory"
+        ],
+        "sha256": "5b90fc4be9e255cf9f88c3c23328374c40b2491e37ba0ca4a103dd6535fce8a5",
+        "window": {
+          "end": "2026-11-26T11:05:00.000Z",
+          "start": "2026-11-26T11:00:00.000Z"
+        }
+      },
+      "configuration": {
+        "completeness": "complete",
+        "recordCount": 2,
+        "scope": [
+          "inventory"
+        ],
+        "sha256": "3d17c6f93a36865b7db67d0e46f52789b3727f06b4bdb1e990b0d982822f5c33",
+        "window": {
+          "end": "2026-11-26T11:05:00.000Z",
+          "start": "2026-11-26T11:00:00.000Z"
+        }
+      },
+      "logs": {
+        "completeness": "complete",
+        "recordCount": 1,
+        "scope": [
+          "inventory"
+        ],
+        "sha256": "067ad33460491aac58fbd16f93cac3604f8430b2c8a978025f81103d4fbc358a",
+        "window": {
+          "end": "2026-11-26T11:05:00.000Z",
+          "start": "2026-11-26T11:00:00.000Z"
+        }
+      },
+      "metrics": {
+        "completeness": "unavailable",
+        "recordCount": 0,
+        "scope": [
+          "inventory"
+        ],
+        "sha256": "b2c4978734c7f12ac0b245b7f3b224bad8f3e3487037b1c114a01b0c8b7fb841",
+        "window": {
+          "end": "2026-11-26T11:05:00.000Z",
+          "start": "2026-11-26T11:00:00.000Z"
+        }
+      }
+    }
+  },
+  "origin": {
+    "accountId": "000000000000",
+    "alarmArn": "arn:aws:cloudwatch:us-east-1:000000000000:alarm:PublicInventoryDenied",
+    "apiId": "public-synthetic-api",
+    "capturedAt": "2026-11-26T11:06:00.000Z",
+    "region": "us-east-1",
+    "runId": "public-synthetic-inventory-denial",
+    "startedAt": "2026-11-26T11:05:01.000Z",
+    "transitionAt": "2026-11-26T11:05:00.000Z"
+  },
+  "schemaVersion": 1,
+  "sources": {
+    "changeHistory": {
+      "completeness": "unavailable",
+      "errors": [
+        "synthetic public fixture omits change history"
+      ],
+      "observations": [],
+      "observedAt": "2026-11-26T11:05:00.000Z",
+      "scope": [
+        "inventory"
+      ],
+      "truncated": false,
+      "window": {
+        "end": "2026-11-26T11:05:00.000Z",
+        "start": "2026-11-26T11:00:00.000Z"
+      }
+    },
+    "configuration": {
+      "completeness": "complete",
+      "errors": [],
+      "observations": [
+        {
+          "access": {
+            "policy": "IncidentTriageDemoInventoryReadDeny",
+            "read": "denied"
+          },
+          "alias": {
+            "FunctionVersion": "74",
+            "Name": "live",
+            "RevisionId": "synthetic-revision-74"
+          },
+          "availableAt": "2026-11-26T11:03:00.000Z",
+          "configuration": {
+            "FunctionName": "IncidentTriageDemoInventory",
+            "MemorySize": 256,
+            "Role": "arn:aws:iam::000000000000:role/IncidentTriageDemoAppInventoryDeniedRole",
+            "Version": "74"
+          },
+          "function": "IncidentTriageDemoInventory",
+          "kind": "lambda",
+          "observedAt": "2026-11-26T11:03:00.000Z"
+        },
+        {
+          "access": {
+            "read": "healthy"
+          },
+          "availableAt": "2026-11-26T11:03:00.000Z",
+          "configuration": {
+            "FunctionName": "IncidentTriageDemoInventory",
+            "MemorySize": 256,
+            "Role": "arn:aws:iam::000000000000:role/IncidentTriageDemoAppInventoryRole",
+            "Version": "75",
+            "artifactSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "sourceRevision": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+          },
+          "function": "IncidentTriageDemoInventory",
+          "kind": "lambda-version",
+          "observedAt": "2026-11-26T11:03:00.000Z"
+        }
+      ],
+      "observedAt": "2026-11-26T11:05:00.000Z",
+      "scope": [
+        "inventory"
+      ],
+      "truncated": false,
+      "window": {
+        "end": "2026-11-26T11:05:00.000Z",
+        "start": "2026-11-26T11:00:00.000Z"
+      }
+    },
+    "logs": {
+      "completeness": "complete",
+      "errors": [],
+      "observations": [
+        {
+          "availableAt": "2026-11-26T11:02:15.000Z",
+          "eventId": "synthetic-denial-001",
+          "fields": {
+            "errorCode": "ACCESS_DENIED",
+            "errorName": "AccessDeniedException",
+            "functionVersion": "74",
+            "operation": "GetItem",
+            "requestId": "synthetic-request-001",
+            "statusCode": 502
+          },
+          "ingestionTime": "2026-11-26T11:02:15.000Z",
+          "resource": "inventory",
+          "timestamp": "2026-11-26T11:02:14.000Z"
+        }
+      ],
+      "observedAt": "2026-11-26T11:05:00.000Z",
+      "scope": [
+        "inventory"
+      ],
+      "truncated": false,
+      "window": {
+        "end": "2026-11-26T11:05:00.000Z",
+        "start": "2026-11-26T11:00:00.000Z"
+      }
+    },
+    "metrics": {
+      "completeness": "unavailable",
+      "errors": [
+        "synthetic public fixture omits metrics"
+      ],
+      "observations": [],
+      "observedAt": "2026-11-26T11:05:00.000Z",
+      "scope": [
+        "inventory"
+      ],
+      "truncated": false,
+      "window": {
+        "end": "2026-11-26T11:05:00.000Z",
+        "start": "2026-11-26T11:00:00.000Z"
+      }
+    }
+  }
+}
