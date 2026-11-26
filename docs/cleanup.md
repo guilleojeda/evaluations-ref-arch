@@ -1,87 +1,78 @@
 # Talk cleanup
 
-Use this after every delivery or rehearsal, including an interrupted session.
-Routine cleanup retains the cloud stacks, publisher-owned faulty reference,
-qualified repaired publication, frozen tags and evidence. It repairs the source
-branch after the S5 regression; it does not restore an old cloud snapshot or
-tear down the demo. Run [preparation](preparation.md) only after this procedure
-is complete or its remaining steps are explicitly recorded as incomplete.
+After each performance or interrupted rehearsal, stop traffic, reconcile outstanding checkouts, archive the session and revert the participant's S5 regression. Keep the stacks, both published endpoints, frozen tags and evidence for the next performance. Routine cleanup leaves the orders in place. Running the public local example needs none of these steps.
 
-This is a presenter-only runbook; the public build and local evaluation do not
-use it.
-
-Use implemented controller/workflow operations. Reset creates the next durable
-controller run; the private session-index process and repaired
-publication/selection remain separate from the Phase 19 reference fixture.
-Failed or incomplete cleanup stays recorded as incomplete.
+If you stop partway through cleanup, note the last confirmed step and every unresolved action in the private session record before starting [preparation](preparation.md). Keep the repaired publication and controller selection with the session record. Keep the archived faulty reference intact.
 
 ## 1. Stop activity and settle outcomes
 
 - [ ] Stop both controller producers and unrelated browser writers. Close old
-  checkout pages and let accepted work drain; closing a browser does not stop a
+  checkout pages and let accepted work drain. Closing a browser does not stop a
   worker.
-- [ ] Inspect controller actions, local evaluations, scoring/telemetry waits and
-  GitHub runs. Finish bounded work or explicitly stop it and preserve its actual
-  status. Reconcile a partial publication before another mutation.
+- [ ] Inspect controller actions, local evaluations, scoring and telemetry
+  waits, and GitHub runs. Finish bounded work or explicitly stop it. Preserve
+  each actual status. Reconcile a partial publication before another mutation.
 - [ ] Reconcile every unresolved checkout ID with its immutable input and a
-  bounded status read. A timeout or one 404 is not proof that no write occurred.
-- [ ] Record submitted, completed, skipped, unknown and in-flight counts and
-  retain controller, browser and app request evidence separately.
+  bounded status read. A timeout or one 404 does not prove that no write
+  occurred.
+- [ ] Record submitted, completed, skipped, unknown, and in-flight counts.
+  Retain controller, browser, and app request evidence separately.
 
 ## 2. Save the session before releasing the Codespace
 
-Create an allowlisted private inventory from the Phase 22 session index. Include
-the six workspace bases and saved differences, selected tracked deletions,
-intentional untracked source, reviewed cases/captures, candidate/tooling
-snapshots, experiment/report/score receipts, unfinished records and CI links.
-Exclude credentials, Git metadata, `.venv`, `node_modules`, build caches and
+Create an allowlisted private inventory from the session index. Include the six
+workspace bases and saved differences, selected tracked deletions, intentional
+untracked source, reviewed cases and captures, candidate and tooling snapshots,
+experiment, report, and score receipts, unfinished records, and CI links.
+Exclude credentials, Git metadata, `.venv`, `node_modules`, build caches, and
 unselected files.
 
-Confirm the saved `sessionId` is the distinct `PHASE22_SESSION_ID` for this
-performance. An unchanged prepared-asset hash may appear in another session;
-the session index, inventory, results and archive identity must remain tied to
-this performance.
+Confirm that the saved `sessionId` is this performance's distinct
+`PHASE22_SESSION_ID`. An unchanged prepared-asset hash may appear in another
+session. Keep the session index, inventory, results, and archive identity tied
+to this performance.
 
-Also preserve the durable controller run/action records and configuration
-checkpoints, original and current-cap observations, immutable saved surge
-profiles and action/window IDs, actual fetch starts/skips/outcomes, metric
-windows, checkout effects and unresolved identities. Preserve the actual
-audience-reviewed case separately from prepared cases, with its evidence
-references and reference time. Keep candidate/tooling snapshots,
-model/evaluator/policy versions, complete telemetry, raw findings, native
-reports and pending/incomplete statuses.
+Preserve the durable controller run and action records, configuration
+checkpoints, original and current-cap observations, immutable surge profiles,
+action and window IDs, actual fetch starts, skips and outcomes, metric windows,
+checkout effects, and unresolved identities. Preserve the audience-reviewed
+case separately from prepared cases with its evidence references and reference
+time. Keep candidate and tooling snapshots, model, evaluator and policy
+versions, complete telemetry, raw findings, native reports, and
+pending or incomplete statuses.
 
-Preserve the exact faulty-reference descriptor, archive/source/configuration
-digests and S3 `VersionId`, setup workflow run ID, Runtime/endpoint/adapter
-tuple and `AGENT_PUBLICATION#faulty` readback outside teardown scope. Preserve
-the repaired publication, qualification/review tuple and `AGENT_SELECTION`
-readback separately. Copy saved edits, ignored/local files, results and needed
-GitHub artifacts/logs to durable private storage before the Codespace is
-deleted; verify copies, digests and replacement-browser access. Remove
-credentials from material intended for sharing and do not rewrite reports or
-outcomes to match the intended story.
+Preserve the exact faulty-reference descriptor, archive, source, and
+configuration digests, S3 `VersionId`, setup workflow run ID,
+Runtime/endpoint/adapter tuple, and `AGENT_PUBLICATION#faulty` readback outside
+teardown scope. Preserve the repaired publication, qualification and review
+tuple, and `AGENT_SELECTION` readback separately. Before deleting the
+Codespace, copy saved edits, ignored and local files, results, and required
+GitHub artifacts and logs to durable private storage. Verify the copies,
+digests, and replacement-browser access. Remove credentials from material for
+sharing. Do not rewrite reports or outcomes to match the intended story.
 
-Before releasing the Codespace, run the complete [save and recover sequence](preparation.md#save-and-recover-a-session).
-That sequence uses the normal inventory CLI with only reviewed allowlisted
-session-index, selected-untracked and record files, then saves both the
-inventory and archive
-and verifies the archive sidecar. Inventory is verified directly against its
-retained SHA-256; do not invent a second required sidecar. Do not replace the
-sequence with an archive-only save or an archive digest; both files are
-required restore inputs.
+Before releasing the Codespace, run the complete [save and recover
+sequence](preparation.md#save-and-recover-a-session). It uses the normal
+inventory CLI with only reviewed allowlisted session-index, selected-untracked,
+and record files. It saves both the inventory and archive and verifies the
+archive sidecar. Verify the inventory directly against its retained SHA-256.
+Do not add a second required sidecar. Both the inventory and archive are
+required restore inputs. Do not replace this sequence with an archive-only save
+or an archive digest.
 
 Upload both files through the versioned private asset bucket and
-talk-sessions/<session-id>/ prefix named by the operator's receipt. Record a
-separate S3 VersionId and SHA-256/metadata for each object, plus UTC time and
-operator identity. The upload/download receipt is separate from the
+`talk-sessions/<session-id>/` prefix named by the operator's receipt. Record an
+S3 VersionId and SHA-256 and metadata for each object, plus UTC time and
+operator identity. The upload and download receipt is separate from the
 content-addressed evaluation inputs in the evidence bucket. Use the exact
-versioned readback commands in [preparation](preparation.md#save-and-recover-a-session).
+versioned readback commands in
+[preparation](preparation.md#save-and-recover-a-session).
 
-On a replacement Codespace, read that retained receipt and use the exact
-archive and inventory object versions. Verify each downloaded file against its
-trusted receipt hash, write and verify the expected archive sidecar, and
-prepare all six clean A bases - including detached S5 - from
-inventory.sourceBase.commits before restoring:
+In a replacement Codespace, read the retained receipt and use the exact archive
+and inventory object versions. Verify each downloaded file against its trusted
+receipt hash. Write and verify the expected archive sidecar. Before restoring,
+prepare all six clean A bases, including detached S5, from
+`inventory.sourceBase.commits`:
 
 ```sh
 replacement_repository="${PHASE22_SESSION_REPLACEMENT_REPOSITORY:?path to the reviewed replacement clone}"
@@ -97,18 +88,18 @@ replacement_repository="${PHASE22_SESSION_REPLACEMENT_REPOSITORY:?path to the re
 ```
 
 Verify the restored files' original digests, each stage's base commit and diff,
-the two run identities and the fact that an unfinished run remains unfinished.
-Do not silently rerun work during restore. Keep dirty or conflicting destination
-edits and stop rather than overwriting them. Keep every A worktree detached;
-only a separate session B may later own the current qualified demo-deploy
+the two run identities, and that an unfinished run remains unfinished. Do not
+silently rerun work during restore. Preserve dirty or conflicting destination
+edits and stop rather than overwriting them. Keep every A worktree detached.
+Only a separate session B may later own the current qualified `demo-deploy`
 branch.
 
 ## 3. Repair `demo-deploy` after the regression
 
-Do this only when S5 actually committed the prompt regression. A failed gate
-leaves regressed source on `demo-deploy` while the previously qualified repaired
-artifact continues serving. Reverting source creates a new package identity;
-the earlier pass does not qualify it.
+Run this section only when S5 actually committed the prompt regression. A
+failed gate leaves regressed source on `demo-deploy` while the previously
+qualified repaired artifact continues serving. Reverting source creates a new
+package identity. The earlier pass does not qualify it.
 
 ```sh
 s5_root="${PHASE22_S5_ROOT:?path to the only demo-deploy worktree}"
@@ -142,9 +133,10 @@ git -C "$s5_root" status --short
 git -C "$s5_root" log --oneline -8
 ```
 
-Preserve the recorded regression SHA, inspect that it is prompt-only, and
-revert that exact commit in the S5 worktree. Do not reset, rebase, amend,
-force-push, move a frozen tag, or replace newer source with an old checkpoint.
+Preserve the recorded regression SHA. Inspect the commit and confirm that it is
+prompt-only. Revert that exact commit in the S5 worktree. Do not reset, rebase,
+amend, force-push, move a frozen tag, or replace newer source with an old
+checkpoint.
 
 ```sh
 s5_root="${PHASE22_S5_ROOT:?path to the only demo-deploy worktree}"
@@ -166,80 +158,78 @@ git -C "$s5_root" diff HEAD^ HEAD
 git -C "$s5_root" push origin HEAD:demo-deploy
 ```
 
-Wait for the normal full gate. Inspect the exact new ZIP, source/prompt/config
-identities, frozen cases, deterministic findings, real reports/traces and
-source-backed human approval before publication. Verify the new repaired
-publication and selection tuple, and verify that the faulty publication is
-unchanged. If the run fails, remains pending or the response is lost, preserve
-the old verified serving tuple and mark preparation incomplete; do not repin an
-endpoint by hand.
+Wait for the normal full gate. Before publication, inspect the exact new ZIP,
+source, prompt, and configuration identities, frozen cases, deterministic
+findings, real reports and traces, and source-backed human approval. Verify the
+new repaired publication and selection tuple. Verify that the faulty
+publication is unchanged. If the run fails, remains pending, or the response
+is lost, preserve the old verified serving tuple and mark preparation
+incomplete. Do not repin an endpoint by hand.
 
 Before pushing a later repair, stop traffic and settle accepted work. Proceed
-only with a clean S5 worktree on `demo-deploy` containing the regression and
-deployed ancestry; if another session already repaired it, verify that
-publication rather than reverting twice. If history diverged, the revert
+only with a clean S5 worktree on `demo-deploy` that contains the regression and
+deployed ancestry. If another session already repaired it, verify that
+publication instead of reverting twice. If history diverged, the revert
 conflicts, or the diff changes more than the intended regression, stop and
 resolve deliberately. Do not use `main` for this repair. Open the Actions run
-for the exact pushed repair commit, complete source-backed human review of the
-exact repaired ZIP, frozen cases and actual reports/traces, and record the
-repair commit, workflow run, qualification and publication. The normal history
-is **repaired passes/publishes → regression fails → repair passes/publishes**.
+for the exact pushed repair commit. Complete source-backed human review of the
+exact repaired ZIP, frozen cases, and actual reports and traces. Record the
+repair commit, workflow run, qualification, and publication. The normal
+history is **repaired passes/publishes - regression fails - repair
+passes/publishes**.
 
 ## 4. Leave the application and selection healthy
 
-- [ ] Confirm successful current app/controller releases and trusted settings;
-  reconcile partial releases before any recovery or reset.
+- [ ] Confirm successful current app and controller releases and trusted
+  settings. Reconcile partial releases before recovery or reset.
 - [ ] With producers stopped and work settled, use the controller's normal
-  **Recover** to return Inventory to cap **16**, Checkout unreserved, the
-  intended baseline and a healthy role-backed alias. Preserve the denied role
+  **Recover**. Return Inventory to cap **16**, Checkout to unreserved, the
+  intended baseline, and a healthy role-backed alias. Preserve the denied role
   and policy for the next incident.
 - [ ] Observe configuration readback separately from fresh authenticated
-  catalog/checkout verification. Preserve receipt, stock effect and unknown
-  outcomes in the session record.
-- [ ] Wait for native alarm **OK**, verify the adapter/endpoint binding and
-  explicitly select **faulty** for the next opening only after the selected tuple
-  is strongly read back. Keep traffic stopped.
+  catalog and checkout verification. Preserve the receipt, stock effect, and
+  unknown outcomes in the session record.
+- [ ] Wait for native alarm **OK**. Verify the adapter and endpoint binding.
+  Explicitly select **faulty** for the next opening only after strongly reading
+  back the selected tuple. Keep traffic stopped.
 
-For the next whole-talk restart, reconcile the current successful release,
-restore Inventory cap **16** and unreserved Checkout with trusted healthy
-settings, replace the canonical SKU at stock 1,000 under a fresh
-`productVersion`, delete prior Orders and verify the new baseline. Reset itself
-archives the old run and its actual cap observations, then creates the linked
-new controller run/session; do not create another run separately or manipulate
-controller records. If a later readiness check is needed, record its separate
-checkout in the actual request counts. A captured-evidence-only entry needs its
-assets/services, not an unnecessary business Reset.
+Do not run Reset during routine cleanup. For the next whole-talk restart,
+[preparation](preparation.md#final-live-readiness) must reconcile the current
+successful release, restore Inventory cap **16** and unreserved Checkout with
+trusted healthy settings, replace the canonical SKU at stock 1,000 under a
+fresh `productVersion`, delete prior Orders, and verify the new baseline. It
+then runs the controller's confirmed **Reset** once. Reset archives the old run
+and its cap observations, then creates the linked controller run and session.
+Do not create another run or manipulate controller records directly. If a later
+readiness check is needed, record its separate checkout in the actual request
+counts. A captured-evidence-only entry needs its assets and services, not a
+business Reset.
 
-For a whole-talk restart, preparation may run the existing confirmed **Reset**
-once after this cleanup with a fresh `productVersion`; it archives the prior
-controller run and creates the linked next run. Do not create or edit controller
-records directly. If Reset is interrupted, leave it unusable, wait for its
-execution/drain window, preserve unknown effects, and explicitly start one new
-confirmed Reset with a new action UUID/productVersion.
+If Reset is interrupted, leave it unusable. Wait for its execution and drain
+window, preserve unknown effects, and explicitly start one new confirmed Reset
+with a new action UUID and `productVersion`.
 
 ## 5. Close the session without destructive cleanup
 
-- [ ] Verify the six worktrees have been archived before releasing them. Keep
+- [ ] Verify that the six worktrees are archived before releasing them. Keep
   frozen tags and `talk/checkpoints.json` unchanged.
-- [ ] Release the old S5 `demo-deploy` worktree association only after its
-  commits, diffs and archive are preserved. Prepare the next S5 from the newly
-  qualified repaired branch, never from the frozen S5 tag.
-- [ ] Restore the separate one-case IDE smoke prompt to `RESTORE_ACCESS` if it
-  was edited. Keep its results distinct from the real S3/S4 experiment and S5
-  gate.
+- [ ] Release the old S5 `demo-deploy` worktree association only after
+  preserving its commits, diffs, and archive. Prepare the next S5 from the
+  newly qualified repaired branch, never from the frozen S5 tag.
 - [ ] Close credential pages, sign out of shared computers, stop unused
-  Codespaces and local processes, and verify no traffic, evaluation, workflow or
-  temporary schedule remains active unintentionally.
+  Codespaces and local processes, and verify that no traffic, evaluation,
+  workflow, or temporary schedule remains active unintentionally.
 - [ ] Do not use `git clean`, recursive deletion, or broad resource deletion to
   make a session look clean. Remove only explicitly selected temporary files
   after ownership and archive checks.
-- [ ] Mark cleanup complete with branch/serving identities, health observation,
-  archive key/version/digest, request records and unresolved items.
+- [ ] Mark cleanup complete with branch and serving identities, health
+  observation, archive key, version and digest, request records, and unresolved
+  items.
 
 ## After the final delivery
 
-Routine cleanup does not delete the three stacks, retained tables, logs,
-private evidence, prepared publications or frozen checkpoints. If retiring the
-demo, inventory and export evidence first and use a separately reviewed teardown
-procedure for the configured account and region; stack deletion does not remove
+Routine cleanup does not delete the three stacks, retained tables, logs, private
+evidence, prepared publications, or frozen checkpoints. If retiring the demo,
+inventory and export evidence first. Use a separately reviewed teardown
+procedure for the configured account and Region. Stack deletion does not remove
 every retained resource.

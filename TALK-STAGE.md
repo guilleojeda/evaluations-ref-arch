@@ -1,12 +1,6 @@
 # Talk stages
 
-This repository publishes six source checkpoints for the incident response talk.
-The active generation is `talk/v5`; its map records the six annotated tags and
-peeled commits in [talk/checkpoints.json](talk/checkpoints.json). These public
-links are read-only source references from maintained `main`. Private session
-inputs, captures, evaluations and credentials are prepared separately.
-
-The READMEs at the frozen tags still describe the release gate as future work. Follow the table below for the current talk. S4 runs the development experiment. S5 qualifies the exact ZIP for release.
+Open any of the six checkpoints below to see the code at that point in the talk. The frozen READMEs describe an earlier plan in which the release gate was still future work. In the current talk, S4 runs the development experiment and S5 checks the ZIP proposed for release.
 
 | Stage | Public source | Purpose |
 | --- | --- | --- |
@@ -15,20 +9,8 @@ The READMEs at the frozen tags still describe the release gate as future work. F
 | S2 | [talk/v5/S2](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S2) | Run deterministic checks against the recorded denial execution. |
 | S3 | [talk/v5/S3](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S3) | Inspect and run the captured prompt repair. |
 | S4 | [talk/v5/S4](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S4) | Run the native Strands development experiment. |
-| S5 | [frozen talk/v5/S5](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S5); [dated verified demo-deploy example at `52dbc79`](https://github.com/guilleojeda/evaluations-ref-arch/commit/52dbc79ea249b92c43490390a769f73a035fcdae) | Compare the frozen source checkpoint with the separately qualified repaired serving source. |
+| S5 | [frozen talk/v5/S5](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S5) | Inspect the CI gate that checks the proposed release. |
 
-S0-S4 start at their mapped tag commits. S5 has two deliberate identities:
+For a performance, the S0-S4 workspaces start at the commits in the [checkpoint map](talk/checkpoints.json). S5 is editable on `demo-deploy`. Its starting commit must match the repaired package approved for that performance. For example, on November 25, 2026 the repaired package came from [`52dbc79`](https://github.com/guilleojeda/evaluations-ref-arch/commit/52dbc79ea249b92c43490390a769f73a035fcdae), while the S5 tag still pointed to `ee87d88`.
 
-- The frozen `talk/v5/S5` tag is the public source checkpoint at commit
-  `ee87d88276bad79647eafc48d43f681c5b99f846`.
-- A dated verified example bound the repaired package separately to `demo-deploy`
-  at commit `52dbc79ea249b92c43490390a769f73a035fcdae` on 2026-11-25.
-
-The qualified serving source can be newer than the frozen S5 tag. A source
-checkpoint does not prove a live qualification, and a live qualification does
-not move or replace the frozen tag. The private per-performance readback is the
-authority for the current qualification; the `52dbc79` link is a dated verified
-example, not a permanent branch guarantee. Use the [checkpoint workflow](docs/checkpoints.md)
-for provenance, preparation and verification. Any live rehearsal or regression
-is an operator-owned activity covered by private session instructions; this
-public page remains a read-only guide from `main`.
+The presenter prepares the private cases, recordings and credentials separately. To set up another performance, [check the tags and the current release](docs/checkpoints.md).

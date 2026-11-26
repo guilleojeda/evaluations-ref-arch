@@ -1,105 +1,105 @@
 # Talk preparation
 
-Use this checklist before a rehearsal or delivery, and use [cleanup](cleanup.md)
-afterward, including after an interrupted session. The [demo script](demo-script.md)
-owns onstage cues; this document owns the software, workspace, identity, and
-replacement-browser preflight.
+Use this checklist before each rehearsal or delivery. Run [cleanup](cleanup.md)
+afterward, including after an interruption. The [demo script](demo-script.md)
+contains onstage cues. This runbook covers software, workspaces, identity,
+and replacement-browser readiness.
 
-This is a presenter-only runbook; the public build and local evaluation use the
-repository's local path instead.
+To run just the public example, start in the [README](../README.md#run-one-evaluation-locally). You can do that without presenter access.
 
-Phase 22 opens any one of six editable stage workspaces. It does not run a
-model, send application traffic, select a live endpoint, deploy, or reset data
-as a side effect of preparation. The one-case IDE smoke is not a substitute for
-the S3/S4 runners or the S5 gate and is not installed by the maintained
-devcontainer.
+The stage-workspace setup opens one or all six editable workspaces. That setup
+does not run a model, send application traffic, select a live endpoint, deploy,
+or reset data. The hosted pre-talk setup later in this runbook can perform the
+explicit controller recovery, Reset, and readiness actions listed in its
+section. Follow those actions only when establishing the live baseline.
 
-The [checkpoint map](checkpoints.md) is maintained separately from a private
-session index. The map identifies six source tags and peeled commits; it does
-not qualify S5 or prove that tags have been published. The session index
-identifies the selected case, candidate, publication and result for this
-performance. Keep the session index and all private inputs outside credential
-material and retain their digests in the private session record.
+The [checkpoint map](checkpoints.md) and private session index serve different
+purposes. The map identifies six source tags and peeled commits. It does not
+qualify S5 or prove that tags are published. The session index identifies the
+case, candidate, publication, and result for this performance. Store the index
+and private inputs in a directory that contains no credentials. Record their
+digests in the private session record.
 
 ## 1. Create the session record
 
-Give every rehearsal or delivery its own performance identity and private
-session index. Record the date, intended starting stage, and whether the full
-live sequence or selected stages will run. Record app/controller URLs, AWS
-account and Region, deployed source revisions, app version manifest, controller
-run ID, alarm identity, the two prepared publication tuples, six workspace
-bases, case/evidence/reference-time identities, evaluator and policy versions,
-commands, and unique input/result locations. Keep credentials in separate
-presenter-only storage.
+Create a private session index for every rehearsal or delivery. Record the
+date, starting stage, and whether the full sequence or selected stages will
+run. Also record app and controller URLs, AWS account and Region, deployed
+source revisions, the app version manifest, controller run ID, alarm identity,
+the two prepared publication tuples, six workspace bases, case,
+evidence and reference-time identities, evaluator and policy versions,
+commands, and unique input and result locations. Store credentials separately
+in presenter-only storage.
 
-The prepared asset hashes are deliberately reusable, but the performance
-identity is not. Set a new non-empty `PHASE22_SESSION_ID` for every rehearsal
-or delivery (for example, `talk-2026-11-18-rehearsal-b`). The importer records
-that value as `sessionId` and preserves the roster's `sourceAssetSessionId` and
-all input hashes, so session B can reuse unchanged prepared assets without
-being confused with session A:
+Prepared asset hashes may be reused. The performance identity may not. Set a
+new non-empty `PHASE22_SESSION_ID` for every rehearsal or delivery, such as
+`talk-2026-11-18-rehearsal-b`. The importer records it as `sessionId` and
+preserves the roster's `sourceAssetSessionId` and input hashes. This lets a new
+performance reuse unchanged assets without confusing it with an earlier one:
 
 ```sh
 # Replace this with a new unique ID for every rehearsal or delivery.
 export PHASE22_SESSION_ID="talk-2026-11-18-rehearsal-b"
 ```
 
-Keep the session index, inputs, saved source/tooling snapshots and results in
-durable private storage accessible from a replacement browser. Git alone does
-not preserve ignored evidence, uncommitted edits, environments or processes.
+Keep the session index, inputs, source and tooling snapshots, and results in
+durable private storage that a replacement browser can access. Git does not
+preserve ignored evidence, uncommitted edits, environments, or processes.
 
 ## 2. Finish software and release preparation
 
-Use the current qualified publication and branch readbacks, not a historical
-version example. Before the next rehearsal, inspect the exact repaired ZIP,
-source/prompt/configuration identities, Runtime/version/endpoint tuple,
-qualification receipt and protected approval. If `demo-deploy` still contains
-a prompt regression, use the [cleanup procedure](cleanup.md#3-repair-demo-deploy-after-the-regression)
-before preparing another full session.
+Use current qualified publication and branch readbacks. Before the next
+rehearsal, inspect the exact repaired ZIP, source, prompt, and configuration
+identities, Runtime/version/endpoint tuple, qualification receipt, and
+protected approval. If `demo-deploy` still contains a prompt regression, run
+[cleanup](cleanup.md#3-repair-demo-deploy-after-the-regression) before preparing
+another full session.
 
-- [ ] Verify the app, controller and agent as three independent cloud stacks
-  with expected settings; finish dependent releases in binding order outside
-  active demo runs and reconcile partial deployments.
-- [ ] Verify `demo-deploy` is the sole publishing branch and preserves deployed
-  ancestry. Merge maintained `main` only when needed; never recreate or rewind
-  the branch from an old checkpoint.
-- [ ] For changed software, complete build, offline, infrastructure and affected
-  runtime checks. Confirm the quality gate uses the exact agent package,
-  complete required results and source-backed human approval of that ZIP, the
-  frozen cases, and their actual reports and traces.
-- [ ] Verify `faulty` remains pinned and `repaired` has an exact-package
-  qualification. Reuse intact publications; qualify a missing or rebuilt
+- [ ] Verify the app, controller, and agent as three independent cloud stacks
+  with the expected settings. Finish dependent releases in binding order
+  outside active demo runs. Reconcile partial deployments.
+- [ ] Verify that `demo-deploy` is the sole publishing branch and retains
+  deployed ancestry. Merge maintained `main` only when needed. Never recreate
+  or rewind the branch from an old checkpoint.
+- [ ] For changed software, complete build, offline, infrastructure, and
+  affected runtime checks. Confirm that the quality gate uses the exact agent
+  package, all required results, and source-backed human approval of that ZIP,
+  the frozen cases, and their actual reports and traces.
+- [ ] Verify that `faulty` remains pinned and `repaired` has exact-package
+  qualification. Reuse intact publications. Qualify a missing or rebuilt
   publication normally.
-- [ ] In the hosted controller's **Incident** tab, after the baseline is healthy,
-  actions are settled and the alarm is freshly **OK**, choose **Faulty**
-  or **Repaired** under **Agent** and click **Apply agent**. Use **Check readiness**, **Activate Inventory
-  denial**, **Inventory memory**, **Select memory**, **Restore Inventory access**
-  and **Recover** on Incident. Find **Recommendation**, **Open native
-  CloudWatch trace** and **View full report** under **Current investigation**.
-  If the alarm has cleared, expand **Last investigation** and check its transition time. Use **Traffic** for
-  healthy traffic, surge and capacity, and **History** for **Reset demo** and
-  previous runs. Verify the strong readback; selection sends no traffic or
-  inference and never falls back automatically.
+- [ ] In the hosted controller, open **Incident** after the baseline is healthy,
+  actions are settled, and the alarm is freshly **OK**. Under **Agent**, choose
+  **Faulty** or **Repaired**, then click **Apply agent**. Use **Check readiness**,
+  **Activate Inventory denial**, **Inventory memory**, **Select memory**,
+  **Restore Inventory access**, and **Recover** on **Incident**. Under **Current
+  investigation**, find **Recommendation**, **Open native CloudWatch trace**,
+  and **View full report**. If the alarm has cleared, expand **Last
+  investigation** and check its transition time. In **Traffic**, use **Start
+  healthy traffic**, **Start surge**, **Stop traffic**, and **Increase Inventory
+  capacity** as needed. Use **History** for **Reset demo** and previous runs.
+  Verify the strong readback. Selection sends no traffic or inference and never
+  falls back automatically.
 - [ ] Verify tracing, complete-session telemetry, sanitized source capture,
-  captured providers, evaluation permissions and reference times. Missing
-  evidence remains visible.
-- [ ] Pin reviewed cases, deterministic checks and the single advisory verdict
-  with their actual identities, and verify the retained S2 result opens
+  captured providers, evaluation permissions, and reference times. Leave
+  missing evidence visible.
+- [ ] Pin reviewed cases, deterministic checks, and the single advisory verdict
+  with their actual identities. Verify that the retained S2 result opens
   offline from the replacement browser.
 - [ ] When rediscovering a qualification from the browser IDE, list the exact
   branch runs with `gh run list --branch demo-deploy --workflow deploy.yml
   --limit 10`, then open the selected run with `gh run view <run-id> --web`.
 
 Repeat affected checks after relevant changes. Do not redeploy unchanged
-software merely because another performance is scheduled.
+software only because another performance is scheduled.
 
 ## 3. Verify browser access and the development environment
 
 Create or reopen a Codespace from the maintained checkout. A cold or replacement
-Codespace must install its own tools and dependencies; do not copy a local
+Codespace must install its own tools and dependencies. Do not copy a local
 credential cache, `.venv`, `node_modules`, or binaries from an older Codespace.
-The committed `.devcontainer/` installs the pinned AWS CLI, Node.js and `uv`,
-while the repository pins Python 3.13, Node.js 24.22.2 and the locked agent
+The committed `.devcontainer/` installs the pinned AWS CLI, Node.js, and `uv`.
+The repository pins Python 3.13, Node.js 24.22.2, and the locked agent
 dependencies.
 
 ```sh
@@ -116,9 +116,9 @@ npm ci
 uv sync --locked --project agent
 ```
 
-For a cold browser, use a clean clone and fetch the maintained map. The clone
-and all private session paths are separate from the browser receipt and from
-credential storage:
+For a cold browser, use a clean clone and fetch the maintained map. Put the
+clone, browser receipt, and private session paths in different directories.
+Keep credential storage outside all three:
 
 ```sh
 replacement_root="${PHASE22_REPLACEMENT_ROOT:?set a new private directory}"
@@ -132,10 +132,9 @@ cd "$replacement_root/repository"
 git -C "$replacement_root/repository" status --short
 ```
 
-The container has no AWS credentials. Sign in only through a named operator
-profile and verify the account before opening private evidence. Keep the
-profile name and region in environment variables so the same commands work in
-another Codespace:
+The container has no AWS credentials. Sign in through a named operator profile
+and verify the account before opening private evidence. Keep the profile name
+and Region in environment variables so the commands work in another Codespace:
 
 ```sh
 aws configure list-profiles
@@ -152,26 +151,26 @@ aws sts get-caller-identity --profile "$AWS_PROFILE" --region "$AWS_REGION" \
   --query '{Account:Account,Arn:Arn}' --output json
 ```
 
-If the terminal cannot open a browser, use
+If the terminal cannot open a browser, run
 `aws sso login --profile "$operator_profile" --use-device-code --no-browser`
 and enter the displayed URL and code in the operator's browser. Do not use a
 default profile, paste long-lived keys, or save credentials in a worktree.
 
 If this AWS CLI build does not expose `--use-device-code` on `configure sso`,
-run `aws configure sso --profile "$operator_profile" --no-browser` and use
+run `aws configure sso --profile "$operator_profile" --no-browser`, then use
 `aws sso login --profile "$operator_profile" --use-device-code --no-browser`.
 The profile contains only non-secret SSO configuration. Evaluation commands use
 the separately scoped, short-lived evaluation role through the documented role
-chain; do not reuse the app/controller bearer or deployment credentials.
+chain. Do not reuse the app/controller bearer or deployment credentials.
 
-For hosted pages, retrieve the app and controller bearers through the existing
-private AWS paths in [deployment](deployment.md#rotate-presenter-credentials),
-then close credential views before sharing the screen. The agent/evaluation
-role is separate from the app/controller operator role.
+For hosted pages, retrieve app and controller bearers through the existing
+private AWS paths in [deployment](deployment.md#rotate-presenter-credentials).
+Close credential views before sharing the screen. The agent and evaluation
+role is separate from the app and controller operator role.
 
-The publication verifier uses the GitHub CLI for read-only calls to the
-repository contents, workflow run, protected environment and run approvals.
-Check its login and API compatibility before a full S5 preparation:
+The publication verifier uses the GitHub CLI for read-only calls to repository
+contents, workflow runs, the protected environment, and run approvals. Check
+its login and API compatibility before full S5 preparation:
 
 ```sh
 gh auth status
@@ -181,22 +180,22 @@ gh api 'repos/guilleojeda/evaluations-ref-arch/actions/runs?per_page=1' \
   --jq '.workflow_runs[0] | {id,head_sha,status,conclusion}'
 ```
 
-The verifier then looks up the exact protected run by the `reviewRunId` in the
-native publication readback (`actions/runs/<reviewRunId>` and
-`actions/runs/<reviewRunId>/approvals`) and reads the qualification pointer at
-the verified `demo-deploy` tip. Do not substitute an arbitrary successful run
-or hand-author an approval. If a browser is the only available GitHub access,
-inspect the same run, its `repaired-publication` environment approval, the
-`demo-deploy` commit and pointer in the GitHub UI, then restore `gh` in the
-maintained Codespace and rerun the verifier; the UI review is not a replacement
-for its machine-readable binding.
+The verifier looks up the exact protected run from `reviewRunId` in the native
+publication readback (`actions/runs/<reviewRunId>` and
+`actions/runs/<reviewRunId>/approvals`). It then reads the qualification pointer
+at the verified `demo-deploy` tip. Do not substitute an arbitrary successful run
+or hand-author an approval. If GitHub is available only in a browser, inspect
+the same run, its `repaired-publication` environment approval, the
+`demo-deploy` commit, and the pointer in the GitHub UI. Restore `gh` in the
+maintained Codespace and rerun the verifier. The UI review does not replace its
+machine-readable binding.
 
 ### Verify the source and prepared release
 
 Before preparing a full session, fetch the reviewed source and inspect the
 checkpoint map from maintained `main`. Check the map and tag identities in
-[checkpoints](checkpoints.md); tag creation and ruleset changes belong to the
-checkpoint maintainer, not to a presenter preparing a session.
+[checkpoints](checkpoints.md). The checkpoint maintainer owns tag creation and
+ruleset changes. Do not make those changes while preparing a session.
 
 ```sh
 git status --short
@@ -205,11 +204,11 @@ git log --oneline -8
 sed -n '1,220p' docs/checkpoints.md
 ```
 
-From the clean operator checkout on maintained `main`, fetch the release ref
-directly into the local `demo-deploy` branch. This creates or fast-forwards
-the local branch while leaving it available for the S5 worktree. If a previous
-worktree owns the branch, settle and archive it using the cleanup procedure.
-Inspect divergence before continuing.
+From a clean operator checkout on maintained `main`, fetch the release ref
+directly into the local `demo-deploy` branch. This creates or fast-forwards the
+local branch and leaves it available for the S5 worktree. If another worktree
+owns the branch, settle and archive it with the cleanup procedure. Inspect
+divergence before continuing.
 
 ```sh
 git branch --show-current
@@ -217,11 +216,11 @@ git fetch origin refs/heads/demo-deploy:refs/heads/demo-deploy
 git rev-parse --verify refs/heads/demo-deploy
 ```
 
-Keep the identities separate when preparing S5. The map's S5 commit is the
-frozen source checkpoint; the production verifier's `demoDeploy.qualifiedCommit`
-is the current repaired source that the publication actually serves. Compare
-both to their recorded evidence, but do not change a tag or move `demo-deploy`
-to make them match:
+Keep these values distinct when preparing S5. The map's S5 commit is the frozen
+source checkpoint. The production verifier's
+`demoDeploy.qualifiedCommit` is the current repaired source served by the
+publication. Compare both with their recorded evidence. Do not change a tag or
+move `demo-deploy` to make them match:
 
 ```sh
 checkpoint_map="${PHASE22_CHECKPOINTS:?set the maintained checkpoint map}"
@@ -232,12 +231,12 @@ git rev-parse --verify "refs/tags/$s5_tag^{commit}" 2>/dev/null || \
   printf '%s\n' 'S5 tag is not published in this checkout; do not create it here.'
 ```
 
-For a full session, defer the qualified source, `faulty`/`repaired` publication
-tuples and immutable Runtime/package readbacks to the read-only verifier in the
-next step, after the prepared assets have been imported. A failed S5 regression
-leaves source regressed while the qualified artifact continues serving; follow
-[cleanup](cleanup.md#3-repair-demo-deploy-after-the-regression) before preparing another full
-session. Do not claim that a source checkpoint is a qualified publication.
+For a full session, import the prepared assets before running the read-only
+verifier for the qualified source, `faulty` and `repaired` publication tuples,
+and immutable Runtime and package readbacks. If S5 leaves a prompt regression,
+the qualified artifact continues serving while source is regressed. Run
+[cleanup](cleanup.md#3-repair-demo-deploy-after-the-regression) before preparing
+another full session. A source checkpoint is not a qualified publication.
 
 ## 4. Prepare six independent editable workspaces
 
@@ -246,35 +245,33 @@ session. Do not claim that a source checkpoint is a qualified publication.
   frozen S0-S5 tags and their expected commit mapping unchanged.
 - [ ] Prepare S0-S4 from verified frozen tags. Prepare S5 on long-lived
   `demo-deploy` at the current qualified repaired source, which may differ from
-  the frozen S5 tag. Only one worktree may check out that branch; release the
-  old session's branch association after preserving and settling its work.
+  the frozen S5 tag. Keep that branch checked out in one worktree only. Release
+  the old session's branch association after preserving and settling its work.
 - [ ] In each workspace, show its stage, base tag/commit, saved differences,
   candidate/input identity, entry command and result location. A missing runner
   or asset leaves that stage unready.
 
-Do not prepare from a private path that happens to exist on the presenter's Mac,
-and do not hand-write a session input. Download the maintained, versioned
-session asset archive into a new private directory, verify both its recorded
-S3 `VersionId` and SHA-256, and let the maintained importer select the stock or
-audience-carried gate. The archive contains the generated `session-roster.json`
-and the selected prepared files. The maintained archive is self-contained:
-extract it as one directory and pass its in-archive roster directly to the
-importer. Do not use an older archive whose roster points to a private
-source-tree path or rearrange files to satisfy it; request the refreshed
-portable archive from the stage-assets maintainer.
+Do not prepare from a private path on the presenter's Mac or hand-write a
+session input. Download the maintained, versioned session asset archive into a
+new private directory. Verify its recorded S3 `VersionId` and SHA-256. Let the
+maintained importer select the stock or audience-carried gate. The archive
+contains `session-roster.json` and the selected prepared files. Extract it as
+one directory and pass its in-archive roster to the importer. If the roster
+points to a private source-tree path, request a refreshed portable archive from
+the stage-assets maintainer. Do not rearrange files to satisfy an old roster.
 
 The downloaded prepared-input/session archive is a versioned private object in
 the asset bucket under `talk-sessions/`. Its nested `gate/staging.tar.gz` is a
-content-addressed evaluation object in the evidence bucket. That pointer and
-SHA are checked from the roster; the content-addressed object does not acquire
-a fabricated S3 version. Keep the downloaded archive, roster and generated
-input outside the checkout.
+content-addressed evaluation object in the evidence bucket. The importer checks
+that pointer and SHA from the roster. Do not assign the content-addressed
+object a fabricated S3 version. Keep the downloaded archive, roster, and
+generated input outside the checkout.
 
-The replacement-browser receipt is itself a pinned, versioned S3 object. Keep
-the locator JSON private, fetch exactly its recorded object version, and verify
-the locator digest before deriving the archive key/version/digest. This is the
-same procedure on a cold or replacement Codespace; do not copy an old download
-or infer a new key from a prior session:
+The replacement-browser receipt is a pinned, versioned S3 object. Keep the
+locator JSON private. Fetch its recorded object version and verify the locator
+digest before deriving the archive key, version, and digest. Follow the same
+procedure in a cold or replacement Codespace. Do not copy an old download or
+infer a new key from a prior session:
 
 ```sh
 asset_root="${PHASE22_ASSET_ROOT:?set a new private directory outside the checkout}"
@@ -299,7 +296,7 @@ export PHASE22_ASSET_VERSION_ID="$(jq -er '.archive.versionId' "$receipt")"
 export PHASE22_ASSET_SHA256="$(jq -er '.archive.sha256' "$receipt")"
 ```
 
-The archive download uses the IDs from that receipt, not a mutable latest
+Download the archive with the IDs from that receipt. Do not use a mutable latest
 object:
 
 ```sh
@@ -334,14 +331,14 @@ test "$PHASE22_ASSET_SESSION_ID" != "$performance_id" || {
 }
 ```
 
-The importer is intentionally local and deterministic: it authenticates the
-selected private bytes and writes the small `talk-session.py` input; it does
-not copy credentials, query AWS, run a model, invoke an agent, change a Git
-ref, or publish a release. Its supported interface is `build` (the default
-command), with `--roster`, `--output`, `--session-id`, `--suite stock|carried`,
-and optional `--stage S3` or `--live-release-binding`. Roster entries may be files or
-selected run directories; the importer verifies their recorded digest
-recursively and rejects symlinks or missing content:
+The importer is local and deterministic. It authenticates the selected private
+bytes and writes the small `talk-session.py` input. It does not copy
+credentials, query AWS, run a model, invoke an agent, change a Git ref, or
+publish a release. Its supported interface is `build` with `--roster`,
+`--output`, `--session-id`, `--suite stock|carried`, and optional `--stage S3`
+or `--live-release-binding`. Roster entries may be files or selected run
+directories. The importer verifies recorded digests recursively and rejects
+symlinks or missing content:
 
 ```sh
 suite="${PHASE22_SUITE:?set stock or carried to match the verified qualification pointer}"
@@ -352,19 +349,19 @@ python3 scripts/talk-inputs.py build \
   --suite "$suite" --stage S3 --output "$phase22_s3_session"
 ```
 
-`stock` selects the preserved three-case gate and its stock pointer;
+`stock` selects the preserved three-case gate and its stock pointer.
 `carried` selects the four-case gate with the reviewed audience case. For a
 full S0-S5 session, set `PHASE22_SUITE` to the mode named by the verified
-qualification pointer; the current carried qualification is not interchangeable
+qualification pointer. The current carried qualification is not interchangeable
 with stock. Direct S3 entry may explicitly use stock and requires no S5
 binding.
 
-For a full S0-S5 session, verify the production publication binding after the
-asset import and before writing the final all-stage input. This read-only
-verifier joins the native repaired tuple, current remote/GitHub
-`demo-deploy` tip, protected approval, immutable Phase 20 receipt/review
-manifest and `agent/qualification-input.json`; it never selects, publishes,
-invokes or mutates a resource:
+For a full S0-S5 session, verify the production publication binding after
+importing assets and before writing the final all-stage input. This read-only
+verifier joins the native repaired tuple, current remote and GitHub
+`demo-deploy` tip, protected approval, immutable qualification receipt and review
+manifest, and `agent/qualification-input.json`. It never selects, publishes,
+invokes, or mutates a resource:
 
 ```sh
 runtime_arn="${CONTROLLER_AGENT_RUNTIME_ARN:?set the verified Runtime ARN}"
@@ -383,13 +380,13 @@ export PHASE22_SESSION="$phase22_session"
 ```
 
 The verifier output must have `schemaVersion: 1` and
-`kind: "phase22-s5-qualification-binding"`; the importer checks that exact
+`kind: "phase22-s5-qualification-binding"`. The importer checks that exact
 production schema and rejects a hand-written or older binding.
 
-The final input has `schemaVersion: 1`, per-stage candidate/input identities
-and, for S5, the verified `demoDeploy` tuple. Keep it private. If the binding
-or any immutable readback mismatches, stop; do not edit the JSON to make the
-import pass. For S3-only entry, use the first generated input directly:
+The final input has `schemaVersion: 1`, per-stage candidate and input
+identities, and the verified `demoDeploy` tuple for S5. Keep it private. If the
+binding or any immutable readback mismatches, stop. Do not edit the JSON to
+make the import pass. For S3-only entry, use the first generated input directly:
 
 ```sh
 export PHASE22_S3_SESSION="$phase22_s3_session"
@@ -397,18 +394,17 @@ export PHASE22_S3_SESSION="$phase22_s3_session"
 
 ### Prepare all stages, or enter one stage directly
 
-The operator CLI validates the schema, tag peel, private stage inputs and the
-qualified `demo-deploy` branch before creating any worktree. It writes one
-`session-index.json` under the requested directory. Preparation can be retried
-after an input correction; an occupied or dirty path is reported and is never
-replaced.
+Before creating any worktree, the operator CLI validates the schema, tag peel,
+private stage inputs, and qualified `demo-deploy` branch. It writes one
+`session-index.json` under the requested directory. You can retry after fixing
+an input. An occupied or dirty path is reported and never replaced.
 
-Set paths to private files outside the checkout. The checkpoint map must have
-`schemaVersion: 1` and a `checkpoints` object with `S0`-`S5` entries containing
-`tag` and a 40-character peeled `commit`. The session input must have
-`schemaVersion: 1`, `sessionId`, per-stage `candidateId`/`inputId`, and, for a
-full session, `demoDeploy` with `branch: "demo-deploy"`, the qualified commit,
-`candidateId: "repaired"`, and `publicationId`.
+Set all paths to private files outside the checkout. The checkpoint map must
+have `schemaVersion: 1` and a `checkpoints` object with `S0`-`S5` entries that
+contain `tag` and a 40-character peeled `commit`. The session input must have
+`schemaVersion: 1`, `sessionId`, per-stage `candidateId` and `inputId`, and,
+for a full session, `demoDeploy` with `branch: "demo-deploy"`, the qualified
+commit, `candidateId: "repaired"`, and `publicationId`.
 
 ```sh
 checkpoint_map="${PHASE22_CHECKPOINTS:?set the maintained checkpoint map}"
@@ -421,15 +417,15 @@ python3 scripts/talk-session.py prepare \
   --directory "$session_root"
 ```
 
-The result is JSON describing each workspace, its tag/branch base, commit,
-candidate/input identity, and initial clean state. S0-S4 use the peeled tag
-commit. S5 alone owns the current qualified `demo-deploy` branch, which may be
-newer than the frozen S5 tag. No stage switch moves a ref or changes a cloud
-resource.
+The command returns JSON for each workspace with its tag or branch base,
+commit, candidate and input identity, and initial clean state. S0-S4 use the
+peeled tag commit. S5 alone owns the current qualified `demo-deploy` branch,
+which may be newer than the frozen S5 tag. Switching stages moves no ref and
+changes no cloud resource.
 
 For direct entry, pass only the selected checkpoint map and that stage's private
-session input. S3, for example, does not require S5 qualification or an earlier
-S0-S2 run. A stage-only input is sufficient; it does not need the all-stage
+session input. S3 does not require S5 qualification or an earlier S0-S2 run.
+A stage-only input is sufficient. It does not need the all-stage
 `PHASE22_SESSION` created by the S5 binding route:
 
 ```sh
@@ -445,10 +441,10 @@ python3 scripts/talk-session.py status \
 ```
 
 To continue an independently prepared S3 performance into S4, build S4's own
-stage-only input from the same roster, assets, suite and performance ID. Use the
-same session root so the existing S3 workspace is preserved, then inspect S4
-before editing. The S3-to-S4 handoff still consumes the current immutable S3 run
-directory printed by the S3 runner; opening S4 does not relaunch S3:
+stage-only input from the same roster, assets, suite, and performance ID. Use
+the same session root to preserve the existing S3 workspace. Inspect S4 before
+editing. Pass the current immutable S3 run directory printed by the S3 runner.
+Opening S4 does not relaunch S3:
 
 ```sh
 s3_run_directory="${PHASE22_S3_RUN_DIRECTORY:?set the current fresh S3 run directory printed by the runner}"
@@ -470,48 +466,50 @@ python3 scripts/talk-session.py status \
 ```
 
 Status is read-only. Use it before switching or editing and after reconnecting
-from another browser. It reports the current commit, dirty state and saved
-differences; it does not relaunch an execution or replace an edit.
+from another browser. It reports the current commit, dirty state, and saved
+differences. It does not relaunch an execution or replace an edit.
 
 ## 5. Rehearse the experience and fallbacks
 
-Use the prepared workspaces for the actual rehearsal, and keep every recorded
-fallback labeled with its input and execution identity:
+Use the prepared workspaces for the rehearsal. Label every recorded fallback
+with its input and execution identity:
 
-- [ ] Rehearse the opening denial: a genuine new alarm transition, matching
-  faulty investigation and wrong memory recommendation, higher-memory switch
-  preserving denial, separate fresh failed requests, then actual access
-  restoration and recovery. A configuration readback alone proves no business
-  outcome.
-- [ ] Rehearse selecting repaired with endpoint/version/artifact readback, then
-  a new incident after native alarm **OK**. Match the new event/run; do not
-  relabel an old report or clear deduplication records.
+- [ ] Rehearse the opening denial. Trigger a genuine new alarm transition,
+  match the faulty investigation and wrong memory recommendation, switch to
+  higher memory while preserving denial, send separate fresh failed requests,
+  then restore access and recover. A configuration readback alone does not
+  prove a business outcome.
+- [ ] Rehearse selecting repaired with endpoint, version, and artifact
+  readback. Then trigger a new incident after native alarm **OK**. Match the
+  new event and run. Do not relabel an old report or clear deduplication
+  records.
 - [ ] Reopen the controller from a replacement authenticated browser. Start on
-  **Incident**, read the same selected tuple and prior investigation identities,
-  and use **View full report** when detailed evidence is needed. Interrupt one
-  later state/alarm refresh during rehearsal: confirm the UI marks the last
-  successful selection stale/unavailable, preserves its earlier observation
-  time, and leaves the candidate unchanged until explicit selection succeeds.
+  **Incident** and read the selected tuple and prior investigation identities.
+  Use **View full report** for detailed evidence. Interrupt one later
+  state or alarm refresh. Confirm that the UI marks the last successful
+  selection stale or unavailable, preserves its earlier observation time, and
+  leaves the candidate unchanged until explicit selection succeeds.
 - [ ] For the capacity rehearsal, use the **Traffic** tab and its **Inventory
-  surge**, **Stop traffic**, healthy traffic and capacity controls. Use the
-  approved finite profile and compare
-  actual starts, skips, native arrivals, caller outcomes, metric windows and
-  checkout effects. Preserve app code, memory, aliases, access, productVersion
-  and prior data across the pair. Use the [capacity cue](demo-script.md#phase-10-capacity-overload-and-separate-remedy-observation)
+  surge**, **Start surge**, **Stop traffic**, **Start healthy traffic**, and
+  **Increase Inventory capacity** controls. Use the approved finite profile.
+  Compare actual starts, skips, native arrivals,
+  caller outcomes, metric windows, and checkout effects. Preserve app code,
+  memory, aliases, access, `productVersion`, and prior data across the pair.
+  Use the [capacity cue](demo-script.md#capacity-overload-and-separate-remedy-observation)
   for acceptance evidence and fallback.
-- [ ] Verify recovered/stale-alert examples have a later reference time and
-  captured post-recovery evidence. Do not judge a pre-recovery report as though
-  it knew later outcomes.
-- [ ] Rehearse the audience interactions: review the case, judge the report and
-  enter the bounded prompt regression. Reveal reviewed verdicts and actual judge
-  findings after the audience vote without changing the rubric. Brief the
-  participant on the exact file/edit, timing and presenter takeover.
-- [ ] Time execution, ingestion, scoring and CI. Set switch cutoffs leaving time
-  for results and closing. Label recorded reports, traces, comparisons and CI
-  rejection evidence **recorded** with their identities; a pending live run
+- [ ] Verify recovered and stale-alert examples have a later reference time and
+  captured post-recovery evidence. Do not judge a pre-recovery report by later
+  outcomes.
+- [ ] Rehearse the audience interactions. Review the case, judge the report,
+  and enter the bounded prompt regression. Reveal reviewed verdicts and actual
+  judge findings after the audience vote without changing the rubric. Brief the
+  participant on the exact file and edit, timing, and presenter takeover.
+- [ ] Time execution, ingestion, scoring, and CI. Set switch cutoffs that leave
+  time for results and closing. Label reports, traces, comparisons, and CI
+  rejection evidence **recorded** with their identities. A pending live run
   remains pending.
 - [ ] Verify numeric slide claims against retained measurements and dated
-  pricing. Distinguish agent inference, judging, retries, telemetry, CI and
+  pricing. Distinguish agent inference, judging, retries, telemetry, CI, and
   feedback waits. Review [audience questions](questions.md).
 - [ ] Rehearse the 60-minute [cue sheet](demo-script.md#working-run-of-show),
   screen switches and approved closing. After the final rehearsal, execute
@@ -519,29 +517,29 @@ fallback labeled with its input and execution identity:
 
 ### Run a stage from its prepared workspace
 
-Open the requested stage directory and use its private input paths. Each run
-must snapshot its candidate, tooling, lockfile, case/bundle, evaluator and
-configuration at launch and write to a unique private result directory. Keep
+Open the requested stage directory and use its private input paths. At launch,
+each run must snapshot its candidate, tooling, lockfile, case or bundle,
+evaluator, and configuration. Write to a unique private result directory. Keep
 the command output and identity in the session record.
 
-For the S3 → S4 handoff, pass the directory printed by the current S3 run to
-`--source-run` when continuing from that execution. Do not substitute a
-historical run whose saved prompt, source, or tooling identity does not match;
-keep any recorded result under its original identity.
+For the S3 to S4 continuation, pass the directory printed by the current S3 run
+to `--source-run`. Do not substitute a historical run whose saved prompt,
+source, or tooling identity does not match. Keep each recorded result under its
+original identity.
 
 | Stage | Entry and required evidence |
 | --- | --- |
-| S0 | Open/edit the faulty source. Use the hosted controller and [S0 operating instructions](demo-script.md) for a genuine alarm; retain the actual report, trace, and sanitized capture. Source editing does not change the served publication. |
-| S1 | From the S1 worktree root, copy the portable `audience/denial-session-draft.json` to the session edit directory. Review it against `prepared/denial.json`, then run `validate`, `freeze` and `candidate-input`. Review produces no score. See [agent README](../agent/README.md#review-and-freeze-a-case-s1). |
-| S2 | Open the identified saved run with `evaluate_case.py show`, then score only that matching execution with the pinned evaluator. Keep the original execution identity and advisory result. See [agent README](../agent/README.md#run-and-score-the-captured-baseline-s2). |
-| S3 | Edit only the prompt in the S3 worktree. Run `evaluate_case.py run --candidate repaired`, inspect with `show`, score the fresh execution with the same evaluator, and compare only after the matching S2 and S3 scores complete. See [agent README](../agent/README.md#run-score-and-compare-the-repaired-candidate-s3). |
-| S4 | Run the native `development_experiment.py run` launcher with the prepared suite/evaluator, optionally using an explicitly selected immutable `--source-run`; inspect with `show` and compare the saved experiment offline. A focused run cannot qualify a release. See [agent README](../agent/README.md#run-the-native-strands-development-experiment-s4). |
-| S5 | In the only `demo-deploy` worktree, make the reviewed prompt-only regression commit and push through the normal workflow. Record the rejected gate, exact commit/package, frozen case roster, and unchanged repaired serving tuple. Repair the branch through the normal gate before the next full session. |
+| S0 | Open and edit the faulty source. Use the hosted controller and [S0 operating instructions](demo-script.md) for a genuine alarm. Retain the actual report, trace, and sanitized capture. Source editing does not change the served publication. |
+| S1 | From the S1 worktree root, copy portable `audience/denial-session-draft.json` to the session edit directory. Review it against `prepared/denial.json`, then run `validate`, `freeze`, and `candidate-input`. Review produces no score. See [agent README](../agent/README.md#review-and-freeze-a-case-s1). |
+| S2 | Open the identified saved run with `evaluate_case.py show`. Score only that matching execution with the pinned evaluator. Keep the original execution identity and advisory result. See [agent README](../agent/README.md#run-and-score-the-captured-baseline-s2). |
+| S3 | Edit only the prompt in the S3 worktree. Run `evaluate_case.py run --candidate repaired`, inspect with `show`, and score the fresh execution with the same evaluator. Compare only after matching S2 and S3 scores complete. See [agent README](../agent/README.md#run-score-and-compare-the-repaired-candidate-s3). |
+| S4 | Run the native `development_experiment.py run` launcher with the prepared suite and evaluator. You may pass an explicitly selected immutable `--source-run`. Inspect with `show` and compare the saved experiment offline. A focused run cannot qualify a release. See [agent README](../agent/README.md#run-the-native-strands-development-experiment-s4). |
+| S5 | In the only `demo-deploy` worktree, make the reviewed prompt-only regression commit and push through the normal workflow. Record the rejected gate, exact commit and package, frozen case roster, and unchanged repaired serving tuple. Repair the branch through the normal gate before the next full session. |
 
-Switching from S3 to S4 while S3 is running is allowed only after confirming
-that each run owns immutable launch-time inputs and a unique output directory.
+You may switch from S3 to S4 while S3 is running only after confirming that
+each run owns immutable launch-time inputs and a unique output directory.
 Opening S4 must not read mutable files from S3 or relaunch S3. A deliberately
-missing or incompatible case fails visibly; it is not silently replaced.
+missing or incompatible case fails visibly. Do not replace it silently.
 
 ## 6. Establish the final live baseline
 
@@ -549,24 +547,24 @@ missing or incompatible case fails visibly; it is not silently replaced.
 
 ### Save and recover a session
 
-After stopping/draining work, build a private inventory from the session index,
-Git bases/differences, selected untracked files, reviewed inputs/captures,
-result records and CI references. Do not archive a whole worktree, Git
-metadata, credentials, virtual environments, `node_modules`, or build caches.
-The archive command checks selected content digests and preserves unfinished
-records as unfinished; it never relaunches work. The inventory and archive are
-both required restore inputs: an archive digest by itself is not a portable
-session receipt.
+After stopping and draining work, build a private inventory from the session
+index, Git bases and differences, selected untracked files, reviewed
+inputs and captures, result records, and CI references. Do not archive a whole
+worktree, Git metadata, credentials, virtual environments, `node_modules`, or
+build caches. The archive command checks selected content digests, preserves
+unfinished records as unfinished, and never relaunches work. The inventory and
+archive are both required restore inputs. An archive digest alone is not a
+portable session receipt.
 
-The session index is included as a private file by the command below. Add each
-reviewed evidence file with a repeated `--include-path`; for example,
-`evidence/s5/push.json` is one possible record. A reviewed untracked file such
-as `S0/talk/presenter/s0-intentional-untracked-note.md` may be selected with
-`--selected-untracked`, but neither example is mandatory; omit it when the
-session has no such file. `PHASE22_REVIEWED_RUN_DIR` is also optional for a
-session interrupted before a model run; when set, it must name a non-empty
-reviewed directory or the command stops. Never broaden `--selected-untracked`
-or `--include-path` to a whole worktree.
+The command below always includes the private session index. Add each reviewed
+evidence file with a repeated `--include-path`, such as
+`evidence/s5/push.json`. Select a reviewed untracked file with
+`--selected-untracked`, such as
+`S0/talk/presenter/s0-intentional-untracked-note.md`. Omit either option when
+the session has no matching file. `PHASE22_REVIEWED_RUN_DIR` is optional for a
+session interrupted before a model run. When set, it must name a non-empty
+reviewed directory or the command stops. Never pass a whole worktree to either
+selection option.
 
 ```bash
 private_root="${PHASE22_PRIVATE_ROOT:?set a private directory outside the checkout}"
@@ -627,19 +625,18 @@ inventory_sha256="$(sha256sum "$private_inventory" | awk '{print $1}')"
   sha256sum -c "$(basename "$private_archive").sha256")
 ```
 
-Restore only into verified clean stage bases prepared first. Preserve unrelated
-or conflicting destination edits and stop on a digest mismatch. Check each
-stage's Git diff/commit and each restored run record after restore. When the
-inventory records stage-local commits, `restore` imports their Git bundles and
-checks the exact saved HEAD before applying the selected file overlay; do not
-cherry-pick the commit again. Reopening a session shows saved status; it does
-not start an evaluation, checkout, alarm, deployment, or reset.
+Restore only into verified clean stage bases that were prepared first. Preserve
+unrelated or conflicting destination edits and stop on a digest mismatch.
+After restore, check each stage's Git diff and commit, and each restored run
+record. When the inventory records stage-local commits, `restore` imports their
+Git bundles and checks the exact saved HEAD before applying the selected file
+overlay. Do not cherry-pick the commit again. Reopening a session shows saved
+status. It does not start an evaluation, checkout, alarm, deployment, or reset.
 
 For durable storage, use the existing versioned private asset bucket from the
-operator's receipt under a unique `talk-sessions/<session-id>/` prefix.
-Upload/download is an operator action after local save/restore has passed, not
-part of preparation. Upload both restore inputs, retain separate object
-versions and trusted hashes, and do not use an unpinned latest object:
+operator's receipt under a unique `talk-sessions/<session-id>/` prefix. Upload
+the two restore inputs after local save has passed. Retain each object version
+and trusted hash. Do not use an unpinned latest object:
 
 ```sh
 archive_sha256="$(sha256sum "$private_archive" | awk '{print $1}')"
@@ -681,11 +678,11 @@ jq -n \
 chmod 600 "$private_receipt"
 ```
 
-Record the two returned VersionId values, both SHA-256 values, object keys,
-UTC time and aws sts get-caller-identity result in the private receipt. On a
-replacement Codespace, read that retained receipt, download both exact object
-versions, and verify each against its trusted hash before writing/verifying the
-archive sidecar and restoring:
+Record both returned VersionId values, both SHA-256 values, object keys, UTC
+time, and the `aws sts get-caller-identity` result in the private receipt. In a
+replacement Codespace, read that receipt, download both exact object versions,
+and verify each trusted hash before writing and checking the archive sidecar or
+restoring:
 
 ```sh
 replacement_root="${PHASE22_SESSION_REPLACEMENT_ROOT:?set a new private directory}"
@@ -714,10 +711,10 @@ printf '%s  %s\n' "$archive_sha256" "$(basename "$replacement_archive")" \
 (cd "$replacement_assets" && sha256sum -c "$(basename "$replacement_archive").sha256")
 ```
 
-Only after those exact-version readbacks and archive-sidecar check pass, use a
-fresh reviewed clone to prepare every detached A base - including S5 - from the
-inventory, then restore the selected files. A must never attach or move the
-current demo-deploy branch:
+After the exact-version readbacks and archive-sidecar check pass, use a fresh
+reviewed clone to prepare every detached A base, including S5, from the
+inventory. Then restore the selected files. A must never attach or move the
+current `demo-deploy` branch:
 
 ```sh
 A_CLONE="${PHASE22_SESSION_REPLACEMENT_REPOSITORY:?path to the reviewed clean replacement clone}"
@@ -744,64 +741,64 @@ test -z "$(git -C "$A_ROOT/S5" branch --show-current)"
 )
 ```
 
-Historical A is evidence recovery only and must not be presented as the
-currently qualified release or used to overwrite a newer live demo-deploy.
-Keep all six A worktrees detached. Only after A's restore and inspection are
-complete may separate session B preparation check out and own the current
-qualified demo-deploy branch and verify its new tip.
+Historical A is for evidence recovery only. Do not present it as the currently
+qualified release or use it to overwrite a newer `demo-deploy`. Keep all six A
+worktrees detached. After A's restore and inspection are complete, session B
+may check out and own the current qualified `demo-deploy` branch. Verify its
+new tip.
 
-Use the browser console or the CLI only with the scoped operator profile. Keep
-the private archive, version receipts and credentials off the public repo.
+Use the browser console or CLI only with the scoped operator profile. Keep the
+private archive, version receipts, and credentials out of the public repo.
 
 ### Final live readiness
 
-Before a full performance, stop and drain producers, reconcile unresolved
-checkout identities on the **Storefront**, close old checkout pages, and verify
-the current app and controller release. Confirm the fresh native alarm is
-**OK**, the intended
-candidate tuple is read back, and no action can still submit traffic. Use the
-controller's **History** tab and use **Reset demo** once with a fresh
-`productVersion` only for a whole-talk restart after prior work is settled;
-captured-only direct entry does not
-need a business reset. Keep traffic stopped until the scripted start.
+Before a full performance, stop and drain producers. Reconcile unresolved
+checkout identities on the **Storefront** and close old checkout pages. Verify
+the current app and controller release. Confirm that the fresh native alarm is
+**OK**, the intended candidate tuple is read back, and no action can submit
+traffic. Use the controller's **History** tab. For a whole-talk restart, use
+**Reset demo** once with a fresh `productVersion` after prior work is settled.
+Captured-only direct entry does not need a business reset. Keep traffic stopped
+until the scripted start.
 
-Record account/region, app/controller URLs, current source and manifest,
-controller run, endpoint/artifact tuples, six workspace bases, private input and
-result identities, and any incomplete or recorded fallback. Do not call a
-recorded result a fresh execution or a source edit a qualified publication.
+Record account and Region, app and controller URLs, current source and
+manifest, controller run, endpoint and artifact tuples, six workspace bases,
+private input and result identities, and any incomplete or recorded fallback.
+Do not call a recorded result a fresh execution or a source edit a qualified
+publication.
 
 Before declaring the baseline ready:
 
-- [ ] Stop producers and other browser writers, drain accepted work, reconcile
+- [ ] Stop producers and other browser writers. Drain accepted work, reconcile
   checkout IDs and receipts, close old checkout pages, and keep traffic stopped.
-- [ ] For a whole-talk restart only, use the controller's normal Reset once with
-  a fresh `productVersion` after prior work is settled. Captured-only direct
-  entry does not need a business reset. Do not manipulate controller records.
-- [ ] Verify the current app/controller release, trusted settings, healthy
-  alias/version, Inventory cap **16**, unreserved Checkout, native alarm **OK**,
-  exact adapter binding and ready endpoint. A stale or missing read is not fresh
-  incident readiness.
+- [ ] For a whole-talk restart, use the controller's normal Reset once with a
+  fresh `productVersion` after prior work is settled. Captured-only direct entry
+  does not need a business reset. Do not manipulate controller records.
+- [ ] Verify the current app and controller release, trusted settings, healthy
+  alias and version, Inventory cap **16**, unreserved Checkout, native alarm
+  **OK**, exact adapter binding, and ready endpoint. A stale or missing read is
+  not fresh incident readiness.
 - [ ] Select retained **faulty** for the opening only after its prepared tuple
   and the native alarm are read back. Keep repaired deployed and qualified for
   later selection.
 - [ ] Record stock, verification order, selection, alarm observation time,
-  session/run ID and actual request counts/outcomes. Captured-evidence-only
-  entry needs its assets/services, not an unnecessary business Reset.
+  session and run ID, and actual request counts and outcomes. Captured-only entry
+  needs its assets and services, not a business Reset.
 
 ## 7. Before the room opens
 
-- [ ] Open the final deck, notes/timer, app, controller, live report, Codespace,
-  native reports, AgentCore Observability and GitHub Actions. Preselect relevant
-  resources/stages without executing them.
-- [ ] Set browser/terminal/editor zoom and arrange readable views. Confirm
-  display, presenter notes, network and power. Close credential pages and
+- [ ] Open the final deck, notes and timer, app, controller, live report,
+  Codespace, native reports, AgentCore Observability, and GitHub Actions.
+  Preselect relevant resources and stages without executing them.
+- [ ] Set browser, terminal, and editor zoom. Arrange readable views. Confirm
+  display, presenter notes, network, and power. Close credential pages and
   unrelated notifications.
 - [ ] Set out the magic box and two visibly different paper planes. Confirm the
   participant and fallback/takeover cues.
-- [ ] Recheck authentication, branch/workspace identity, stopped traffic,
-  settled actions, baseline, timing plan, faulty selection, native alarm OK and
-  recorded fallbacks. Avoid new deployments or unverified input changes.
-- [ ] Mark selected stages ready only when their actual commands and inputs have
-  been verified. If a live path is unavailable, explicitly choose the rehearsed
-  recorded/skip route; prepared evidence cannot establish fresh execution of an
-  edited candidate.
+- [ ] Recheck authentication, branch and workspace identity, stopped traffic,
+  settled actions, baseline, timing plan, faulty selection, native alarm **OK**,
+  and recorded fallbacks. Avoid new deployments and unverified input changes.
+- [ ] Mark a stage ready only after verifying its actual commands and inputs. If
+  a live path is unavailable, explicitly choose the rehearsed recorded or skip
+  route. Prepared evidence cannot establish fresh execution of an edited
+  candidate.

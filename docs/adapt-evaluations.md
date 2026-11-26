@@ -27,16 +27,16 @@ The second command exits 1. Look for these three rows in the output. Both runs a
 
 ## Where your agent fits
 
-The example creates one native Strands `Case` with the public task as input. Its task function returns the selected saved report. `InventoryReportEvaluator` receives that output and uses the reviewed expectations to grade it. `Experiment.run_evaluations(task)` runs both pieces and returns the detailed findings. Open the complete implementation beside the case. [Native example](../examples/inventory-denial/native.py) and [reviewed case](../examples/inventory-denial/case.json)
+The example creates one native Strands `Case` with the public task as input. Its task function returns the selected saved report. `InventoryReportEvaluator` receives that output and uses the reviewed expectations to grade it. `Experiment.run_evaluations(task)` runs both pieces and returns the detailed findings. [Native example](../examples/inventory-denial/native.py) and [reviewed case](../examples/inventory-denial/case.json)
 
-To run your agent on the same task, replace the saved-report task with your invocation. Supply the same [evidence](../examples/inventory-denial/evidence.json) through your read tools and return your agent's real report. Keep the expected answer on the evaluator side. For example, if your callable accepts the case input and returns the report as a dictionary, the adapter is:
+To run your agent on the same task, replace the saved-report task with your invocation. Supply the same [evidence](../examples/inventory-denial/evidence.json) through your read tools and return your agent's real report. Give only the evaluator the expected answer. If your agent accepts the case input and returns a report dictionary, the task can be this short.
 
 ```python
 def task(case):
     return {"output": investigate(case.input)}
 ```
 
-For another domain, change the parts that encode what good behavior means:
+For a different task, decide what the agent gets to see and how you will judge the result.
 
 | Decision | Inventory example | What to change |
 | --- | --- | --- |
@@ -50,4 +50,4 @@ For another domain, change the parts that encode what good behavior means:
 
 The developer workflow runs the candidate on captured evidence, records what tools it actually called, and exports telemetry for that execution. Its Strands evaluator calls AgentCore with the matching session and reviewed source references. The judge returns one advisory verdict covering diagnosis and grounding. This requires Bedrock model access, telemetry export, permission to read the session, and a configured evaluator. [Full Strands experiment](../agent/development_experiment.py), [AgentCore adapter](../agent/strands_evaluators.py), and [AWS evaluation prerequisites](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ondemand-evaluations-prereqs.html)
 
-The IDE result gives the developer feedback. CI evaluates the exact ZIP proposed for publication, and protected human review applies to that package. You can inspect a real rejection and its denial row in the [attendee guide](attendee-guide.md#the-rejected-push).
+In the IDE you can rerun the experiment as you edit the prompt. In CI the experiment runs against the ZIP you intend to publish. A reviewer approves that same ZIP before deployment. For an example of a change that stopped at the gate, see the [rejected denial case](attendee-guide.md#the-rejected-push).

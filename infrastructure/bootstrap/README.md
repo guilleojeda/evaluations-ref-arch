@@ -3,7 +3,7 @@
 These templates set up the deployment path for account
 `027224425948` in `us-east-1` and create the pre-provisioned Inventory access
 Deny. They do not deploy the application, controller, or AgentCore product
-resources; those remain independent product stacks released through GitHub
+resources. Those remain independent product stacks released through GitHub
 Actions.
 
 This is a presenter and administrator handoff for the checked talk account, not
@@ -14,9 +14,9 @@ below before adapting this handoff.
 ## Own-account adaptation checklist
 
 The architecture's region, stack names, endpoint labels, and policy boundaries
-are not values to replace just because they appear here. Keep them unless the
-target intentionally changes the design, then update the owning templates and
-runbooks together. Change only target-specific identities and private inputs:
+are fixed design values. Keep them unless the target intentionally changes the
+design, then update the owning templates and runbooks together. Change only
+target-specific identities and private inputs:
 
 - [ ] **Account and repository identity:** Set the target AWS account/profile
   and verify `sts get-caller-identity` before mutation. If the account differs,
@@ -25,7 +25,7 @@ runbooks together. Change only target-specific identities and private inputs:
   immutable repository ID, workflow path, publishing branch, and GitHub
   environment names in [`github-iam.yaml`](github-iam.yaml) and the deployment
   commands. Inspect existing OIDC providers, audiences, and subject-template
-  settings; do not reuse the author's OIDC subject.
+  settings. Do not reuse the author's OIDC subject.
 - [ ] **DNS and published URLs:** If using a different domain, update the
   parent-zone delegation, hostnames, and certificate/API mapping in the
   [talk hostname procedure](../../docs/deployment.md#talk-hostnames). Keep the
@@ -35,12 +35,12 @@ runbooks together. Change only target-specific identities and private inputs:
   versioned receipts, telemetry paths, model IDs, and evaluation-role grants
   at the target account. Store them in the target account's private paths. The
   [preparation save/recover sequence](../../docs/preparation.md#save-and-recover-a-session)
-  owns archive receipts; [`phase0-cfn-execution-policy.yaml`](phase0-cfn-execution-policy.yaml)
+  owns archive receipts. [`phase0-cfn-execution-policy.yaml`](phase0-cfn-execution-policy.yaml)
   owns scoped AWS grants.
 - [ ] **Published endpoints:** Read the target Runtime, `faulty`/`repaired`
   endpoint ARNs and numbered versions, adapter binding, and publication rows
   after release. Do not copy the author's endpoint tuple or assume its
-  ownership/readiness; use the [reference publication procedure](../../docs/deployment.md#restore-the-reviewed-faulty-reference)
+  ownership/readiness. Use the [reference publication procedure](../../docs/deployment.md#restore-the-reviewed-faulty-reference)
   for the target account.
 - [ ] **Retained teardown:** Before retiring the demo, inventory private
   archives/evidence and the resources marked `Retain`: app web bucket and
@@ -48,8 +48,8 @@ runbooks together. Change only target-specific identities and private inputs:
   and agent run table/adapter logs. Publisher-owned Runtime endpoints and
   versioned objects are also outside ordinary product-stack deletion. Stack
   deletion may remove non-retained API, Lambda, certificate, and mapping
-  resources, but it does not remove those retained resources or their data;
-  delete them explicitly only after preserving anything needed. See [cleanup](../../docs/cleanup.md#after-the-final-delivery).
+  resources, but it does not remove those retained resources or their data.
+  Delete them explicitly only after preserving anything needed. See [cleanup](../../docs/cleanup.md#after-the-final-delivery).
 
 The setup has three deliberately separate layers:
 
@@ -61,25 +61,26 @@ The setup has three deliberately separate layers:
    `IncidentTriageDemoAppCustomDomainCfnExecution`, and
    `IncidentTriageDemoControllerCustomDomainCfnExecution` in stack
    `IncidentTriageDemoBootstrapPolicy`. The policies separate bootstrap and
-   app grants, controller grants, custom-domain grants, Phase 3 alarm/evidence
+   app grants, controller grants, custom-domain grants, alarm/evidence
    grants, and scoped AgentCore Runtime, run-table, alarm-adapter, and
-   runtime-identity grants. Custom-domain grants are separate because the
-   existing app execution policy is at the customer-managed 6,144-character
-   policy limit. The app policy covers only
-   `store.riv2026.guilleojeda.com`; the controller policy covers only
+   runtime-identity grants. The existing app execution policy is at the
+   customer-managed 6,144-character policy limit, so custom-domain grants are
+   separate. The app policy covers only
+   `store.riv2026.guilleojeda.com`. The controller policy covers only
    `controller.riv2026.guilleojeda.com` and its API mapping.
-   It also creates the
-   `IncidentTriageDemoInventoryReadDeny` managed policy. That policy has one
-   explicit `dynamodb:GetItem` Deny on the Inventory table; the app stack
-   permanently attaches it to the named denied Inventory role. The controller
-   worker reads both static role states and never attaches or detaches policies.
-   The Phase 3 policy gives the app CloudFormation execution path only the
-   scoped denied-role creation, attachment and PassRole grants. It is not
-   attached to any runtime role. The same stack owns the four
+   The same template also creates the
+   `IncidentTriageDemoInventoryReadDeny` managed policy. This Deny policy has
+   one explicit `dynamodb:GetItem` Deny on the Inventory table. The app stack
+   permanently attaches it only to the named denied Inventory role. The
+   controller worker reads both static role states and never attaches or
+   detaches policies. The separate `IncidentTriageDemoPhase3CfnExecution`
+   policy gives the app CloudFormation execution path only the scoped
+   denied-role creation, attachment and PassRole grants. It is not attached to
+   any runtime role. The same stack owns the four
    app/controller runtime permissions boundaries and separate runtime and
    alarm-adapter boundaries. The product-stack CloudFormation execution roles
    cannot edit those boundaries.
-   Creation-time tagging requires the project/component tags and target Region;
+   Creation-time tagging requires the project/component tags and target Region.
    workload identity tags cover the `IncidentTriageDemoAgent-*` prefix and its
    exact default-directory parent required by creation authorization.
 2. The standard CDK v2 bootstrap command creates stack
@@ -101,7 +102,11 @@ The setup has three deliberately separate layers:
 
 ### GitHub deployment environments
 
-In repository **Settings → Environments**, create `demo-infrastructure`, `demo-evaluation`, and `repaired-publication`. Limit each to the selected **branch** `demo-deploy`. For `repaired-publication`, require the presenter as reviewer, allow self-review for the single-presenter demo, and deselect **Allow administrators to bypass configured protection rules**. Save and inspect the settings before enabling the corresponding AWS trusts. The publication run needs the review comment bound to the exact evidence digest. [Presenter instructions](../../docs/deployment.md#review-a-repaired-agent-release)
+In repository **Settings > Environments**:
+
+- Create `demo-infrastructure`, `demo-evaluation`, and `repaired-publication`, and limit each to the selected **branch** `demo-deploy`.
+- For `repaired-publication`, require the presenter as reviewer, allow self-review for the single-presenter demo, and deselect **Allow administrators to bypass configured protection rules**.
+- Save and inspect the settings before enabling the corresponding AWS trusts. The publication run needs the review comment bound to the exact evidence digest. See the [presenter instructions](../../docs/deployment.md#review-a-repaired-agent-release).
 
 The existing deployment role serves `demo-infrastructure`. The evaluation job gets scoped model, telemetry and private evidence permissions. The protected publisher gets authority for the repaired pin only after clearance. The stack template binds the OIDC trust paths to their GitHub environments, repository identity and exact workflow on the deployment branch.
 
@@ -151,20 +156,20 @@ continuing. This one-time account setup creates only the Runtime Identity
 service-linked role, without provisioning other roles or AgentCore network or
 instances resources. AWS can create this role during Runtime creation or
 update, but the scoped CI policies do not grant service-linked-role creation.
-The role is managed by AWS; it does not add authority to the agent execution
+The role is managed by AWS. It does not add authority to the agent execution
 role. See [AgentCore service-linked roles](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/service-linked-roles.html).
 
 ## Before the first live Anthropic Runtime rehearsal
 
 The active Runtime candidate uses the account's active US cross-Region profile
-`us.anthropic.claude-opus-5-5`; its destination model ID is
+`us.anthropic.claude-opus-5-5`. Its destination model ID is
 `anthropic.claude-opus-5-5` in `us-east-1`, `us-east-2`, and `us-west-2`. The
 original faulty reference remains an immutable Sonnet 4.6 archive and is not
 rewritten by this switch. Before live rehearsal,
 the verified account administrator completes Anthropic's first-time-use form
-using accurate company/developer identity and industry information supplied
-and approved by the user. Do not store the form answers or personal details in
-this repository. This is account setup; do not grant form-submission or
+using accurate company/developer identity and industry information. Do not
+store the form answers or personal details in this repository. This is account
+setup. Do not grant form-submission or
 Marketplace permissions to the Runtime, alarm adapter, or GitHub Actions roles.
 
 Check the native `GetUseCaseForModelAccess` result and call
@@ -172,11 +177,11 @@ Check the native `GetUseCaseForModelAccess` result and call
 case to be on file and availability statuses `AUTHORIZED`, `AVAILABLE`,
 `AVAILABLE`, and `AVAILABLE` for authorization, entitlement, Region, and
 agreement. A prior successful `Converse` call is not proof that the form and
-agreement checks are complete; AWS documents that initial access can be
+agreement checks are complete. AWS documents that initial access can be
 temporarily available. If `agreementAvailability` remains `NOT_AVAILABLE` after
 the form is submitted, inspect the applicable offer and terms separately
 before authorized acceptance. The current release workflow does not automate
-first-use onboarding; no paid inference probe is needed for these control-plane
+first-use onboarding. No paid inference probe is needed for these control-plane
 checks. See
 [Model access](https://docs.aws.amazon.com/bedrock/latest/userguide/model-access.html),
 [`GetUseCaseForModelAccess`](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_GetUseCaseForModelAccess.html), and
@@ -238,9 +243,15 @@ npm exec -- cdk bootstrap aws://027224425948/us-east-1 \
     "arn:aws:iam::027224425948:policy/IncidentTriageDemoBootstrapCfnExecution,arn:aws:iam::027224425948:policy/IncidentTriageDemoControllerCfnExecution,arn:aws:iam::027224425948:policy/IncidentTriageDemoPhase3CfnExecution,arn:aws:iam::027224425948:policy/IncidentTriageDemoAgentCfnExecution,arn:aws:iam::027224425948:policy/IncidentTriageDemoAppCustomDomainCfnExecution,arn:aws:iam::027224425948:policy/IncidentTriageDemoControllerCustomDomainCfnExecution"
 ```
 
-Keep the three existing app resource ID parameters when updating the policy stack. Set `ControllerHttpApiId` to the controller's `ApiId` output as soon as the first controller release succeeds. The `*` setting is for first creation, while CloudFormation is assigning the ID. Keep all six policy ARNs attached to the exact `cdk-evaltalk-cfn-exec-role-027224425948-us-east-1` role; do not replace them with a broad policy or unpinned role.
+Keep the three existing app resource ID parameters when updating the policy stack. Set `ControllerHttpApiId` to the controller's `ApiId` output as soon as the first controller release succeeds. The `*` setting is for first creation while CloudFormation is assigning the ID.
 
-The app, controller, and agent releases share the CloudFormation execution role, but each product stack has its own scoped execution policy and its runtime components assume separate named roles with separate boundaries. The agent runtime can invoke only the selected model, read allowlisted app observations, write its own run records, save sanitized source evidence under the agent-source prefix, and emit traces. The adapter can invoke only the named AgentCore Runtime endpoint. The deploy role can finalize the checked Runtime endpoint and attest its final version in the adapter after native readback; it cannot run an investigation or send application traffic. Verify the runtime boundaries and bootstrap policy attachment before the first rehearsal. [CDK bootstrap policy inputs](https://docs.aws.amazon.com/cdk/v2/guide/bootstrapping-env.html)
+Keep all six policy ARNs attached to the exact `cdk-evaltalk-cfn-exec-role-027224425948-us-east-1` role. Do not replace them with a broad policy or unpinned role.
+
+The app, controller, and agent releases share the CloudFormation execution role, but each product stack has its own scoped execution policy. Runtime components assume separate named roles with separate boundaries.
+
+The agent runtime can invoke only the selected model, read allowlisted app observations, write its own run records, save sanitized source evidence under the agent-source prefix, and emit traces. The adapter can invoke only the named AgentCore Runtime endpoint.
+
+The deploy role can finalize the checked Runtime endpoint and attest its final version in the adapter after native readback. It cannot run an investigation or send application traffic. Verify the runtime boundaries and bootstrap policy attachment before the first rehearsal. See [CDK bootstrap policy inputs](https://docs.aws.amazon.com/cdk/v2/guide/bootstrapping-env.html).
 
 Use this single-account setup without `--trust` or `--trust-for-lookup`.
 The resulting standard role names are:
@@ -271,8 +282,8 @@ before passing its ARN to the stack. Preserve that provider's existing owner
 and pass its ARN on every rerun. If it does not exist, omit
 `GitHubOidcProviderArn` and the stack creates it.
 
-Create/reuse the role stack with the hard-coded approved immutable repository
-and workflow inputs:
+Create or reuse the role stack with the fixed immutable repository and workflow
+inputs:
 
 ```sh
 # Existing provider path: set this only after the read-only provider check.
@@ -307,7 +318,7 @@ the release helpers' Lambda role-only stage/publish/restore operations, exact
 role and policy reads, conditional manifest publication, and the agent's
 checked Runtime finalization. It cannot publish outside the revision-scoped
 manifest prefix or pass an unrelated role. The administrator attaches policies
-and bootstraps the account; subsequent product releases and finalization run
+and bootstraps the account. Subsequent product releases and finalization run
 through the scoped GitHub workflow.
 The deploy role's existing Lambda-key decryption exception covers only the
 exact Inventory and alarm-adapter environment contexts.
@@ -316,14 +327,14 @@ same key and the exact alarm-adapter environment context. It does not permit
 Inventory encryption or grant/key creation. See [Lambda environment encryption](https://docs.aws.amazon.com/lambda/latest/dg/configuration-envvars-encryption.html)
 and the [KMS Encrypt permission](https://docs.aws.amazon.com/kms/latest/APIReference/API_Encrypt.html).
 
-The Phase 19 `reference-setup` maintenance operation adds only the following
+The `reference-setup` maintenance operation adds only the following
 publisher scope to the assumed CDK deploy role:
 
 - read the fixed, versioned reference objects under
-  `s3://cdk-evaltalk-assets-027224425948-us-east-1/agent-reference/*`;
+  `s3://cdk-evaltalk-assets-027224425948-us-east-1/agent-reference/*`.
 - list versions and read/update the named `IncidentTriageDemoAgent-*` Runtime,
   create the `faulty` endpoint on that Runtime, and read/update only its
-  `.../runtime-endpoint/faulty` endpoint; and
+  `.../runtime-endpoint/faulty` endpoint.
 - strongly read/write the single controller-table item whose leading key is
   `AGENT_PUBLICATION#faulty`.
 
@@ -331,7 +342,7 @@ The reference objects use the bootstrap KMS key only with that exact
 `agent-reference/*` S3 encryption-context prefix. The publisher has no direct
 endpoint-delete permission and cannot write the selection, action-journal, or
 other controller-table keys. It cannot provide an archive URI, digest, Runtime,
-endpoint name, or candidate through the workflow; those values come from the
+endpoint name, or candidate through the workflow. Those values come from the
 reviewed fixed descriptor.
 
 The publisher's controller-record read/write also causes DynamoDB to decrypt
@@ -341,10 +352,10 @@ managed DynamoDB CMK, `dynamodb.us-east-1.amazonaws.com`, and the observed
 It does not grant direct KMS encryption, grant creation, re-encryption, or
 access to another DynamoDB table.
 The `reference-setup` workflow's inline STS session policy must include this
-same CMK in its KMS resource intersection before dispatch; the role policy
+same CMK in its KMS resource intersection before dispatch. The role policy
 alone cannot widen a session policy that omits the table key.
 
-The additive Phase 19 grants and the existing Runtime-finalization grants are
+The additive publisher grants and the existing Runtime-finalization grants are
 attached through the customer-managed `IncidentTriageDemoPhase19Publisher`
 policy. The original inline guard retains all explicit denies and remains
 responsible for the non-app boundary. This keeps the role's two inline policy
@@ -355,15 +366,15 @@ publisher policy below the 6,144-character customer-managed policy quota.
 the AWS service-authorization model, so its unavoidable `Resource: "*"` grant
 is limited to `us-east-1`. The fixed helper obtains the Runtime ID only from
 the named `IncidentTriageDemoAgent` stack and does not accept a caller-supplied
-Runtime. The effective-scope check must keep this read limitation visible;
+Runtime. The effective-scope check must keep this read limitation visible.
 the create/get/update actions remain ARN-scoped.
 
 AgentCore evaluates `CreateAgentRuntimeEndpoint` before the requested endpoint
 name exists, using the synthetic
 `...:runtime/IncidentTriageDemoAgent-7VWTOWDIs4/runtime-endpoint/*` resource.
 That create-only collection grant is pinned to the observed Runtime ID in the
-bootstrap policy. The fixed workflow supplies the only approved endpoint name,
-`faulty`; get/update remain pinned to the final `.../runtime-endpoint/faulty`
+bootstrap policy. The fixed workflow supplies the only permitted endpoint name,
+`faulty`. Get/update remain pinned to the final `.../runtime-endpoint/faulty`
 ARN and delete remains denied. If the Runtime is replaced and its generated ID
 changes, update this bootstrap policy before running the reference publisher.
 
@@ -374,7 +385,7 @@ code hash and revision, immediately restores `$LATEST` to the healthy role,
 checks both static policy states, and then writes
 `releases/app/<SourceRevision>/inventory-variants.json` with explicit
 `AES256` server-side encryption. A matching existing object is reused only
-when its bytes are identical; a conflicting object fails the release.
+when its bytes are identical. A conflicting object fails the release.
 
 ## Pin the first app release's resource IDs
 
@@ -386,11 +397,11 @@ aws cloudformation list-stack-resources --stack-name IncidentTriageDemoApp \
   --query "StackResourceSummaries[?ResourceType=='AWS::ApiGatewayV2::Api' || ResourceType=='AWS::CloudFront::Distribution' || ResourceType=='AWS::CloudFront::OriginAccessControl'].[ResourceType,PhysicalResourceId]"
 ```
 
-Reapply step 1 with `--parameter-overrides AppHttpApiId="$api_id" AppDistributionId="$distribution_id" AppOriginAccessControlId="$origin_access_control_id"`, using the three reported IDs. The named execution role then has resource-level access to the app's generated resources. Keep these values for routine releases. A reviewed replacement of one of those resources needs a corresponding bootstrap update.
+Reapply step 1 with `--parameter-overrides AppHttpApiId="$api_id" AppDistributionId="$distribution_id" AppOriginAccessControlId="$origin_access_control_id"`, using the three reported IDs. The named execution role then has resource-level access to the app's generated resources. Keep these values for routine releases. A replacement of one of those resources needs a corresponding bootstrap update.
 
 ## Recover a failed initial agent creation
 
-After a failed first agent create reaches `ROLLBACK_COMPLETE`, an administrator removes only that failed stack shell. Preserve `IncidentTriageDemoAgentRun` and `/aws/lambda/IncidentTriageDemoAlarmAdapter`; the next normal checked agent deployment uses CDK auto-import, and its guard permits only those exact retained resources from the checked template. Never delete table rows or log history to make deployment succeed.
+After a failed first agent create reaches `ROLLBACK_COMPLETE`, an administrator removes only that failed stack shell. Preserve `IncidentTriageDemoAgentRun` and `/aws/lambda/IncidentTriageDemoAlarmAdapter`. The next normal checked agent deployment uses CDK auto-import, and its guard permits only those exact retained resources from the checked template. Never delete table rows or log history to make deployment succeed.
 
 ## Offline checks
 

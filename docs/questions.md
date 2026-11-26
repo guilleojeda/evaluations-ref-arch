@@ -6,7 +6,7 @@ No. A native Strands experiment can run a task and a Python evaluator locally. T
 
 ## What counts as an action in this example?
 
-The agent chooses and calls read tools, then proposes a remediation. The execution trace lets us check the scope of its reads and whether it stayed within its read-only permissions. The report lets us check the proposed action, target and value. The presenter applies the remedy through a separate controller. A new checkout shows what happened to the application. [Follow the denial](attendee-guide.md)
+The agent reads evidence and recommends a remedy. We use the trace to check which sources it queried and whether it attempted a write. We use the report to check what it recommended changing and to what value. The presenter applies the remedy through a separate controller. A new checkout shows what happened to the application. [Follow the denial](attendee-guide.md)
 
 ## Why can the judge pass a report that gives the wrong advice?
 
@@ -14,7 +14,7 @@ The judge assesses the diagnosis and whether the agent's factual claims are grou
 
 ## Why use one judge call for diagnosis and grounding?
 
-Both questions need the same report, reference time and source observations. One call reads that context once and returns one advisory verdict with a reason. The tradeoff is that a single verdict tells you less about which requirement failed, and an unavailable call leaves the entire semantic result incomplete. Separate calls make sense when you need independent scores, examples, or retries for each requirement.
+Both questions need the same report, reference time and source observations. One call reads that context once and returns one advisory verdict with a reason. If the judge rejects the report, you have to read its reason to see which claim failed. If the call fails, you lose both judgments for that attempt. Separate calls make sense when you need independent scores, examples, or retries for each requirement.
 
 ## How do you decide whether to trust the judge?
 
@@ -22,7 +22,7 @@ Have reviewers label reports against their source evidence first. Include a plau
 
 ## Why keep captured evidence when the live incident is over?
 
-After recovery, querying the live system gives a candidate different evidence. A capture with a cutoff lets two prompt versions investigate the same incident independently and choose their own queries. It also lets a reviewer check each report against what the agent could have known at the time. [Case construction](adapt-evaluations.md)
+After recovery, the same query might now find a successful checkout. A capture with a cutoff lets two prompt versions investigate the same incident independently and choose their own queries. It also lets a reviewer check each report against what the agent could have known at the time. [Case construction](adapt-evaluations.md)
 
 ## What happens if an evaluation cannot finish?
 

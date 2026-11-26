@@ -1,8 +1,8 @@
-# Failure controller specification
+# Failure controller behavior
 
-The [controller](failure-controller.md) supports checkout readiness, bounded normal traffic, the finite Inventory catalog surge, the Inventory-only capacity shortcut, Stop, Recover, inspection or discard of interrupted work, fixed native metric reads, and read-only discovery of durable agent runs. This specification owns the surge/action and observation contracts. Comparability requires measured actual demand plus native-metric, caller, and business evidence from both workload episodes. It uses the [application API](application.md), [agent contract](operations-agent.md), and [scenario contracts](../demo-scenarios.md).
+The [controller](failure-controller.md) supports checkout readiness, bounded normal traffic, the finite Inventory catalog surge, the Inventory-only capacity shortcut, Stop, Recover, interrupted-work inspection or discard, fixed native metric reads, and read-only discovery of durable agent runs. A capacity comparison needs measured demand plus native-metric, caller, and business evidence from both workload episodes. See the [application API](application.md), [agent contract](operations-agent.md), and [scenario contracts](../demo-scenarios.md).
 
-This is the presenter/operator contract for a hosted controller. The local Vite bundle is only a frontend preview: it can render the interface without an API, while authenticated reads and commands require the hosted same-origin `/api/*` path and operator bearer. The preview has no API proxy and does not create or mutate AWS state.
+This page describes the hosted controller for presenters and operators. The local Vite bundle is a frontend preview: it can render the interface without an API, but authenticated reads and commands require the hosted same-origin `/api/*` path and operator bearer. The preview has no API proxy and does not create or mutate AWS state.
 
 ## Supported capabilities
 
@@ -21,50 +21,52 @@ This is the presenter/operator contract for a hosted controller. The local Vite 
 | Observe and inspect | Show action progress, separate catalog/checkout demand and outcomes, fixed native metrics, actual alarms, matching agent runs, and source-timestamped evidence |
 | Reconnect and reconcile | Reattach after browser navigation; reconcile AWS state and pending work after backend restart before a new explicit action. An interrupted Reset is not continued under its old ID |
 
-The presenter independently chooses each action and its parameters. The agent remains read-only and may suggest an available remedy, no remediation, or another response. No agent report is automatically executed, no agent credentials authorize a controller action, and no evaluation gate is introduced here. Do not add code publication, arbitrary AWS operations, automatic remediation, or manual live-agent invocation.
+The presenter chooses each action and its parameters. The agent is read-only and may suggest a remedy, no remediation, or another response. Reports and agent credentials cannot authorize controller actions. Controller scope excludes code publication, arbitrary AWS operations, automatic remediation, and manual live-agent invocation.
 
 ## Baseline and state ownership
 
-Setup records the target account/region/resources, trusted successful deployment generation and artifact identity, the allowlisted healthy and denied numeric Inventory versions and their memory sizes, their static execution roles and exact policy/default-document state, the healthy baseline alias target, normal traffic settings, Inventory's release-owned reserved-concurrency baseline of **16** (one function-level cap shared by its published variants), Checkout's unreserved setting, and the absence of an Inventory table resource policy. The baseline pair has identical checked code, memory and non-role settings; only the execution role differs. The denied role retains logging/read access and carries the permanent exact-table `dynamodb:GetItem` Deny. The baseline must support ordinary demand; overload activation changes demand, not this cap. The controller's capacity shortcut targets Inventory only. Its initial higher target is **32**, with integer inputs from **16-64**; these are configurable controls, not measured surge requirements or a promise of account headroom.
+Setup records these values:
 
-Capture missing resource policies or concurrency settings explicitly. Absence is not a zero concurrency cap. Keep the original expected baseline distinct from current settings and the presenter's remediation targets: both the release identity's `inventoryCap` and the original baseline cap remain **16**. Only a confirmed capacity-action result updates the controller's current Inventory cap and its observation time. An unexplained observed value is drift; it is never promoted to the current baseline.
+- target account, Region, and resources;
+- trusted successful deployment generation and artifact identity;
+- allowlisted healthy and denied numeric Inventory versions and memory sizes;
+- static execution roles and exact policy/default-document state;
+- healthy baseline alias target and normal traffic settings;
+- Inventory's release-owned reserved-concurrency baseline of **16**, one function-level cap shared by its published variants;
+- Checkout's unreserved setting; and
+- the absence of an Inventory table resource policy.
 
-Bind the Recover baseline to the deployment generation and artifact identity known to be successfully deployed when its expected settings and application checks were verified. The app deployment identity includes the opaque credential generation; a same-source credential rotation is still a new generation even when source revision, tables, and business code are unchanged. Recover requires that same generation; a later or unknown generation makes the old baseline stale, and it must never be restored over the newer release. Reset has a different reconciliation path: it can use the trusted expected settings for the current successful app release even if the old baseline is stale or missing. A failed or partial deployment, or unknown current target/configuration, blocks destructive work until reconciled. Reconciliation preserves business data, request history, unsettled outcomes, and prior action/run history; it does not bless active fault settings as a new baseline. Establish a new baseline only from known expected settings for a successfully deployed generation and after required actual checks pass, not by sampling current configuration blindly. The app, agent, and controller are independent cloud stacks; the presenter sequences dependent releases outside a live run. Follow the [release procedure](../deployment.md#deployment-and-controller-baseline) and reconcile affected baselines and endpoints after each release.
+The baseline pair has identical checked code, memory, and non-role settings. Only the execution role differs. The denied role retains logging/read access and carries the permanent exact-table `dynamodb:GetItem` Deny. The baseline must support ordinary demand. Overload activation changes demand, not this cap. The controller's capacity shortcut targets Inventory only, with an initial target of **32** and integer inputs from **16-64**. These values control the UI; they do not measure surge demand or guarantee account headroom.
+
+Record a missing resource policy or concurrency setting explicitly. A missing setting is not a zero cap. Keep the expected baseline separate from current settings and remediation targets. The release identity's `inventoryCap` and original baseline cap remain **16**. Only a confirmed capacity action updates the controller's current Inventory cap and observation time. An unexplained value is drift, not a new baseline.
+
+Bind the Recover baseline to the deployment generation and artifact identity that passed its expected-setting and application checks. The app deployment identity includes the opaque credential generation. A same-source credential rotation is a new generation even when source revision, tables, and business code are unchanged. Recover requires that generation and never restores an older baseline over a later or unknown release.
+
+Reset can use trusted expected settings for the current successful app release when the old baseline is stale or missing. A failed or partial deployment or unknown target/configuration blocks destructive work until reconciliation. Reconciliation preserves business data, request history, unsettled outcomes, and prior action/run history. It does not promote active fault settings to a baseline. Establish a baseline from known settings for a successful generation after the required checks pass. The app, agent, and controller are independent cloud stacks. Sequence dependent releases outside live runs, reconcile affected baselines and endpoints after each release, and follow the [release procedure](../deployment.md#deployment-and-controller-baseline).
 
 ### Deployment and baseline adoption
 
-Schedule independent app, agent, and controller releases outside demo operation. For
-the initial alarm path, deploy the checked agent Runtime/adapter, complete the
-one-time publisher migration and fixed `reference-setup`, bind the verified
-adapter, then deploy the controller. Confirm both publisher tuples before
-readiness; a stale, partial, or unknown release/reference blocks dependent
-operations. The [deployment runbook](../deployment.md#restore-the-reviewed-faulty-reference)
-owns the maintenance preflight and recovery steps.
+Schedule app, agent, and controller releases outside demo operation. For the initial alarm path, deploy the checked agent Runtime/adapter, complete the one-time publisher migration and fixed `reference-setup`, bind the verified adapter, then deploy the controller. Confirm both publisher tuples before readiness. A stale, partial, or unknown release/reference blocks dependent operations. The [deployment runbook](../deployment.md#restore-the-reviewed-faulty-reference) covers the maintenance preflight and recovery steps.
 
-Adopt a fresh baseline only after matching the trusted expected settings and verifying a new order and its stock decrement. First adoption and adoption of a new generation require the release's original Inventory cap of **16**, healthy original memory, and the other expected release settings, with successful stack identity/time, immutable versions and artifact/configuration identities recorded. Same-generation readiness may validate a previously confirmed higher Inventory cap, such as 32, while preserving original cap 16 and the same release identity; it does not adopt an arbitrary observed cap or carry a raised cap into a new generation. Later higher-memory readiness likewise preserves the original restore target. Legacy records missing those facts require fresh readiness. An old-generation incident stays inspectable when explicit readiness adopts a new successful generation; same-generation denial still requires restoration. If the bounded readiness action cannot complete its request checks, show readiness as incomplete. Readiness adopts the baseline within the current session/run and preserves prior history. [Release operation](../deployment.md#deployment-and-controller-baseline)
+Adopt a fresh baseline only after matching trusted expected settings and verifying a new order and stock decrement. First and new-generation adoption require the release's original Inventory cap of **16**, healthy original memory, and the other expected settings. Record stack identity/time and immutable version and artifact/configuration identities.
 
-The controller reads either publisher-owned tuple as a control-plane binding
-only. Runtime ARN/version, endpoint, source/artifact identity, adapter
-attestation, and the strongly read-back `AGENT_PUBLICATION#faulty` or
-`AGENT_PUBLICATION#repaired` record must agree before a live witness. An
-authenticated `select_agent` action may write only the separate
-`AGENT_SELECTION` record after it verifies the chosen tuple, endpoint READY/live
-version, numbered Runtime configuration, and the native alarm `OK` precondition.
-It cannot create, delete, or repin an endpoint, invoke the Runtime, or write a
-publisher-owned record. Reference status is not a quality pass and repaired
-qualification is not inferred from endpoint readiness. A repeated identical
-verified tuple is a no-op; a changed row under the same label is verified again.
+Same-generation readiness may validate a previously confirmed higher cap such as 32 while preserving original cap 16 and the release identity. It cannot adopt an arbitrary observed cap or carry a raised cap into a new generation. Higher-memory readiness also preserves the original restore target. Legacy records missing these facts require fresh readiness. An old-generation incident remains inspectable when readiness adopts a new successful generation. Same-generation denial still requires restoration. If bounded readiness cannot complete its request checks, show readiness as incomplete. Readiness adopts the baseline within the current session/run and preserves prior history. See [Release operation](../deployment.md#deployment-and-controller-baseline).
 
-The selected tuple is durable and is the adapter's sole routing input. Selection
-does not generate application requests or start an investigation. A failed or
-uncertain selection read/write stays failed or unknown and never falls back to
-an old environment/default route. Dashboard refresh and replacement-browser
-reconnect show the last successful tuple with its observation time, marked
-stale/unavailable when a read fails; they never reselect automatically.
+The controller reads either publisher-owned tuple as a control-plane binding only. Before a live witness, these values must agree:
 
-A session/run groups a recorded business/configuration baseline and its traffic, incident, remedy, and verification history. Before Reset changes business data, it archives the prior run and makes the Reset action UUID the new current run ID, linked to the previous run. That run remains unusable until verification completes. Run identity provides history and baseline isolation, not a cumulative request allowance or request credits. Each action has its own identity and applicable duration, rate, maximum attempts, in-flight limit, timeout, and deadline. Stop and drain control current work; they do not erase history or deduplication records.
+- Runtime ARN/version;
+- endpoint;
+- source/artifact identity;
+- adapter attestation; and
+- the strongly read-back `AGENT_PUBLICATION#faulty` or `AGENT_PUBLICATION#repaired` record.
 
-Historical request-quota fields, if present in saved records, are inert: missing, positive, or exhausted values never gate new actions, and no migration is required. Retain prior action outcomes and evidence as recorded.
+An authenticated `select_agent` action may write only the separate `AGENT_SELECTION` record. Before writing it, the controller verifies the chosen tuple, endpoint READY/live version, numbered Runtime configuration, and native alarm `OK` precondition. It cannot create, delete, or repin an endpoint, invoke the Runtime, or write a publisher-owned record. Reference status is not a quality pass, and repaired qualification is not inferred from endpoint readiness. A repeated identical verified tuple is a no-op; a changed row under the same label is verified again.
+
+The selected tuple is durable and is the adapter's sole routing input. Selection does not generate application requests or start an investigation. A failed or uncertain selection read/write stays failed or unknown; it never falls back to an old environment/default route. Dashboard refresh and replacement-browser reconnect show the last successful tuple with its observation time, marked stale/unavailable when a read fails. They never reselect automatically.
+
+A session/run groups a recorded business/configuration baseline and its traffic, incident, remedy, and verification history. Before Reset changes business data, it archives the prior run and makes the Reset action UUID the new current run ID, linked to the previous run. That run remains unusable until verification completes. Run identity provides history and baseline isolation, not a cumulative request allowance or request credits.
+
+Each action has its own identity and applicable duration, rate, maximum attempts, in-flight limit, timeout, and deadline. Stop and drain control current work; they do not erase history or deduplication records. Historical request-quota fields, if present in saved records, are inert: missing, positive, or exhausted values never gate new actions, and no migration is required. Retain prior action outcomes and evidence as recorded.
 
 | Fact | Values or meaning |
 | --- | --- |
@@ -77,78 +79,140 @@ Historical request-quota fields, if present in saved records, are inert: missing
 
 The background Lambda owns accepted actions. Browser closure leaves the worker running within its original bounds. Authenticated tabs share the durable run. The worker can claim only the current, unexpired action. A repeated or late invocation cannot restart it after a claim or discard.
 
-Readiness and normal traffic are mutually exclusive. Reject a conflicting command without queuing a later side effect. In the incident flows, targeted remedies can operate alongside traffic, while Recover and Reset require stopped producers and settled work. Observation reads remain independent.
+Readiness and normal traffic are mutually exclusive. Reject a conflicting command without queuing a side effect. Targeted remedies can operate alongside incident traffic. Recover and Reset require stopped producers and settled work. Observation reads remain independent.
 
-Stop remains available for active producers. It stops new submissions, not an accepted AWS change, action-owned probe, or submitted request. Each command has a browser-generated action ID: repeated same ID/input returns the recorded action; different input with that ID is rejected. Persist acceptance before acknowledgement and resolve lost responses by reading that action. This deduplicates controller commands; it does not guarantee exactly-once AWS effects.
+Stop remains available for active producers. It stops new submissions, not an accepted AWS change, action-owned probe, or submitted request. Each command has a browser-generated action ID:
 
-## Action contracts
+- the same ID and input returns the recorded action;
+- different input with that ID is rejected; and
+- acceptance is persisted before acknowledgement, so a lost response is resolved by reading that action.
 
-Every action exposes its real steps, elapsed time, and evidence. Use bounded reads and action deadlines, ending with incomplete/unknown when necessary. Do not invent percentages or hide pending propagation. A scoped remediation shortcut - capacity, memory, or Restore inventory access - ends with its configuration result: applied, no change, failed, or unknown. It sends no business probes and makes no resolution judgment. Incident activation is separate: it retains its bounded catalog probes and, for access denial, one fresh verification checkout after a typed denied read. Record those request outcomes separately from the activation's configuration/readback result; polling remains independent.
+This deduplicates controller commands; it does not guarantee exactly-once AWS effects.
+
+## Actions
+
+Each action shows its steps, elapsed time, and evidence. Bounded reads end with `incomplete` or `unknown` when necessary. A scoped configuration action - capacity, memory, or Restore inventory access - ends with `applied`, `no_change`, `failed`, or `unknown`. It sends no business probes and does not decide whether an incident is resolved. Incident activation is separate: it retains bounded catalog probes and, for access denial, one fresh verification checkout after a typed denied read. Record request outcomes separately from activation configuration/readback. Polling remains independent.
 
 ### Check readiness
 
-Require no competing action or active producer and presenter confirmation that unrelated browser checkouts are stopped. Inspect the selected account, Region, resource identifiers, the current `live` alias and revision, allowlisted healthy/denied versions and their memory sizes, actual function caps, expected role/policy state and absence of an Inventory table resource policy, private setup record, and AWS permissions. For the alarm path, separately read back the configured AgentCore endpoint and verify the actual alarm binding; neither readiness observation invokes the agent or establishes that inference occurred. Do not silently repair mismatches.
+Before Readiness:
 
-Verify an authenticated catalog read and a fresh quantity-one checkout, its saved receipt, and its stock decrement after outcomes settle. Retain that real order in the baseline and count its POST attempt. Capture sku/productVersion for later probes; the two incidents may prevent catalog refresh.
+1. Ensure there is no competing action or active producer.
+2. Confirm that unrelated browser checkouts are stopped.
+3. Inspect the selected account, Region, resource identifiers, current `live` alias and revision, allowlisted healthy/denied versions and their memory sizes, actual function caps, expected role/policy state, absence of an Inventory table resource policy, the private setup record, and AWS permissions.
+4. For the alarm path, read back the configured AgentCore endpoint and verify the actual alarm binding. Neither observation invokes the agent or proves that inference occurred.
 
-Report application readiness separately from fresh alarm-path readiness. A fresh alarm-driven demonstration requires the selected alarm observed OK, `ActionsEnabled`, the exact expected adapter binding, and a ready pinned AgentCore endpoint. ALARM, INSUFFICIENT_DATA, disabled actions, missing or unexpected configuration, endpoint mismatch/unavailability, and stale reads are not ready. Readiness is not proof of event delivery; observe the actual run later.
+Do not silently repair mismatches.
+
+Verify an authenticated catalog read and a fresh quantity-one checkout, its saved receipt, and its stock decrement after outcomes settle. Retain that real order in the baseline and count its POST attempt. Capture `sku`/`productVersion` for later probes; the two incidents may prevent catalog refresh.
+
+Report application readiness separately from fresh alarm-path readiness. A fresh alarm-driven demonstration requires the selected alarm observed `OK`, `ActionsEnabled`, the exact expected adapter binding, and a ready pinned AgentCore endpoint. `ALARM`, `INSUFFICIENT_DATA`, disabled actions, missing or unexpected configuration, endpoint mismatch/unavailability, and stale reads are not ready. Readiness is not proof of event delivery; observe the actual run later.
 
 ### Reconnect after credential rotation
 
-Credential rotation is a same-run handoff, not Reset. Keep traffic and other writers paused while the replacement browser retrieves the new operator bearer from the established presenter-only SSM SecureString `/incident-triage-demo/presenter/controller-operator-bearer` through the private presenter channel. The app bearer remains a separate worker credential in the existing `incident-triage-demo/controller/app-bearer` secret and is retrieved privately from its confirmed `AWSCURRENT` version; the operator secret contains only the operator digest. Do not introduce another vault or ARN boundary. Never ask the browser, controller API, or evidence record to carry either raw value, a digest, an `Authorization` header, or a secret string. Retain only the secret/parameter identifiers, opaque `VersionId`s or parameter version/status, request IDs/statuses, and sanitized verdicts. The replacement browser must see the existing run, action/incident history, and controls; it must not create a new run or receive AWS credentials.
+Credential rotation is a same-run handoff, not Reset. Keep traffic and other writers paused while the replacement browser retrieves the new operator bearer from the established presenter-only SSM SecureString `/incident-triage-demo/presenter/controller-operator-bearer` through the private presenter channel.
 
-Before Readiness, compare the observed app alias/generation with the intended app pending `VersionId` now promoted to `AWSCURRENT`, and compare the operator secret's `AWSCURRENT` `VersionId` with the intended staged version. If an acknowledgement was lost, read the actual stack, alias, and both label sets before any further mutation. A failed app publication leaves current labels unchanged. A successful alias switch with incomplete label promotion remains a maintenance state: continue forward only from the confirmed saved/pending IDs, never roll a label back or repoint `live` to an older credential version.
+The app bearer remains a separate worker credential in the existing `incident-triage-demo/controller/app-bearer` secret and is retrieved privately from its confirmed `AWSCURRENT` version. The operator secret contains only the operator digest. Do not introduce another vault or ARN boundary. Never ask the browser, controller API, or evidence record to carry either raw value, a digest, an `Authorization` header, or a secret string. Retain only the secret/parameter identifiers, opaque `VersionId`s or parameter version/status, request IDs/statuses, and sanitized verdicts. The replacement browser must see the existing run, action/incident history, and controls; it must not create a new run or receive AWS credentials.
 
-Run the normal bounded Readiness once the two `AWSCURRENT` labels and the app binding are confirmed. A legacy or pre-rotation saved baseline must reject ordinary traffic without sending business requests; Readiness explicitly adopts the new generation at the release Inventory cap of 16 and validates the worker bearer/digest match, healthy aliases/settings, two catalog reads, one fresh quantity-one checkout, its receipt/status, and the stock decrement. It preserves the current run, `productVersion`, prior orders, immutable controller actions, agent runs, and source identities. Only after this adoption may the presenter start a separate traffic action. If the bounded verification is incomplete, keep traffic stopped and report readiness incomplete rather than claiming a successful rotation.
+Before Readiness, compare the observed app alias/generation with the intended app pending `VersionId` now promoted to `AWSCURRENT`. Also compare the operator secret's `AWSCURRENT` `VersionId` with the intended staged version. If an acknowledgement was lost, read the actual stack, alias, and both label sets before any further mutation. A failed app publication leaves current labels unchanged. A successful alias switch with incomplete label promotion remains a maintenance state: continue forward only from the confirmed saved/pending IDs; never roll a label back or repoint `live` to an older credential version.
+
+Run normal bounded Readiness once the two `AWSCURRENT` labels and the app binding are confirmed. A legacy or pre-rotation saved baseline must reject ordinary traffic without sending business requests. Readiness explicitly adopts the new generation at the release Inventory cap of 16 and validates the worker bearer/digest match, healthy aliases/settings, two catalog reads, one fresh quantity-one checkout, its receipt/status, and the stock decrement. It preserves the current run, `productVersion`, prior orders, immutable controller actions, agent runs, and source identities. Only after this adoption may the presenter start a separate traffic action. If bounded verification is incomplete, keep traffic stopped and report readiness incomplete rather than claiming a successful rotation.
 
 ### Traffic profiles and per-action bounds
 
 All traffic uses the normal protected API. Keep catalog load and checkout traffic separate in records and displays.
 
-- The normal profile lasts 15 seconds and gives catalog reads and quantity-one checkouts separate one-second ticks. Each producer can send at most 15 requests, allows at most one catalog request and two checkout requests in flight, and skips full-slot ticks without catch-up. Each logical checkout gets a fresh UUID and immutable input.
-- The strict surge command is `{ "kind": "traffic", "profile": "inventory_surge" }`; extra fields and unknown profiles are rejected. New actions snapshot profile version 4 at acceptance: 15 seconds, catalog `batchSize: 30`, `batchIntervalMs: 1000`, and `ratePerSecond: 30` (30 reads per wave, 30 starts/second average), at most 450 attempts and 30 in flight, a 300 ms bounded launch allowance, and a 7-second request timeout. It also reserves and durably records at most 15 quantity-one checkout probes at one-second ticks, with one in flight (`checkout.maxInFlight: 1`) and a 7-second timeout, before the producers co-launch. Missed, full-slot, and checkpoint-overlapping catalog waves are skipped; no queue or catch-up burst is allowed. Historical v1 requested a smooth 240 catalog starts/second, at most 3,600 attempts and 128 in flight; v2 requested 30 reads every 500 ms (60 starts/second average), at most 900 attempts and 30 in flight; v3 requested 30 reads every 1,000 ms, at most 450 attempts and 30 in flight, and used a 150 ms launch allowance. Historical versions 1-3 remain readable; v1/v2/v3 allowed at most 15 one-second checkout probes, with two in-flight slots in v1 and one in v2/v3. Reusing an action UUID with the same input returns the recorded action/result and does not send traffic; conflicting input is rejected. A new action UUID starts a new workload using v4, so historical profiles are not eligible for the current same-profile repeat. The v4 profile is a pressure/latency hypothesis until verified. Use the same exact v4 paired workload for both cap episodes and compare actual starts, per-wave cadence, skips, one-second start cohorts, outcomes, request-arrival times, completion times, and upstream headroom; requested bounds do not establish achieved demand.
-- Catalog reads use the uncached normal API path and must actually invoke inventory. Record actual fetch starts separately from scheduled wave ordinals, along with completion/outcome, in-flight counts, skips, request-arrival times and one-second start-time cohorts. A pacing setting or average rate is not proof of delivered demand.
-- A full concurrency slot, missed scheduler interval, or checkpoint pause skips that catalog wave; do not accumulate a client queue, catch-up burst, or automatic extension. Each explicit repeated phase is a separate bounded action with its own observation window.
+Normal traffic:
 
-There are no cumulative controller-wide quotas for checkout POSTs, catalog reads, or status reads, and no separate generator, verification, or manual pools. Readiness uses its established bounded verification sequence: two catalog reads, one fresh quantity-one checkout, and one status read. Bound each individual action by its applicable duration, attempt count, rate, in-flight limit, timeout, and deadline; bound reconciliation status reads within the action that performs them. Record actual submissions, completions, skips, results, receipts, stock changes, and unresolved identities; counts are observations, not request credits.
+- lasts 15 seconds;
+- gives catalog reads and quantity-one checkouts separate one-second ticks;
+- sends at most 15 requests per producer;
+- allows at most one catalog request and two checkout requests in flight;
+- skips full-slot ticks without catch-up; and
+- gives each logical checkout a fresh UUID and immutable input.
 
-For a surge, `trafficProfile` is the immutable requested profile and `trafficContext` separately records the validated app revision/productVersion and current Inventory/Checkout cap, alias, access, and memory before production. Repeating the same profile does not restore the earlier cap or make actual demand equivalent. `trafficWindow` distinguishes actual producer start, scheduled end, observed Stop, closed admissions, settlement, and stop reason. Stop acceptance is not producer-stop acknowledgement; the action stays draining until accepted work settles.
+The strict surge command is exactly `{ "kind": "traffic", "profile": "inventory_surge" }`. Extra fields and unknown profiles are rejected. New actions snapshot profile version 4 at acceptance:
 
-Retain all checkout/status records and ordinary traffic records. Surge catalog GETs do not create per-request table rows or grow `action.requests`; instead, `catalogObservation` stores fixed outcome/skip counters, peak in-flight work, exactly 15 one-second **start-time** cohorts with observed duration, and at most 24 deduplicated completed catalog samples (first 8, last 8, first 8 unsuccessful). Cohort completions belong to requests started in that cohort; future/unobserved periods are not zero demand. Samples are bounded evidence only and never determine totals. Checkpoint around once per second and after drain, pausing starts during the write; any overlapping wave is skipped, never queued for catch-up. A failed checkpoint or Stop read closes new admissions and leaves the action incomplete with only its last persisted partial observation. A final complete observation requires a successfully persisted drained snapshot, including after an explicit Stop.
+| Setting | Value |
+| --- | --- |
+| Duration | 15 seconds |
+| Catalog | `batchSize: 30`, `batchIntervalMs: 1000`, `ratePerSecond: 30` (30 reads per wave, 30 starts/second average) |
+| Catalog bounds | At most 450 attempts and 30 in flight |
+| Launch allowance | 300 ms, bounded |
+| Catalog request timeout | 7 seconds |
+| Checkout probes | At most 15 quantity-one probes at one-second ticks, reserved and durably recorded before producers co-launch |
+| Checkout concurrency | One in flight (`checkout.maxInFlight: 1`) |
+| Checkout timeout | 7 seconds |
+
+Missed, full-slot, and checkpoint-overlapping catalog waves are skipped. There is no queue or catch-up burst. Historical versions remain readable:
+
+- v1 requested a smooth 240 catalog starts/second, at most 3,600 attempts, and 128 in flight;
+- v2 requested 30 reads every 500 ms (60 starts/second average), at most 900 attempts, and 30 in flight; and
+- v3 requested 30 reads every 1,000 ms, at most 450 attempts, and 30 in flight, with a 150 ms launch allowance.
+
+Versions 1-3 allowed at most 15 one-second checkout probes; v1 had two in-flight slots and v2/v3 had one. Reusing an action UUID with the same input returns the recorded action/result and sends no traffic. Conflicting input is rejected. A new action UUID starts a new workload using v4, so historical profiles are not eligible for the current same-profile repeat. The v4 profile is a pressure/latency hypothesis until verified. Use the same exact v4 paired workload for both cap episodes and compare actual starts, per-wave cadence, skips, one-second start cohorts, outcomes, request-arrival times, completion times, and upstream headroom. Requested bounds do not establish achieved demand.
+
+Catalog reads use the uncached normal API path and must actually invoke Inventory. Record actual fetch starts separately from scheduled wave ordinals, along with completion/outcome, in-flight counts, skips, request-arrival times, and one-second start-time cohorts. A pacing setting or average rate is not proof of delivered demand. A full concurrency slot, missed scheduler interval, or checkpoint pause skips that catalog wave; do not accumulate a client queue, catch-up burst, or automatic extension. Each explicit repeated phase is a separate bounded action with its own observation window.
+
+There are no cumulative controller-wide quotas for checkout POSTs, catalog reads, or status reads, and no separate generator, verification, or manual pools. Readiness uses its established bounded verification sequence: two catalog reads, one fresh quantity-one checkout, and one status read. Bound each action by its applicable duration, attempt count, rate, in-flight limit, timeout, and deadline. Bound reconciliation status reads within the action that performs them. Record actual submissions, completions, skips, results, receipts, stock changes, and unresolved identities; counts are observations, not request credits.
+
+For a surge, `trafficProfile` is the immutable requested profile. `trafficContext` separately records the validated app revision/productVersion and current Inventory/Checkout cap, alias, access, and memory before production. Repeating the same profile does not restore the earlier cap or make actual demand equivalent. `trafficWindow` distinguishes actual producer start, scheduled end, observed Stop, closed admissions, settlement, and stop reason. Stop acceptance is not producer-stop acknowledgement; the action stays draining until accepted work settles.
+
+Retain all checkout/status records and ordinary traffic records. Surge catalog GETs do not create per-request table rows or grow `action.requests`. Instead, `catalogObservation` stores:
+
+- fixed outcome/skip counters;
+- peak in-flight work;
+- exactly 15 one-second **start-time** cohorts with observed duration; and
+- at most 24 deduplicated completed catalog samples (first 8, last 8, first 8 unsuccessful).
+
+Cohort completions belong to requests started in that cohort. Future/unobserved periods are not zero demand. Samples are bounded evidence only and never determine totals. Checkpoint around once per second and after drain, pausing starts during the write; any overlapping wave is skipped, never queued for catch-up. A failed checkpoint or Stop read closes new admissions and leaves the action incomplete with only its last persisted partial observation. A final complete observation requires a successfully persisted drained snapshot, including after an explicit Stop.
 
 The shared producer clock begins after durable preflight context. Its actual window is saved with the first periodic observation or an earlier Stop/final lifecycle record. Until then, the window and catalog counts are unobserved; initial zero counters do not prove zero requests. An interrupted action shows totals through its last checkpoint, with final totals and current catalog in-flight work unknown. A late Stop does not move admission closure beyond the scheduled end.
 
 Capture checkout identity/input before sending. A timeout, lost response, or outcome-unknown response is unresolved, not proof of no order. Do not retry every failure. Reconcile with status reads bounded within the current action; a single 404 does not rule out a later commit. Any resubmission retains the same identity/input and is recorded as another actual attempt.
 
-Stop disables new producer admissions and shows draining until submitted work settles. Preserve unresolved identities and block destructive reset. A durably reserved checkout closed before its fetch begins remains recorded as `not_sent` (“Not sent - admission closed”), without an HTTP status or duration. Stop does not restore capacity/access or delete orders. A new explicit action starts its own bounded work; duplicate command IDs return the recorded action and cannot replay it.
+Stop disables new producer admissions and shows draining until submitted work settles. Preserve unresolved identities and block destructive Reset. A durably reserved checkout closed before its fetch begins remains recorded as `not_sent` ("Not sent - admission closed"), without an HTTP status or duration. Stop does not restore capacity/access or delete orders. A new explicit action starts its own bounded work; duplicate command IDs return the recorded action and cannot replay it.
 
 ### Activate inventory capacity overload
 
-Start from verified healthy ordinary demand at Inventory 16, a healthy current generation, positive confirmed cap, and productVersion. Only one incident is selected at a time; Recover before switching incidents. The surge uses the finite saved profile and bounded checkout probes, after fresh worker preflight. After stopping and draining, the presenter may explicitly repeat this profile at the current cap without Recover or reapplying the baseline limit.
+Start from verified healthy ordinary demand at Inventory 16, a healthy current generation, positive confirmed cap, and `productVersion`. Select only one incident at a time; Recover before switching incidents. Run the finite saved profile and bounded checkout probes after fresh worker preflight. After stopping and draining, the presenter may explicitly repeat this profile at the current cap without Recover or reapplying the baseline limit.
 
-Record the actual current caps/aliases and start the selected catalog producer. Do not change code, memory, access, aliases, restore or lower the inventory cap, set it to zero, add an artificial sleep, or silently change API/database limits. Do not offer a Checkout capacity shortcut or force a memory-overload experiment. Existing sparse checkout probes stay within their bounds. Give each explicitly repeated workload phase its own evidence window; a repeat uses the same profile with a new ID. Same-profile identity is not proof of equivalent actual demand.
+Record the actual current caps/aliases and start the selected catalog producer. Do not change code, memory, access, aliases, restore or lower the Inventory cap, set it to zero, add an artificial sleep, or silently change API/database limits. Do not offer a Checkout capacity shortcut or force a memory-overload experiment. Existing sparse checkout probes stay within their bounds. Give each explicit workload phase its own evidence window; a repeat uses the same profile with a new ID. Same-profile identity is not proof of equivalent actual demand.
 
 Verify increased actual demand and Inventory invocation rejections using checkout caller `dependencyThrottleReason` and native Inventory Throttles in the separately queried metric window. Distinguish native concurrent-execution exhaustion from synchronous invocation-rate throttling using available error reasons; do not claim all execution slots were busy without evidence. Throttled invocations may have no child execution log and do not increment Invocations or Errors. Check for competing Gateway rejection, checkout throttling, client queueing, account concurrency pressure, or database failures before attributing the incident.
 
-The full presenter journey is healthy ordinary demand at cap 16 → finite surge and real incident evidence → explicit Stop/drain → Inventory-only increase to 32 → explicit same-profile surge → Recover to 16 with orders and history preserved and a fresh verification order. At 16, the live pair requires genuine caller rejection, native Inventory Throttles, a fresh checkout dependency failure without business writes, and a real ALARM with its matching investigation. At 32, actual catalog starts and offered demand must be at least as high over the same production duration, using the same saved version-4 profile and stable app generation/productVersion/code/memory/access/aliases. Inspect one-second cohorts and actual arrivals for lower sustained rate, queueing, or bursts. Require valid catalog results, settled successful checkout probes with matching orders/decrements, and native Invocations plus Gateway/caller evidence for upstream headroom. Sparse empty series remain unknown. If the demand/caller/native evidence or business effects are missing, mark the comparison unverified even if the cap readback or an ordinary request succeeds. A lower/different offered workload cannot establish that the higher cap served the same demand.
+The presenter journey is:
 
-The result may be “surge started; incident effect unverified.” An expired producer does not mean capacity is fixed. Its request evidence can still produce a later real alarm/run, but no traffic is extended to force delivery.
+1. Healthy ordinary demand at cap 16.
+2. Finite surge and real incident evidence.
+3. Explicit Stop/drain.
+4. Inventory-only increase to 32.
+5. Explicit same-profile surge.
+6. Recover to 16 with orders and history preserved and a fresh verification order.
+
+At 16, the live pair requires genuine caller rejection, native Inventory Throttles, a fresh checkout dependency failure without business writes, and a real ALARM with its matching investigation. At 32, actual catalog starts and offered demand must be at least as high over the same production duration, using the same saved version-4 profile and stable app generation/productVersion/code/memory/access/aliases. Inspect one-second cohorts and actual arrivals for lower sustained rate, queueing, or bursts. Require valid catalog results, settled successful checkout probes with matching orders/decrements, and native Invocations plus Gateway/caller evidence for upstream headroom. Sparse empty series remain unknown. If demand/caller/native evidence or business effects are missing, mark the comparison unverified even if cap readback or an ordinary request succeeds. A lower/different offered workload cannot establish that the higher cap served the same demand.
+
+The result may be "surge started; incident effect unverified." An expired producer does not mean capacity is fixed. Its request evidence can still produce a later real alarm/run, but no traffic is extended to force delivery.
 
 ### Activate inventory access denied
 
-Start with the healthy version at the approved baseline memory, adequate capacity, and the overload producer stopped. Verify the current `live` alias is unweighted and points to the healthy qualified version. Verify the denied version's static execution role, its logging/read Allow and permanent policy that denies only `dynamodb:GetItem` on the exact Inventory table, and the absence of a table resource policy.
+Start with the healthy version at approved baseline memory, adequate capacity, and the overload producer stopped. Verify that the current `live` alias is unweighted and points to the healthy qualified version. Verify the denied version's static execution role, its logging/read Allow, the permanent policy that denies only `dynamodb:GetItem` on the exact Inventory table, and the absence of a table resource policy.
 
-The controller serializes its configuration actions and records intent before making one compare-and-swap alias update. It checks the observed alias revision, requested release/version, qualified configuration, role and policy state, and stops on unexpected drift. An uncertain alias response stays unknown until reconciled through alias readback; existing invocations may overlap the switch.
+The controller serializes configuration actions and records intent before making one compare-and-swap alias update. It checks the observed alias revision, requested release/version, qualified configuration, role and policy state, and stops on unexpected drift. An uncertain alias response stays unknown until reconciled through alias readback; existing invocations may overlap the switch.
 
-Activation requires a verified current release, settled controller traffic, and paused unrelated writers. The worker captures the active alias/version/role/policy configuration before the switch, then sends up to six paced catalog probes through the denied version. A typed catalog denial permits one verification checkout. A specific denied-read response and a fresh checkout 502 establish the incident. Keep actual successes and unresolved checkout identities in the run if the request evidence differs.
+Activation requires a verified current release, settled controller traffic, and paused unrelated writers. The worker captures the active alias/version/role/policy configuration before the switch, then sends up to six paced catalog probes through the denied version. A typed catalog denial permits one verification checkout. A specific denied-read response and a fresh checkout 502 establish the incident. Keep actual successes and unresolved checkout identities in the run if request evidence differs.
 
 Neither incident activation nor its probes invoke the agent. A repeated command ID does not create another action. An explicit new workload phase records its own observations without promising a new incident, alarm transition, or agent run.
 
 ### Increase function capacity
 
-The only capacity shortcut is for Inventory. The presenter supplies an integer reserved-concurrency target from 16 through 64; the initial input value is 32. Strictly validate the function name as `inventory` and reject any Checkout target. Read Inventory's current cap and fresh account settings. Require an existing positive cap and a target at least as large as current; setting a cap on an uncapped function is not presented as an increase. An already-active target is a `no_change` result, not an executed increase. The AWS account limit is not itself available headroom: the target delta must fit fresh unreserved capacity above the 100-unit floor.
+The only capacity shortcut is for Inventory. The presenter supplies an integer reserved-concurrency target from 16 through 64; the initial input value is 32. Validate the function name strictly as `inventory` and reject any Checkout target. Read Inventory's current cap and fresh account settings.
 
-Require a verified current release generation and expected current cap, no pending/unsettled action, no active producer, and a usable run. Reject a missing or unreserved current Inventory cap, lower target, stale generation, unexplained cap drift, or insufficient/unavailable headroom before mutation. A running producer is not stopped automatically; the presenter stops and drains it explicitly. Capture pre-change configuration, re-read release/cap/account identity, and record `capacityChange` intent before at most one `PutFunctionConcurrency`. Record acknowledgement separately from readback and its time. A matching readback with a lost acknowledgement is applied with ambiguity retained; conflicting or unavailable readback remains failed or incomplete/unknown. Do not retry the Put automatically or claim an exactly-once AWS update.
+Require an existing positive cap and a target at least as large as current. Setting a cap on an uncapped function is not presented as an increase. An already-active target is a `no_change` result, not an executed increase. The AWS account limit is not itself available headroom: the target delta must fit fresh unreserved capacity above the 100-unit floor.
+
+Before mutation, require a verified current release generation and expected current cap, no pending/unsettled action, no active producer, and a usable run. Reject a missing or unreserved current Inventory cap, lower target, stale generation, unexplained cap drift, or insufficient/unavailable headroom. A running producer is not stopped automatically; the presenter stops and drains it explicitly.
+
+Capture pre-change configuration, re-read release/cap/account identity, and record `capacityChange` intent before at most one `PutFunctionConcurrency`. Record acknowledgement separately from readback and its time. A matching readback with a lost acknowledgement is applied with ambiguity retained. Conflicting or unavailable readback remains failed or incomplete/unknown. Do not retry the Put automatically or claim an exactly-once AWS update.
 
 Do not change Checkout, memory allocation, Inventory access state, code, alias target, or traffic profile. Apply the operator's Inventory target without substituting another action. The worker checks regional account settings using `GetAccountSettings`; it does not call Service Quotas or wait on a quota request.
 
@@ -158,7 +222,7 @@ End the action after the configuration result/readback. Do not submit business p
 
 Show a memory dropdown only for variants prepared for the current app release. The demo needs two Inventory sizes, baseline and higher. Resolve the selected live alias and the memory size of its active version. Require a prepared target greater than the current allocation. An already-active target returns no change; a stale release or unlisted value is rejected before mutation.
 
-Apply the requested memory increase by selecting the prepared qualified version through the selected function's `live` alias while preserving its application artifact and all non-memory settings, including authentication, dependency targets, timeouts, concurrency, and access state. For Inventory, preserve whether the current variant is healthy or denied. Record the prior and resulting memory sizes, code identity, numeric version, role, and alias target/revision. Do not modify the other function.
+Apply the requested memory increase by selecting the prepared qualified version through the selected function's `live` alias. Preserve its application artifact and all non-memory settings, including authentication, dependency targets, timeouts, concurrency, and access state. For Inventory, preserve whether the current variant is healthy or denied. Record prior and resulting memory sizes, code identity, numeric version, role, and alias target/revision. Do not modify the other function.
 
 Published Lambda versions have immutable memory settings. Deployment publishes the allowlisted qualified variants and verifies the original unpublished `$LATEST` configuration is restored. The demo's Inventory release matrix contains healthy and denied variants at each supported memory size. The action must activate a compatible allowlisted release/version through the selected `live` alias; updating `$LATEST` or publishing from the controller does not complete the action. Read back that alias, revision, qualified configuration, and resolved version's memory before reporting applied. The controller has no role-passing, `$LATEST` staging, version-publication, or other version-preparation authority. See [Lambda published versions](https://docs.aws.amazon.com/lambda/latest/dg/configuration-versions.html).
 
@@ -166,37 +230,63 @@ Use the existing action serialization, deduplication, conflict handling, and bou
 
 ### Restore inventory access
 
-The presenter chooses **Restore inventory access**. The worker checks the current app source revision and the active alias/version/role/policy recorded by activation. It captures that configuration before the change, then selects only the allowlisted healthy version at the current memory with a compare-and-swap alias update and reads back the alias, revision, qualified configuration, role and policy state. Unexpected changes require inspection.
+The presenter chooses **Restore inventory access**. The worker checks the current app source revision and the active alias/version/role/policy recorded by activation. It captures that configuration before the change, selects only the allowlisted healthy version at the current memory with a compare-and-swap alias update, and reads back the alias, revision, qualified configuration, role, and policy state. Unexpected changes require inspection.
 
-Capture the live incident configuration in the private evidence bucket before switching away from the denied version. If required capture fails, the presenter can explicitly confirm restoration without the configuration checkpoint. Record the evidence gap. Both paths use the current app source revision and exact qualified manifest entries. Retain alias/version/role/policy identity across interruption for reconciliation. Report configuration readback independently of request health, then let the presenter run separate traffic or readiness to observe the effect.
+Capture the live incident configuration in the private evidence bucket before switching away from the denied version. If required capture fails, the presenter can explicitly confirm restoration without the configuration checkpoint; record the evidence gap. Both paths use the current app source revision and exact qualified manifest entries. Retain alias/version/role/policy identity across interruption for reconciliation. Report configuration readback independently of request health, then let the presenter run separate traffic or readiness to observe the effect.
 
 ### Observe after a targeted remedy
 
-This is a presenter workflow, not a verification step inside a fix action. A scoped remedy leaves unrelated settings and traffic unchanged. The presenter can stop the workload, apply the fix, and explicitly repeat the same profile at the current configuration. Starting the workload does not undo the fix. For overload, compare actual offered demand and outcomes across the recorded phases. For denied access, repeat ordinary requests through the healthy version without selecting the denied version again. Preserve alias-readback, metric lag, partial evidence, and any period without traffic as separate observations.
+Observation happens after the fix action, not inside it. A scoped remedy leaves unrelated settings and traffic unchanged. The presenter can stop the workload, apply the fix, and explicitly repeat the same profile at the current configuration. Starting the workload does not undo the fix.
 
-A confirmed checkout receipt can be observed under catalog load. For precise order/stock verification, stop checkout producers and unrelated browser writes, settle submitted work, then compare the actual stock/order effects. Do not require a precise stock delta while other writers remain active. Distinguish pre-change/overlapping requests from fresh post-confirmation requests.
+For overload, compare actual offered demand and outcomes across the recorded phases. For denied access, repeat ordinary requests through the healthy version without selecting the denied version again. Preserve alias-readback, metric lag, partial evidence, and any period without traffic as separate observations.
 
-Observed improvement does not prove the agent's reasoning was sound; evaluation of the recommendation remains separate.
+A confirmed checkout receipt can be observed under catalog load. For precise order/stock verification, stop checkout producers and unrelated browser writes, settle submitted work, then compare actual stock/order effects. Do not require a precise stock delta while other writers remain active. Distinguish pre-change/overlapping requests from fresh post-confirmation requests. Observed improvement does not prove that the agent's reasoning was sound; evaluation of the recommendation remains separate.
 
 ### Recover application
 
-Recover itself stops catalog and checkout producers and waits for accepted work to drain. Confirm the trusted deployment generation and app source revision still match the baseline, then restore/read back Inventory's original release cap of **16**, Checkout's release-owned unreserved setting, and the healthy role-backed Inventory version at baseline memory through the healthy `live` alias. Apply the alias compare-and-swap guard and inspect conflicting external changes. Restore the original release baseline, not the controller-confirmed raised cap or whichever memory allocation was most recently used. If deployment identity is newer or unknown, or a deployment is failed/partial, keep Recover blocked pending deployment reconciliation; never silently restore old aliases/settings over it. Reconcile the new generation against its trusted manifest explicitly before adopting a new baseline or resuming presenter actions.
+Recover stops catalog and checkout producers and waits for accepted work to drain. Confirm that the trusted deployment generation and app source revision still match the baseline. Then restore and read back:
 
-Settle submitted work, including ambiguous checkout outcomes, then run the fresh bounded readiness verification: two catalog reads, one quantity-one checkout, its receipt/status read, and the stock decrement while other writers are stopped. Recover first checks each prior unresolved identity at most once through status and stops reconciliation on the first unknown result, then runs the fresh verification sequence. Configuration restoration may complete while effect verification is incomplete. If the bounded action cannot complete or an outcome remains uncertain, report verification as incomplete rather than claiming recovery. Do not resubmit an ambiguous checkout; missing/404 status remains unresolved. Configuration and per-function cap readback remain visible when business verification is incomplete.
+- Inventory's original release cap of **16**;
+- Checkout's release-owned unreserved setting; and
+- the healthy role-backed Inventory version at baseline memory through the healthy `live` alias.
 
-Recover preserves orders, productVersion, logs, incident/remedy records, alarm state, and previous agent results. Traffic stays stopped until explicitly restarted. Its fresh business verification occurs after the Inventory cap has returned to 16 and does not demonstrate that peak demand is served. Preserve the earlier comparable-load remedy result separately.
+Apply the alias compare-and-swap guard and inspect conflicting external changes. Restore the original release baseline, not the controller-confirmed raised cap or whichever memory allocation was most recently used. If deployment identity is newer or unknown, or a deployment is failed/partial, keep Recover blocked pending deployment reconciliation. Never silently restore old aliases/settings over it. Reconcile the new generation against its trusted manifest explicitly before adopting a new baseline or resuming presenter actions.
+
+Settle submitted work, including ambiguous checkout outcomes, then run fresh bounded readiness verification:
+
+- two catalog reads;
+- one quantity-one checkout;
+- its receipt/status read; and
+- the stock decrement while other writers are stopped.
+
+Recover checks each prior unresolved identity at most once through status and stops reconciliation on the first unknown result, then runs the fresh verification sequence. Configuration restoration may complete while effect verification is incomplete. If the bounded action cannot complete or an outcome remains uncertain, report verification as incomplete rather than claiming recovery. Do not resubmit an ambiguous checkout; missing/404 status remains unresolved. Configuration and per-function cap readback remain visible when business verification is incomplete.
+
+Recover preserves orders, `productVersion`, logs, incident/remedy records, alarm state, and previous agent results. Traffic stays stopped until explicitly restarted. Fresh business verification occurs after the Inventory cap has returned to 16 and does not demonstrate that peak demand is served. Preserve the earlier comparable-load remedy result separately.
 
 ### Reset demo
 
-Require explicit confirmation for quiet traffic, destructive order deletion/stock reseeding, and closed old checkout pages. Stop producers, wait for accepted work and the execution/drain window, and reconcile known checkout identities through status without retrying their POSTs. Validate the current successful app release and exact target resources, then reconcile to its trusted expected healthy aliases, baseline memory, Inventory cap **16**, and Checkout's unreserved setting. This restores 16 after a same-generation capacity increase and can also adopt a newer release when the old saved baseline is stale or missing; Recover still requires its strict saved baseline. A failed/partial deployment or unknown current configuration blocks destructive work until reconciled.
+Require explicit confirmation for quiet traffic, destructive order deletion/stock reseeding, and closed old checkout pages. Stop producers, wait for accepted work and the execution/drain window, and reconcile known checkout identities through status without retrying their POSTs.
 
-Before changing business data, archive the quiescent old run with its receipts, observed outcomes, unresolved identities, actions, incident/source captures, and agent results. Preserve the original cap of 16 and the raised current-cap observation as actually recorded; link those records from the new run without rewriting the archived settings. The Reset action UUID becomes the new run ID. Through the existing public SKU definition, replace only the canonical product with its expected name/price/currency, stock 1,000, and a fresh UUID productVersion; then delete all old Orders, following every Scan page. Verify the new version/stock, save one fresh quantity-one order and its receipt/status, and confirm stock is 999. Commit the new run's release identity, original cap and current cap at 16 only after verification succeeds. The verified order remains in the new baseline. Use the previous-run link and authenticated `GET /api/runs/{id}` to inspect current or archived state; history is read-only.
+Validate the current successful app release and exact target resources. Reconcile to its trusted expected healthy aliases, baseline memory, Inventory cap **16**, and Checkout's unreserved setting. This restores 16 after a same-generation capacity increase and can also adopt a newer release when the old saved baseline is stale or missing; Recover still requires its strict saved baseline. A failed/partial deployment or unknown current configuration blocks destructive work until reconciled.
 
-Leave traffic stopped after success. If Reset is interrupted, keep `resetRequired` set and the run unusable; ordinary actions and Recover cannot claim or present the half-reset data as healthy. Do not continue the old action, reuse its ID/version, or add a reset-resume journal. After the worker's execution/drain window ends and an expired action is explicitly discarded if needed, a new confirmed Reset uses a fresh action UUID and productVersion. Preserve any old unknown checkout outcome in archived history as unknown; once its old execution has stopped, it does not alone block the new reset. Reset gives no request credits, and its verification is part of the reset action rather than an implicit traffic restart.
+Before changing business data, archive the quiescent old run with its receipts, observed outcomes, unresolved identities, actions, incident/source captures, and agent results. Preserve the original cap of 16 and the raised current-cap observation as recorded. Link those records from the new run without rewriting the archived settings. The Reset action UUID becomes the new run ID.
 
-## Observation contracts
+Through the existing public SKU definition:
 
-Poll alarm and investigation observations independently every five seconds without overlapping reads for the same source. On a read failure, retain the last good value and its observation time; mark investigation data stale after two intervals. Each observation identifies source, target, scope/window, read time, and source event/update time. Use monotonic time for request durations and UTC for correlation; avoid precise ordering claims across machines from tiny timestamp differences.
+1. Replace only the canonical product with its expected name/price/currency, stock 1,000, and a fresh UUID `productVersion`.
+2. Delete all old Orders, following every Scan page.
+3. Verify the new version/stock.
+4. Save one fresh quantity-one order and its receipt/status.
+5. Confirm stock is 999.
+6. Commit the new run's release identity, original cap, and current cap at 16 only after verification succeeds.
+
+The verified order remains in the new baseline. Use the previous-run link and authenticated `GET /api/runs/{id}` to inspect current or archived state. History is read-only.
+
+Leave traffic stopped after success. If Reset is interrupted, keep `resetRequired` set and the run unusable; ordinary actions and Recover cannot claim or present the half-reset data as healthy. Do not continue the old action, reuse its ID/version, or add a reset-resume journal. After the worker's execution/drain window ends and an expired action is explicitly discarded if needed, a new confirmed Reset uses a fresh action UUID and `productVersion`. Preserve any old unknown checkout outcome in archived history as unknown; once its old execution has stopped, it does not alone block the new reset. Reset gives no request credits, and its verification is part of the reset action rather than an implicit traffic restart.
+
+## Observations
+
+Poll alarm and investigation observations independently every five seconds without overlapping reads for the same source. On a read failure, retain the last good value and its observation time; mark investigation data stale after two intervals. Each observation identifies source, target, scope/window, read time, and source event/update time. Use monotonic time for request durations and UTC for correlation. Avoid precise ordering claims across machines from tiny timestamp differences.
 
 | Data | Source and meaning |
 | --- | --- |
@@ -204,30 +294,66 @@ Poll alarm and investigation observations independently every five seconds witho
 | Checkout outcomes | Controller POST records only, separating HTTP result from confirmed/unknown business outcome and labelling probes |
 | Latency | Completed controller POSTs begun within a rolling 60-second window: median and sample count; client timeouts separate. Catalog latency and CloudWatch metrics are separate series |
 | Orders/stock | Deduplicated confirmed receipts/status reads for known IDs and last authenticated stock/productVersion observation; no all-orders source implied |
-| Function configuration/access | Selected current function caps, active-version memory sizes and alias targets/revisions, Inventory version/role/policy state and ordinary management history, actual caller error reasons, and native inventory Throttles with scope/freshness |
+| Function configuration/access | Selected current function caps, active-version memory sizes and alias targets/revisions, Inventory version/role/policy state and ordinary management history, actual caller error reasons, and native Inventory Throttles with scope/freshness |
 | Native traffic metrics | Authenticated `GET /api/actions/{UUID}/metrics`; fixed Inventory/Checkout Lambda, API Gateway stage and account-concurrency queries, with the saved bounded UTC-minute window, query/result association, status and source timestamps |
-| Alarm | DescribeAlarms: actual stage 5xx state, reason, transition/update/read times, and enabled action state; separately report whether the exact configured adapter is bound. Missing, disabled, unexpected, stale, or failed is not ready; read time is freshness only |
+| Alarm | `DescribeAlarms`: actual stage 5xx state, reason, transition/update/read times, and enabled action state; separately report whether the exact configured adapter is bound. Missing, disabled, unexpected, stale, or failed is not ready; read time is freshness only |
 | Agent | Selected alarm ARN plus normalized originating ALARM transition, matching durable run/session/candidate identity, Runtime version and release provenance, status/deadline, report citations and uncertainty, trace and source-capture references; unavailable and no matching run are distinct |
 | Timeline | Recorded intent, traffic phases, confirmed settings, request effects, alarm transitions, agent events, and recovery/reset; no invented missed transitions |
 
-The metrics route derives its query window from saved producer start through settlement (or the recorded normal-traffic interval), rounds to UTC minute boundaries, and limits the bounded interval to 180 seconds after rounding. While the producer drains, it uses the bounded current-observation window. It queries 12 fixed series with 60-second periods in one `GetMetricData` call, at most one attempt, and a two-second SDK deadline; it does not wait or paginate inside the HTTP request: Inventory and Checkout `AWS/Lambda` `Invocations`, `Errors`, and `Throttles` use `Sum`; their `ConcurrentExecutions` uses `Maximum`, each with exact `FunctionName`; `AWS/ApiGateway` `Count`, `4xx`, and `5xx` use `Sum` with exact `ApiId` and `Stage`; account `AWS/Lambda` `ConcurrentExecutions` uses `Maximum` with no dimensions. Its response preserves query/result association and series status. Before traffic starts it returns `pending` with no window or CloudWatch call. Empty values remain empty; useful nonempty series can be `available` while another sparse series has no samples, all-empty results remain pending, and a provider token or incomplete coverage remains `partial`. Provider errors return safe `METRICS_UNAVAILABLE`; the dashboard may retain the last good observation as stale. The endpoint rejects caller resource/window/query overrides before AWS calls and is not a general metric proxy.
+### Native metrics
 
-The live alarm identity is the selected alarm ARN paired with the UTC-normalized originating ALARM state-transition timestamp from the actual adapter-delivered `alarmData.state.timestamp`. The [agent design](operations-agent.md) owns producing and persisting that identity. The authenticated `/api/investigations` route reads durable run records from the agent's separate DynamoDB table using scoped strong base-table reads; an optional `alarmArn` must be allowlisted, and an exact `transitionAt` query returns only that event's row or no row. Without an exact transition it returns up to 20 recent records for the selected alarm. If observation polling missed the transition or the backend restarted, the controller rediscovers actual records rather than reconstructing an event from alarm state. Keep runs for distinct transitions separate, and retain the originating identity after `DescribeAlarms` reports OK.
+The metrics route derives its query window from saved producer start through settlement, or from the recorded normal-traffic interval. It rounds to UTC minute boundaries and limits the bounded interval to 180 seconds after rounding. While the producer drains, it uses the bounded current-observation window.
 
-`DescribeAlarms.StateTransitionedTimestamp` may corroborate an identity only when it represents that same ALARM transition. `StateUpdatedTimestamp` and controller poll/read timestamps describe display state and freshness; they are never substitutes for the originating transition identity. Polling never invokes the agent or manufactures a missed event. `/api/investigations` polls independently of `/api/alarm`, retains the last good value on error, and marks the result stale after two five-second intervals. The alarm read separately reports whether the configured endpoint is ready and the adapter is bound to the selected alarm; these are control-plane observations, not inference evidence. An older result stays labelled as history when a newer transition has no matching run; absence of a discovered run is distinct from an unavailable read. For a fresh live cycle, observe the selected alarm OK before activating; persistent ALARM does not promise another invocation. Do not use `SetAlarmState` or a direct invocation as hidden proof. See [CloudWatch alarm behavior](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Alarms.html).
+It queries 12 fixed series with 60-second periods in one `GetMetricData` call, at most one attempt, and a two-second SDK deadline. It does not wait or paginate inside the HTTP request. The fixed queries are:
+
+| Namespace and metric | Statistic and dimensions |
+| --- | --- |
+| Inventory and Checkout `AWS/Lambda`: `Invocations`, `Errors`, `Throttles` | `Sum`, each with exact `FunctionName` |
+| Inventory and Checkout `AWS/Lambda`: `ConcurrentExecutions` | `Maximum`, each with exact `FunctionName` |
+| `AWS/ApiGateway`: `Count`, `4xx`, `5xx` | `Sum`, with exact `ApiId` and `Stage` |
+| Account `AWS/Lambda`: `ConcurrentExecutions` | `Maximum`, with no dimensions |
+
+The response preserves query/result association and series status. Before traffic starts it returns `pending` with no window or CloudWatch call. Empty values remain empty. Useful nonempty series can be `available` while another sparse series has no samples; all-empty results remain pending; a provider token or incomplete coverage remains `partial`. Provider errors return safe `METRICS_UNAVAILABLE`; the dashboard may retain the last good observation as stale. The endpoint rejects caller resource/window/query overrides before AWS calls and is not a general metric proxy.
+
+### Alarm and investigation discovery
+
+The live alarm identity is the selected alarm ARN paired with the UTC-normalized originating ALARM state-transition timestamp from the actual adapter-delivered `alarmData.state.timestamp`. The [agent design](operations-agent.md) owns producing and persisting that identity.
+
+The authenticated `/api/investigations` route reads durable run records from the agent's separate DynamoDB table using scoped strong base-table reads. An optional `alarmArn` must be allowlisted. An exact `transitionAt` query returns only that event's row or no row. Without an exact transition it returns up to 20 recent records for the selected alarm. If observation polling missed the transition or the backend restarted, the controller rediscovers actual records rather than reconstructing an event from alarm state. Keep runs for distinct transitions separate, and retain the originating identity after `DescribeAlarms` reports `OK`.
+
+`DescribeAlarms.StateTransitionedTimestamp` may corroborate an identity only when it represents that same ALARM transition. `StateUpdatedTimestamp` and controller poll/read timestamps describe display state and freshness; they are never substitutes for the originating transition identity. Polling never invokes the agent or manufactures a missed event.
+
+`/api/investigations` polls independently of `/api/alarm`, retains the last good value on error, and marks the result stale after two five-second intervals. The alarm read separately reports whether the configured endpoint is ready and the adapter is bound to the selected alarm. These are control-plane observations, not inference evidence. An older result stays labelled as history when a newer transition has no matching run. Absence of a discovered run is distinct from an unavailable read.
+
+For a fresh live cycle, observe the selected alarm `OK` before activating. Persistent `ALARM` does not promise another invocation. Do not use `SetAlarmState` or a direct invocation as hidden proof. See [CloudWatch alarm behavior](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch_Alarms.html).
 
 ## Backend boundary and private records
 
 Expose defined authenticated commands and observation reads. The controller table records accepted actions and immutable checkout inputs before external submission. A failed durable write blocks the send.
 
-Record target/run/action identities, expected baseline including its deployment generation/artifact identity, current/target settings and revisions, per-action traffic profiles and actual request records, command results, request/effect windows, alarm/event/run references, unresolved outcomes, and reset progress. Memory and access actions retain before/after allocation, version/code/alias identity, role and policy state. Capture the active alias/version/role/policy before recovery. Scope permissions to the named functions' approved capacity APIs and allowlisted alias/version operations, selected aliases, manifest reads, and existing data-reset operations; no IAM attach/detach, role-passing, `$LATEST` staging, version-publication, or general code/configuration editor is exposed.
+Record target/run/action identities, expected baseline including its deployment generation/artifact identity, current/target settings and revisions, per-action traffic profiles and actual request records, command results, request/effect windows, alarm/event/run references, unresolved outcomes, and reset progress. Memory and access actions retain before/after allocation, version/code/alias identity, role and policy state. Capture the active alias/version/role/policy before recovery.
+
+Scope permissions to the named functions' approved capacity APIs and allowlisted alias/version operations, selected aliases, manifest reads, and existing data-reset operations. No IAM attach/detach, role-passing, `$LATEST` staging, version-publication, or general code/configuration editor is exposed.
 
 Private intended causes, scenario IDs, prepared baseline mappings, and expected answers are scorer context. Ordinary current settings and management history may be agent evidence. Never store credentials, authentication configuration, or raw SDK dumps. Do not require an agent recommendation/run ID to operate a shortcut; an optional reference merely records what the presenter was reviewing.
 
 An expired action appears incomplete. Discard it only after its execution and drain window has elapsed. Keep actual attempts, observed outcomes, and unresolved checkout identities. A single missing order response leaves that checkout unresolved. The worker never automatically replays expired or previously claimed actions.
 
-## Implementation verification
+## Verification checklist
 
-Implementation verification covers the supported configuration actions, Readiness, Recover and Reset, both incidents, finite surge lifecycle/snapshots, fixed metrics reads, and ordinary-traffic compatibility. Verify bounded/no-catch-up production, explicit Stop acknowledgement and drain, checkpoint/read failure handling, preserved checkout records, 15 observed cohorts, 24-sample limit, 64 KiB action bound, no surge catalog-driven STATE growth, fixed native metric query/window/results, and sparse/partial/stale behavior. A valid live comparison requires comparable measured demand, genuine throttle attribution, the real alarm and matching report, raised-cap service, and Recover to 16 with data/history preserved. Scoped shortcuts send no business requests or judge incident resolution; activation and separate metric/request observations keep configuration and business results distinct. For denied access, prove failed and restored reads after alias readback. Keep the initial agent recommendation and its model, prompt, report schema, tools, and budgets unchanged; do not use a capacity-related prompt repair as evidence.
+Verify the supported configuration actions, Readiness, Recover and Reset, both incidents, finite surge lifecycle/snapshots, fixed metrics reads, and ordinary-traffic compatibility. The checks include:
 
-Retain duplicate/lost command responses, browser refresh, backend restart during a mutation, partial configuration restoration, ambiguous checkout outcomes, failed/stale reads, old alarms/results, action attempt/deadline boundaries, and interrupted reset as existing behavior checks. Verify that private truth and credentials do not enter agent evidence. For the genuine alarm path, verify duplicate delivery creates no second investigation, an interrupted post-claim run remains incomplete, and the report and trace stay discoverable after OK or browser reconnect.
+- bounded/no-catch-up production;
+- explicit Stop acknowledgement and drain;
+- checkpoint/read failure handling;
+- preserved checkout records;
+- 15 observed cohorts;
+- the 24-sample limit;
+- the 64 KiB action bound;
+- no surge catalog-driven STATE growth;
+- fixed native metric query/window/results; and
+- sparse/partial/stale behavior.
+
+A valid live comparison requires comparable measured demand, genuine throttle attribution, the real alarm and matching report, raised-cap service, and Recover to 16 with data/history preserved. Scoped shortcuts send no business requests or judge incident resolution; activation and separate metric/request observations keep configuration and business results distinct. For denied access, prove failed and restored reads after alias readback. Keep the initial agent recommendation and its model, prompt, report schema, tools, and budgets unchanged; do not use a capacity-related prompt repair as evidence.
+
+Retain these behavior checks: duplicate/lost command responses, browser refresh, backend restart during a mutation, partial configuration restoration, ambiguous checkout outcomes, failed/stale reads, old alarms/results, action attempt/deadline boundaries, and interrupted Reset. Verify that private truth and credentials do not enter agent evidence. For the genuine alarm path, verify duplicate delivery creates no second investigation, an interrupted post-claim run remains incomplete, and the report and trace stay discoverable after `OK` or browser reconnect.
