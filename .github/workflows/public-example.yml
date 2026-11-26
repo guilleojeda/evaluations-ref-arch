@@ -7,6 +7,7 @@ on:
       - docs/adapt-evaluations.md
       - agent/**
       - examples/inventory-denial/**
+      - examples/live-denial/**
       - .github/workflows/public-example.yml
   push:
     branches:
@@ -16,6 +17,7 @@ on:
       - docs/adapt-evaluations.md
       - agent/**
       - examples/inventory-denial/**
+      - examples/live-denial/**
       - .github/workflows/public-example.yml
 
 permissions:
@@ -40,3 +42,5 @@ jobs:
         run: uv sync --project agent --locked
       - name: Run public Inventory example checks offline
         run: uv run --offline --project agent --locked python examples/inventory-denial/test_public_example.py
+      - name: Check the native dataset and trace handoff offline
+        run: uv run --offline --project agent --locked python examples/live-denial/test_score_denial.py
