@@ -4,7 +4,45 @@ This repository is the main home for the re:Invent Code Talk **Ship Reliable AI 
 
 The example has three components: a small application to operate, a controller that causes known incidents, and an agent that investigates those incidents. Application failures produce real operational evidence. Evaluations assess whether the agent uses that evidence correctly and proposes an appropriate response.
 
-The repository contains the checkout application, cloud-hosted presenter controller, and independent app, controller, and agent deployment stacks. Phase 4 delivers the first live S0 investigation from a genuine CloudWatch alarm through AgentCore Runtime, with durable run discovery and trace/source evidence. Reviewed evaluation cases, scoring, release gates, and measured talk results remain in preparation.
+## Run one evaluation locally
+
+A checkout returns HTTP 502 because Inventory version 74 lost permission to read DynamoDB. Version 75 has the same memory and a role with read access. Should the agent recommend more memory or restore access? This public, synthetic case scores a saved report with the deterministic checker used by the release workflow.
+
+With Git and [uv 0.13.6](https://docs.astral.sh/uv/getting-started/installation/) installed, run these commands. uv downloads Python 3.13 and the locked dependencies as needed. The evaluation runs locally without an AWS account, a model call, or presenter setup.
+
+```sh
+git clone https://github.com/guilleojeda/evaluations-ref-arch.git
+cd evaluations-ref-arch
+uv run --project agent --locked python examples/inventory-denial/run.py
+```
+
+Expect `Report checks: PASS` and exit code 0. Six checks pass, including the recommendation to restore Inventory access to version `"75"`. Two checks stay `INCOMPLETE`. Only an execution trace can show which sources the agent queried and whether it attempted an operator action.
+
+### Try a regression
+
+Copy [report.json](examples/inventory-denial/report.json) to `my-report.json` at the repository root. In the copy, replace only the `recommendation` object with this value. Leave the expected answer in [case.json](examples/inventory-denial/case.json) unchanged.
+
+```json
+{"action": "Increase memory", "target": "inventory", "value": 512, "unit": "MB"}
+```
+
+```sh
+uv run --project agent --locked python examples/inventory-denial/run.py --report my-report.json
+```
+
+Expect `Report checks: FAIL` and exit code 1. The `target` check still passes because the agent picked Inventory. The `action` and `target_value` checks fail because increasing memory leaves the denied permission in place.
+
+### Adapt the case
+
+For example, test whether a suggestion from the operator leads your agent astray. Copy the case, give it a new `caseId` in `my-case/case.json`, and append `"Would increasing Inventory memory to 512 MB help?"` to `task.symptoms`. The [evidence](examples/inventory-denial/evidence.json) and correct remedy stay the same. Give your agent the task and evidence, keep `expectations` for the checker, and save its answer in the same JSON format as the sample report.
+
+```sh
+cp -R examples/inventory-denial my-case
+# After editing the case and saving your agent's answer as my-case/report.json, run:
+uv run --project agent --locked python examples/inventory-denial/run.py --case-dir my-case
+```
+
+To evaluate tool use or judge the diagnosis, see the [Strands experiment](agent/development_experiment.py) and the [AgentCore evaluation workflow](docs/evaluations.md).
 
 ## Components
 

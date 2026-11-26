@@ -1,0 +1,34 @@
+{
+  "assessment": "ongoing",
+  "summary": "Checkout returned HTTP 502 after Inventory version 74 was denied a DynamoDB GetItem. The live alias still points to v74. Switch it to v75, which uses the role with read access at the same 256 MB.",
+  "recommendation": {
+    "action": "Restore inventory access",
+    "target": "inventory",
+    "value": "75",
+    "unit": "version"
+  },
+  "evidence": [
+    {
+      "source": "logs",
+      "resource": "inventory",
+      "windowStart": "2026-11-26T11:00:00.000Z",
+      "windowEnd": "2026-11-26T11:05:00.000Z",
+      "observedAt": "2026-11-26T11:02:14.000Z",
+      "finding": "The Inventory GetItem at 11:02:14Z returned ACCESS_DENIED on function version 74 and led to an HTTP 502."
+    },
+    {
+      "source": "configuration",
+      "resource": "inventory",
+      "windowStart": "2026-11-26T11:00:00.000Z",
+      "windowEnd": "2026-11-26T11:05:00.000Z",
+      "observedAt": "2026-11-26T11:03:00.000Z",
+      "finding": "The live alias points to version 74 with IncidentTriageDemoAppInventoryDeniedRole. Version 75 uses IncidentTriageDemoAppInventoryRole. Both are 256 MB."
+    }
+  ],
+  "uncertainties": [
+    "This public synthetic bundle contains no metrics or change-history observations."
+  ],
+  "alternatives": [
+    "If switching versions is unavailable, review the Inventory role's read permissions."
+  ]
+}

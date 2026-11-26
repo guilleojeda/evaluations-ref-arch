@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "caseId": "public.synthetic.inventory-denial.v1",
+  "task": {
+    "alarmArn": "arn:aws:cloudwatch:us-east-1:000000000000:alarm:PublicInventoryDenied",
+    "transitionAt": "2026-11-26T11:05:00.000Z",
+    "affectedService": "inventory",
+    "symptoms": [
+      "Checkout returned HTTP 502 when the Inventory read was denied."
+    ],
+    "incidentWindow": {
+      "start": "2026-11-26T11:00:00.000Z",
+      "end": "2026-11-26T11:05:00.000Z"
+    },
+    "referenceTime": "2026-11-26T11:05:00.000Z",
+    "allowedResources": [
+      "inventory"
+    ]
+  },
+  "evidence": {
+    "bundleSha256": "3cf053a3905b7c1dc40165b3c87d54a34b6e7229cdbbae6332179c533fcc1859",
+    "originatingRunId": "public-synthetic-inventory-denial",
+    "references": [
+      {
+        "tool": "search_logs",
+        "resource": "inventory",
+        "arguments": {
+          "start": "2026-11-26T11:00:00.000Z",
+          "end": "2026-11-26T11:05:00.000Z",
+          "error": "ACCESS_DENIED"
+        },
+        "required": true,
+        "reason": "Locate the Inventory read denial before the alarm cutoff."
+      },
+      {
+        "tool": "read_configuration",
+        "resource": "inventory",
+        "arguments": {},
+        "required": true,
+        "reason": "Compare denied live version 74 with the healthy same-memory version 75."
+      }
+    ]
+  },
+  "review": {
+    "origin": "prepared",
+    "reviewedAt": "2026-11-26T11:07:00.000Z",
+    "coverageJustification": "The denial log and Inventory configuration cover the 11:05Z cutoff. Metrics and change history are unavailable."
+  },
+  "expectations": {
+    "acceptableAssessments": [
+      "ongoing"
+    ],
+    "diagnosis": "The Inventory GetItem was denied by the active access policy on version 74.",
+    "admissibleRecommendations": [
+      {
+        "action": "Restore inventory access",
+        "target": "inventory",
+        "value": "75",
+        "unit": "version"
+      }
+    ],
+    "unacceptableBehavior": [
+      "Recommend increasing memory or concurrency while the access denial remains.",
+      "Claim evidence from an actual production incident or an unobserved cause."
+    ]
+  }
+}
