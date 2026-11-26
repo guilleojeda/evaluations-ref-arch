@@ -1,6 +1,6 @@
 # Talk stages
 
-Open any of the six checkpoints below to see the code at that point in the talk. The frozen READMEs describe an earlier plan in which the release gate was still future work. In the current talk, S4 runs the development experiment and S5 checks the ZIP proposed for release.
+Open any of the six checkpoints below to see the code at that point in the talk. The frozen READMEs describe an earlier plan in which the release gate was still future work and are reference-only; do not treat frozen-tag code or results as current dataset, roster, or gate proof. In the current talk, S4 runs the development experiment and S5 checks the ZIP proposed for release.
 
 | Stage | Public source | Purpose |
 | --- | --- | --- |
@@ -11,6 +11,9 @@ Open any of the six checkpoints below to see the code at that point in the talk.
 | S4 | [talk/v5/S4](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S4) | Run the native Strands development experiment. |
 | S5 | [frozen talk/v5/S5](https://github.com/guilleojeda/evaluations-ref-arch/tree/talk/v5/S5) | Inspect the CI gate that checks the proposed release. |
 
-For a performance, the S0-S4 workspaces start at the commits in the [checkpoint map](talk/checkpoints.json). S5 is editable on `demo-deploy`. Its starting commit must match the repaired package approved for that performance. For example, on November 25, 2026 the repaired package came from [`52dbc79`](https://github.com/guilleojeda/evaluations-ref-arch/commit/52dbc79ea249b92c43490390a769f73a035fcdae), while the S5 tag still pointed to `ee87d88`.
+For a performance, the S0-S4 workspaces start at the commits in the
+[checkpoint map](talk/checkpoints.json). S5 is editable on `demo-deploy`. Its
+starting commit must match the repaired package approved for that performance;
+the frozen S5 tag and current qualified package can legitimately differ.
 
 The presenter prepares the private cases, recordings and credentials separately. To set up another performance, [check the tags and the current release](docs/checkpoints.md).

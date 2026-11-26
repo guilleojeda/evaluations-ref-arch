@@ -34,6 +34,46 @@ uv run --project agent --locked python examples/inventory-denial/run.py --report
 
 Expect `Report checks: FAIL` and exit code 1. The `target` check still passes because the agent picked Inventory. The `action` and `target_value` checks fail because increasing memory leaves the denied permission in place.
 
+## Score the live denial case
+
+The talk also uses one published AgentCore dataset version made from the
+original investigation trace. The dataset version contains the alarm input,
+the reviewed prose response, typed recommendation, and source metadata. It does not rerun the
+investigating agent. The public example downloads that case and scores the
+original report with AgentCore's built-in `Builtin.Correctness` evaluator.
+
+This route needs an AWS account with permission to read the published dataset
+and the recorded evaluation trace. It does not change the application or
+invoke the agent. From the repository root:
+
+```sh
+set -euo pipefail
+cd examples/live-denial
+export AWS_PROFILE="${AWS_PROFILE:?set the authorized AWS profile}"
+export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:?set the evaluation Region}"
+dataset_id="${DATASET_ID:?copy the full dataset ID from the published Version row}"
+dataset_version="${DATASET_VERSION:?copy the published dataset version}"
+aws bedrock-agentcore-control list-dataset-examples \
+  --dataset-id "$dataset_id" \
+  --dataset-version "$dataset_version" --query 'examples[0]' --output json > denial-case.json
+uv run --project ../../agent --locked python -u score_denial.py | tee evaluation.txt
+```
+
+The command deliberately selects `examples[0]` from the published version you
+just showed. A dataset scenario draft is editable; it is not the case used for
+this command until you save it and create a version. The score reports the native
+label, value, and explanation. The initial walkthrough readback was `Incorrect`
+and `0.0`, a completed scored quality failure for that attempt: the prose identifies the IAM denial and even names the
+access-restoration version, but the formal recommendation still says to
+increase memory. A later judge attempt can return a different label for the
+same trace, so show the returned explanation and keep the deterministic action
+check separate. The script reads the original report from the trace and does
+not start another investigation.
+
+See the [live-denial example](examples/live-denial/README.md) for the file
+layout and the [talk walkthrough](docs/adapt-evaluations.md) for how the case
+was reviewed and carried into the IDE.
+
 ### Adapt the case
 
 To test whether a suggestion from the operator leads your agent astray, start with a copy of the case.
@@ -56,17 +96,19 @@ To try the same case with Strands, follow the walkthrough. It shows where to plu
 | --- | --- |
 | Inspect the code shown on stage | [Six frozen checkpoints in the talk/v5 series](docs/checkpoints.md) |
 | Understand the code checks, model judge, and release decision | [Evaluation approach](docs/evaluations.md) and [audience questions](docs/questions.md) |
-| See what a rejected release looks like | [Denial result and GitHub run](docs/attendee-guide.md#the-rejected-push) |
+| See a rejected release pattern | [Historical/synthetic denial result](docs/attendee-guide.md#the-rejected-push) |
 | Find the services that produced the incident | [Checkout application](docs/components/application.md), [failure controller](docs/components/failure-controller.md), and [read-only operations agent](docs/components/operations-agent.md) |
 | Build and check the components locally or adapt the AWS setup | [Development and deployment](docs/deployment.md) |
 
-## Presenter operations
+## Talk materials
 
-The hosted storefront and controller require presenter access. Running the full cloud demonstration also requires the prepared case archive, an AWS evaluator and the release identities for the talk account. The public examples above work without those resources.
+The public materials explain the incident, the evaluation boundary, and the
+release decision. They do not contain credentials, private trace links,
+account-specific role names, or presenter-only runbooks.
 
 - [Talk outline](docs/talk-plan.md), [slide outline](docs/slides-plan.md), and [demo cues](docs/demo-script.md)
-- [Session preparation](docs/preparation.md) and [post-talk cleanup](docs/cleanup.md)
-- [Incident scenarios](docs/demo-scenarios.md), [controller behavior](docs/components/failure-controller-behavior.md), and [talk-account bootstrap](infrastructure/bootstrap/README.md)
+- [Public preparation notes](docs/preparation.md) and [cleanup notes](docs/cleanup.md)
+- [Incident scenarios](docs/demo-scenarios.md), [controller behavior](docs/components/failure-controller-behavior.md), and [stage map](TALK-STAGE.md)
 
 ## License
 

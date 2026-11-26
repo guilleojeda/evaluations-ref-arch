@@ -32,12 +32,31 @@ The public route uses the local synthetic case. Start with the
 to run a saved report and the native Strands example without presenter
 credentials, an AWS account, private evidence, or a model call.
 
-The prepared route uses private cases and evaluator inputs, a named short-lived
-AWS profile, outside-Runtime telemetry, and the protected release workflow.
-Follow [talk preparation](../docs/preparation.md) and the
-[deployment design](../docs/deployment.md). Keep private locators out of this
-checkout. Preparation and inspection commands do not run a model or send
-application traffic.
+The prepared route uses reviewed cases and evaluator inputs, outside-Runtime
+telemetry, and the protected release workflow. Follow [talk preparation](../docs/preparation.md)
+and the [deployment design](../docs/deployment.md). Keep private locators and
+credentials out of this checkout. Preparation and inspection commands do not
+run a model or send application traffic.
+
+## Score the published live-denial case
+
+The public live walkthrough starts from a native trace. In AgentCore, add that
+trace to a fixed dataset, edit `turns[0].expected_response` and the typed
+`metadata.expected_recommendation` in the scenario draft, save it, and create
+a version. Only the published version is a frozen input.
+
+Use the maintained [live-denial Codespace command](../examples/live-denial/README.md#download-the-published-case-in-codespaces)
+from a terminal whose working directory is `examples/live-denial`. It copies
+the full published dataset ID and version into `DATASET_ID` and
+`DATASET_VERSION`, selects `examples[0]`, and runs the locked `uv` scorer.
+
+`score_denial.py` reads the case, fetches the original spans from CloudWatch
+using the case's session/log-group/start-time fields, reads `incident.report`,
+and calls `Builtin.Correctness` with the recorded spans and the reviewed fields
+published in that same scenario. It does not invoke the agent again. Show the
+exact structured `recommendation` object first, then the separate native
+label, value, explanation, and scoring-attempt identity; a later attempt may
+return a different label.
 
 ## Open a prepared stage
 
@@ -91,7 +110,7 @@ relevant configuration is still observable:
 
 ```sh
 uv run --project agent --locked python agent/captured_evidence.py export \
-  --profile reinvent-2026-talk --account-id 027224425948 --region us-east-1 \
+  --profile "$AWS_PROFILE" --account-id "$AWS_ACCOUNT_ID" --region "$AWS_REGION" \
   --api-id "$app_api_id" --alarm-arn "$alarm_arn" \
   --transition-at "$transition_at" --run-id "$run_id" \
   --start "$window_start" --end "$window_end" --output "$bundle"
@@ -118,6 +137,20 @@ using a result as evidence. A partial or unavailable source leaves the related
 conclusion uncertain.
 
 ## Review and freeze a case (S1)
+
+For the public live-denial route, S1 is the AgentCore dataset workflow: add the
+selected native trace to a fixed dataset, leave expected response and expected
+trajectory disabled during creation, edit `turns[0].expected_response` and
+the typed `metadata.expected_recommendation` in the scenario draft, save it,
+and choose **Create version**. For ongoing evidence the typed value is
+`Restore inventory access`/`inventory`/healthy-version/`version`; for
+recovered evidence it is `Other` with null target and unit plus a separate
+free explanation. A draft scenario ID is not a published case and must not be
+used by the Codespace download command.
+
+The repository's captured-evidence stages use the offline review commands
+below. They preserve the same boundary: the expected remedy remains evaluator
+input while the candidate sees only the public task and read-only evidence.
 
 Use the verified portable inputs from [talk preparation](../docs/preparation.md)
 and keep the editable draft and frozen envelope in separate private
@@ -209,7 +242,10 @@ The experiment uses native `strands_evals` `Case` and `Evaluator` objects and
 `Experiment.run_evaluations`. Each case task calls the existing captured
 execution function. It writes the native `EvaluationReport`, runs cases
 sequentially, and may overlap the deterministic and advisory evaluators for a
-completed case.
+completed case. The current native denial case uses the same case/evidence
+bridge as S3; the normal S4/CI suite carries that case alongside the four
+retained reviewed gate cases, for five cases total. It does not silently switch
+to another case or live source.
 
 Direct prepared entry does not require an S3 run prerequisite. The prepared
 suite keeps case and bundle paths plus evaluator metadata outside
@@ -247,15 +283,18 @@ The run snapshots the candidate, evaluator and experiment code, lock, suite,
 selected cases and bundles before the first case. Repeating a selection creates
 a new experiment and fresh execution, session, and trace identities. Bounded
 task and evaluator retries record an error once and allow later selected cases
-to continue. The native report has one row per `(case, evaluator)`, so two
-cases produce four rows with two custom evaluators.
+to continue. The native report has one row per `(case, evaluator)`, so the
+normal five-case suite produces ten rows with two custom evaluators. A
+standalone one-case Codespace run is only the public live-denial example; it is
+not the full gate roster.
 
 The deterministic row contains the eight named findings. The advisory row
 contains the pinned AgentCore Opus 5.5 `semantic_quality` categorical verdict,
 reason, selected scoring attempt, and identity references. The current rubric
 checks diagnosis support and source or coverage grounding in that verdict.
 recommendation correctness remains deterministic. Its native numeric field is
-`0.0` with `numericPlaceholder: true`. Policy does not use that placeholder.
+not a release quality score. Always retain the returned label, value, and
+explanation: a later judge attempt can disagree with an earlier one.
 
 Inspect or compare saved experiments without credentials or new work:
 
@@ -282,11 +321,57 @@ otherwise exits 2. `compare` never authorizes a release.
 
 S4 is development feedback. It does not publish or qualify a Runtime ZIP. The
 editable prompt snapshot is separate from the prompt bytes in a serving ZIP.
-The later protected release workflow runs the same experiment and policy
-against the exact Linux ARM64 ZIP before a publisher pins those bytes to the
-named endpoint.
+Presenter preparation supplies a private five-case archive: the four retained
+reviewed cases plus the current native denial case. The later protected release
+workflow downloads and verifies all five and applies policy against the exact
+Linux ARM64 ZIP. Keep that CI qualification row separate from any later live
+alarm/run row; the participant's one prompt-plus-private-suite-pointer commit
+only selects the prepared archive.
 
 ## Run and score the captured baseline (S2)
+
+For the public live-denial walkthrough, S2 is the published dataset download
+and original-trace score. Use the maintained [live-denial Codespace command](../examples/live-denial/README.md#download-the-published-case-in-codespaces)
+from the `examples/live-denial` directory; it selects `examples[0]` and runs
+the locked `uv` scorer.
+
+`score_denial.py` reads `denial-case.json`, fetches the recorded spans using the
+case's session/log-group/start-time fields, extracts `incident.report`, and
+calls `Builtin.Correctness` with the reviewed fields from that same published
+scenario. It does not rerun the investigating agent. First show the exact structured
+`recommendation` object and compare its action, target, value, and unit with the
+reviewed expectation. Then show the separate native label, value, and
+explanation; keep both outputs tied to the original trace and scoring attempt.
+
+### Bridge the live case into S3/S4
+
+The public native scenario and the normal captured-evidence runner use
+different input shapes. Use the runnable [native case bridge](../scripts/native_case_bridge.py)
+to bind the downloaded case and the `original-trace.json` written by
+`score_denial.py`. The bridge reads the originating RunTable row and bounded S3
+captures itself.
+
+```sh
+set -euo pipefail
+cd ../..
+export AWS_PROFILE="${AWS_PROFILE:?set the authorized AWS profile}"
+export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:?set the evaluation Region}"
+bridge_root="$(mktemp -d "${TMPDIR:-/tmp}/native-case-bridge.XXXXXX")"
+uv run --project agent --locked python scripts/native_case_bridge.py build \
+  --scenario examples/live-denial/denial-case.json \
+  --trace examples/live-denial/original-trace.json \
+  --profile "$AWS_PROFILE" --region "$AWS_DEFAULT_REGION" \
+  --output "$bridge_root"
+```
+
+The bridge verifies trace/session/run joins and writes `case.frozen.json`,
+`captured-bundle.json`, `suite.json`, and `candidate-input.json`. Pass the
+first two as S3 `--case`/`--bundle`, or `suite.json` as the S4 `--suite`. S3
+and S4 then use the same incident's normal task projection and bounded
+captured evidence, while creating fresh candidate executions and traces. The
+bridge derives its structured expectations from the native metadata in the
+published scenario; no manually typed restore version or extra review file is
+needed. This is not a new trace or a standalone known-reference example.
 
 Open the prepared S2 execution from private evidence and inspect its retained
 report and deterministic findings:
@@ -320,13 +405,13 @@ group, and archive private evidence. Configure the locked AWS OpenTelemetry
 distribution for the outside-Runtime trace destination:
 
 ```sh
-export AWS_ACCOUNT_ID=027224425948 AWS_REGION=us-east-1 AWS_DEFAULT_REGION=us-east-1
+export AWS_ACCOUNT_ID="${AWS_ACCOUNT_ID:?set the authorized account}" AWS_REGION="${AWS_REGION:?set the authorized region}" AWS_DEFAULT_REGION="$AWS_REGION"
 export AGENT_OBSERVABILITY_ENABLED=true AWS_GENAI_CONTENT_EXTRACTION_OPT_OUT=true
 export OTEL_PYTHON_DISTRO=aws_distro OTEL_PYTHON_CONFIGURATOR=aws_configurator
-export OTEL_RESOURCE_ATTRIBUTES=service.name=incident-triage-evaluation,aws.log.group.names=/aws/bedrock-agentcore/incident-triage-evaluation
-export OTEL_EXPORTER_OTLP_TRACES_HEADERS=x-aws-log-group=/aws/bedrock-agentcore/incident-triage-evaluation,x-aws-log-stream=spans
+export OTEL_RESOURCE_ATTRIBUTES="service.name=incident-triage-evaluation,aws.log.group.names=${EVALUATION_LOG_GROUP:?set the evaluation log group}"
+export OTEL_EXPORTER_OTLP_TRACES_HEADERS="x-aws-log-group=$EVALUATION_LOG_GROUP,x-aws-log-stream=$EVALUATION_LOG_STREAM"
 export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf OTEL_EXPORTER_OTLP_TRACES_PROTOCOL=http/protobuf
-export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=https://xray.us-east-1.amazonaws.com/v1/traces OTEL_TRACES_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="${TRACE_ENDPOINT:?set the regional trace endpoint}" OTEL_TRACES_EXPORTER=otlp
 export OTEL_METRICS_EXPORTER=none OTEL_LOGS_EXPORTER=none OTEL_TRACES_SAMPLER=always_on
 ```
 
@@ -348,11 +433,11 @@ attempts private.
 An administrator supplies the descriptor with
 `evaluate_case.py provision --model --rubric single` using the reviewed judge
 profile. Provisioning uses the existing Transaction Search configuration, the
-dedicated evaluation log group with a pre-created `spans` stream, and the
-scoped presenter role. Scoring verifies the active SESSION evaluator against
-the descriptor. The evaluation role is separate from the app and controller
-operator role. Use `evaluate_case.py calibrate` for reviewed controls and keep
-those calibration records separate from candidate scores.
+dedicated evaluation log group with a pre-created `spans` stream, and scoped
+evaluation permissions. Scoring verifies the active SESSION evaluator against
+the descriptor. Evaluation permissions are separate from application and
+controller permissions. Use `evaluate_case.py calibrate` for reviewed controls
+and keep those calibration records separate from candidate scores.
 
 ## Run, score and compare the repaired candidate (S3)
 

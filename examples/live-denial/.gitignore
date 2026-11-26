@@ -4,6 +4,7 @@
 /original-trace.json
 /original-score.json
 /bridge/
+/bridge.archive.*/
 /reviewed-expectations.json
 /bridge-manifest.json
 /candidate-input.json
