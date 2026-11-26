@@ -1,30 +1,30 @@
 {
-  "schemaVersion": 1,
-  "generation": "talk/v4",
   "checkpoints": {
     "S0": {
-      "tag": "talk/v4/S0",
-      "commit": "7d559ffcb9a9224458f52bceab33b5bb0b45c417"
+      "commit": "7d559ffcb9a9224458f52bceab33b5bb0b45c417",
+      "tag": "talk/v5/S0"
     },
     "S1": {
-      "tag": "talk/v4/S1",
-      "commit": "2db0797ed6c51f79aa66679b460b6f47e98e79fa"
+      "commit": "2db0797ed6c51f79aa66679b460b6f47e98e79fa",
+      "tag": "talk/v5/S1"
     },
     "S2": {
-      "tag": "talk/v4/S2",
-      "commit": "53167e225b87fe1993ee45c657ad40a00b59a403"
+      "commit": "53167e225b87fe1993ee45c657ad40a00b59a403",
+      "tag": "talk/v5/S2"
     },
     "S3": {
-      "tag": "talk/v4/S3",
-      "commit": "2f58f287ee96a21749c6768dd564323534f5084d"
+      "commit": "9fc1a230c5d40252c54111f1045d8ab85c96be6b",
+      "tag": "talk/v5/S3"
     },
     "S4": {
-      "tag": "talk/v4/S4",
-      "commit": "519aced08cc7872037173f40515696bbe02c17fb"
+      "commit": "1f67f305104e9d9c74a7919cf0f968622d1d0c01",
+      "tag": "talk/v5/S4"
     },
     "S5": {
-      "tag": "talk/v4/S5",
-      "commit": "ee87d88276bad79647eafc48d43f681c5b99f846"
+      "commit": "ee87d88276bad79647eafc48d43f681c5b99f846",
+      "tag": "talk/v5/S5"
     }
-  }
+  },
+  "generation": "talk/v5",
+  "schemaVersion": 1
 }

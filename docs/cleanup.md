@@ -7,6 +7,9 @@ branch after the S5 regression; it does not restore an old cloud snapshot or
 tear down the demo. Run [preparation](preparation.md) only after this procedure
 is complete or its remaining steps are explicitly recorded as incomplete.
 
+This is a presenter-only runbook; the public build and local evaluation do not
+use it.
+
 Use implemented controller/workflow operations. Reset creates the next durable
 controller run; the private session-index process and repaired
 publication/selection remain separate from the Phase 19 reference fixture.
@@ -58,7 +61,7 @@ deleted; verify copies, digests and replacement-browser access. Remove
 credentials from material intended for sharing and do not rewrite reports or
 outcomes to match the intended story.
 
-Before releasing the Codespace, run the complete [save and recover sequence](preparation.md#6-save-and-recover-a-session).
+Before releasing the Codespace, run the complete [save and recover sequence](preparation.md#save-and-recover-a-session).
 That sequence uses the normal inventory CLI with only reviewed allowlisted
 session-index, selected-untracked and record files, then saves both the
 inventory and archive
@@ -72,12 +75,12 @@ talk-sessions/<session-id>/ prefix named by the operator's receipt. Record a
 separate S3 VersionId and SHA-256/metadata for each object, plus UTC time and
 operator identity. The upload/download receipt is separate from the
 content-addressed evaluation inputs in the evidence bucket. Use the exact
-versioned readback commands in [preparation](preparation.md#6-save-and-recover-a-session).
+versioned readback commands in [preparation](preparation.md#save-and-recover-a-session).
 
 On a replacement Codespace, read that retained receipt and use the exact
 archive and inventory object versions. Verify each downloaded file against its
 trusted receipt hash, write and verify the expected archive sidecar, and
-prepare all six clean A bases—including detached S5—from
+prepare all six clean A bases - including detached S5 - from
 inventory.sourceBase.commits before restoring:
 
 ```sh
