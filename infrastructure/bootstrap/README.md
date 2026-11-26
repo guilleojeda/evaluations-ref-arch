@@ -6,6 +6,51 @@ Deny. They do not deploy the application, controller, or AgentCore product
 resources; those remain independent product stacks released through GitHub
 Actions.
 
+This is a presenter and administrator handoff for the checked talk account, not
+a public bootstrap tutorial. It is not required for the public local build.
+Do not run the commands unchanged in another account. Complete the checklist
+below before adapting this handoff.
+
+## Own-account adaptation checklist
+
+The architecture's region, stack names, endpoint labels, and policy boundaries
+are not values to replace just because they appear here. Keep them unless the
+target intentionally changes the design, then update the owning templates and
+runbooks together. Change only target-specific identities and private inputs:
+
+- [ ] **Account and repository identity:** Set the target AWS account/profile
+  and verify `sts get-caller-identity` before mutation. If the account differs,
+  replace the hard-coded account ID in [`infrastructure/src/target.ts`](../src/target.ts)
+  and the account-specific stack/policy inputs. Replace the repository slug and
+  immutable repository ID, workflow path, publishing branch, and GitHub
+  environment names in [`github-iam.yaml`](github-iam.yaml) and the deployment
+  commands. Inspect existing OIDC providers, audiences, and subject-template
+  settings; do not reuse the author's OIDC subject.
+- [ ] **DNS and published URLs:** If using a different domain, update the
+  parent-zone delegation, hostnames, and certificate/API mapping in the
+  [talk hostname procedure](../../docs/deployment.md#talk-hostnames). Keep the
+  stack's `FriendlySiteUrl` and `SiteUrl` outputs as the source of truth.
+- [ ] **Private inputs and permissions:** Generate new presenter credentials
+  and point secret/parameter ARNs, private archive/evidence buckets and
+  versioned receipts, telemetry paths, model IDs, and evaluation-role grants
+  at the target account. Store them in the target account's private paths. The
+  [preparation save/recover sequence](../../docs/preparation.md#save-and-recover-a-session)
+  owns archive receipts; [`phase0-cfn-execution-policy.yaml`](phase0-cfn-execution-policy.yaml)
+  owns scoped AWS grants.
+- [ ] **Published endpoints:** Read the target Runtime, `faulty`/`repaired`
+  endpoint ARNs and numbered versions, adapter binding, and publication rows
+  after release. Do not copy the author's endpoint tuple or assume its
+  ownership/readiness; use the [reference publication procedure](../../docs/deployment.md#restore-the-reviewed-faulty-reference)
+  for the target account.
+- [ ] **Retained teardown:** Before retiring the demo, inventory private
+  archives/evidence and the resources marked `Retain`: app web bucket and
+  Orders/Inventory tables, app logs, controller run table/logs/evidence bucket,
+  and agent run table/adapter logs. Publisher-owned Runtime endpoints and
+  versioned objects are also outside ordinary product-stack deletion. Stack
+  deletion may remove non-retained API, Lambda, certificate, and mapping
+  resources, but it does not remove those retained resources or their data;
+  delete them explicitly only after preserving anything needed. See [cleanup](../../docs/cleanup.md#after-the-final-delivery).
+
 The setup has three deliberately separate layers:
 
 1. `phase0-cfn-execution-policy.yaml` creates the managed policies

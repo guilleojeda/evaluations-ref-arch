@@ -5,6 +5,9 @@ afterward, including after an interrupted session. The [demo script](demo-script
 owns onstage cues; this document owns the software, workspace, identity, and
 replacement-browser preflight.
 
+This is a presenter-only runbook; the public build and local evaluation use the
+repository's local path instead.
+
 Phase 22 opens any one of six editable stage workspaces. It does not run a
 model, send application traffic, select a live endpoint, deploy, or reset data
 as a side effect of preparation. The one-case IDE smoke is not a substitute for
@@ -240,8 +243,8 @@ session. Do not claim that a source checkpoint is a qualified publication.
 
 - [ ] Settle and archive the prior performance before creating fresh editing
   copies. Do not overwrite dirty files or folders used by active processes. Keep
-  frozen S0–S5 tags and their expected commit mapping unchanged.
-- [ ] Prepare S0–S4 from verified frozen tags. Prepare S5 on long-lived
+  frozen S0-S5 tags and their expected commit mapping unchanged.
+- [ ] Prepare S0-S4 from verified frozen tags. Prepare S5 on long-lived
   `demo-deploy` at the current qualified repaired source, which may differ from
   the frozen S5 tag. Only one worktree may check out that branch; release the
   old session's branch association after preserving and settling its work.
@@ -351,12 +354,12 @@ python3 scripts/talk-inputs.py build \
 
 `stock` selects the preserved three-case gate and its stock pointer;
 `carried` selects the four-case gate with the reviewed audience case. For a
-full S0–S5 session, set `PHASE22_SUITE` to the mode named by the verified
+full S0-S5 session, set `PHASE22_SUITE` to the mode named by the verified
 qualification pointer; the current carried qualification is not interchangeable
 with stock. Direct S3 entry may explicitly use stock and requires no S5
 binding.
 
-For a full S0–S5 session, verify the production publication binding after the
+For a full S0-S5 session, verify the production publication binding after the
 asset import and before writing the final all-stage input. This read-only
 verifier joins the native repaired tuple, current remote/GitHub
 `demo-deploy` tip, protected approval, immutable Phase 20 receipt/review
@@ -401,7 +404,7 @@ after an input correction; an occupied or dirty path is reported and is never
 replaced.
 
 Set paths to private files outside the checkout. The checkpoint map must have
-`schemaVersion: 1` and a `checkpoints` object with `S0`–`S5` entries containing
+`schemaVersion: 1` and a `checkpoints` object with `S0`-`S5` entries containing
 `tag` and a 40-character peeled `commit`. The session input must have
 `schemaVersion: 1`, `sessionId`, per-stage `candidateId`/`inputId`, and, for a
 full session, `demoDeploy` with `branch: "demo-deploy"`, the qualified commit,
@@ -419,14 +422,14 @@ python3 scripts/talk-session.py prepare \
 ```
 
 The result is JSON describing each workspace, its tag/branch base, commit,
-candidate/input identity, and initial clean state. S0–S4 use the peeled tag
+candidate/input identity, and initial clean state. S0-S4 use the peeled tag
 commit. S5 alone owns the current qualified `demo-deploy` branch, which may be
 newer than the frozen S5 tag. No stage switch moves a ref or changes a cloud
 resource.
 
 For direct entry, pass only the selected checkpoint map and that stage's private
 session input. S3, for example, does not require S5 qualification or an earlier
-S0–S2 run. A stage-only input is sufficient; it does not need the all-stage
+S0-S2 run. A stage-only input is sufficient; it does not need the all-stage
 `PHASE22_SESSION` created by the S5 binding route:
 
 ```sh
@@ -542,7 +545,7 @@ missing or incompatible case fails visibly; it is not silently replaced.
 
 ## 6. Establish the final live baseline
 
-<a id="6-save-and-recover-a-session"></a>
+<a id="save-and-recover-a-session"></a>
 
 ### Save and recover a session
 
@@ -712,7 +715,7 @@ printf '%s  %s\n' "$archive_sha256" "$(basename "$replacement_archive")" \
 ```
 
 Only after those exact-version readbacks and archive-sidecar check pass, use a
-fresh reviewed clone to prepare every detached A base—including S5—from the
+fresh reviewed clone to prepare every detached A base - including S5 - from the
 inventory, then restore the selected files. A must never attach or move the
 current demo-deploy branch:
 

@@ -25,6 +25,21 @@ bytes. The checked release verifies the Runtime and adapter packages. The
 Phase 19 reference operation finalizes the publisher-owned endpoint and
 adapter attestation after MMDSv2 and the endpoint version have been read back.
 
+## Choose the public or prepared route
+
+The public route is the local, synthetic case in the repository. Start with the
+[attendee guide](../docs/attendee-guide.md) or [adapt the evaluation](../docs/adapt-evaluations.md)
+to run a saved report and the native Strands example without presenter
+credentials, an AWS account, private evidence, or a model call.
+
+The prepared AWS route is for the talk operator. It uses private case and
+evaluator inputs, a named short-lived AWS profile, outside-Runtime telemetry,
+and the protected release workflow. Follow [talk preparation](../docs/preparation.md)
+and the [deployment design](../docs/deployment.md); do not substitute the
+public sample files for prepared inputs or copy private locators into this
+checkout. Preparation and inspection commands are read-only until a command
+explicitly says that it runs a candidate, deploys a package, or publishes it.
+
 ## Open a prepared Phase 22 stage
 
 The repository's [talk preparation runbook](../docs/preparation.md) owns the
@@ -272,11 +287,14 @@ Later edits cannot change an accepted experiment; repeating the same selection
 creates a fresh experiment and fresh execution/session/trace identities. SDK
 retry behavior is bounded at the task/evaluator boundary, so an execution or
 score error is recorded once and later selected cases can continue. The native
-report has one row per `(case, evaluator)`—four rows for two cases and the two
+report has one row per `(case, evaluator)` - four rows for two cases and the two
 custom evaluators. Each case's deterministic row contains the eight named
 findings. The advisory row retains the actual pinned AgentCore Opus 5.5
-categorical verdict and reason, plus its selected scoring attempt and full
-identity references. Its required native numeric field is `0.0` with
+single combined `semantic_quality` categorical verdict and reason, plus its
+selected scoring attempt and full identity references. The current rubric
+checks diagnosis support and source/coverage grounding in that one verdict;
+recommendation correctness remains in the deterministic findings. Its required
+native numeric field is `0.0` with
 `numericPlaceholder: true`; that placeholder is not used by the policy.
 
 Inspect or compare saved experiments without credentials or new work:
@@ -293,13 +311,25 @@ uv run --offline --project agent --locked \
 `compare` joins the exact selected cases and tooling/runtime/input/evaluator/
 scorer identities and retains each experiment's original selected scoring
 attempt; it does not rejudge or rerun work. A known required deterministic
-failure yields `reject` immediately (exit 1), even if advisory scoring is still
-pending. Missing, invalid, or error execution/scoring yields `incomplete`
-(exit 2). All required deterministic findings passing plus a complete advisory
-result—whether advisory pass or advisory fail—yields `review_required` (exit
-0). S4 is development feedback only: it does not publish or authorize a
-Runtime ZIP. Exact-package qualification and human approval are the later S5
-release-gate responsibility.
+failure yields `reject` in the experiment decision, even if advisory scoring is
+still pending. Missing, invalid, or error execution/scoring yields
+`incomplete`. For the `run` command, exit 1 means `reject`, exit 0 means
+`review_required`, and exit 2 means incomplete or invalid execution. The
+`show` command is an inspection command: exit 0 means the saved experiment was
+read, even when its decision is `reject` or `incomplete`; exit 2 means the
+saved record cannot be read or authenticated. The `compare` command reports
+`complete` only when both saved experiments match and all per-case comparisons
+are complete, and returns exit 0 then; any mismatch or unavailable evidence
+returns `incomplete` and exit 2. `compare` does not emit the experiment
+decision or authorize a release.
+
+S4 is development feedback only: it does not publish or qualify a Runtime ZIP.
+The editable S4 candidate has a development prompt snapshot. The serving
+candidate has its own prompt bytes inside an immutable Runtime ZIP; an S4 edit
+does not change that serving prompt or endpoint. S5 runs the same experiment
+and policy against the exact Linux ARM64 ZIP, then requires complete required
+results and source-backed approval in the protected GitHub environment before
+the publisher may pin those exact bytes to the named endpoint.
 
 ## Run and score the captured baseline (S2)
 
@@ -312,10 +342,14 @@ uv run --offline --project agent --locked python agent/evaluate_case.py show --r
 ```
 
 Score that execution's matching CloudWatch session using the short-lived
-evaluation role and the reviewed evaluator descriptor. The retained S2 receipt
-uses the historical Sonnet 4.6 single-verdict evaluator, whose semantic result
-is advisory; new active S3/S4 scores use the verified Opus 5.5 evaluator. Keep
-the evaluator configuration and reviewed reference inputs with the score. Release
+evaluation role and the reviewed evaluator descriptor. Current S2-S5 inputs
+select the calibrated single-mode Opus evaluator, whose one `semantic_quality`
+verdict is advisory. Retained S2 records from earlier generations may use the
+historical multi-mode evaluator with separate `diagnosis_support` and
+`evidence_grounding` findings, or the historical Sonnet single-verdict
+evaluator; preserve those labels and do not present them as current scores.
+The original Opus judge records are historical for the same reason. Keep the
+evaluator configuration and reviewed reference inputs with each score. Release
 decisions still require the deterministic findings and an identity-bound human
 review of the exact report, trace and pending artifact.
 
@@ -378,6 +412,12 @@ Setup checks the selected workspace and AWS identity. S3 also starts the
 locked telemetry launcher and records the effective `SYSTEM_PROMPT` from the
 selected faulty baseline before the edit. Neither setup invokes a model. The receipt is bound to the
 selected workspace and maintained launcher.
+
+The S3 and S4 edit is a development prompt snapshot. It is not the prompt
+currently served by either publisher-owned endpoint. The checked serving
+prompt is authenticated inside its Runtime ZIP; local prompt saves affect only
+the new captured execution or experiment snapshot until a later S5 package
+passes the protected release gate.
 
 ```sh
 session="${PHASE22_SESSION_ROOT:?path to the selected session root}"
