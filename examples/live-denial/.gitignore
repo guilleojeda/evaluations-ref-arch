@@ -2,3 +2,14 @@
 /denial-case.tmp
 /evaluation.txt
 /original-trace.json
+/original-score.json
+/bridge/
+/reviewed-expectations.json
+/bridge-manifest.json
+/candidate-input.json
+/captured-bundle.json
+/case.frozen.json
+/native-handoff.json
+/suite.json
+/gate/
+/case.json

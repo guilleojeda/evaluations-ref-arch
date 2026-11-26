@@ -22,7 +22,7 @@ class OriginalTraceTest(unittest.TestCase):
             "session_id": "source-session",
             "cloudwatch_logs": {"log_group_names": ["test/runtime"]},
         }
-        case = {"metadata": {"source": source}, "turns": [{
+        case = {"scenario_id": "sample", "metadata": {"source": source, "expected_recommendation": {"action": "Other", "target": None, "unit": None}}, "turns": [{
             "input": "Investigate the alarm.\nStarted: 2026-01-01T12:00:05Z",
             "expected_response": "Keep the recovered configuration and verify checkout.",
         }]}
@@ -36,9 +36,9 @@ class OriginalTraceTest(unittest.TestCase):
                 session.return_value.region_name = "test-region"
                 evaluate = session.return_value.client.return_value.evaluate
                 evaluate.return_value = {"evaluationResults": [{
-                    "label": "Incorrect", "value": 0.0, "explanation": "The report proposes a memory increase.",
+                    "label": "Correct", "value": 1.0, "explanation": "The diagnosis identifies the denial.",
                 }]}
-                runpy.run_path(str(SCRIPT))
+                runpy.run_path(str(SCRIPT), run_name="__main__")
             self.assertEqual(fetch.call_args.kwargs["session_id"], "source-session")
             self.assertEqual(fetch.call_args.kwargs["region"], "test-region")
             request = evaluate.call_args.kwargs
@@ -47,13 +47,25 @@ class OriginalTraceTest(unittest.TestCase):
             reference, = request["evaluationReferenceInputs"]
             self.assertEqual(reference["context"]["spanContext"], {"sessionId": "source-session", "traceId": "selected-trace"})
             self.assertEqual(reference["expectedResponse"]["text"], case["turns"][0]["expected_response"])
-            self.assertIn("AgentCore: Incorrect 0.0", printed.getvalue())
+            self.assertIn("Exact action: FAIL", printed.getvalue())
+            self.assertIn("AgentCore: Correct 1.0", printed.getvalue())
+            self.assertEqual(json.loads(Path("original-score.json").read_text())["exactAction"], "FAIL")
+
+    def test_ongoing_version_and_recovered_explanation(self):
+        matches = runpy.run_path(str(SCRIPT))["exact_action_matches"]
+        restore = {"action": "Restore inventory access", "target": "inventory", "unit": "version", "value": "42"}
+        self.assertTrue(matches(restore, restore))
+        self.assertFalse(matches(restore, {**restore, "value": "43"}))
+        recovered = {"action": "Other", "target": None, "unit": None}
+        self.assertTrue(matches(recovered, {**recovered, "value": "Verify another checkout."}))
+        self.assertFalse(matches(recovered, {**recovered, "value": ""}))
+        self.assertFalse(matches(recovered, restore))
 
     def test_an_unreviewed_draft_never_calls_aws(self):
         with tempfile.TemporaryDirectory() as tmp, chdir(tmp):
             Path("denial-case.json").write_text('{"turns":[{"input":"Investigate this alarm"}]}')
             with patch("boto3.Session") as aws, self.assertRaisesRegex(SystemExit, "expected_response"):
-                runpy.run_path(str(SCRIPT))
+                runpy.run_path(str(SCRIPT), run_name="__main__")
             aws.assert_not_called()
 
 

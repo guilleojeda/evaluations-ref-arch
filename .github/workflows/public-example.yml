@@ -8,6 +8,10 @@ on:
       - agent/**
       - examples/inventory-denial/**
       - examples/live-denial/**
+      - scripts/native_case_bridge.py
+      - scripts/prepare_live_gate.py
+      - tests/native_case_bridge_test.py
+      - tests/prepare_live_gate_test.py
       - .github/workflows/public-example.yml
   push:
     branches:
@@ -18,6 +22,10 @@ on:
       - agent/**
       - examples/inventory-denial/**
       - examples/live-denial/**
+      - scripts/native_case_bridge.py
+      - scripts/prepare_live_gate.py
+      - tests/native_case_bridge_test.py
+      - tests/prepare_live_gate_test.py
       - .github/workflows/public-example.yml
 
 permissions:
@@ -44,3 +52,7 @@ jobs:
         run: uv run --offline --project agent --locked python examples/inventory-denial/test_public_example.py
       - name: Check the native dataset and trace handoff offline
         run: uv run --offline --project agent --locked python examples/live-denial/test_score_denial.py
+      - name: Check the replay and private CI suite handoffs offline
+        run: |
+          uv run --offline --project agent --locked python -m unittest discover -s tests -p 'native_case_bridge_test.py'
+          uv run --offline --project agent --locked python -m unittest discover -s tests -p 'prepare_live_gate_test.py'
