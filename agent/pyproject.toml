@@ -1,7 +1,7 @@
 [project]
 name = "incident-triage-agent"
 version = "0.1.0"
-description = "Credential-free AgentCore runtime starter for the incident triage demo"
+description = "Read-only incident investigation agent and its Strands and AgentCore evaluation workflows"
 requires-python = ">=3.13,<3.14"
 dependencies = [
   "aws-opentelemetry-distro==0.18.0",

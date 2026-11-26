@@ -1,6 +1,6 @@
 # Operations agent
 
-This document describes the initial live S0 investigation and the later evaluation capabilities that build on it. Phase 4 adds the genuine alarm-to-AgentCore path; S1-S5 remain the separate evaluation progression. See the [reference overview](../../README.md) and the [public talk plan](../talk-plan.md).
+This document describes the live alarm-to-AgentCore investigation and the separate S1-S5 evaluation workflows. The workflows distinguish genuine alarm execution, captured cases, development experiments, and protected release checks. See the [reference overview](../../README.md) and the [public talk plan](../talk-plan.md).
 
 ## Public and prepared access
 
@@ -23,12 +23,12 @@ with the native agent tool/report path working. The current semantic evaluator
 is the calibrated single-mode Opus judge, which returns one combined
 `semantic_quality` advisory verdict; deterministic recommendation checks stay
 separate. The checked Sonnet 4.6 implementation, earlier multi-finding scores,
-and original-judge records remain historical. Planned regression executions
-retain their case and originating-event provenance; they are not live alarm
-deliveries and do not use live event deduplication as their execution identity.
-Regression/replay execution is a later evaluation capability, not part of the
-Phase 4 live Runtime. The controller has no manual agent trigger, and replay
-must not be presented as a new live investigation.
+and original-judge records remain historical. Regression executions retain their
+case and originating-event provenance; they are not live alarm deliveries and
+do not use live event deduplication as their execution identity. Regression and
+replay are separate evaluation workflows, not part of the live Runtime. The
+controller has no manual agent trigger, and replay must not be presented as a
+new live investigation.
 
 The run input identifies the affected service and scope, the originating alarm/event and its time, the reported symptoms, and when investigation began. Regression input also supplies the case's effective investigation reference time. Trusted deployment configuration identifies the permitted evidence sources. A CloudWatch alarm invokes a small Lambda adapter directly on a transition to ALARM ([CloudWatch alarm actions](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/alarms-and-actions-Lambda.html)).
 
@@ -79,11 +79,14 @@ The live S0 witness uses the publisher-owned `faulty/faulty` tuple. Its exact
 source, prompt/model/lock/configuration identities, ZIP, S3 `VersionId`, adapter
 attestation, and `AGENT_PUBLICATION#faulty` record are maintained by the
 [deployment runbook](../deployment.md#restore-the-reviewed-faulty-reference).
-The controller can read this tuple but cannot publish, select, repin, delete,
-or invoke an agent manually. After fresh native `OK`, the runbook's witness
-sequence requires a new readiness, denied Inventory read, real `5xx` transition,
-matching report/trace/source capture, and recovery. Phase 19 is not a quality
-pass or repaired publication; Phase 20 owns that gate.
+The controller can read and select a publisher-owned tuple for the next alarm,
+but cannot publish, repin, delete, or invoke an agent manually. Selection
+verifies the publisher-owned tuple and writes the durable `AGENT_SELECTION`
+record; it does not publish a new Runtime or endpoint. After fresh native `OK`,
+the runbook's witness sequence requires a new readiness, denied Inventory read,
+real `5xx`
+transition, matching report/trace/source capture, and recovery. Phase 19 is
+not a quality pass or repaired publication; Phase 20 owns that candidate gate.
 
 ## Report contract
 
