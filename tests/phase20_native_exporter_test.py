@@ -94,10 +94,18 @@ with tempfile.TemporaryDirectory(prefix="phase20-package-exporter-") as temporar
         from opentelemetry.sdk.trace import TracerProvider
 
         posts = []
-        def fake_post(self, **kwargs):
-            posts.append(kwargs)
+        def fake_send(self, request, **kwargs):
+            headers = {key.lower(): value for key, value in request.headers.items()}
+            posts.append(
+                {
+                    "method": request.method,
+                    "url": request.url,
+                    "data": request.body,
+                    "authorization": headers.get("authorization", ""),
+                }
+            )
             return SimpleNamespace(ok=True, reason="OK", status_code=200)
-        AwsAuthSession.post = fake_post
+        AwsAuthSession.send = fake_send
 
         provider = _configure_packaged_exporter(launcher_provider)
         assert isinstance(provider, TracerProvider)
@@ -107,8 +115,11 @@ with tempfile.TemporaryDirectory(prefix="phase20-package-exporter-") as temporar
             pass
         assert provider.force_flush(timeout_millis=30_000)
         provider.shutdown()
-        assert posts and posts[0]["url"] == os.environ["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]
+        assert posts and posts[0]["method"] == "POST"
+        assert posts[0]["url"] == os.environ["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]
         assert posts[0]["data"], "the real package OTLP encoder emitted no payload"
+        assert posts[0]["authorization"].startswith("AWS4-HMAC-SHA256 Credential=dummy/")
+        assert "/us-east-1/xray/aws4_request" in posts[0]["authorization"]
 '''
         result = subprocess.run(
             [
@@ -286,12 +297,18 @@ class TransportSession:
         return ScriptedClient(client, real_client.meta)
 
 posts = []
-def fake_post(self, **kwargs):
-    posts.append({"url": kwargs.get("url"), "dataBytes": len(kwargs.get("data", b""))})
+def fake_send(self, request, **kwargs):
+    headers = {key.lower(): value for key, value in request.headers.items()}
+    posts.append({
+        "method": request.method,
+        "url": request.url,
+        "dataBytes": len(request.body or b""),
+        "authorization": headers.get("authorization", ""),
+    })
     return SimpleNamespace(ok=True, reason="OK", status_code=200)
 
 from amazon.opentelemetry.distro.exporter.otlp.aws.traces.otlp_aws_span_exporter import AwsAuthSession
-AwsAuthSession.post = fake_post
+AwsAuthSession.send = fake_send
 boto3.Session = TransportSession
 
 import captured_execution
@@ -338,6 +355,9 @@ assert record["status"] == "complete", record
 assert telemetry["clients"] >= 1 and telemetry["modelRequests"] >= 2, telemetry
 assert telemetry["posts"] and telemetry["posts"][0]["dataBytes"] > 0, telemetry
 assert telemetry["posts"][0]["url"] == os.environ["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]
+assert telemetry["posts"][0]["method"] == "POST", telemetry
+assert telemetry["posts"][0]["authorization"].startswith("AWS4-HMAC-SHA256 Credential=dummy/"), telemetry
+assert "/us-east-1/xray/aws4_request" in telemetry["posts"][0]["authorization"], telemetry
 assert record["modelResponseCount"] == record["modelSpanCount"] > 0, record
 spans = json.loads((Path(run_dir) / "strands.native-spans.json").read_text())["spans"]
 def operation(span):
