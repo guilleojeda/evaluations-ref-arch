@@ -17,7 +17,7 @@ import type {
 const control = new BedrockAgentCoreControlClient({ maxAttempts: 1 });
 const dynamo = new DynamoDBClient({ maxAttempts: 1 });
 const s3 = new S3Client({ maxAttempts: 1, forcePathStyle: true });
-const timeout = () => ({ abortSignal: AbortSignal.timeout(4_000) });
+const defaultTimeoutMs = 4_000;
 const selectionKey = "AGENT_SELECTION";
 const candidateIds = new Set<AgentCandidateId>(["faulty", "repaired"]);
 const runtimeArnPattern = /^arn:aws:bedrock-agentcore:([a-z0-9-]+):(\d{12}):runtime\/([A-Za-z0-9_-]+)$/;
@@ -31,6 +31,21 @@ export class AgentReadinessError extends Error {
     super(message);
     this.name = "AgentReadinessError";
   }
+}
+
+export interface AgentPublicationVerificationOptions {
+  timeoutMs?: number;
+}
+
+function validTimeout(timeoutMs: number): number {
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new AgentReadinessError("The AgentCore verification timeout must be a positive integer.");
+  }
+  return timeoutMs;
+}
+
+function timeout(timeoutMs = defaultTimeoutMs): { abortSignal: AbortSignal } {
+  return { abortSignal: AbortSignal.timeout(timeoutMs) };
 }
 
 /** A native response was received, but it definitively cannot serve the tuple. */
@@ -175,10 +190,10 @@ function selectionFor(value: unknown): AgentSelection {
   return { ...publication, pk: selectionKey, selectedAt };
 }
 
-async function readRow(pk: string): Promise<Record<string, unknown> | undefined> {
+async function readRow(pk: string, timeoutMs = defaultTimeoutMs): Promise<Record<string, unknown> | undefined> {
   const response = await dynamo.send(new GetItemCommand({
     TableName: table(), Key: { pk: { S: pk } }, ConsistentRead: true,
-  }), timeout());
+  }), timeout(timeoutMs));
   return response.Item ? unmarshall(response.Item) as Record<string, unknown> : undefined;
 }
 
@@ -187,8 +202,8 @@ export async function readAgentSelection(): Promise<AgentSelection | undefined> 
   return row ? selectionFor(row) : undefined;
 }
 
-export async function readAgentPublication(candidate: AgentCandidateId): Promise<AgentPublication> {
-  const row = await readRow(`AGENT_PUBLICATION#${candidate}`);
+export async function readAgentPublication(candidate: AgentCandidateId, timeoutMs = defaultTimeoutMs): Promise<AgentPublication> {
+  const row = await readRow(`AGENT_PUBLICATION#${candidate}`, timeoutMs);
   return publicationFor(row, candidate);
 }
 
@@ -322,11 +337,14 @@ function configuredArtifactLocator(publication: AgentPublication, configuration:
   }
 }
 
-async function readNativeEndpoint(publication: Pick<AgentPublication, "runtimeArn" | "endpointName" | "endpointArn" | "runtimeVersion">): Promise<Record<string, unknown>> {
+async function readNativeEndpoint(
+  publication: Pick<AgentPublication, "runtimeArn" | "endpointName" | "endpointArn" | "runtimeVersion">,
+  timeoutMs = defaultTimeoutMs,
+): Promise<Record<string, unknown>> {
   const runtime = parseRuntimeArn(publication.runtimeArn);
   const endpoint = await control.send(new GetAgentRuntimeEndpointCommand({
     agentRuntimeId: runtime.runtimeId, endpointName: publication.endpointName,
-  }), timeout()) as unknown as Record<string, unknown>;
+  }), timeout(timeoutMs)) as unknown as Record<string, unknown>;
   if (endpoint.agentRuntimeArn !== publication.runtimeArn || endpoint.agentRuntimeEndpointArn !== publication.endpointArn ||
       endpoint.name !== publication.endpointName || endpoint.status !== "READY" || endpoint.liveVersion !== publication.runtimeVersion ||
       (endpoint.targetVersion !== undefined && endpoint.targetVersion !== endpoint.liveVersion)) {
@@ -338,11 +356,11 @@ async function readNativeEndpoint(publication: Pick<AgentPublication, "runtimeAr
   return endpoint;
 }
 
-async function readNativeRuntime(publication: AgentPublication): Promise<Record<string, unknown>> {
+async function readNativeRuntime(publication: AgentPublication, timeoutMs = defaultTimeoutMs): Promise<Record<string, unknown>> {
   const runtimeIdentity = parseRuntimeArn(publication.runtimeArn);
   const runtime = await control.send(new GetAgentRuntimeCommand({
     agentRuntimeId: runtimeIdentity.runtimeId, agentRuntimeVersion: publication.runtimeVersion,
-  }), timeout()) as unknown as Record<string, unknown>;
+  }), timeout(timeoutMs)) as unknown as Record<string, unknown>;
   if (runtime.agentRuntimeArn !== publication.runtimeArn || runtime.agentRuntimeVersion !== publication.runtimeVersion ||
       runtime.status !== "READY") throw new AgentObservationMismatchError("The AgentCore Runtime version is not READY or has the wrong identity.");
   try {
@@ -354,7 +372,7 @@ async function readNativeRuntime(publication: AgentPublication): Promise<Record<
   }
   const locator = configurationLocator(publication);
   const object = await s3.send(new GetObjectCommand({ Bucket: locator.bucket, Key: locator.key, Range: `bytes=0-${maxConfigurationBytes - 1}`,
-    ...(locator.versionId ? { VersionId: locator.versionId } : {}) }), timeout());
+    ...(locator.versionId ? { VersionId: locator.versionId } : {}) }), timeout(timeoutMs));
   if (object.ContentLength !== undefined && object.ContentLength > maxConfigurationBytes) {
     throw new AgentReadinessError("The Runtime configuration object exceeds the bounded read limit.");
   }
@@ -381,14 +399,18 @@ async function readNativeRuntime(publication: AgentPublication): Promise<Record<
 }
 
 /** Verify a publication and its native serving state without invoking or repinning an agent. */
-export async function verifyAgentPublication(candidate: AgentCandidateId): Promise<AgentSelection> {
+export async function verifyAgentPublication(
+  candidate: AgentCandidateId,
+  options: AgentPublicationVerificationOptions = {},
+): Promise<AgentSelection> {
   if (!candidateIds.has(candidate)) throw new AgentReadinessError("The requested AgentCore candidate is not allowed.");
-  const publication = await readAgentPublication(candidate);
+  const timeoutMs = validTimeout(options.timeoutMs ?? defaultTimeoutMs);
+  const publication = await readAgentPublication(candidate, timeoutMs);
   const configured = configuredRuntimeArn();
   if (!configured) throw new AgentReadinessError("The fixed configured AgentCore Runtime is unavailable.");
   if (configured !== publication.runtimeArn) throw new AgentReadinessError("The publication Runtime differs from the fixed configured Runtime.");
-  await readNativeEndpoint(publication);
-  await readNativeRuntime(publication);
+  await readNativeEndpoint(publication, timeoutMs);
+  await readNativeRuntime(publication, timeoutMs);
   return { ...publication, pk: selectionKey, selectedAt: new Date().toISOString() };
 }
 

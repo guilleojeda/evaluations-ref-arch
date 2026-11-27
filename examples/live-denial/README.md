@@ -32,6 +32,22 @@ In the presenter workspace, right-click **Case and results > live-denial** and s
 export AWS_PROFILE=reinvent-2026-talk AWS_DEFAULT_REGION=us-east-1 AWS_PAGER=""
 ```
 
+In the **prepared presenter workspace**, set up the integrated terminal once
+before projecting it. Use the locked interpreter from the stage installation
+and the editable agent source from S5. A plain terminal in a fresh Codespace
+can otherwise resolve `python` to the system interpreter. When this prints the
+stage interpreter and the two package versions, leave the terminal open.
+
+```bash
+stage=$(jq -er .session ../session.json)
+source "$stage/S4/agent/.venv/bin/activate"
+export PYTHONPATH="$stage/S5/agent"
+python -c 'import sys, boto3; from importlib.metadata import version; print(sys.executable, version("boto3"), version("strands-agents-evals"))'
+```
+
+In an ordinary repository checkout, use the `uv run --project ../../agent --locked`
+commands below. In either workflow, download the published example:
+
 ```bash
 aws sts get-caller-identity --query Account --output text
 aws bedrock-agentcore-control list-datasets --query 'datasets[].[datasetName,datasetId]' --output table

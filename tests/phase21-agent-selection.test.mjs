@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { resolve } from 'node:path';
 import {
@@ -399,3 +399,48 @@ test('Phase 21 authenticated AgentCore candidate selection is a verified, fail-c
   if (failures.length) assert.fail(failures.join('\n\n'));
 });
 
+test('native publication verification keeps hosted defaults and accepts the standalone deadline', async (t) => {
+  await createPhase21Context(t);
+  const observedTimeouts = [];
+  const originalTimeout = AbortSignal.timeout;
+  AbortSignal.timeout = (milliseconds) => {
+    observedTimeouts.push(milliseconds);
+    return originalTimeout(milliseconds);
+  };
+
+  try {
+    const readiness = await import(`../controller/src/agent-readiness.ts?test=${randomUUID()}`);
+
+    await assert.rejects(
+      () => readiness.verifyAgentPublication('repaired', { timeoutMs: 0 }),
+      /positive integer/,
+      'an invalid override must fail before any native read is attempted',
+    );
+    assert.deepEqual(observedTimeouts, []);
+
+    await readiness.verifyAgentPublication('repaired');
+    assert.deepEqual(observedTimeouts, [4_000, 4_000, 4_000, 4_000],
+      'worker publication verification uses the four-second request deadline');
+
+    observedTimeouts.length = 0;
+    await readiness.verifyAgentPublication('repaired', { timeoutMs: 30_000 });
+    assert.deepEqual(observedTimeouts, [30_000, 30_000, 30_000, 30_000],
+      'the standalone verifier can widen every native publication read explicitly');
+
+    observedTimeouts.length = 0;
+    const endpoint = await readiness.readAgentEndpoint();
+    assert.equal(endpoint.state, 'ready');
+    assert.deepEqual(observedTimeouts, [4_000, 4_000, 4_000, 4_000, 4_000],
+      'hosted endpoint readiness retains the four-second default');
+  } finally {
+    AbortSignal.timeout = originalTimeout;
+  }
+});
+
+test('the standalone CLI applies its independent deadline to native and direct S3 reads', () => {
+  const source = readFileSync(new URL('../scripts/verify-talk-publication.ts', import.meta.url), 'utf8');
+  assert.match(source, /const standaloneReadTimeoutMs = 30_000;/);
+  assert.equal((source.match(/AbortSignal\.timeout\(standaloneReadTimeoutMs\)/g) ?? []).length, 2,
+    'both direct S3 operations use the standalone deadline');
+  assert.match(source, /verifyAgentPublication\("repaired", \{ timeoutMs: standaloneReadTimeoutMs \}\)/);
+});
