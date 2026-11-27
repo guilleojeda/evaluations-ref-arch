@@ -194,7 +194,7 @@ is intentionally separate from the live trace and published dataset above.
 
 The opening case required restoring Inventory access to version 167. On the regressed prompt, GitHub Actions invoked the application agent on the same alarm and pre-report history used in the IDE. Its fresh recommendation was to increase Inventory memory to 512 MB. Strands `Equals` returned 0 and the job exited 1. Open the **Expected** and **Actual** row to see exactly what prevented publication. [Verified regression on the opening case](https://github.com/guilleojeda/evaluations-ref-arch/actions/runs/46020216978/job/140577710151)
 
-You can match the two input files across runs. The published scenario digest begins with `aa756098` and the saved trace digest with `72ca97e7`. The repaired prompt recommended restoring version 167 on that pair. [Passing CI comparison](https://github.com/guilleojeda/evaluations-ref-arch/actions/runs/46016469184/job/140564845666)
+You can match the two input files across runs. The published scenario digest begins with `aa756098` and the saved trace digest with `72ca97e7`. The repaired prompt recommended restoring version 167 on that pair. [Passing CI comparison](https://github.com/guilleojeda/evaluations-ref-arch/actions/runs/46020463920/job/140578533381)
 
 To reproduce the deterministic failure without AWS, use the saved report in the
 [synthetic case](../README.md#try-a-regression). The live score and the
