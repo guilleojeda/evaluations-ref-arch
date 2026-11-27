@@ -72,11 +72,29 @@ not start another investigation.
 
 ## Run the agent before and after a prompt edit
 
-Use the published case's source trace to retrieve the evidence that was available during the incident. Build a Strands `Case` with the alarm as input and the reviewed recommendation as its expected output. The task calls the agent and returns its structured recommendation. The evaluator compares that result with the expected action, target, value and unit.
+Use the published case directly. Read `denial-case.json` into a native Strands
+`Case` with `Case.input = denial-case.json.turns[0].input` (the original alarm),
+open its matching final chat input in `original-trace.json`, and build
+`messages = alarm + history` separately. Keep the same reviewed read-only
+history. The presenter-authored typed recommendation is the `Case` expectation.
+Each prompt gets one fresh agent run and one structured report; the SDK may make
+its normal bounded formatting follow-up inside that run. A missing report is
+**INCOMPLETE**, not a quality **FAIL**. Exclude the old answer, system
+prompt, and signed-thinking/reasoning from the new task; the original trace is
+provenance, not candidate output. The application's real
+`investigation.create_agent` starts the fresh agent run for each prompt; its
+normal bounded formatting follow-up remains inside that run. Native
+`Equals` compares action, target, value, and unit.
 
-Run the experiment in your IDE, edit the recommendation rule in `agent/prompt.py`, save, and run it again. Both versions can query the same captured evidence. Each run generates a fresh report. [Step-by-step example](examples/live-denial/README.md)
+Run the faulty prompt in your IDE, show the actual **FAIL**, edit the
+recommendation rule in `agent/prompt.py`, save, and run the same Case again.
+Both versions use the same case/history and each generates a fresh report. [Step-by-step example](examples/live-denial/README.md)
 
-The release workflow runs the audience case on the pushed prompt. When the action regresses, the check fails and blocks publication. The private evidence stays outside Git. [Add the case to CI](docs/adapt-evaluations.md)
+The hosted endpoint then runs one dedicated full investigation for a new
+denial. The release workflow runs the same saved case and matching trace
+identity on the pushed prompt. When the action regresses, the
+check fails and blocks publication. The private evidence stays outside Git.
+[Add the case to CI](docs/adapt-evaluations.md)
 
 ### Adapt the case
 
@@ -100,7 +118,7 @@ To try the same case with Strands, follow the walkthrough. It shows where to plu
 | --- | --- |
 | Inspect the code shown on stage | [Six frozen checkpoints in the talk/v5 series](docs/checkpoints.md) |
 | Understand the code checks, model judge, and release decision | [Evaluation approach](docs/evaluations.md) and [audience questions](docs/questions.md) |
-| See the current gate exhibit | [Temporary verified-CI reference](docs/attendee-guide.md#current-gate-exhibit-temporary-pending-verified-ci-reference) |
+| See the current gate exhibit | [Verified audience gate exhibit](docs/attendee-guide.md#verified-audience-gate-exhibit) |
 | Find the services that produced the incident | [Checkout application](docs/components/application.md), [failure controller](docs/components/failure-controller.md), and [read-only operations agent](docs/components/operations-agent.md) |
 | Build and check the components locally or adapt the AWS setup | [Development and deployment](docs/deployment.md) |
 

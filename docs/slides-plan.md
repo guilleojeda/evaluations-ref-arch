@@ -109,13 +109,22 @@ the pre-qualified live endpoint and the fast CI gate. If the fallback is used,
 label it prepared or recorded and never imply that the current audience edit
 ran.
 
-The runnable [native case bridge](../scripts/native_case_bridge.py), using the
-build command in the [adaptation walkthrough](adapt-evaluations.md#bridge-the-live-case-into-s3s4),
-binds the downloaded scenario and `original-trace.json` to the originating
-RunTable row and S3 captures. Its `case.frozen.json` and `captured-bundle.json`
-feed S3; its `suite.json` feeds S4. This is the same incident's normal task
-projection and bounded evidence, not a new trace or an unreviewed native
-expected-response string.
+The [native case bridge](../scripts/native_case_bridge.py) and its S3/S4
+artifacts are recovery material only. They are not the direct mapping shown in
+the normal route and must not replace the one fresh native Strands report. The
+normal route keeps the published alarm in `Case.input`, the authored
+recommendation in `Case.expected_output`, and the original trace's public
+pre-report history in `messages` for `agent(messages, ...)`.
+
+### Direct native Strands case
+
+Show the three mappings together: published alarm
+`scenario["turns"][0]["input"]` → `Case.input`; presenter-authored
+`scenario["metadata"]["expected_recommendation"]` → `Case.expected_output`;
+and original-trace public pre-report history → `messages`. Then show
+`create_agent(...)`, `agent(messages, ...)`, one fresh report, and native
+`Equals()` comparing returned `report.recommendation` with
+`Case.expected_output`. The expected recommendation never enters `messages`.
 
 ### Current fast release gate
 

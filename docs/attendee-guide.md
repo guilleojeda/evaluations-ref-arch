@@ -29,8 +29,13 @@ evidence separate from the report and configuration readback.
 ## The current IDE-to-CI route
 
 After the fixed-case score and calibration, the presenter uses one clean S5
-workspace. The audience sees the case input, expected output, fixed captured
-tools, and exact evaluator; the faulty prompt runs to FAIL. The presenter then
+workspace. The audience sees `denial-case.json` with
+`Case.input = denial-case.json.turns[0].input` (the original alarm), its
+matching final chat input in `original-trace.json`, the presenter-authored
+expected output, separately built `messages = alarm + history`, same read-only
+history, and native `Equals`; the old answer, system prompt, and
+signed-thinking/reasoning are excluded from the new task. The faulty prompt runs
+to FAIL. The presenter then
 says:
 
 > Earlier, we evaluated an already generated output. Now we're using fixed inputs, and letting the agent generate the output again
@@ -43,9 +48,10 @@ When Inventory reads are still denied, recommend restoring access. Identify the 
 ```
 
 The repaired prompt is then exercised once on the pre-qualified endpoint with
-a new denial. That hosted denial is behavior evidence only. Register the
-original scored case and matching case/bundle hashes once in the private suite.
-The original prompt is restored, the same local case is run
+a dedicated full investigation for a new denial. Match its event/run/trace and
+show the real recommendation as behavior evidence only. Register the
+presenter-authored original scored case and matching case/trace identity once
+in the private suite. The original prompt is restored, the same local case is run
 to FAIL, the careless-dev line is spoken, and an ordinary push starts the
 required `audience-case-gate`. A failure/incomplete fast result blocks/skips
 downstream qualification and publication; the presenter returns to the actual
@@ -69,7 +75,7 @@ expected trajectory disabled while creating the scenario. AWS creates a
 **dataset scenario draft**. Open that draft and add the reviewed expectation:
 
 Record the prose response and the exact structured recommendation in that same
-draft. For an ongoing denial, use the healthy version observed in
+draft. The presenter authors both fields; the audience watches. For an ongoing denial, use the healthy version observed in
 `read_configuration`:
 
 ```json
@@ -94,7 +100,7 @@ published case as `{"action":"Other","target":null,"unit":null}`. Do not
 repeat an access restore after the evidence shows recovery.
 
 Save the draft, then choose **Create version**. The published version is the
-frozen input for the walkthrough. A draft scenario ID is not a published case;
+fixed input for the walkthrough. A draft scenario ID is not a published case;
 the download command must use the dataset ID and version number from the
 published row.
 
@@ -156,22 +162,26 @@ lead to another change, use a fresh holdout. [Calibration and holdouts](evaluati
 | S0 | Observe the alarm, trace, failed read, configuration, and original report. | The original execution and its evidence. |
 | S1 | Review the trace and publish the fixed AgentCore dataset version. | The input and both reviewed fields are separate from the agent prompt. |
 | S2 | Show the original report's exact structured recommendation check, then the separate `Builtin.Correctness` result. | No agent rerun; both outputs belong to the original trace. |
-| IDE repair | Convert the audience case to native Strands, show input/expected/fixed tools/evaluator, run the original prompt to FAIL, edit the exact rule, and run the same command. | Fixed case and captured tools; fresh session and prompt digest. |
-| Live repaired endpoint | Use the identical repaired prompt for one new denial. | A real new event/run, not a prepared result. |
-| Fast release check | Register the original scored case with matching case/bundle hashes, restore the faulty prompt, show local FAIL, and push normally. | The hosted denial is behavior evidence only; `audience-case-gate` runs in parallel. Failure/incomplete blocks/skips `evaluate-agent` and publication. |
+| IDE repair | Read `denial-case.json` directly into native Strands, show the matching final chat input from `original-trace.json`, exclude old answer/system/signed-thinking fields, show native `Equals`, run the original prompt to FAIL, edit the exact rule, and run the same command. | Presenter-authored expectation/history; fresh session and prompt digest. |
+| Live repaired endpoint | Use the identical repaired prompt for one dedicated full investigation for a new denial. | A real new event/run/trace, not a prepared result. |
+| Fast release check | Register the original scored case with matching case/trace identity, restore the faulty prompt, show local FAIL, and make the ordinary push. | The hosted denial is behavior evidence only; `audience-case-gate` uses the same saved Case/trace in parallel. Failure/incomplete blocks/skips `evaluate-agent` and publication. |
 
 Follow the prompt edit into the real call: `create_agent` imports
 `SYSTEM_PROMPT` from `agent/prompt.py` and passes it to `Agent(system_prompt=...)`.
-The next Python invocation loads your saved edit, investigates with the same
-captured tools, and returns its new recommendation for the evaluator. [Agent construction](../agent/investigation.py)
+The next Python invocation starts one fresh agent run for the prompt, uses the
+same reviewed history/read-only tools, and returns one structured report for
+native `Equals`. Its normal bounded formatting follow-up may occur inside that
+run; a missing report is **INCOMPLETE**, not a quality **FAIL**. [Agent construction](../agent/investigation.py)
 
 The IDE run is development feedback, not package qualification. After the
 fresh pass, the identical repaired prompt handles one new denial on the
 pre-qualified endpoint. That hosted denial is behavior evidence only. Register
-the original scored case and matching case/bundle hashes once in the private
-suite. Restoring the original prompt and showing local FAIL makes the ordinary
+the presenter-authored original scored case and matching case/trace identity
+once in the private suite. Prepare the separate `agent/audience-input.json`
+from the saved case and original trace; keep the standing
+`agent/qualification-input.json` unchanged. Restoring the original prompt and showing local FAIL makes the ordinary
 push intentionally unsafe; the required `audience-case-gate` then runs beside
-ordinary checks. Its failure/incomplete status blocks/skips downstream
+ordinary checks on the same saved Case/trace identity. Its failure/incomplete status blocks/skips downstream
 `evaluate-agent` exact-package qualification and publication. A previously
 qualified serving package remains in place while the actual callback is
 pending or red.

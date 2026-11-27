@@ -7,23 +7,28 @@ Attendees can [follow the public case](attendee-guide.md).
 
 ## Current audience progression
 
-The normal post-calibration route is one native Strands IDE loop, one
-pre-qualified live endpoint, and one required fast gate. Start from clean S5
-and copy the prepared `before/faulty-prompt.py` reference into the active
-`S5/agent/prompt.py`. Show the
-audience case input, expected output, fixed captured tools, and evaluator; run
-the original prompt to FAIL, say the required boundary sentence, edit the
-active rule to:
+The normal post-calibration route is one direct native Strands Case, one
+pre-qualified hosted full investigation, and one required fast gate. Start from
+clean S5 and copy the prepared `before/faulty-prompt.py` reference into the
+active `S5/agent/prompt.py`. Open `denial-case.json` beside the matching final
+chat input in `original-trace.json`. Show `Case.input = denial-case.json.turns[0].input`
+(the original alarm), separately built `messages = alarm + history`, the
+presenter-authored expectation, and native `Equals`; exclude the old answer,
+system prompt, and signed-thinking/reasoning. Run the original prompt to FAIL,
+say the required boundary sentence, edit the active rule to:
 
 ```text
 When Inventory reads are still denied, recommend restoring access. Identify the healthy version at the same memory from the configuration evidence. If access has already recovered, recommend no change.
 ```
 
 Run the same command for a fresh recommendation. Use the identical repaired
-prompt for one new denial and show that hosted behavior only. Register the
-original scored case and matching case/bundle hashes once, restore
-the original prompt, run local FAIL, say “assume I'm a careless dev and I
-didn't run my tests locally before merging my changes”, and push. The
+prompt for one dedicated hosted full investigation for a new denial; match its
+event/run/trace and show behavior only. Register the presenter-authored
+original scored case and matching case/trace identity once, prepare the separate
+`agent/audience-input.json`, restore the original prompt, run local FAIL, say
+“assume I'm a careless dev and I didn't run my tests locally before merging my
+changes”, and hand the diff to the participant for the push. Keep the standing
+`agent/qualification-input.json` unchanged. The
 `audience-case-gate` fast check runs in parallel with ordinary checks; failure
 or incomplete status blocks/skips downstream `evaluate-agent` qualification
 and publication. Reach slides 35/36 before the actual red/no-publication or
@@ -41,7 +46,7 @@ S2 first checks the exact structured recommendation, then scores the original
 report with `Builtin.Correctness`. The current route then runs one native
 Strands case on fixed input/tools and uses the identical repaired prompt on one
 new denial as behavior evidence only. It registers the original scored case
-and matching case/bundle hashes once before the ordinary push. The historical
+and matching case/trace identity once before the ordinary push. The historical
 S3/S4/S5 workflow adds a case to retained reviewed cases and can be used for
 independent preparation; keep these identities
 distinct:
@@ -65,18 +70,16 @@ versions 74 and 75 and remains an independent local check.
 | S0 - Native trace | Show the denied read, configuration, source results, and original memory recommendation. | Evidence of one actual agent execution; no score yet. |
 | S1 - Dataset case | Add the trace to a fixed dataset, edit the prose response and typed recommendation in the scenario draft, save it, and create the published version. | The published version freezes the reviewed input. |
 | S2 - Original score | Download `examples[0]` from the full dataset ID, show the exact structured recommendation check, and score the original report. | Show the returned `Builtin.Correctness` label, value, and explanation; compare the formal action with the expected response. No agent rerun. |
-| IDE repair | Convert the audience case to native Strands, run the original prompt to FAIL, edit the exact rule, and run the same command. | Fresh session/recommendation on fixed input and captured tools. |
-| Live repaired endpoint | Use the identical repaired prompt for one new denial and show the recommendation. | Real event/run, not a prepared result or CI input. |
-| Fast release gate | Register the original scored case and matching case/bundle hashes, restore the original prompt, show local FAIL, say the careless-dev line, and push. | `audience-case-gate` failure/incomplete blocks/skips `evaluate-agent` and publication. |
+| IDE repair | Read `denial-case.json` directly into native Strands, show the matching final chat input from `original-trace.json`, exclude old answer/system/signed-thinking fields, show native `Equals`, run the original prompt to FAIL, edit the exact rule, and run the same command. | Fresh session/recommendation on `Case.input = turns[0].input`; history is supplied separately. |
+| Live repaired endpoint | Use the identical repaired prompt for one dedicated full investigation for a new denial and show the recommendation. | Real event/run/trace, not a prepared result or CI input. |
+| Fast release gate | Prepare `agent/audience-input.json` from the original case/trace, restore the original prompt, show local FAIL, say the careless-dev line, and let the participant push. | `audience-case-gate` uses the same saved Case/trace; failure/incomplete blocks/skips `evaluate-agent` and publication. |
 
-The [native case bridge](../scripts/native_case_bridge.py) makes the prepared
-transfer explicit; use the [build command](adapt-evaluations.md#bridge-the-live-case-into-s3s4)
-only for the historical S3/S4 fallback.
-The downloaded native case and `original-trace.json` join the originating
-RunTable row and S3 captures, then become the frozen case, captured bundle, and
-S4 suite. S3/S4 use the same incident's normal task projection and bounded
-evidence; the bridge does not create a new trace or treat native
-expected-response prose as the review record.
+The delivery path does not run a bridge, freeze a second case, or transfer a
+hidden bundle. `denial-case.json` supplies the direct Case input and
+`original-trace.json` supplies matching history/provenance. The historical
+S3/S4 fallback has its own prepared inputs and identities; it is not part of
+this audience sequence. For an independent adaptation, use [the direct Case
+walkthrough](adapt-evaluations.md#generate-a-new-answer-from-the-same-inputs).
 
 ## Evidence rules
 
