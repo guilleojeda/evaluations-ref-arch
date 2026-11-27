@@ -138,7 +138,114 @@ python3 scripts/prepare_live_gate.py publish-command \
   --profile "$AWS_PROFILE" --region "$AWS_DEFAULT_REGION" | jq -r .publishCommand
 ```
 
-After upload and readback, the participant stages only `agent/prompt.py` and the new `agent/qualification-input.json`. The qualified CI workflow reads that pointer, verifies the archive and runs the five cases against the candidate ZIP. Match the live case and bundle digests to the CI row before showing its verdict. Traces, expectations, observations and reports remain private. [Suite preparation and verification](../scripts/prepare_live_gate.py)
+The carried suite entry is not replaced; the prepared suite appends one row. Inspect the old and new entries from the private archives, then inspect the exact frozen case and captured bundle selected by the private map:
+
+```bash
+old_suite_entry=$(tar -xOf "$bridge_root/previous-suite.tar.gz" staging/suite.json | jq -c '.cases[-1]')
+new_suite_entry=$(tar -xOf "$bridge_root/gate/staging.tar.gz" staging/suite.json | jq -c '.cases[-1]')
+live_case_member=$(tar -xOf "$bridge_root/gate/staging.tar.gz" staging/live-case-map.json | jq -er .members.case)
+live_bundle_member=$(tar -xOf "$bridge_root/gate/staging.tar.gz" staging/live-case-map.json | jq -er .members.bundle)
+printf 'old suite entry: %s\nnew suite entry: %s\n' "$old_suite_entry" "$new_suite_entry"
+tar -xOf "$bridge_root/gate/staging.tar.gz" "staging/$live_case_member" > "$bridge_root/audience-case.frozen.json"
+tar -xOf "$bridge_root/gate/staging.tar.gz" "staging/$live_bundle_member" > "$bridge_root/audience-bundle.json"
+jq '{caseSha256, case: {caseId, task, evidence: {bundleSha256, traceRef}}}' \
+  "$bridge_root/audience-case.frozen.json"
+sha256sum "$bridge_root/audience-bundle.json"
+```
+
+The frozen case and bundle above are the audience trace's existing reviewed
+inputs, not a synthetic replacement. They stay in private S3; the committed
+`agent/qualification-input.json` contains only the content-addressed archive
+pointer, archive/suite/evaluator digests, and case IDs. Do not commit the case,
+bundle, map, trace, expectation, or report.
+
+The pointer is also the roster binding: an unaugmented carried archive must
+name exactly the four retained baseline cases; the prepared audience archive
+must name those four in the same order plus the mapped audience case as the
+fifth row. The fast helper rejects a pointer/manifest order or count mismatch.
+It also binds the pointer's suite digest and suite case order before selecting
+the mapped row, so a manifest-only handoff cannot green the early check.
+
+### The fast audience row and the full package gate
+
+On `demo-deploy`, `.github/workflows/deploy.yml` starts the **Gate audience case
+(fast exact action)** job after routing, in parallel with the standard ARM64
+checks. It reads only the committed pointer, downloads and hashes the private
+archive, selects the map's `members` and `ci` rows, and runs this same public native
+program:
+
+```bash
+PYTHONPATH=agent:examples/live-denial \
+  uv run --offline --project agent --locked \
+  opentelemetry-instrument python examples/live-denial/strands_denial.py \
+  --frozen-only --safe-output \
+  --case "$GATE_ROOT/inputs/case.frozen.json" \
+  --bundle "$GATE_ROOT/inputs/captured-bundle.json" \
+  --result "$GATE_ROOT/audience-row.json"
+```
+
+The command's `RecommendedAction` row uses
+`score_denial.exact_action_matches`: it checks action, target, value and unit,
+including a non-empty explanation for `Other`. A completed wrong action exits
+1 and prints `Exact action: FAIL`; incomplete inputs, execution, or evaluator
+output exit 2. The workflow preserves that status with `exit "$status"`, so a
+red audience row blocks both the initial candidate deploy and
+`evaluate-agent`; the later exact-ZIP five-case qualification and protected
+review remain required for a successful candidate. The job summary shows the
+mapped case ID, case/bundle digests, prompt digest, and evaluator row even if
+another case in the later suite is red.
+
+The existing `evaluate-agent` job then runs the checked Runtime ZIP through
+`scripts/qualify-repaired.py` on the full suite. Its nonzero status is carried
+to `publish-repaired`, whose `needs.evaluate-agent.result == 'success'` guard
+is the publication boundary. A fast audience failure is visible first, and a
+later package failure still blocks publication after the audience row passes.
+
+CI redirects the native runner's verbose trace/report output to a private
+runner log and passes `--safe-output`. Its receipt keeps only the opaque case
+binding, hashes, verdict, action fields, numeric/canonical version values, and
+`<explanation redacted>` for `Other`; trace IDs, sessions, evaluator prose and
+free-form explanations never enter public logs or the summary. The summary
+step emits the same one-line `AUDIENCE_GATE_ROW` in the Actions log and job
+summary, bound to `GITHUB_SHA` and `GITHUB_RUN_ATTEMPT` with its 0/1/2 exit
+code. The local presenter command remains verbose because it runs on the
+presenter-owned screen.
+
+The demo also has an existing, qualified four-case suite. It predates the
+per-performance map. The gate recognizes that exact suite by digest and can
+run its retained denial as a baseline check. When the presenter adds the
+opening incident as the fifth case, the archive must carry an explicit map to
+that case and its captured bundle. A missing or inconsistent map blocks the
+run before inference.
+
+This is the precise common invariant between the local walkthrough and CI: the
+same `strands_denial.py`, same frozen case task, same captured-bundle bytes,
+same reviewed expectation projection, and same `exact_action_matches` function.
+Local and CI intentionally differ in source checkout and output directory; the
+fast gate is one audience exact-action row, while full qualification is a
+package-bound five-case experiment with advisory scoring. It is therefore not
+accurate to call the fast row the whole package test.
+
+To pair the CI gate with a local previous-prompt failure, use the same extracted
+case and bundle with a disposable copy of the historical prompt:
+
+```bash
+previous_root=$(mktemp -d "${TMPDIR:-/tmp}/previous-prompt.XXXXXX")
+cp -a agent "$previous_root/agent"
+cp tests/fixtures/phase20_faulty_prompt.py "$previous_root/agent/prompt.py"
+PYTHONPATH="$previous_root/agent:examples/live-denial" \
+  uv run --offline --project agent --locked \
+  opentelemetry-instrument python examples/live-denial/strands_denial.py \
+  --frozen-only \
+  --case "$bridge_root/audience-case.frozen.json" \
+  --bundle "$bridge_root/audience-bundle.json" \
+  --result "$previous_root/audience-row.json"
+```
+
+That historical prompt is expected to return exit 1 and `Exact action: FAIL`
+for the same audience case. CI does not trust this local result: it downloads
+the private archive itself and reruns the checked-out prompt before any package
+qualification or publication. [Suite preparation and verification](../scripts/prepare_live_gate.py)
 
 ## Where your agent fits
 

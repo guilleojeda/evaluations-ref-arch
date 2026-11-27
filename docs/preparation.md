@@ -10,6 +10,25 @@ publishing credentials, trace exports, account-specific role names, or private
 session locators. Keep those values in the maintainer's separate session
 record.
 
+## Current normal-route rehearsal
+
+Prepare one clean qualified S5 and verify the source file
+the prepared `before/faulty-prompt.py` reference is available. Before the IDE
+cue, copy it into the active `S5/agent/prompt.py`; keep the case input, expected output, fixed captured
+tools, and exact evaluator ready to show. The rehearsal must record the actual
+faulty FAIL, then use this exact rule for the fresh run:
+
+```text
+When Inventory reads are still denied, recommend restoring access. Identify the healthy version at the same memory from the configuration evidence. If access has already recovered, recommend no change.
+```
+
+Show the pre-qualified endpoint's new denial recommendation as behavior
+evidence only. Register the original scored case and matching case/bundle
+hashes once. Restore the original prompt before the local FAIL and ordinary push.
+The fast `audience-case-gate` is required and runs beside ordinary checks; a
+failure/incomplete result blocks/skips `evaluate-agent` and publication. Never
+replace a missing result with a recording or claim a skipped qualification ran.
+
 To run just the public example, start in the [README](../README.md#run-one-evaluation-locally). You can do that without presenter access.
 
 The stage-workspace setup opens one or all six editable workspaces. That setup
@@ -521,7 +540,7 @@ with its input and execution identity:
   Compare actual starts, skips, native arrivals,
   caller outcomes, metric windows, and checkout effects. Preserve app code,
   memory, aliases, access, `productVersion`, and prior data across the pair.
-  Use the [capacity cue](demo-script.md#capacity-overload-and-separate-remedy-observation)
+  Use the [capacity cue](demo-script.md#capacity-comparison)
   for acceptance evidence and fallback.
 - [ ] Verify recovered and stale-alert examples have a later reference time and
   captured post-recovery evidence. Do not judge a pre-recovery report by later
@@ -541,7 +560,14 @@ with its input and execution identity:
   screen switches and approved closing. After the final rehearsal, execute
   cleanup before establishing the delivery baseline.
 
-### Run a stage from its prepared workspace
+### Historical stage-entry map (fallback only)
+
+The current normal rehearsal is the short route in section 3: one clean S5,
+one native IDE case, one identical live endpoint, original scored case
+registration, restored local FAIL, ordinary push, and the fast gate. The hosted
+denial is behavior evidence only, not a CI input. Use the stage map below only for
+independent entry, preparation, or an actual outage; label its results
+prepared/recorded and do not imply that the current audience edit ran.
 
 Open the requested stage directory and use its private input paths. At launch,
 each run must snapshot its candidate, tooling, lockfile, case or bundle,
@@ -560,7 +586,7 @@ original identity.
 | S2 | Download `examples[0]` from the published version, show the exact structured recommendation check, and score the original report with `Builtin.Correctness`; do not rerun the agent. Captured-evidence stages may score their matching saved run. |
 | S3 | Edit only the prompt in the S3 worktree. Run `evaluate_case.py run --candidate repaired` against the same selected case/evidence, inspect with `show`, and score the fresh execution. See [agent README](../agent/README.md#run-score-and-compare-the-repaired-candidate-s3). |
 | S4 | Run the native `development_experiment.py run` launcher for the current native denial case plus the four retained reviewed cases, each with its bounded case/evidence bridge. You may pass an explicitly selected immutable `--source-run`. Inspect with `show` and compare the saved experiment offline. A focused run cannot qualify a release. See [agent README](../agent/README.md#run-the-native-strands-development-experiment-s4). |
-| S5 | Presenter preparation appends the current denial case to the four retained reviewed cases and uploads the five-case archive privately. In the only `demo-deploy` worktree, make one reviewed commit containing the prompt edit and private suite-pointer update, then push through the normal workflow. Record the rejected gate, exact commit and package, all five verified cases, source-run case/bundle identity, and unchanged repaired serving tuple. Repair the branch through the normal gate before the next full session. |
+| S5 (historical fallback) | Presenter preparation may append a denial case to the four retained reviewed cases and upload the five-case archive privately. Use this only for independent preparation or an outage; it is not the current audience push. Record the exact commit/package, case roster, source-run case/bundle identity, and unchanged repaired serving tuple. |
 
 You may switch from S3 to S4 while S3 is running only after confirming that
 each run owns immutable launch-time inputs and a unique output directory.

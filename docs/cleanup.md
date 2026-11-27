@@ -9,6 +9,16 @@ here.
 
 If you stop partway through cleanup, note the last confirmed step and every unresolved action in the private session record before starting [preparation](preparation.md). Keep the repaired publication and controller selection with the session record. Keep the archived faulty reference intact.
 
+## Current route reminder
+
+The normal audience route leaves the fast `audience-case-gate` running after
+the careless-dev push. Record its actual failure, incomplete, skipped, or
+pending status before cleanup; a downstream `evaluate-agent` qualification
+that was blocked/skipped must not be described as having run. Preserve the
+exact live-case pointer and workflow identity with the session archive, then
+restore the original prompt in the S5 workspace only through the ordinary
+source-repair procedure below.
+
 ## 1. Stop activity and settle outcomes
 
 - [ ] Stop both controller producers and unrelated browser writers. Close old

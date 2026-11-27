@@ -365,9 +365,10 @@ jobs:
 
   deploy:
     name: Deploy ${{ matrix.component }}
-    needs: [route, check, check-agent]
+    needs: [route, check, check-agent, audience-case-gate]
     if: >-
       always() && !cancelled() && needs.route.result == 'success' &&
+      (needs.route.outputs.qualification_required != 'true' || needs.audience-case-gate.result == 'success') &&
       ((needs.route.outputs.deploy_components == '["agent"]' && needs.check-agent.result == 'success') ||
       (needs.route.outputs.deploy_components != '["agent"]' && needs.check.result == 'success')) &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/demo-deploy' &&
@@ -717,7 +718,7 @@ jobs:
 
   evaluate-agent:
     name: Qualify checked repaired agent
-    needs: [route, check-agent]
+    needs: [route, check-agent, audience-case-gate]
     outputs:
       qualification_sha256: ${{ steps.receipt.outputs.qualification_sha256 }}
       artifact_sha256: ${{ steps.artifact.outputs.artifact_sha256 }}
@@ -727,6 +728,7 @@ jobs:
       evaluation_run_attempt: ${{ github.run_attempt }}
     if: >-
       needs.route.result == 'success' && needs.check-agent.result == 'success' &&
+      needs.audience-case-gate.result == 'success' &&
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
       github.ref == 'refs/heads/demo-deploy' &&
       needs.route.outputs.operation == 'normal' &&
@@ -1151,6 +1153,232 @@ jobs:
           set -euo pipefail
           echo "Package qualification did not produce an eligible candidate (exit=$QUALIFY_STATUS)" >&2
           exit "${QUALIFY_STATUS:-2}"
+
+  audience-case-gate:
+    name: Gate audience case (fast exact action)
+    needs: route
+    if: >-
+      needs.route.result == 'success' &&
+      needs.route.outputs.qualification_required == 'true' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/demo-deploy' &&
+      needs.route.outputs.operation == 'normal'
+    runs-on: ubuntu-24.04-arm
+    environment: demo-evaluation
+    permissions:
+      contents: read
+      id-token: write
+    concurrency:
+      group: incident-triage-demo-audience-case-gate
+      cancel-in-progress: false
+    steps:
+      - name: Check out the candidate source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Set up locked uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: '0.13.6'
+          enable-cache: true
+          cache-dependency-glob: agent/uv.lock
+      - name: Install locked agent dependencies
+        run: uv sync --project agent --locked
+      - name: Verify the evaluation OIDC case
+        env:
+          PHASE0_OIDC_CASE: allowed
+          PHASE0_OIDC_ROLE_ARN: ${{ env.PHASE20_EVALUATION_ROLE_ARN }}
+          PHASE0_OIDC_ENVIRONMENT: demo-evaluation
+          PHASE0_DENIED_OIDC_ROLE_ARNS: ${{ env.PHASE0_DEPLOY_ROLE_ARN }},${{ env.PHASE20_PUBLISHER_ROLE_ARN }}
+        run: node --test tests/phase0-oidc.test.mjs
+      - name: Assume the scoped evaluation role
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.PHASE20_EVALUATION_ROLE_ARN }}
+          role-session-name: phase20-audience-gate-${{ github.run_id }}
+          role-duration-seconds: 1800
+      - name: Retrieve the private carried gate archive
+        id: inputs
+        shell: bash
+        env:
+          INPUT_BUCKET: ${{ env.PHASE20_EVIDENCE_BUCKET }}
+          INPUT_POINTER: ${{ github.workspace }}/agent/qualification-input.json
+        run: |
+          set -euo pipefail
+          input_root="$RUNNER_TEMP/phase20-audience-inputs"
+          mkdir -p "$input_root"
+          test -s "$INPUT_POINTER"
+          pointer_bucket="$(jq -er '.bucket' "$INPUT_POINTER")"
+          [[ "$pointer_bucket" == "$INPUT_BUCKET" ]] || {
+            echo 'qualification pointer bucket is outside the fixed evidence bucket' >&2
+            exit 1
+          }
+          input_key="$(jq -er '.s3Key' "$INPUT_POINTER")"
+          input_sha256="$(jq -er '.sha256' "$INPUT_POINTER")"
+          [[ "$input_key" =~ ^agent-evaluation/phase[0-9]+/inputs/[0-9a-f]{64}/staging\.tar\.gz$ ]]
+          [[ "$input_sha256" =~ ^[0-9a-f]{64}$ ]]
+          archive="$input_root/staging.tar.gz"
+          aws s3api get-object --bucket "$INPUT_BUCKET" --key "$input_key" --checksum-mode ENABLED "$archive" >/dev/null
+          printf '%s  %s\n' "$input_sha256" "$archive" | sha256sum -c -
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "archive_sha256=$input_sha256" >> "$GITHUB_OUTPUT"
+          echo "Retrieved private audience gate archive: sha256=$input_sha256"
+      - name: Run the same audience Strands exact-action check
+        id: gate
+        shell: bash
+        env:
+          ARCHIVE: ${{ steps.inputs.outputs.archive }}
+          GATE_ROOT: ${{ runner.temp }}/phase20-audience-gate
+          AGENT_OBSERVABILITY_ENABLED: 'true'
+          AWS_GENAI_CONTENT_EXTRACTION_OPT_OUT: 'true'
+          OTEL_TRACES_EXPORTER: otlp
+          OTEL_TRACES_SAMPLER: always_on
+          OTEL_PYTHON_DISTRO: aws_distro
+          OTEL_PYTHON_CONFIGURATOR: aws_configurator
+          OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+          OTEL_EXPORTER_OTLP_TRACES_PROTOCOL: http/protobuf
+          OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: https://xray.us-east-1.amazonaws.com/v1/traces
+          OTEL_EXPORTER_OTLP_TRACES_HEADERS: x-aws-log-group=/aws/bedrock-agentcore/incident-triage-evaluation,x-aws-log-stream=spans
+          OTEL_RESOURCE_ATTRIBUTES: service.name=IncidentTriageDemoPhase20AudienceGate,aws.log.group.names=/aws/bedrock-agentcore/incident-triage-evaluation
+          OTEL_LOGS_EXPORTER: none
+          OTEL_METRICS_EXPORTER: none
+          OTEL_SERVICE_NAME: IncidentTriageDemoPhase20AudienceGate
+        run: |
+          set -euo pipefail
+          mkdir -p "$GATE_ROOT"
+          gate_log="$GATE_ROOT/native-gate.log"
+          set +e
+          PYTHONPATH=agent uv run --offline --project agent --locked \
+            python scripts/early_audience_gate.py \
+            --archive "$ARCHIVE" \
+            --pointer "$GITHUB_WORKSPACE/agent/qualification-input.json" \
+            --output-root "$GATE_ROOT" >"$gate_log" 2>&1
+          prepare_status=$?
+          status=$prepare_status
+          if [[ "$prepare_status" -eq 0 ]]; then
+            PYTHONPATH=agent:examples/live-denial uv run --offline --project agent --locked \
+              opentelemetry-instrument python examples/live-denial/strands_denial.py \
+              --frozen-only --safe-output \
+              --case "$GATE_ROOT/inputs/case.frozen.json" \
+              --bundle "$GATE_ROOT/inputs/captured-bundle.json" \
+              --result "$GATE_ROOT/audience-row.json" >>"$gate_log" 2>&1
+            status=$?
+          fi
+          set -e
+          if [[ "$status" -eq 0 || "$status" -eq 1 ]]; then
+            echo "Audience exact-action gate completed: exit=$status"
+          else
+            echo "Audience exact-action gate could not complete: exit=$status"
+          fi
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+          exit "$status"
+      - name: Show the audience row in the job summary
+        if: always() && steps.gate.outcome != 'skipped'
+        shell: bash
+        env:
+          GATE_ROOT: ${{ runner.temp }}/phase20-audience-gate
+        run: |
+          set -euo pipefail
+          result="$GATE_ROOT/audience-row.json"
+          input="$GATE_ROOT/audience-input.json"
+          exit_code="${{ steps.gate.outputs.status }}"
+          [[ "$exit_code" =~ ^[012]$ ]] || exit_code=2
+          input_json='{}'
+          result_json='{}'
+          [[ -s "$input" ]] && input_json="$(jq -c . "$input")"
+          [[ -s "$result" ]] && result_json="$(jq -c . "$result")"
+          row="$(jq -cn \
+            --arg commit "$GITHUB_SHA" \
+            --arg attempt "$GITHUB_RUN_ATTEMPT" \
+            --argjson exitCode "$exit_code" \
+            --argjson input "$input_json" \
+            --argjson result "$result_json" \
+            '{
+              commit: $commit,
+              attempt: $attempt,
+              exitCode: $exitCode,
+              status: (if $exitCode == 0 then "pass" elif $exitCode == 1 then "fail" else "incomplete" end),
+              gateKind: ($input.gateKind // null),
+              frozenCaseId: ($result.frozenCaseId // $input.caseId // null),
+              caseSha256: ($result.caseSha256 // $input.caseSha256 // null),
+              bundleSha256: ($result.bundleSha256 // $input.bundleSha256 // null),
+              promptSha256: ($result.promptSha256 // null),
+              evaluator: (if ($result.evaluator | type) == "object" then {name: $result.evaluator.name, finding: $result.evaluator.finding} else null end),
+              exactAction: ($result.exactAction // null),
+              expected: ($result.expected // null),
+              actual: ($result.actual // null)
+            }')"
+          echo "AUDIENCE_GATE_ROW=$row"
+          result_field() {
+            jq -r --arg side "$1" --arg field "$2" \
+              'if (.[$side] | type) == "object" then (.[$side][$field] // "unavailable") | tostring else "unavailable" end' \
+              <<<"$result_json"
+          }
+          normalize_action() {
+            case "$1" in
+              'Increase reserved concurrency'|'Increase memory'|'Restore inventory access'|'Other') printf '%s' "$1" ;;
+              *) printf 'unavailable' ;;
+            esac
+          }
+          normalize_target() {
+            case "$1" in
+              checkout|inventory) printf '%s' "$1" ;;
+              *) printf 'unavailable' ;;
+            esac
+          }
+          normalize_value() {
+            case "$1" in
+              '<explanation redacted>'|'<redacted>'|unavailable) printf '%s' "$1" ;;
+              [0-9]*) [[ "$1" =~ ^[0-9]+$ ]] && printf '%s' "$1" || printf 'unavailable' ;;
+              *) printf 'unavailable' ;;
+            esac
+          }
+          normalize_unit() {
+            case "$1" in
+              MB|executions|version) printf '%s' "$1" ;;
+              *) printf 'unavailable' ;;
+            esac
+          }
+          case "$exit_code" in
+            0) verdict=PASS ;;
+            1) verdict=FAIL ;;
+            *) verdict=INCOMPLETE ;;
+          esac
+          expected_action="$(normalize_action "$(result_field expected action)")"
+          actual_action="$(normalize_action "$(result_field actual action)")"
+          expected_target="$(normalize_target "$(result_field expected target)")"
+          actual_target="$(normalize_target "$(result_field actual target)")"
+          expected_value="$(normalize_value "$(result_field expected value)")"
+          actual_value="$(normalize_value "$(result_field actual value)")"
+          expected_unit="$(normalize_unit "$(result_field expected unit)")"
+          actual_unit="$(normalize_unit "$(result_field actual unit)")"
+          {
+            echo '### Audience case gate'
+            echo
+            echo "Exact recommendation: **$verdict**"
+            echo
+            if [[ "$verdict" == INCOMPLETE ]]; then
+              echo 'Expected vs actual action fields: unavailable (the gate did not complete).'
+            else
+              echo '| Field | Expected | Actual |'
+              echo '| --- | --- | --- |'
+              printf '| action | `%s` | `%s` |\n' "$expected_action" "$actual_action"
+              printf '| target | `%s` | `%s` |\n' "$expected_target" "$actual_target"
+              printf '| value | `%s` | `%s` |\n' "$expected_value" "$actual_value"
+              printf '| unit | `%s` | `%s` |\n' "$expected_unit" "$actual_unit"
+            fi
+            echo
+            echo '<details>'
+            echo '<summary>Binding and machine row</summary>'
+            echo
+            echo '```json'
+            echo "$row"
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
 
   publish-repaired:
     name: Publish repaired agent (protected review)

@@ -327,14 +327,4 @@ S1 freezes reviewed cases. S2 scores a captured faulty investigation. S3 evaluat
 3. Open **Review deployments** for that run and select **repaired-publication**. If the evidence supports release, enter `approve <manifest-sha256>` with the full digest from the summary and approve. Otherwise reject. Keep evidence and private reports out of the public comment. A rerun that produces new evidence needs a new matching review.
 4. Inspect the publisher’s readback of the new numbered Runtime version, the READY named `repaired` endpoint, its serving ZIP and its prepared publication record. The alarm adapter and the named `faulty` reference retain their bindings.
 
-A prompt regression on `demo-deploy` uses the same gate. The participant commit
-contains the prompt edit and private suite-pointer update. Review the failed
-case against the submitted SHA, confirm presenter preparation supplied the
-five-case archive (the four retained cases plus the current denial case), and
-compare the source-run case/bundle identity with the exact candidate result.
-Then compare the named endpoint and prepared record to the
-last qualified release. The branch now contains the failed experiment while
-the endpoint continues serving the qualified bytes. Before another full
-rehearsal, revert that specific commit on `demo-deploy` so both files revert
-together, then inspect the newly built package through the same workflow.
-Source-code checkout and endpoint publication have separate identities.
+The presenter adds the current audience case to the private suite and commits its content-addressed pointer alongside the prompt regression. Open the Actions run for that commit and read the early audience-case result. It uses the pushed prompt and the case's captured evidence. A failed or incomplete check blocks the later package qualification and publication. On a red source check the repaired endpoint continues serving its prior qualified bytes. Revert the two-file rehearsal commit before the next performance, and verify the new release through the usual package qualification and protected review. [Add the case to the gate](adapt-evaluations.md)

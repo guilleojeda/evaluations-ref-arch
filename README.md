@@ -2,7 +2,7 @@
 
 An operations agent reads a real DynamoDB access denial and recommends more memory. Doubling memory leaves checkout broken. This re:Invent Code Talk follows that mistake from an incident trace to a test case, a prompt edit, and a CI check that blocks the same mistake from shipping.
 
-**Coming from the talk?** Follow the denial through all six stages and see the result of the participant's push. [Attendee guide](docs/attendee-guide.md) and [audience slides (PDF)](docs/slides/audience.pdf)
+**Coming from the talk?** Start with the [native Strands experiment](examples/live-denial/strands_denial.py), the [CI workflow](.github/workflows/deploy.yml), or the [audience slides (PDF)](docs/slides/audience.pdf). The [attendee guide](docs/attendee-guide.md) follows the incident from checkout to the rejected push.
 
 **Trying this with your own agent?** Start with the local case below, then run it as a native Strands experiment and see which parts to replace. [Adapt the evaluation](docs/adapt-evaluations.md)
 
@@ -70,9 +70,13 @@ same trace, so show the returned explanation and keep the deterministic action
 check separate. The script reads the original report from the trace and does
 not start another investigation.
 
-See the [live-denial example](examples/live-denial/README.md) for the file
-layout and the [talk walkthrough](docs/adapt-evaluations.md) for how the case
-was reviewed and carried into the IDE.
+## Run the agent before and after a prompt edit
+
+Use the published case's source trace to retrieve the evidence that was available during the incident. Build a Strands `Case` with the alarm as input and the reviewed recommendation as its expected output. The task calls the agent and returns its structured recommendation. The evaluator compares that result with the expected action, target, value and unit.
+
+Run the experiment in your IDE, edit the recommendation rule in `agent/prompt.py`, save, and run it again. Both versions can query the same captured evidence. Each run generates a fresh report. [Step-by-step example](examples/live-denial/README.md)
+
+The release workflow runs the audience case on the pushed prompt. When the action regresses, the check fails and blocks publication. The private evidence stays outside Git. [Add the case to CI](docs/adapt-evaluations.md)
 
 ### Adapt the case
 
@@ -96,7 +100,7 @@ To try the same case with Strands, follow the walkthrough. It shows where to plu
 | --- | --- |
 | Inspect the code shown on stage | [Six frozen checkpoints in the talk/v5 series](docs/checkpoints.md) |
 | Understand the code checks, model judge, and release decision | [Evaluation approach](docs/evaluations.md) and [audience questions](docs/questions.md) |
-| See a rejected release pattern | [Historical/synthetic denial result](docs/attendee-guide.md#the-rejected-push) |
+| See a rejected release pattern | [Historical denial result](docs/attendee-guide.md#historical-rejected-push-exhibit-not-the-current-callback) |
 | Find the services that produced the incident | [Checkout application](docs/components/application.md), [failure controller](docs/components/failure-controller.md), and [read-only operations agent](docs/components/operations-agent.md) |
 | Build and check the components locally or adapt the AWS setup | [Development and deployment](docs/deployment.md) |
 
