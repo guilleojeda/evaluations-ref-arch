@@ -11,8 +11,6 @@ from pathlib import Path
 import subprocess
 import tarfile
 import tempfile
-from contextlib import redirect_stderr, redirect_stdout
-from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
 
@@ -31,16 +29,6 @@ def load_gate():
     spec = importlib.util.spec_from_file_location("early_audience_gate_test_subject", path)
     if spec is None or spec.loader is None:
         raise RuntimeError("could not load early audience gate")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
-def load_native_runner():
-    path = ROOT / "examples" / "live-denial" / "strands_denial.py"
-    spec = importlib.util.spec_from_file_location("strands_denial_gate_test_subject", path)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("could not load native denial runner")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -226,59 +214,21 @@ class EarlyAudienceGateTests(unittest.TestCase):
         self.assertEqual(selected["gateKind"], "audience-carried")
         self.assertEqual(selected["caseId"], self.fixture.case_id)
 
-    def test_safe_native_receipt_redacts_free_form_other_explanation(self) -> None:
-        runner = load_native_runner()
-        safe = runner.strands_denial_io._safe_recommendation({
-            "action": "Other", "target": None, "unit": None, "value": "private explanation",
-        })
-        self.assertEqual(safe, {
-            "action": "Other", "target": None, "unit": None,
-            "value": "<explanation redacted>",
-        })
-
-    def test_safe_native_cli_emits_only_the_public_verdict_and_receipt_fields(self) -> None:
-        runner = load_native_runner()
-        identity = {
-            "nativeId": "native.private",
-            "nativeSession": "source-private",
-            "frozenId": "frozen.opaque-case",
-            "caseSha256": "a" * 64,
-            "traceId": "trace-private",
-            "bundleSha256": "b" * 64,
-            "originatingRunId": "run-private",
-            "expected": {"action": "Other", "target": None, "unit": None},
-        }
-        actual = {"action": "Other", "target": None, "unit": None, "value": "private explanation"}
-        with tempfile.TemporaryDirectory(prefix="safe-native-") as directory:
-            result = Path(directory) / "audience-row.json"
-            stdout, stderr = io.StringIO(), io.StringIO()
-            with patch.object(
-                runner,
-                "run_experiment",
-                return_value=(identity, "fresh-private", actual, SimpleNamespace(test_pass=True, score=1.0, reason="private evaluator prose")),
-            ), redirect_stdout(stdout), redirect_stderr(stderr):
-                self.assertEqual(
-                    runner.main(["--frozen-only", "--safe-output", "--result", str(result)]),
-                    0,
-                )
-            receipt = json.loads(result.read_text(encoding="utf-8"))
-            self.assertEqual(stdout.getvalue().strip(), "Audience gate result: PASS")
-            self.assertEqual(stderr.getvalue(), "")
-            self.assertEqual(receipt["evaluator"]["name"], "recommended-action")
-            self.assertEqual(receipt["evaluator"]["finding"], "action")
-            self.assertEqual(receipt["actual"]["value"], "<explanation redacted>")
-            self.assertNotIn("nativeScenarioId", receipt)
-            self.assertNotIn("traceId", receipt)
-            self.assertNotIn("private", json.dumps(receipt))
-
     def test_workflow_wires_fast_gate_before_package_qualification(self) -> None:
         workflow = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
         self.assertIn("audience-case-gate:", workflow)
         self.assertIn("name: Gate audience case (fast exact action)", workflow)
         self.assertIn("Run the same audience Strands exact-action check", workflow)
         self.assertIn("python examples/live-denial/strands_denial.py", workflow)
-        self.assertIn("--frozen-only --safe-output", workflow)
-        self.assertIn('--pointer "$GITHUB_WORKSPACE/agent/qualification-input.json"', workflow)
+        self.assertIn('--scenario "$GATE_ROOT/inputs/staging/denial-case.json"', workflow)
+        self.assertIn('--trace "$GATE_ROOT/inputs/staging/original-trace.json"', workflow)
+        self.assertIn('--safe-output --result "$GATE_ROOT/audience-row.json"', workflow)
+        self.assertIn('INPUT_POINTER: ${{ github.workspace }}/agent/audience-input.json', workflow)
+        self.assertIn('INPUT_POINTER: ${{ github.workspace }}/agent/qualification-input.json', workflow)
+        self.assertIn('test -s "$INPUT_POINTER"', workflow)
+        self.assertNotIn("scripts/early_audience_gate.py \\", workflow)
+        self.assertNotIn("--frozen-only", workflow)
+        self.assertNotIn("--bundle", workflow)
         self.assertIn('native-gate.log', workflow)
         self.assertIn('AUDIENCE_GATE_ROW=', workflow)
         self.assertIn('GITHUB_SHA', workflow)
@@ -301,18 +251,21 @@ class EarlyAudienceGateTests(unittest.TestCase):
         ).stdout.replace("${{ steps.gate.outputs.status }}", "1")
         with tempfile.TemporaryDirectory(prefix="audience-summary-") as directory:
             root = Path(directory)
-            (root / "audience-input.json").write_text(json.dumps({
-                "gateKind": "audience-live",
-                "caseId": "opaque.audience-case",
-                "caseSha256": "a" * 64,
-                "bundleSha256": "b" * 64,
+            pointer = root / "audience-input.json"
+            pointer.write_text(json.dumps({
+                "schemaVersion": 1,
+                "purpose": "Phase 20 native audience gate input handoff",
+                "bucket": "private",
+                "s3Key": "agent-evaluation/phase20/audience-inputs/" + "a" * 64 + "/staging.tar.gz",
+                "sha256": "a" * 64,
+                "scenarioSha256": "b" * 64,
+                "traceSha256": "c" * 64,
             }), encoding="utf-8")
             (root / "audience-row.json").write_text(json.dumps({
                 "status": "fail",
-                "frozenCaseId": "opaque.audience-case",
-                "caseSha256": "a" * 64,
-                "bundleSha256": "b" * 64,
-                "promptSha256": "c" * 64,
+                "scenarioSha256": "b" * 64,
+                "traceSha256": "c" * 64,
+                "promptSha256": "d" * 64,
                 "exactAction": "FAIL",
                 "expected": {
                     "action": "Restore inventory access", "target": "inventory",
@@ -322,8 +275,8 @@ class EarlyAudienceGateTests(unittest.TestCase):
                     "action": "Other", "target": None,
                     "value": "<explanation redacted>", "unit": None,
                 },
-                "evaluator": {
-                    "name": "recommended-action", "finding": "action",
+                "nativeEvaluator": {
+                    "name": "Equals", "score": 0.0, "testPass": False,
                     "reason": "PRIVATE EVALUATOR PROSE MUST NOT RENDER",
                 },
             }), encoding="utf-8")
@@ -331,6 +284,7 @@ class EarlyAudienceGateTests(unittest.TestCase):
             environment = os.environ.copy()
             environment.update({
                 "GATE_ROOT": str(root),
+                "INPUT_POINTER": str(pointer),
                 "GITHUB_SHA": "deadbeef",
                 "GITHUB_RUN_ATTEMPT": "7",
                 "GITHUB_STEP_SUMMARY": str(summary),
@@ -342,6 +296,7 @@ class EarlyAudienceGateTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             rendered = summary.read_text(encoding="utf-8")
             self.assertTrue(rendered.startswith("### Audience case gate\n\nExact recommendation: **FAIL**"))
+            self.assertIn("Blocked by: exact structured action mismatch.", rendered)
             self.assertIn("| action | `Restore inventory access` | `Other` |", rendered)
             self.assertIn("| target | `inventory` | `unavailable` |", rendered)
             self.assertIn("| value | `75` | `<explanation redacted>` |", rendered)

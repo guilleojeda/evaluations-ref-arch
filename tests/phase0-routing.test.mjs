@@ -52,6 +52,7 @@ test('the CI selector identifies component, shared, and documentation changes ac
   const submittedCase = commit('examples/live-denial/strands_denial.py');
   const exactAction = commit('examples/live-denial/score_denial.py');
   const caseSelection = commit('scripts/early_audience_gate.py');
+  const nativeAudienceRegistration = commit('scripts/prepare_audience_gate.py');
 
 
   assert.deepEqual(affected(baseline, docs), []);
@@ -72,6 +73,7 @@ test('the CI selector identifies component, shared, and documentation changes ac
   assert.deepEqual(affected(releaseWorkflow, submittedCase), ['agent']);
   assert.deepEqual(affected(submittedCase, exactAction), ['agent']);
   assert.deepEqual(affected(exactAction, caseSelection), ['agent']);
+  assert.deepEqual(affected(caseSelection, nativeAudienceRegistration), ['agent']);
 
   assert.deepEqual(affected(baseline, controller), ['app', 'controller'],
     'an earlier relevant change remains visible when comparing with the last successful revision');
