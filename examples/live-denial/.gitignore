@@ -1,0 +1,17 @@
+/denial-case.json
+/denial-case.tmp
+/evaluation.txt
+/original-trace.json
+/original-score.json
+/bridge/
+/bridge.archive.*/
+/reviewed-expectations.json
+/bridge-manifest.json
+/candidate-input.json
+/captured-bundle.json
+/case.frozen.json
+/native-handoff.json
+/suite.json
+/gate/
+/case.json
+/strands-result.json

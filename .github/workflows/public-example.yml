@@ -1,0 +1,66 @@
+name: Public Inventory Example
+
+on:
+  pull_request:
+    paths:
+      - README.md
+      - docs/adapt-evaluations.md
+      - agent/**
+      - examples/inventory-denial/**
+      - examples/live-denial/**
+      - scripts/native_case_bridge.py
+      - scripts/early_audience_gate.py
+      - scripts/prepare_live_gate.py
+      - tests/native_case_bridge_test.py
+      - tests/early_audience_gate_test.py
+      - tests/prepare_live_gate_test.py
+      - tests/strands_denial_test.py
+      - .github/workflows/public-example.yml
+  push:
+    branches:
+      - main
+    paths:
+      - README.md
+      - docs/adapt-evaluations.md
+      - agent/**
+      - examples/inventory-denial/**
+      - examples/live-denial/**
+      - scripts/native_case_bridge.py
+      - scripts/early_audience_gate.py
+      - scripts/prepare_live_gate.py
+      - tests/native_case_bridge_test.py
+      - tests/early_audience_gate_test.py
+      - tests/prepare_live_gate_test.py
+      - tests/strands_denial_test.py
+      - .github/workflows/public-example.yml
+
+permissions:
+  contents: read
+
+jobs:
+  public-example:
+    name: Public Inventory example
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.13'
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+        with:
+          version: '0.13.6'
+      - name: Install locked agent dependencies
+        run: uv sync --project agent --locked
+      - name: Run public Inventory example checks offline
+        run: uv run --offline --project agent --locked python examples/inventory-denial/test_public_example.py
+      - name: Check the native dataset and trace handoff offline
+        run: uv run --offline --project agent --locked python examples/live-denial/test_score_denial.py
+      - name: Check the replay and private CI suite handoffs offline
+        run: |
+          uv run --offline --project agent --locked python -m unittest discover -s tests -p 'native_case_bridge_test.py'
+          uv run --offline --project agent --locked python -m unittest discover -s tests -p 'prepare_live_gate_test.py'
+          uv run --offline --project agent --locked python -m unittest discover -s tests -p 'early_audience_gate_test.py'
+          uv run --offline --project agent --locked python -m unittest discover -s tests -p 'strands_denial_test.py'
