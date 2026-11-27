@@ -5,6 +5,11 @@ afterward, including after an interruption. The [demo script](demo-script.md)
 contains onstage cues. This runbook covers software, workspaces, identity,
 and replacement-browser readiness.
 
+The public page preserves stage, evidence, and recovery mechanics without
+publishing credentials, trace exports, account-specific role names, or private
+session locators. Keep those values in the maintainer's separate session
+record.
+
 To run just the public example, start in the [README](../README.md#run-one-evaluation-locally). You can do that without presenter access.
 
 The stage-workspace setup opens one or all six editable workspaces. That setup
@@ -32,14 +37,14 @@ commands, and unique input and result locations. Store credentials separately
 in presenter-only storage.
 
 Prepared asset hashes may be reused. The performance identity may not. Set a
-new non-empty `PHASE22_SESSION_ID` for every rehearsal or delivery, such as
-`talk-2026-11-18-rehearsal-b`. The importer records it as `sessionId` and
+new non-empty `PHASE22_SESSION_ID` for every rehearsal or delivery. The
+importer records it as `sessionId` and
 preserves the roster's `sourceAssetSessionId` and input hashes. This lets a new
 performance reuse unchanged assets without confusing it with an earlier one:
 
 ```sh
 # Replace this with a new unique ID for every rehearsal or delivery.
-export PHASE22_SESSION_ID="talk-2026-11-18-rehearsal-b"
+export PHASE22_SESSION_ID="${PHASE22_SESSION_ID:?set a unique per-performance ID}"
 ```
 
 Keep the session index, inputs, source and tooling snapshots, and results in
@@ -469,6 +474,27 @@ Status is read-only. Use it before switching or editing and after reconnecting
 from another browser. It reports the current commit, dirty state, and saved
 differences. It does not relaunch an execution or replace an edit.
 
+### Public live-denial case
+
+The public S1/S2 walkthrough uses the native trace and AgentCore dataset path,
+not a hand-written case file. Select the trace, create a fixed dataset with
+expected response and expected trajectory disabled, edit
+`turns[0].expected_response` and `metadata.expected_recommendation` in the
+resulting scenario draft, save it, and choose **Create version**. For an
+ongoing denial use `Restore inventory access` with the healthy version,
+`inventory`, and `version`; for recovered evidence use `Other` with null target
+and unit plus a separate free explanation. Only the published version is
+frozen. From a Codespace terminal in `examples/live-denial`, use the
+maintained [download and score command](../examples/live-denial/README.md#download-the-published-case-in-codespaces)
+to select its single example and score the original report.
+
+The scorer reads the case, fetches the original trace with its session,
+log-group, and start-time fields, extracts `incident.report`, and calls
+`Builtin.Correctness`. It does not rerun the agent. Keep the returned label,
+value, explanation, and scoring-attempt identity together. The private
+captured-evidence S1/S2 commands below remain valid for the independently
+prepared stage route; they are not the public dataset download.
+
 ## 5. Rehearse the experience and fallbacks
 
 Use the prepared workspaces for the rehearsal. Label every recorded fallback
@@ -530,11 +556,11 @@ original identity.
 | Stage | Entry and required evidence |
 | --- | --- |
 | S0 | Open and edit the faulty source. Use the hosted controller and [S0 operating instructions](demo-script.md) for a genuine alarm. Retain the actual report, trace, and sanitized capture. Source editing does not change the served publication. |
-| S1 | From the S1 worktree root, copy portable `audience/denial-session-draft.json` to the session edit directory. Review it against `prepared/denial.json`, then run `validate`, `freeze`, and `candidate-input`. Review produces no score. See [agent README](../agent/README.md#review-and-freeze-a-case-s1). |
-| S2 | Open the identified saved run with `evaluate_case.py show`. Score only that matching execution with the pinned evaluator. Keep the original execution identity and advisory result. See [agent README](../agent/README.md#run-and-score-the-captured-baseline-s2). |
-| S3 | Edit only the prompt in the S3 worktree. Run `evaluate_case.py run --candidate repaired`, inspect with `show`, and score the fresh execution with the same evaluator. Compare only after matching S2 and S3 scores complete. See [agent README](../agent/README.md#run-score-and-compare-the-repaired-candidate-s3). |
-| S4 | Run the native `development_experiment.py run` launcher with the prepared suite and evaluator. You may pass an explicitly selected immutable `--source-run`. Inspect with `show` and compare the saved experiment offline. A focused run cannot qualify a release. See [agent README](../agent/README.md#run-the-native-strands-development-experiment-s4). |
-| S5 | In the only `demo-deploy` worktree, make the reviewed prompt-only regression commit and push through the normal workflow. Record the rejected gate, exact commit and package, frozen case roster, and unchanged repaired serving tuple. Repair the branch through the normal gate before the next full session. |
+| S1 | Create the fixed dataset from the selected trace, review the prose and typed recommendation in the draft, and publish the version. Captured-evidence stages may additionally use the offline review commands. |
+| S2 | Download `examples[0]` from the published version, show the exact structured recommendation check, and score the original report with `Builtin.Correctness`; do not rerun the agent. Captured-evidence stages may score their matching saved run. |
+| S3 | Edit only the prompt in the S3 worktree. Run `evaluate_case.py run --candidate repaired` against the same selected case/evidence, inspect with `show`, and score the fresh execution. See [agent README](../agent/README.md#run-score-and-compare-the-repaired-candidate-s3). |
+| S4 | Run the native `development_experiment.py run` launcher for the current native denial case plus the four retained reviewed cases, each with its bounded case/evidence bridge. You may pass an explicitly selected immutable `--source-run`. Inspect with `show` and compare the saved experiment offline. A focused run cannot qualify a release. See [agent README](../agent/README.md#run-the-native-strands-development-experiment-s4). |
+| S5 | Presenter preparation appends the current denial case to the four retained reviewed cases and uploads the five-case archive privately. In the only `demo-deploy` worktree, make one reviewed commit containing the prompt edit and private suite-pointer update, then push through the normal workflow. Record the rejected gate, exact commit and package, all five verified cases, source-run case/bundle identity, and unchanged repaired serving tuple. Repair the branch through the normal gate before the next full session. |
 
 You may switch from S3 to S4 while S3 is running only after confirming that
 each run owns immutable launch-time inputs and a unique output directory.

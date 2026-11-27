@@ -2,6 +2,11 @@
 
 After each performance or interrupted rehearsal, stop traffic, reconcile outstanding checkouts, archive the session and revert the participant's S5 regression. Keep the stacks, both published endpoints, frozen tags and evidence for the next performance. Routine cleanup leaves the orders in place. Running the public local example needs none of these steps.
 
+This page keeps the public, command-level recovery and evidence rules. Private
+locators, credentials, trace exports, and account-specific receipts belong in
+the maintainer's separate session record and are intentionally not reproduced
+here.
+
 If you stop partway through cleanup, note the last confirmed step and every unresolved action in the private session record before starting [preparation](preparation.md). Keep the repaired publication and controller selection with the session record. Keep the archived faulty reference intact.
 
 ## 1. Stop activity and settle outcomes
@@ -133,8 +138,9 @@ git -C "$s5_root" status --short
 git -C "$s5_root" log --oneline -8
 ```
 
-Preserve the recorded regression SHA. Inspect the commit and confirm that it is
-prompt-only. Revert that exact commit in the S5 worktree. Do not reset, rebase,
+Preserve the recorded regression SHA. Inspect the commit and confirm that its
+two intended changes are the prompt and private suite pointer. Revert that
+exact commit in the S5 worktree so both files return together. Do not reset, rebase,
 amend, force-push, move a frozen tag, or replace newer source with an old
 checkpoint.
 

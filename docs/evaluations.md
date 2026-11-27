@@ -19,7 +19,65 @@ On stage, the audience sees the faulty agent's trace (S0), reviews the case (S1)
 
 To try the checker on a laptop, start with the saved synthetic case. The public example needs no AWS credentials. You can then run the same case with Strands or replace the saved report with your own agent’s output. [Attendee guide](attendee-guide.md) and [adaptation walkthrough](adapt-evaluations.md)
 
-For a performance, use the private cases, scoped AWS profile and reviewer-approved evaluator. The Codespace exports each investigation's traces to CloudWatch so AgentCore can score the session. See [talk preparation](preparation.md) for the inputs and [deployment](deployment.md) for the package and approval steps.
+For a performance, use reviewed cases and the evaluator inputs supplied by the
+maintainer. The Codespace exports the selected execution's traces to
+CloudWatch so AgentCore can score that session. Credentials, private locators,
+and run records stay outside the public checkout. See [talk preparation](preparation.md)
+for the public boundary and [deployment](deployment.md) for package policy.
+
+### The public live-denial path
+
+The public walkthrough starts with the native investigation trace. In AgentCore
+Observability, select that trace and add it to a new fixed dataset. Leave
+expected response and expected trajectory disabled during creation. AWS creates
+an editable **dataset scenario draft**. Reviewers open the draft, add
+`turns[0].expected_response` and the typed `metadata.expected_recommendation`
+in that same scenario, save it, and choose **Create version**. For an ongoing
+denial the recommendation is
+`{"action":"Restore inventory access","target":"inventory","value":"<healthy-version>","unit":"version"}`;
+for recovered evidence it is `{"action":"Other","target":null,"unit":null}`
+with a separate free explanation. Only the published version is a frozen
+evaluation input.
+
+The Codespace uses the maintained [live-denial download command](../examples/live-denial/README.md#download-the-published-case-in-codespaces)
+from the `examples/live-denial` directory. It copies the full published
+dataset ID and version and selects `examples[0]` explicitly.
+
+The public `examples/live-denial/score_denial.py` example reads that file,
+fetches the original trace from CloudWatch using its session/log-group/start
+fields, extracts `incident.report`, and calls `Builtin.Correctness` with the
+recorded spans and the reviewed fields in that same published scenario. It
+does not invoke the agent again. Always show the returned native label, value,
+and explanation: a later scoring attempt can disagree with an earlier
+attempt. The formal action must still be compared with the structured
+recommendation, and deterministic action checks remain the release authority.
+
+To continue from the native score into the normal S3/S4 path, use the runnable
+[native case bridge](../scripts/native_case_bridge.py). It joins the downloaded
+scenario and the `original-trace.json` written by `score_denial.py`, then reads
+the originating RunTable row and bounded S3 captures itself.
+
+```sh
+set -euo pipefail
+export AWS_PROFILE="${AWS_PROFILE:?set the authorized AWS profile}"
+export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:?set the evaluation Region}"
+bridge_root="$(mktemp -d "${TMPDIR:-/tmp}/native-case-bridge.XXXXXX")"
+uv run --project agent --locked python scripts/native_case_bridge.py build \
+  --scenario examples/live-denial/denial-case.json \
+  --trace examples/live-denial/original-trace.json \
+  --profile "$AWS_PROFILE" --region "$AWS_DEFAULT_REGION" \
+  --output "$bridge_root"
+```
+
+The bridge writes `case.frozen.json`, `captured-bundle.json`, `suite.json`, and
+`candidate-input.json`; pass the first two as S3 `--case`/`--bundle`, or
+`suite.json` to S4. The bridge carries the published prose verbatim as
+evaluator-only diagnosis and the typed recommendation separately; neither is
+copied into the candidate task. S3 uses the current native denial case and its
+same-incident public task projection plus bounded evidence. S4 and CI use that
+case alongside the four retained reviewed gate cases, five cases total, each
+with its bounded evidence. No manual review file or typed version ID is needed
+on this route.
 
 ### Active model target
 
@@ -33,15 +91,12 @@ separately. Evaluator-only reference inputs carry the reviewed criteria and may
 include a compact source view copied from returned results. They do not carry
 the admissible recommendation list.
 
-### Maintainer details
+### Model and evaluator identity
 
-The US inference profile ID is `us.anthropic.claude-opus-5-5`. The calibrated
-evaluator is `IncidentTriageSemanticSingle_584b1b2b228fbf141f-MqPN3HHgez` with
-configuration digest
-`584b1b2b228fbf141f50eb780df5d51c75b56b0ed720fe7717d247527069b5c1`. Its judge
-configuration sets `maxTokens` to 2000 and omits `temperature`. Prepared S2-S5
-inputs select the exact evaluator descriptor. Older results retain their own
-model, rubric and findings in the [historical evaluation record](evaluation-history.md).
+Record the model, evaluator, rubric, and configuration with each scoring
+attempt. Older results retain their own identities in the [historical
+evaluation record](evaluation-history.md). Do not treat a model name or one
+judge result as a general accuracy claim.
 
 ## Evaluation inputs and expectations
 
@@ -193,26 +248,38 @@ S2 and S3 can score one saved session directly with AgentCore. S4 and S5 call it
 
 For a Codespace run, set up the trace export and access to the matching CloudWatch session before calling the evaluator. AWS documents the [outside-Runtime observability setup](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/observability-configure.html#observability-configure-3p) and [on-demand evaluation prerequisites](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ondemand-evaluations-prereqs.html). To adapt the evaluator, see [passing ground-truth references](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ground-truth-evaluations.html) and [running code-based checks in Lambda](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/code-based-evaluators.html).
 
-## S2: Run and score the captured baseline
+## S2: Run and score the original trace
 
-Use the [captured-run commands](../agent/README.md#run-and-score-the-captured-baseline-s2).
-`evaluate_case.py show` opens a saved run offline. `evaluate_case.py score`
-scores its matching CloudWatch session with the reviewed evaluator. A new
-input requires a matching execution. `evaluate_case.py run` creates a fresh
-captured execution for a frozen case and source bundle.
-
-Scoring waits for matching telemetry and saves each explicit scoring attempt.
-If spans are still arriving, score the same run again later. `show` reopens
-saved reports and scores without credentials. Keep case, bundle, run and judge
-attempts in private evidence storage.
+Use the [public scorer](../examples/live-denial/score_denial.py) with the
+published `denial-case.json`. It reads the original report from the recorded
+trace and sends that trace plus the reviewed fields from the same published
+scenario to `Builtin.Correctness`. It does not run the agent. First show the exact
+structured `recommendation` object and compare action, target, value, and unit
+with the reviewed expectation. Then save the separate native label, value,
+explanation, and evaluator identity as one scoring attempt. If the service
+returns a later result, retain both attempts rather than relabelling the
+earlier one.
 
 ## S3: Fresh candidate before deployment
 
-The S3 runner snapshots the editable candidate, source, lockfile, frozen case
-and captured bundle before importing the candidate. The prepared repair changes
-only the prompt. Each invocation gets a fresh execution, session and trace
-identity. The serving prompt remains inside the selected immutable Runtime ZIP.
-Editing the development prompt does not change a serving endpoint.
+The S3 runner snapshots the editable candidate, source, lockfile, selected
+case, and captured evidence before importing the candidate. The prepared repair
+changes only the prompt. Each invocation gets a fresh execution, session, and
+trace identity. The serving prompt remains inside the selected immutable
+Runtime ZIP. Editing the development prompt does not change a serving endpoint.
+
+For the live-denial route, set the normal runner inputs from the bridge output,
+not from the native scenario file directly:
+
+```sh
+s3_case="$BRIDGE_ROOT/case.frozen.json"
+s3_bundle="$BRIDGE_ROOT/captured-bundle.json"
+```
+
+The S4 suite uses `"$BRIDGE_ROOT/suite.json"`. S3 consumes the current native
+denial case and its same-incident captured evidence; S4 adds that case to the
+four retained reviewed cases, five cases total, while producing fresh
+candidate execution and trace identities.
 
 Follow the [S3 runbook](../agent/README.md#run-score-and-compare-the-repaired-candidate-s3).
 Use `talk_stage.py setup` and `run` to start from the prepared workspace. Then use `evaluate_case.py run`, `score` and `compare`. The edited agent chooses its own queries. Compare it with the S2 baseline when the case, cutoff, model, runtime and tooling sources, evaluator and scoring source match. Each execution has its own scoring attempt. Verify that the selected attempt belongs to that execution. Missing spans, a score from a different session, or changed case inputs leave the comparison incomplete.
@@ -222,9 +289,13 @@ Use `talk_stage.py setup` and `run` to start from the prepared workspace. Then u
 ## S4: Native Strands development experiment
 
 Run the [native experiment](../agent/README.md#run-the-native-strands-development-experiment-s4)
-from a prepared workspace. The Strands task for each case runs the candidate on its captured evidence. The
-experiment calls `Experiment.run_evaluations` with two custom evaluators. Cases run sequentially. The deterministic and
-advisory calls for a completed case may overlap.
+from a prepared workspace. The Strands task for each selected case runs the
+candidate against its bounded case/evidence bridge; the current native denial
+case uses the same bridge selected for S3, and four retained reviewed cases
+complete the normal five-case suite. The experiment
+calls `Experiment.run_evaluations` with the case/evidence bridge and its
+evaluators. Cases run sequentially; deterministic and advisory calls for a
+completed case may overlap.
 
 Direct S4 entry does not require an S3 run. An optional `--source-run` selects
 an authenticated immutable S3 source exactly, including an accepted active
@@ -232,7 +303,8 @@ execution. It does not repair or substitute the candidate. A focused `--case`
 run is a development subset.
 
 The native report has one `(case, evaluator)` row for each selected case and
-evaluator. Each case has one deterministic row with the eight named findings
+evaluator. The normal S4 suite has five cases: four retained reviewed cases
+plus the current native denial case. Each case has one deterministic row with the eight named findings
 and one advisory row with the pinned Opus 5.5 categorical verdict, reason,
 status, scoring attempt and full run, session and trace references. The native
 numeric field is `0.0` with `numericPlaceholder: true`. It is not a quality
@@ -251,10 +323,12 @@ ZIP. `show` reopens a saved report without credentials or side effects.
 `compare` joins exact identities, keeps available rows visible and does not
 emit a release decision.
 
-S5 runs the same experiment and policy against the exact Linux ARM64 Runtime
-ZIP. Required results must be complete, package identities must match and the
-protected GitHub environment must contain source-backed human approval before
-publication.
+S5 runs the approved reviewed case roster and policy against the exact Linux
+ARM64 Runtime ZIP. Required results must be complete, package identities must
+match, and the protected GitHub environment must contain source-backed human
+approval before publication. Whether a later live case is added to that roster
+is a release-input decision. Keep the CI qualification row distinct from a
+later live alarm/run row.
 
 ## Offline cases and observed traffic
 

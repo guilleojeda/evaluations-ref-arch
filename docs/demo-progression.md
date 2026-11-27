@@ -1,43 +1,72 @@
 # Demo progression
 
-Follow one Inventory failure through six stages, from the agent’s first investigation to a prompt regression that CI rejects. The [talk plan](talk-plan.md) gives the timing and the [cue sheet](demo-script.md) gives the commands. Attendees can [follow the same case in the public repo](attendee-guide.md).
+Follow one Inventory failure through six stages, from the original native
+trace to a prompt regression that CI rejects. The [talk plan](talk-plan.md)
+gives the timing and the [cue sheet](demo-script.md) gives the screen order.
+Attendees can [follow the public case](attendee-guide.md).
 
-The v5 experiment uses one calibrated Opus 5.5 judge in AgentCore. Its verdict helps the developer review the report. Before a ZIP goes live, CI checks the recommended action and a person reviews the reports and traces for that ZIP.
+## Case and package boundaries
 
-## Candidate and package boundaries
+The trace is the evidence for the original execution. S1 turns that trace into
+a fixed AgentCore dataset scenario: first an editable draft, then a published
+version after the prose response and typed expected recommendation are saved.
+The published version is the input downloaded by the Codespace. Both reviewed
+fields are evaluator context; they are not added to the agent prompt.
 
-Start with the faulty agent. In S3, edit its prompt. In S4, test that edit. For the repaired live incident, switch to the package that passed the release gate before the talk. The participant’s S5 push proposes another version. If CI rejects it, the repaired endpoint keeps serving the approved package.
+S2 first checks the exact structured recommendation, then scores the original
+report with `Builtin.Correctness`. S3 runs the current native denial case with
+its same-incident evidence bridge. S4 and S5 add that case to the four retained
+reviewed cases, five cases total, against the exact package proposed for
+release. Keep these identities
+distinct:
 
-The agent recommends one action. The presenter decides whether to apply it. The report can name either function, but the controller’s memory and capacity shortcuts target Inventory. The report accepts these recommendations.
+- original trace and its report;
+- published dataset case and version;
+- fresh S3/S4 execution and trace;
+- CI execution and exact Runtime ZIP; and
+- a later live alarm/run, if one is shown.
 
-- Increase reserved concurrency for INVENTORY or CHECKOUT, with a higher cap.
-- Increase memory for INVENTORY or CHECKOUT, with a larger allocation.
-- Restore inventory access by selecting the healthy role-backed Inventory version at the current memory.
-- Other, with a reason for no change or insufficient evidence.
-
-After a change, show the setting, then make a request or repeat the workload to find out whether the service recovered.
+The agent proposes one action; it does not call the controller. The approved
+denial action is **Restore inventory access** by selecting the healthy
+role-backed version at the current memory. Capacity evidence may instead
+support **Increase reserved concurrency**. The offline synthetic example keeps
+versions 74 and 75 and remains an independent local check.
 
 ## Checkpoints
 
 | State | Audience sequence | Meaning |
 | --- | --- | --- |
-| S0 - Instrumented agent | Run the genuine alarm-driven access-denied investigation with the faulty candidate. It recommends **Increase memory - INVENTORY - 512 MB**. Apply that recommendation, then use one fresh checkout from the already-open signed-in storefront. | The memory change is real, but the denied role and exact-table Deny remain. The checkout returns the denied failure with no order or stock write. Ask the diagnostic question, start Recover privately, and go directly to the matched original trace. Keep the constructor view in backup material only. |
-| S1 - Reviewed case | Use the captured source at its investigation reference time. Ask what an acceptable recommendation should do, normalize the answer to **Restore inventory access**, and open the prepared reviewed case. | Review expectations before scoring. S1 has no verdict. |
-| S2 - Evaluated faulty candidate | Keep the same faulty candidate and score its saved session once. Introduce two checks, ask once **"Do the logs support the diagnosis?"**, then show the matching actual action and one current calibrated semantic verdict. Show one clock-calibration pair and move on. | The deterministic action and value fail. Keep the target and other required findings as separate facts. Treat the semantic result as advisory. Do not rerun the agent. |
-| S3 - Short development repair | Edit only the recommendation rule in the prepared development workspace. Run a fresh candidate against the same case and judge, then compare it with the retained faulty baseline. | Change only the prompt. Keep the case, evidence boundary, tools, permissions, model target, and judge fixed. |
-| S4 - Developer experiment | Start the normal Strands experiment as soon as the authenticated S3 source is ready, aiming for 30:00. If that source is unavailable, use the independent prepared S4 checkpoint and label it prepared. Hand the participant the S5 terminal immediately. Show the denial row before the throttling row around 36:00-37:00, using a matching recorded pair by 37:00 if needed. | Use S4 for repeatable development feedback. Do not use it to qualify the prepared serving package. |
-| S5 - Release gate | Have the participant edit only the prompt, predict the result, and push the regression to `demo-deploy` by 35:00 while S4 continues. Show status at 35:05. At 50:00 use the private presenter kit to run `python3 gate_packet.py --callback` and inspect the result. The [attendee guide](attendee-guide.md#the-rejected-push) shows the same rejection in public CI. Keep the prepared exact package serving until the gate completes. | Deterministic failures reject automatically. Otherwise human semantic review decides. A rejected candidate leaves the qualified repaired package in place. |
+| S0 - Native trace | Show the denied read, configuration, source results, and original memory recommendation. | Evidence of one actual agent execution; no score yet. |
+| S1 - Dataset case | Add the trace to a fixed dataset, edit the prose response and typed recommendation in the scenario draft, save it, and create the published version. | The published version freezes the reviewed input. |
+| S2 - Original score | Download `examples[0]` from the full dataset ID, show the exact structured recommendation check, and score the original report. | Show the returned `Builtin.Correctness` label, value, and explanation; compare the formal action with the expected response. No agent rerun. |
+| S3 - Development repair | Edit only the recommendation rule and run a fresh candidate. | Development feedback against the same case/evidence. |
+| S4 - Native Strands experiment | Run the repaired candidate with the current native case/evidence bridge alongside the four retained reviewed cases. | Five development cases; not qualification or publication. |
+| S5 - Release gate | Push one commit containing the prompt edit and private suite-pointer update; run CI against the exact ZIP. | Presenter preparation has already appended the current case to the four-case roster; CI downloads/verifies all five, checks source/bundle identity, and required failures reject. |
+
+The [native case bridge](../scripts/native_case_bridge.py) makes the normal
+transfer explicit; use the [build command](adapt-evaluations.md#bridge-the-live-case-into-s3-s4).
+The downloaded native case and `original-trace.json` join the originating
+RunTable row and S3 captures, then become the frozen case, captured bundle, and
+S4 suite. S3/S4 use the same incident's normal task projection and bounded
+evidence; the bridge does not create a new trace or treat native
+expected-response prose as the review record.
 
 ## Evidence rules
 
 Identify each result by the case and candidate that produced it.
 
 - A saved trace is evidence of that execution, not proof that a later edit ran.
-- S2 scores the saved faulty session once. S3 and S4 run fresh development candidates.
-- S3 and S4 use the same reviewed case and current calibrated judge for advisory feedback.
-- The S5 gate evaluates the exact package being proposed, not a trace from another candidate.
-- The live repaired incident is a separate new alarm, run, action, and request outcome.
-- The capacity scenario requires actual demand, native metrics, caller evidence, and business outcomes at both caps. A cap readback or quiet request is not proof of surge recovery.
-- Missing, pending, incomplete, or recorded evidence keeps its status. It is never silently promoted to success.
+- A dataset draft is editable; only a created version is a frozen download.
+- S2 scores the saved original session once. S3 and S4 run fresh candidates.
+- S3 uses the current native case and captured evidence; S4 adds that case to
+  the four retained reviewed cases. Their new traces are not the original
+  trace.
+- S5 evaluates the exact package being proposed, not a development trace from
+  another candidate.
+- A later live row is evidence of a later alarm/run and must not be presented as
+  the CI qualification row.
+- Missing, pending, incomplete, or recorded evidence keeps its status.
 
-For the incident evidence, see [demo scenarios](demo-scenarios.md). For scoring and publication, see the [evaluation guide](evaluations.md), [operations agent](components/operations-agent.md), and [deployment](deployment.md). Use [preparation](preparation.md) and [cleanup](cleanup.md) between performances.
+For the detailed application invariants, see [demo scenarios](demo-scenarios.md).
+For scoring and publication, see [evaluations](evaluations.md) and
+[deployment](deployment.md).

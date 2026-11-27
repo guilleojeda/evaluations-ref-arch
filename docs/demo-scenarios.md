@@ -1,6 +1,12 @@
 # Demonstration scenario contracts
 
-Run two incidents: **inventory-access-denied** and **inventory-capacity-overload**. Both use unchanged healthy application code. **recovered-stale-alarm** is a time and evidence condition reached through recovery, not a third injected fault. For the public denial-to-CI story, see the [attendee guide](attendee-guide.md). Keep the invariants in this file.
+Run two incidents: **inventory-access-denied** and
+**inventory-capacity-overload**. Both use unchanged healthy application code.
+**recovered-stale-alarm** is a time and evidence condition reached through
+recovery, not a third injected fault. For the public denial-to-CI story, see
+the [attendee guide](attendee-guide.md). Keep the application invariants in
+this file; the AgentCore dataset case is the separate reviewed input for the
+denial walkthrough.
 
 For API and business semantics, see the [application](components/application.md). For actions, traffic, and records, see the [controller specification](components/failure-controller-behavior.md). For investigation and recommendations, see the [operations agent](components/operations-agent.md). For candidate assessment, see [evaluations](evaluations.md).
 
@@ -22,6 +28,23 @@ Retain four evidence layers:
 4. **Agent:** genuine alarm identity, matching run and trace, status, report, and result.
 
 An alarm or dashboard poll does not establish an invocation. A saved trace proves that execution only. It does not prove that a later candidate ran.
+
+## Public denial case boundary
+
+The live walkthrough starts from a native trace, not from a hand-written
+scenario. Reviewers create a fixed dataset scenario draft from that trace,
+add the expected response, save it, and create a published version. The
+Codespace downloads the published version with `list-dataset-examples` and
+selects `examples[0]`. The draft remains editable and must not be treated as a
+frozen evaluation input.
+
+The case's source metadata joins the downloaded input to the original report.
+The public scorer reads that report from the recorded spans and sends it to
+`Builtin.Correctness`; it does not rerun the agent. Deterministic action checks
+remain the authority for the formal recommendation. A semantic judge label or
+score is evidence from that scoring attempt and must be shown with its
+explanation, not treated as a universal truth or as a replacement for the
+action check.
 
 Use the native stage-level HTTP API 5xx alarm for both incidents: Sum >= 1 over 60 seconds, 1 of 1, missing data notBreaching. It includes catalog failures and is not checkout-only. Both causes produce dependency-failure 502 responses when the Inventory lookup fails before a transaction. Keep ambiguous writes and unrelated timeouts separate.
 

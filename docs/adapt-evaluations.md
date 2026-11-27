@@ -1,53 +1,192 @@
 # Adapt the evaluation to your agent
 
-Start with a behavior you care about and an example that distinguishes a correct response from a plausible mistake. In this case, Inventory needs read access. A report can name the right function and still recommend more memory.
+Start with a behavior you care about and an example that distinguishes a
+correct response from a plausible mistake. In this case, Inventory needs read
+access. A report can name the right function and still recommend more memory.
 
-## Run the native Strands example
+## Run the offline Strands example
 
-From the repository root, score the saved report that recommends restoring access. Git and the pinned version of uv are the only prerequisites. The first run installs dependencies. Scoring happens locally.
+From the repository root, score the saved report that recommends restoring
+access. Git and the pinned version of uv are the only prerequisites. The first
+run installs dependencies; no AWS account or model call is needed.
 
 ```sh
 uv run --project agent --locked python examples/inventory-denial/native.py
 ```
 
-Expect six passing report checks and `Native result: PASS` (exit 0). Then score the synthetic memory-first response against the same case.
+Expect six passing report checks and `Native result: PASS` (exit 0). Then score
+the synthetic memory-first response against the same case.
 
 ```sh
 uv run --project agent --locked python examples/inventory-denial/native.py \
   --report examples/inventory-denial/report-memory-regression.json
 ```
 
-The second command exits 1. Look for these three rows in the output. Both runs also show `source_scope` and `operator_boundary` as incomplete because a saved report has no record of tool calls.
+The second command exits 1. The `target` row passes; `action` and
+`target_value` fail because extra memory cannot restore the denied permission.
+Both runs mark execution-dependent checks incomplete because a saved report
+has no tool-call trace.
 
-| Report check | Restore access | Increase memory |
-| --- | --- | --- |
-| `target` | Pass | Pass |
-| `action` | Pass | Fail |
-| `target_value` | Pass | Fail |
+The offline case is intentionally independent from the live talk case. Its
+Inventory versions are 74 and 75, and its evidence is checked from files in
+this repository.
+
+## Score the published live case
+
+The talk's live case follows a different boundary. A trace is first turned into
+an AgentCore dataset scenario draft. Reviewers add `turns[0].expected_response`
+and the typed `metadata.expected_recommendation` to that same draft, save it,
+and create a version. Only the published version is downloaded into the
+Codespace. A draft scenario ID alone is not a frozen input. For an ongoing
+denial the typed recommendation is `Restore inventory access` for `inventory`,
+the healthy version, and `version`; for recovered evidence it is `Other` with
+null target and unit plus a separate free explanation. The exact healthy
+version comes from the selected trace/configuration, not from this public text.
+
+Use the maintained [live-denial Codespace command](../examples/live-denial/README.md#download-the-published-case-in-codespaces)
+from the `examples/live-denial` directory. It copies the full published
+dataset ID and version, selects `examples[0]`, and runs the locked `uv` scorer.
+
+`score_denial.py` reads the downloaded case, fetches the original trace using
+the case's session/log-group/start-time fields, writes `original-trace.json`,
+extracts the original `incident.report`, and calls `Builtin.Correctness` with
+the recorded spans and reviewed fields from the same published scenario. It does not call the
+investigating agent again.
+The initial walkthrough readback was **Incorrect, 0.0** because its formal
+action is `Increase memory` even though its summary explains that restoring
+access is the evidence-supported fix. A later native attempt can return a
+different label for the same trace, so retain the returned explanation and
+keep deterministic action checks separate.
+
+## Bridge the live case into S3/S4
+
+The live scorer and the normal captured-evidence runner have different input
+shapes. Use the repository's [native case bridge](../scripts/native_case_bridge.py)
+to bind the downloaded native scenario and the `original-trace.json` written by
+the scorer. The bridge derives the structured expectation from the published
+`metadata.expected_recommendation`; it can read the originating RunTable row
+and the two captured source objects itself, verifies the trace/session/run
+joins, and never turns native `expected_response` prose into hidden
+expectations. No hand-written review file or typed restore-version argument is
+needed on the normal route.
+
+```sh
+set -euo pipefail
+cd ../..
+export AWS_PROFILE="${AWS_PROFILE:?set the authorized AWS profile}"
+export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:?set the evaluation Region}"
+bridge_root="$(mktemp -d "${TMPDIR:-/tmp}/native-case-bridge.XXXXXX")"
+uv run --project agent --locked python scripts/native_case_bridge.py build \
+  --scenario examples/live-denial/denial-case.json \
+  --trace examples/live-denial/original-trace.json \
+  --profile "$AWS_PROFILE" --region "$AWS_DEFAULT_REGION" \
+  --output "$bridge_root"
+```
+
+The build reads the original RunTable row by the trace's alarm/transition and
+downloads the bounded baseline/query captures from S3. It writes:
+
+| Bridge output | Normal runner input |
+| --- | --- |
+| `case.frozen.json` | S3 `--case` |
+| `captured-bundle.json` | S3 `--bundle` |
+| `suite.json` | S4 `--suite` |
+| `candidate-input.json` | Public agent task projection |
+
+The normal S3 task uses `case.frozen.json` plus `captured-bundle.json`; the S4
+experiment uses `suite.json`. The bridge carries the published prose verbatim
+as evaluator-only diagnosis and the typed recommendation separately; neither
+is copied into the candidate task. S3 uses the current native denial case and
+its same-incident task projection. S4 and CI use that case alongside the four
+retained reviewed gate cases, five cases total, each with its bounded evidence.
+The native scenario and its original trace remain the reference execution; a
+standalone synthetic case remains a known reference example, not a new trace.
+
+### Run the edited agent
+
+Use the [outside-Runtime telemetry setup](../agent/README.md) for the candidate checkout. From its repository root, the native execution command takes both private files you just built:
+
+```bash
+uv run --project agent --locked opentelemetry-instrument python agent/evaluate_case.py run \
+  --candidate repaired --case "$bridge_root/case.frozen.json" \
+  --bundle "$bridge_root/captured-bundle.json" --output-root "$bridge_root/executions"
+```
+
+Open the new execution's `execution.json`. Compare its structured recommendation to the one in `original-score.json`. A different trace ID is expected because the edited agent has just run.
+
+### Put that case in the participant's CI run
+
+In the presenter kit, preparation loads the existing private four-case suite from its qualified commit, appends the live case and uploads the new archive. The equivalent repository commands below show what gets added. They require read access to the previously qualified private suite. Run them in the checkout that contains the walkthrough tools.
+
+```bash
+read -r -p 'Previously qualified demo-deploy commit: ' QUALIFIED_COMMIT
+git show "$QUALIFIED_COMMIT:agent/qualification-input.json" > "$bridge_root/previous-pointer.json"
+bucket=$(jq -r .bucket "$bridge_root/previous-pointer.json")
+key=$(jq -r .s3Key "$bridge_root/previous-pointer.json")
+aws s3api get-object --bucket "$bucket" --key "$key" "$bridge_root/previous-suite.tar.gz" >/dev/null
+python3 scripts/prepare_live_gate.py prepare \
+  --qualification-input "$bridge_root/previous-pointer.json" --base-archive "$bridge_root/previous-suite.tar.gz" \
+  --bridge-manifest "$bridge_root/bridge-manifest.json" --case "$bridge_root/case.frozen.json" \
+  --bundle "$bridge_root/captured-bundle.json" --output-dir "$bridge_root/gate"
+```
+
+The output identifies the five cases and their archive. To see the exact private S3 upload the presenter wrapper performs, print it and inspect the bucket, content-addressed key and checksum:
+
+```bash
+python3 scripts/prepare_live_gate.py publish-command \
+  --archive "$bridge_root/gate/staging.tar.gz" --pointer "$bridge_root/gate/qualification-input.json" \
+  --profile "$AWS_PROFILE" --region "$AWS_DEFAULT_REGION" | jq -r .publishCommand
+```
+
+After upload and readback, the participant stages only `agent/prompt.py` and the new `agent/qualification-input.json`. The qualified CI workflow reads that pointer, verifies the archive and runs the five cases against the candidate ZIP. Match the live case and bundle digests to the CI row before showing its verdict. Traces, expectations, observations and reports remain private. [Suite preparation and verification](../scripts/prepare_live_gate.py)
 
 ## Where your agent fits
 
-The example creates one native Strands `Case` with the public task as input. Its task function returns the selected saved report. `InventoryReportEvaluator` receives that output and uses the reviewed expectations to grade it. `Experiment.run_evaluations(task)` runs both pieces and returns the detailed findings. [Native example](../examples/inventory-denial/native.py) and [reviewed case](../examples/inventory-denial/case.json)
+The offline example creates one native Strands `Case` with the public task as
+input. Its task returns a saved report, and `InventoryReportEvaluator` uses the
+reviewed expectations to grade it. `Experiment.run_evaluations(task)` returns
+the findings. [Native example](../examples/inventory-denial/native.py) and
+[reviewed case](../examples/inventory-denial/case.json)
 
-To run your agent on the same task, replace the saved-report task with your invocation. Supply the same [evidence](../examples/inventory-denial/evidence.json) through your read tools and return your agent's real report. Give only the evaluator the expected answer. If your agent accepts the case input and returns a report dictionary, the task can be this short.
+To run your agent on the same task, replace the saved-report task with your
+invocation. Supply the same [evidence](../examples/inventory-denial/evidence.json)
+through your read tools and return the agent's real report. Give only the
+evaluator the expected answer:
 
 ```python
 def task(case):
     return {"output": investigate(case.input)}
 ```
 
-For a different task, decide what the agent gets to see and how you will judge the result.
+For a different task, decide what the agent gets to see and how you will judge
+the result.
 
 | Decision | Inventory example | What to change |
 | --- | --- | --- |
-| What does the agent know? | Alarm, symptoms, allowed resources and evidence available by the cutoff | Supply a task and source snapshot from your own workflow. [Case inputs](../agent/reviewed_cases.py) |
-| What can the agent do? | Read operational data and recommend a remedy | Connect its real tools and define the output or action arguments you need to observe. [Report and tool contract](../agent/investigation.py) |
-| What can code decide? | Whether the proposed action, target and value form an allowed remedy | Write checks for behavior with an unambiguous pass condition. [Deterministic checks](../agent/deterministic_checks.py) |
-| What requires judgment? | Whether the diagnosis and factual claims are supported | Choose a rubric, label examples with human reviewers, and check the judge on held-back cases. [AgentCore evaluator](../agent/agentcore_evaluation.py) |
-| What should block shipping? | A required failure rejects the package. Missing evidence blocks publication. Completed advisory results go to a human reviewer. | Choose blocking checks and review requirements that reflect the consequences of errors in your use case. [Release policy](../agent/release_gate.py) |
+| What does the agent know? | Alarm, symptoms, allowed resources and evidence available by the cutoff | Supply a task and source snapshot from your workflow. |
+| What can the agent do? | Read operational data and recommend a remedy | Connect its real tools and define the report or action arguments. |
+| What can code decide? | Whether action, target and value form an allowed remedy | Write checks with an unambiguous pass condition. |
+| What requires judgment? | Whether the diagnosis and factual claims are supported | Choose a rubric, review examples, and check the judge on held-back cases. |
+| What should block shipping? | A required failure rejects the package; advisory results go to review | Choose blocking checks and review requirements for the consequences of errors. |
 
-## From a local task to a cloud-scored execution
+## Keep S3, S4, and CI identities aligned
 
-The developer workflow runs the candidate on captured evidence, records what tools it actually called, and exports telemetry for that execution. Its Strands evaluator calls AgentCore with the matching session and reviewed source references. The judge returns one advisory verdict covering diagnosis and grounding. This requires Bedrock model access, telemetry export, permission to read the session, and a configured evaluator. [Full Strands experiment](../agent/development_experiment.py), [AgentCore adapter](../agent/strands_evaluators.py), and [AWS evaluation prerequisites](https://docs.aws.amazon.com/bedrock-agentcore/latest/devguide/ondemand-evaluations-prereqs.html)
+The normal development path uses the current native denial case and its
+same-incident captured evidence for the fresh S3 candidate. S4 adds that case
+to the four retained reviewed cases, five cases total. The bridge between the
+case and evaluator is part of the run identity; it does not copy a private
+trace into the agent prompt. S3 and S4 create fresh executions and traces, so
+their results are development feedback rather than a score for the original
+trace.
 
-In the IDE you can rerun the experiment as you edit the prompt. In CI the experiment runs against the ZIP you intend to publish. A reviewer approves that same ZIP before deployment. For an example of a change that stopped at the gate, see the [rejected denial case](attendee-guide.md#the-rejected-push).
+CI repeats the selected cases against the exact Runtime ZIP proposed for
+release. Its qualification row is not the same thing as a later live
+investigation row. Keep candidate/package identity, case identity, evaluator
+identity, and live alarm/run identity visible when comparing results.
+
+Required deterministic findings reject the ZIP. Complete advisory scoring then
+goes to source-backed human review of that exact package. A previously
+qualified serving package remains available while a new ZIP is evaluated.
+
+See the [attendee guide](attendee-guide.md), [evaluation approach](evaluations.md),
+and [stage map](../TALK-STAGE.md) for the public flow.

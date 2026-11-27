@@ -8,9 +8,13 @@ No. A native Strands experiment can run a task and a Python evaluator locally. T
 
 The agent reads evidence and recommends a remedy. We use the trace to check which sources it queried and whether it attempted a write. We use the report to check what it recommended changing and to what value. The presenter applies the remedy through a separate controller. A new checkout shows what happened to the application. [Follow the denial](attendee-guide.md)
 
-## Why can the judge pass a report that gives the wrong advice?
+## Why can a judge agree with the diagnosis while the action check fails?
 
-The judge assesses the diagnosis and whether the agent's factual claims are grounded in its evidence. We can check the proposed remedy directly against the reviewed case. A report can accurately describe an access denial and still recommend more memory. In the rehearsed push, the required action check caught exactly that error and stopped publication. [See the scored row](attendee-guide.md#the-rejected-push)
+In the original trace, the report can explain that a database read was denied and still recommend increasing memory. The exact check compares the structured recommendation with the operator action we wrote in the dataset. AgentCore’s built-in Correctness evaluator compares the recorded trace with our written expectation and gives its own verdict and reason. We show both. The later release gate requires the action check to pass and uses a separately calibrated judge for evidence quality. [Score the original report](../examples/live-denial/README.md)
+
+## Does creating the dataset run the agent again?
+
+Adding the trace creates a draft from the investigation that already happened. You review the alarm input, write the answer you would accept and publish a version. Scoring the original reads its recorded spans. Editing the prompt and running the new candidate later creates a fresh investigation trace against the captured incident. [Follow the case from the console to the IDE](../examples/live-denial/README.md)
 
 ## Why use one judge call for diagnosis and grounding?
 

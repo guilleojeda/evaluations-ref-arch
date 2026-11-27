@@ -1,144 +1,116 @@
 # Demo cue sheet
 
-Use this sheet at the keyboard. The [talk plan](talk-plan.md) gives the story and timing, and the [slides plan](slides-plan.md) matches the six stages to slides and live actions. For the public example and the rejected push, see the [attendee guide](attendee-guide.md).
-
-The v5 judge uses Opus 5.5 in AgentCore. On stage, show its reason alongside the code checks. Prepare the repaired endpoint before the talk so you can switch to an approved package while the S3/S4 development experiment runs.
-
-## Before the room opens
-
-- Confirm the current deployment generation, healthy aliases, baseline Inventory cap 16, unreserved Checkout, and no unresolved checkout.
-- Confirm the alarm-to-agent path is ready and the native alarm is **OK**.
-- Select the faulty opening candidate. No case score or release gate is active for S0.
-- Prepare one compatible higher-memory Inventory version that preserves the denied role and policy.
-- Prepare independent S0 through S5 workspaces and their direct-entry commands. Keep inputs and result directories separate.
-- Verify that the exact repaired serving package has completed qualification against the reviewed case set and is still the current qualified endpoint.
-- Open one signed-in storefront and keep it loaded through the opening memory action. Open the controller, live report, editor, terminal, evaluation result, and trace views separately.
-- Keep matching recorded results for any live step that may be late. Do not expose private controller or sign-in screens.
+Use this sheet with the [talk plan](talk-plan.md) and [slides plan](slides-plan.md).
+The public cue sheet describes what to show, not private account setup. Keep
+credentials, console locators, trace IDs, and presenter-only runbooks outside
+the repository.
 
 ## Working run of show
 
-<a id="working-run-of-show"></a>
-
 | Minutes | Stage | Cue |
 | --- | --- | --- |
-| 0-5 | S0 | Paper-plane opener and evaluation definition. |
-| 5-11 | S0 | Genuine alarm, faulty report, independent memory action, and one failed checkout. |
-| 11-15 | S0 | Show the request row and Server ID, ask the diagnostic question, Recover privately, and open the matched original trace. |
-| 15-18 | S0 | Inspect the trace and source evidence. The constructor view is an optional backup only. |
-| 18-23 | S1 | Review one complete case and keep the access-restoration expectation visible. |
-| 23-28 | S2 | Introduce two checks, ask the single vote, show the matching action and judge verdict once, then one clock-calibration pair. |
-| 28-29 | S3 | Make the short prompt-only development edit and start the fresh candidate. |
-| 29-35 | S4 and S5 | Start authenticated S4 as soon as the S3 source is ready, aiming for 30:00. Hand the participant the S5 terminal immediately. Push by 35:00. |
-| 35:05 | S4 and S5 | Read push and experiment status only. |
-| 36-37 | S4 | Show denial before throttling. Use the matching recorded pair by 37:00 if needed. |
-| 35-40 | S4 and S5 | On keyboard return, verify the qualified endpoint and fresh alarm OK privately, then trigger the second denial once. Protect the reveal at 40:00. |
-| 40-46 | S5 | Reveal the repaired report, apply Restore inventory access independently, and show the settled receipt by 45:30. |
-| 46-50 | S5 | Show the gate policy and workflow, then run the callback at 50:00 for the participant's exact commit and package. |
-| 50-53:15 | S5 | Show the current gate decision and publication status. Use a matching recorded rejection only if today's result is pending. |
-| 54-55 | S5 | Close. |
-| 55-60 | S5 | Questions and buffer. |
+| 0-8 | S0 | Paper-plane opener, store failure, alarm, and faulty report. |
+| 8-15 | S0 | Show the Inventory denial and the observed denied-version configuration. Explain why a memory increase leaves access unchanged. |
+| 15-22 | S1 | Select the original trace, create a fixed dataset scenario draft, add the expected response, save it, and create the published version. |
+| 22-28 | S2 | In the Codespace `live-denial` folder, download `examples[0]` from the published dataset and run `score_denial.py`. Show the native label, value, and explanation. |
+| 28-35 | S3 | Edit only the recommendation rule and start a fresh candidate against the same selected case/evidence. |
+| 35-42 | S4 | Run the native Strands experiment with the current denial case plus the four retained reviewed cases. Show the denial row before the capacity row. |
+| 42-53 | S5 | Show the participant's one commit with the prompt edit and private suite-pointer update, CI qualification for the exact ZIP, and publication decision. |
+| 53-60 | - | Closing and questions. |
 
-Treat the schedule as a handoff plan, not a promise that every operation completes on a fixed clock. Keep a late result pending. Use only a matching recorded result with its identity visible.
+Treat the schedule as a handoff plan. A pending result remains pending. A
+recorded fallback is labelled with its case, candidate, and execution identity.
 
-## Presenter cues
+## Trace and case
 
-### Opening live incident
+1. Open the original native trace and show the Inventory `AccessDeniedException`
+   and matching Checkout 502.
+2. Open configuration and show the denied version beside the healthy version at
+   the same observed baseline memory and the normal access role.
+3. Add the selected trace to a new fixed dataset. During creation, leave
+   expected response and expected trajectory disabled; AWS creates a scenario
+   draft.
+4. In the draft, add the reviewed prose and typed expectation in the same
+   published scenario:
 
-1. On the controller, verify healthy access, baseline memory, and alarm **OK**. Pause other writers.
-2. Activate the prepared Inventory denial. The activation's bounded probes may establish the alarm. They are not a second audience traffic generator.
-3. Match the alarm transition to the durable agent run and open the report. Show exactly one proposal: **Increase memory - INVENTORY - 512 MB**. The agent has no remediation authority.
-4. Apply the memory action independently. Show the target/version readback. State that a configuration result is not health evidence.
-5. On the already-open storefront, click **Place order** once. Show the actual POST result, error and Server ID, plus the separate unresolved checkout state. Do not retry.
-6. Ask: **"Did the agent miss the clue, or did it see the clue and still recommend the wrong fix?"** Preserve source evidence before recovery.
-7. Start **Recover** privately, verify readiness and alarm **OK**, then go directly to the matched original trace.
+   ```json
+   "turns": [{"expected_response": "Recommend restoring Inventory access by moving the live alias from the denied version to the healthy version. Both use the observed baseline memory. The healthy version has the role that permits dynamodb:GetItem. Increasing memory alone does not restore access."}],
+   "metadata": {"expected_recommendation": {"action": "Restore inventory access", "target": "inventory", "value": "<healthy-version>", "unit": "version"}}
+   ```
 
-Treat the failed checkout as a real application observation. The denied Inventory role remains active, and no order or stock write is expected. If the request is uncertain, look up that same checkout ID after the cue. Do not issue another request.
+5. Save the draft and create the published version. Explain that the draft is editable and
+   the version is the frozen case used by the Codespace.
 
-### Trace and case
+## Download and score
 
-Open the matched trace. Show the tools, windows, query order, and returned evidence that the original candidate actually saw. An alarm poll is not an invocation. Keep captured source coverage distinct from the original query path.
+Use the public `examples/live-denial` terminal and the maintained [Codespace
+download command](../examples/live-denial/README.md#download-the-published-case-in-codespaces).
+It uses the full published dataset ID and version, selects `examples[0]`, and
+runs the locked scorer.
 
-Ask: **"What should an acceptable recommendation do here?"** Normalize the answer to **Restore inventory access** by selecting the healthy role-backed version at the current memory. Show the case reference time, source references, expected action and unacceptable memory/concurrency actions. Keep private scenario labels, controller intent, credentials, and raw authentication configuration out of candidate input.
+Open `denial-case.json` beside `score_denial.py`. Point out that the script
+loads the case, fetches the original spans from CloudWatch using the case's
+session/log-group/start-time fields, reads `incident.report`, and calls
+`Builtin.Correctness` with the recorded spans and expected response. It does
+not invoke the investigating agent again.
 
-### S2 score and calibration
+Read the returned **Expected** and exact structured **Actual** recommendation
+first. Compare action, target, value, and unit. Then read the separate native
+**label**, **value**, and **explanation**. The saved walkthrough readback may show `Incorrect, 0.0`; that is a completed scored quality failure for the attempt, but
+the judge result is a property of that scoring attempt. A later native attempt
+can return a different label; never hide the returned explanation. In every
+case compare the formal recommendation with the reviewed expected response:
+the summary's correct diagnosis does not make `Increase memory` the correct
+action.
 
-Introduce the deterministic action/value check and one advisory semantic diagnosis check. Ask once: **"Do the logs support the diagnosis?"** Then show the actual matching action and current judge verdict once. The opening result fails the memory action/value. The semantic result is advisory. Do not rerun the saved agent.
+## Development and release
 
-Show one calibration pair: a report citing the metric bucket start fails, while the otherwise identical report citing the source observation time passes. Use it to illustrate source-clock grounding. It is not a new agent execution, accuracy estimate, or release decision. Keep older model material out of the normal path.
+1. S3 edits only the recommendation rule. Run a fresh candidate with the same
+   selected dataset case and captured evidence. Its new trace is not the S2
+   original trace.
+2. S4 runs the repaired candidate through native Strands with the current
+   denial case/evidence bridge plus the four retained reviewed cases (five
+   cases total). It is development feedback, not package qualification.
+3. S5 evaluates the exact Runtime ZIP proposed for release. The participant's
+   presenter preparation appends the denial case to the four retained reviewed
+   cases and uploads the five-case archive privately. One commit then changes
+   the prompt and the private suite pointer. CI downloads/verifies all five and
+   compares source-run case/bundle identity with the candidate's CI result. Keep the CI
+   qualification row distinct from any later live alarm/run row. Required
+   deterministic failures reject the ZIP; complete results then need
+   source-backed human review of that package.
+4. If a result is late, show a matching recorded result with its identity and
+   say that it is recorded. Do not relabel a development or live row as CI.
 
-### Short S3/S4 development edit
+Use the runnable [native case bridge](../scripts/native_case_bridge.py) to make
+that transfer visible. Run the build command in the [adaptation
+walkthrough](adapt-evaluations.md#bridge-the-live-case-into-s3-s4). It reads
+the published structured recommendation, originating RunTable row and S3 captures, then writes
+`case.frozen.json` and `captured-bundle.json` for S3 plus `suite.json` for S4.
+The normal task projection and bounded evidence stay tied to the same incident;
+the bridge validates trace/session/run joins and keeps native
+`expected_response` prose separate from reviewed fields.
 
-Edit only the recommendation rule in the prepared S3 workspace. Run a fresh candidate against the same reviewed case and current judge, then compare it with the retained faulty baseline. Treat the S3 result as advisory.
+## Capacity comparison
 
-Start the normal Strands experiment from the S4 workspace as soon as the authenticated S3 source is ready, aiming for 30:00. If it is unavailable, run the independent prepared checkpoint and label it prepared. Use the same reviewed case and judge for advisory feedback. Do not reveal the repaired result before the participant's live edit. Show the denial row first and the throttling row second around 36:00-37:00. If either row is unavailable, use the matching recorded pair and say so.
+Treat capacity as a separate scenario, not a prompt repair. Start healthy at
+Inventory cap 16, run the saved finite surge profile, stop and settle it, raise
+the cap to 32, repeat the same profile, and restore the baseline. Compare
+actual starts, skips, arrivals, native throttles, caller outcomes, and settled
+business effects. A configured cap or quiet request is not surge evidence.
 
-### Participant and release gate
+See the [scenario contract](demo-scenarios.md#inventory-capacity-overload) for
+the detailed invariants.
 
-Hand the participant the pre-opened S5 terminal immediately after S4 starts, even if S4 is still running. Have the participant change one prompt rule, predict the result, review the one-file diff, commit, and push to `demo-deploy` by 35:00. Keep the participant push independent of S4.
-
-At 35:05 show status only. When the keyboard returns and health allows, select and read back the already qualified repaired endpoint privately, confirm fresh **OK**, and trigger the second access denial exactly once. Reveal that new incident at 40:00, apply the healthy-version access action independently, and show the successful settled checkout by 45:30.
-
-At 50:00 run `python3 gate_packet.py --callback` from the Case and results terminal in the private presenter kit. Use the pushed commit and exact candidate package. Show the same denial case identity, required action, separate advisory result, deterministic findings, human review state, and publication status. A failed deterministic requirement rejects without waiting for semantic review. If the current callback is pending at 53:15, use only an exact recorded rejection with its own provenance and say that it is recorded. Keep the qualified repaired package serving throughout.
-
-From a public clone, [inspect the rejected CI run](attendee-guide.md#the-rejected-push) or [run the denial regression locally](../README.md#try-a-regression).
-
-## Prepared stage workspaces
-
-<a id="prepared-stage-workspaces"></a>
-
-Prepare six independent, editable workspaces. Give each its starting candidate, reviewed inputs, captured evidence, configuration, entry command, and result directory. Never let a later stage overwrite an active earlier run.
-
-| Stage | Prepared input | Show |
-| --- | --- | --- |
-| S0 | Faulty candidate, genuine alarm path, trace and source capture. | Live incident or a matching recorded report. No cases or scores. |
-| S1 | Trace, coherent captured evidence, case template and reviewed expectations. | Case construction and provenance before scoring. |
-| S2 | Unchanged faulty candidate, saved telemetry, deterministic checks and current single judge. | One score of the saved session. No agent rerun. |
-| S3 | Short repaired development prompt, same case/judge, fresh-run directory and faulty baseline. | Prompt diff, fresh execution, comparison and advisory status. |
-| S4 | Repaired development candidate, native Strands experiment, same case/judge and dedicated output. | Experiment task, case rows and advisory report. Label an independent checkpoint prepared. |
-| S5 | Current qualified repaired serving source, fixed gate policy, reviewed cases, exact-package binding and participant workspace. | One-file regression diff, push receipt, callback and actual gate outcome. |
-
-Base the S5 workspace on the current qualified repaired source. Keep the frozen stage tags unchanged. Qualify the exact serving package separately from S3/S4 development feedback.
-
-## Capacity overload and separate remedy observation
-
-<a id="phase-10-capacity-overload-and-separate-remedy-observation"></a>
-
-Treat this as a separate scenario, not a prompt repair. Start healthy at Inventory cap 16 with unchanged code, memory, aliases and access. Run the current finite `inventory_surge` profile, stop and drain it, apply the Inventory-only capacity action to 32, repeat the same saved profile, then Recover to 16.
-
-Use actual starts, skipped waves, request arrivals, native Inventory throttle metrics, caller evidence, checkout outcomes, order/stock effects, and separate time windows. A configured rate, profile label, cap readback, quiet request, or ordinary success is not proof that the surge was served. If the required signal is missing, mark the comparison unverified. Keep the same product version and do not queue catch-up work.
-
-The capacity shortcut changes configuration only. It does not send traffic or decide whether the incident recovered. The [scenario contract](demo-scenarios.md#inventory-capacity-overload) owns the detailed invariants.
-
-## Recovered and stale-alert condition
-
-<a id="repeated-performances-and-recovery"></a>
-
-Treat recovery as a time and evidence condition, not a third injected fault. Use a genuine originating event, captured evidence, and a later investigation reference time with post-recovery evidence. Do not add future evidence to an earlier report or invoke the agent manually to create the condition. If replay is needed, label it replay and keep its event, evidence window, candidate, judge and result identity intact.
-
-Before a fresh alarm-driven incident, observe alarm **OK**, settle accepted work, verify the current deployment generation, and match the new event to its run. Recover preserves business data and restores the current generation's healthy settings. Reset is the separate destructive whole-session operation: stop and drain work, create a new product version, remove old Orders, verify one baseline order/decrement, and leave traffic stopped. Never resume an interrupted reset or restore a superseded baseline.
-
-## Continuity and recovery
-
-<a id="onstage-continuity-card"></a>
+## Continuity
 
 | Situation | Onstage response |
 | --- | --- |
-| Opening report or checkout is late | Keep the current screen, then use the exact matching recorded report or request. Say "from rehearsal" and keep its status visible. Do not retry the audience checkout. |
-| S2 score is late | Show the saved-session result once the candidate, case, evidence and judge identities match. Do not rerun the agent. |
-| S3 source is unavailable at the S4 cue | Run the independent prepared S4 checkpoint and label it prepared. Do not imply it used the live S3 edit. |
-| S4 pair is late | Show denial before throttling when available. Otherwise use the matching recorded pair by 37:00. Keep the experiment status visible. |
-| Participant push is late or uncertain | Show the push receipt if accepted. Otherwise say the push is unconfirmed and continue without inventing a gate result. |
-| New live incident is not safe to trigger | Do not induce it. Show a matching recorded repaired incident and keep its provenance visible. |
-| Gate callback is pending at 53:15 | Show the current pending status. Use an exact recorded rejection only as a labeled fallback with its own commit and package identity. |
+| Dataset draft or version is unavailable | Explain the draft/version distinction and use the matching recorded case; do not invent a download. |
+| Score is late | Show the returned status when available, or a matching recorded scoring attempt with its explanation. |
+| S3/S4 is late | Keep the selected case/evidence identity visible and label a prepared or recorded result. |
+| CI is pending | Show pending status. A historical rejection is only a labelled fallback with its own package identity. |
+| A live repair is not safe to trigger | Do not induce it; show a matching recorded live row and keep it separate from CI. |
 
-Treat pending, failed, incomplete, and recorded as distinct outcomes. Do not convert one into another for timing.
-
-## Closing
-
-> Your agent is non-deterministic, but you can still test whether its behavior is acceptable. First define what good looks like. Then check whether your evaluations recognize it. Finally, use them to improve the agent and stop regressions before they ship.
->
-> Evaluations passing does not mean the agent can never fail. But at least your release decision now has evidence behind it.
->
-> Without that evidence, you are hoping nothing goes wrong. Hope is not a strategy. Do evals.
-
-For public setup and the maintainer/reference-run boundary, see [attendee guide](attendee-guide.md), [preparation](preparation.md), [cleanup](cleanup.md), and [evaluation contract](evaluations.md).
+Do not retry the audience request, fabricate an alarm, or call a development
+result a release qualification.
