@@ -114,9 +114,16 @@ The code intentionally uses the application constructor:
 3. `investigation.create_agent` receives the same `MODEL_ID` and a provider
    whose `tools()` returns `[]`. The read phase is already in the trace, so the
    replay cannot make fresh application reads.
-4. `Experiment.run_evaluations` makes one report-generation call with native
-   `Equals`.
+4. `Experiment.run_evaluations` makes one report-generation invocation with
+   native `Equals`. Its bounded `turns: 2` allowance lets Strands perform its
+   normal in-invocation structured-output follow-up when the first model turn
+   ends in prose; a completed structured report is not rerun.
 5. The separate exact-action check compares action, target, value and unit.
+
+For a reviewed `Other` case, native `Equals` compares the canonical action,
+target and unit after a non-empty explanation has been validated; the full
+explanation remains in the regular local receipt and the exact-action check.
+An empty explanation or another action fails both checks.
 
 The input and result identities are visible in `strands-result.json`:
 

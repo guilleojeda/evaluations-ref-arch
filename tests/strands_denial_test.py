@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
-import io
 import json
 from pathlib import Path
 import sys
@@ -12,6 +11,9 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import patch
 import unittest
+
+from botocore.session import get_session
+from strands_evals.evaluators.deterministic import Equals
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,9 +56,9 @@ def write_inputs(root: Path, *, trace_id: str = "trace-1") -> tuple[Path, Path]:
             event("gen_ai.user.message", [{"text": prompt}]),
             event("gen_ai.assistant.message", [
                 {"reasoningContent": {"reasoningText": {"signature": "signed"}}},
-                {"toolUse": {"name": "search_logs", "input": {}}},
+                {"toolUse": {"toolUseId": "read-0", "name": "search_logs", "input": {}}},
             ]),
-            event("gen_ai.tool.message", [{"toolResult": {"content": [{"text": "denied"}]}}]),
+            event("gen_ai.tool.message", [{"toolResult": {"toolUseId": "read-0", "content": [{"text": "denied"}]}}]),
             {"name": "gen_ai.choice", "attributes": {"message": json.dumps([
                 {"reasoningContent": {"reasoningText": {"signature": "signed"}}},
                 {"toolUse": {"name": "InvestigationReport", "input": {}}},
@@ -67,6 +69,55 @@ def write_inputs(root: Path, *, trace_id: str = "trace-1") -> tuple[Path, Path]:
     scenario_path.write_text(json.dumps(scenario, indent=2) + "\n", encoding="utf-8")
     trace_path.write_text(json.dumps(trace, indent=2) + "\n", encoding="utf-8")
     return scenario_path, trace_path
+
+
+class NativeStructuredOutputBedrock:
+    """ConverseStream double for real Strands structured-output turns."""
+
+    def __init__(self, report: dict[str, object], *, initial_prose: bool):
+        self.report = report
+        self.initial_prose = initial_prose
+        self.requests: list[dict[str, object]] = []
+        self.region_name = "us-east-1"
+        self.meta = SimpleNamespace(
+            region_name=self.region_name,
+            service_model=get_session().get_service_model("bedrock-runtime"),
+        )
+
+    def client(self, service_name: str, **_kwargs: object):
+        if service_name != "bedrock-runtime":
+            raise AssertionError(f"unexpected AWS client: {service_name}")
+        return self
+
+    def converse_stream(self, **request: object) -> dict[str, object]:
+        self.requests.append(request)
+        if self.initial_prose and len(self.requests) == 1:
+            return {"stream": iter(self._text_events("The read phase is complete."))}
+        return {"stream": iter(self._report_events())}
+
+    @staticmethod
+    def _metadata() -> dict[str, object]:
+        return {"metadata": {"usage": {"inputTokens": 4, "outputTokens": 3, "totalTokens": 7}, "metrics": {"latencyMs": 1}}}
+
+    @classmethod
+    def _text_events(cls, text: str) -> list[dict[str, object]]:
+        return [
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"text": text}}},
+            {"contentBlockStop": {"contentBlockIndex": 0}},
+            {"messageStop": {"stopReason": "end_turn"}},
+            cls._metadata(),
+        ]
+
+    def _report_events(self) -> list[dict[str, object]]:
+        return [
+            {"messageStart": {"role": "assistant"}},
+            {"contentBlockStart": {"contentBlockIndex": 0, "start": {"toolUse": {"toolUseId": "report-1", "name": "InvestigationReport"}}}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"toolUse": {"toolUseId": "report-1", "input": json.dumps(self.report)}}}},
+            {"contentBlockStop": {"contentBlockIndex": 0}},
+            {"messageStop": {"stopReason": "tool_use"}},
+            self._metadata(),
+        ]
 
 
 class NativeDenialContractTests(unittest.TestCase):
@@ -105,6 +156,96 @@ class NativeDenialContractTests(unittest.TestCase):
         wrong = {"action": "Increase memory", "target": "inventory", "value": 512, "unit": "MB"}
         self.assertFalse(self.runner.exact_action_matches(expected, wrong))
         self.assertTrue(self.runner.exact_action_matches(expected, expected))
+
+    def test_recovered_other_with_explanation_passes_native_equals(self):
+        expected = {"action": "Other", "target": None, "unit": None}
+        actual = {**expected, "value": "Verify the recovered alias before changing configuration."}
+        canonical = self.runner.native_evaluator_output(expected, actual)
+        row = Equals().evaluate(SimpleNamespace(expected_output=expected, actual_output=canonical))[0]
+        self.assertTrue(row.test_pass)
+        self.assertTrue(self.runner.exact_action_matches(expected, actual))
+
+    def test_invalid_or_wrong_recovered_other_fails_native_and_exact_checks(self):
+        expected = {"action": "Other", "target": None, "unit": None}
+        invalid = {**expected, "value": ""}
+        wrong = {"action": "Increase memory", "target": "inventory", "value": 512, "unit": "MB"}
+        for actual in (invalid, wrong):
+            canonical = self.runner.native_evaluator_output(expected, actual)
+            row = Equals().evaluate(SimpleNamespace(expected_output=expected, actual_output=canonical))[0]
+            self.assertFalse(row.test_pass)
+            self.assertFalse(self.runner.exact_action_matches(expected, actual))
+
+    def test_real_strands_follow_up_and_completed_wrong_action(self):
+        with TemporaryDirectory() as directory:
+            scenario, trace = write_inputs(Path(directory))
+            expected = {
+                "action": "Restore inventory access", "target": "inventory",
+                "value": "167", "unit": "version",
+            }
+            report = {
+                "assessment": "ongoing",
+                "summary": "Inventory reads remain denied.",
+                "recommendation": expected,
+                "evidence": [{
+                    "source": "captured",
+                    "resource": "inventory",
+                    "windowStart": "2026-01-01T00:00:00Z",
+                    "windowEnd": "2026-01-01T00:01:00Z",
+                    "observedAt": "2026-01-01T00:01:00Z",
+                    "finding": "The read remains denied.",
+                }],
+                "uncertainties": [],
+                "alternatives": [],
+            }
+            follow_up_model = NativeStructuredOutputBedrock(report, initial_prose=True)
+            real_create_agent = self.runner.create_agent
+            follow_up_invocations = []
+
+            def create_follow_up_agent(provider, **kwargs):
+                agent, bounded = real_create_agent(provider, model_session=follow_up_model, **kwargs)
+
+                def invoke(*args, **call_kwargs):
+                    follow_up_invocations.append(1)
+                    return agent(*args, **call_kwargs)
+
+                return invoke, bounded
+
+            with patch.object(self.runner, "create_agent", side_effect=create_follow_up_agent):
+                _identity, actual, follow_up_row, exact = self.runner.run_experiment(scenario, trace)
+            self.assertEqual(actual, expected)
+            self.assertEqual(exact, "PASS")
+            self.assertTrue(follow_up_row.test_pass)
+            self.assertEqual(follow_up_invocations, [1])
+            self.assertEqual(len(follow_up_model.requests), 2)
+            self.assertIn(
+                "You must format the previous response as structured output.",
+                json.dumps(follow_up_model.requests[1]["messages"]),
+            )
+            self.assertEqual(
+                follow_up_model.requests[1]["toolConfig"]["tools"][0]["toolSpec"]["name"],
+                "InvestigationReport",
+            )
+
+            completed_wrong = {"action": "Increase memory", "target": "inventory", "value": 512, "unit": "MB"}
+            wrong_model = NativeStructuredOutputBedrock({**report, "recommendation": completed_wrong}, initial_prose=False)
+            wrong_invocations = []
+
+            def create_wrong_agent(provider, **kwargs):
+                agent, bounded = real_create_agent(provider, model_session=wrong_model, **kwargs)
+
+                def invoke(*args, **call_kwargs):
+                    wrong_invocations.append(1)
+                    return agent(*args, **call_kwargs)
+
+                return invoke, bounded
+
+            with patch.object(self.runner, "create_agent", side_effect=create_wrong_agent):
+                _identity, actual, wrong_row, exact = self.runner.run_experiment(scenario, trace)
+            self.assertEqual(actual, completed_wrong)
+            self.assertEqual(exact, "FAIL")
+            self.assertFalse(wrong_row.test_pass)
+            self.assertEqual(wrong_invocations, [1])
+            self.assertEqual(len(wrong_model.requests), 1)
 
     def test_cli_distinguishes_pass_fail_and_incomplete(self):
         identity = {
