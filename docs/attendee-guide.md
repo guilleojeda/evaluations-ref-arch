@@ -177,7 +177,7 @@ The IDE run is development feedback, not package qualification. After the
 fresh pass, the identical repaired prompt handles one new denial on the
 pre-qualified endpoint. That hosted denial is behavior evidence only. Register
 the presenter-authored original scored case and matching case/trace identity
-once in the private suite. Prepare the separate `agent/audience-input.json`
+for the private CI check. Prepare the separate `agent/audience-input.json`
 from the saved case and original trace; keep the standing
 `agent/qualification-input.json` unchanged. Restoring the original prompt and showing local FAIL makes the ordinary
 push intentionally unsafe; the required `audience-case-gate` then runs beside
@@ -192,21 +192,9 @@ is intentionally separate from the live trace and published dataset above.
 
 ## Verified audience gate exhibit
 
-The verified pushed-source row is [run 45943122055, job
-140321719185](https://github.com/guilleojeda/evaluations-ref-arch/actions/runs/45943122055#summary-140321719185).
-It ran the ordinary push from commit
-`7965dbc2a1ec6e57a86d6bb9f496d3bc106e8955` against opening case
-`native.inventory.40dc1c65ab64dba3579d`. The exact action check returned
-**FAIL (1)**: expected **Restore inventory access** on healthy Inventory
-**v167**, while the actual report recommended **Increase memory** for
-Inventory at **512 MB**. The row matched the original case and captured-bundle
-hashes and the restored original prompt.
+The opening case required restoring Inventory access to version 167. On the regressed prompt, GitHub Actions invoked the application agent on the same alarm and pre-report history used in the IDE. Its fresh recommendation was to increase Inventory memory to 512 MB. Strands `Equals` returned 0 and the job exited 1. Open the **Expected** and **Actual** row to see exactly what prevented publication. [Verified regression on the opening case](https://github.com/guilleojeda/evaluations-ref-arch/actions/runs/46020216978/job/140577710151)
 
-The fast row is the release guard, not the full qualification. Its downstream
-qualification and publication jobs are skipped/blocked when this required
-check fails or is incomplete; do not claim a skipped job ran. Keep the actual
-red/no-publication or pending status visible in the workflow. The new hosted
-denial remains behavior evidence only, not a CI input.
+You can match the two input files across runs. The published scenario digest begins with `aa756098` and the saved trace digest with `72ca97e7`. The repaired prompt recommended restoring version 167 on that pair. [Passing CI comparison](https://github.com/guilleojeda/evaluations-ref-arch/actions/runs/46016469184/job/140564845666)
 
 To reproduce the deterministic failure without AWS, use the saved report in the
 [synthetic case](../README.md#try-a-regression). The live score and the
