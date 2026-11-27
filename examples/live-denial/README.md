@@ -157,12 +157,14 @@ investigation source paths, expected and actual structured actions, native
 
 ## Compare the prompt edit
 
-Run the command once with the original memory-first prompt. The opening denial
-is expected to complete with the wrong memory action and exit `1`:
+Run the command once with the original memory-first prompt and read the actual
+result. The recorded opening trace and earlier local/CI runs showed the wrong
+memory action and exit `1`, but a later fresh named Codespace run with the same
+unchanged prompt returned the reviewed version and exit `0`. Fresh model runs
+can vary; do not promise either result. If both prompts pass on one pair, that
+single comparison does not establish improvement.
 
-```text
-Exact action: FAIL
-```
+Earlier observed faulty result: `Exact action: FAIL`.
 
 Edit only the recommendation rule in the stage's `agent/prompt.py` to:
 
@@ -170,12 +172,13 @@ Edit only the recommendation rule in the stage's `agent/prompt.py` to:
 When Inventory reads are still denied, recommend restoring access. Identify the healthy version at the same memory from the configuration evidence. If access has already recovered, recommend no change.
 ```
 
-Run the same command against the same scenario and exact trace. The repaired
-prompt should return the reviewed version and exit `0`:
+Run the same command against the same scenario and exact trace, then report the
+actual expected/actual actions and exit status. The three-sentence repair
+passed all observed contexts, but one fresh pair remains a bounded observation,
+not a general improvement claim:
 
-```text
-Exact action: PASS
-```
+Observed repaired contexts returned `Exact action: PASS`; read the fresh result
+instead of assuming that outcome.
 
 The two runs use the same case bytes, trace bytes, source session, model and
 replayed read history. Only the imported prompt is expected to change. The
