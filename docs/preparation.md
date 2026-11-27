@@ -563,8 +563,9 @@ with its input and execution identity:
 ### Historical stage-entry map (fallback only)
 
 The current normal rehearsal is the short route in section 3: one clean S5,
-one native IDE case, one identical live endpoint, exact case append, restored
-local FAIL, ordinary push, and the fast gate. Use the stage map below only for
+one native IDE case, one identical live endpoint, original scored case
+registration, restored local FAIL, ordinary push, and the fast gate. The hosted
+denial is behavior evidence only, not a CI input. Use the stage map below only for
 independent entry, preparation, or an actual outage; label its results
 prepared/recorded and do not imply that the current audience edit ran.
 
@@ -585,7 +586,7 @@ original identity.
 | S2 | Download `examples[0]` from the published version, show the exact structured recommendation check, and score the original report with `Builtin.Correctness`; do not rerun the agent. Captured-evidence stages may score their matching saved run. |
 | S3 | Edit only the prompt in the S3 worktree. Run `evaluate_case.py run --candidate repaired` against the same selected case/evidence, inspect with `show`, and score the fresh execution. See [agent README](../agent/README.md#run-score-and-compare-the-repaired-candidate-s3). |
 | S4 | Run the native `development_experiment.py run` launcher for the current native denial case plus the four retained reviewed cases, each with its bounded case/evidence bridge. You may pass an explicitly selected immutable `--source-run`. Inspect with `show` and compare the saved experiment offline. A focused run cannot qualify a release. See [agent README](../agent/README.md#run-the-native-strands-development-experiment-s4). |
-| S5 | Presenter preparation appends the current denial case to the four retained reviewed cases and uploads the five-case archive privately. In the only `demo-deploy` worktree, make one reviewed commit containing the prompt edit and private suite-pointer update, then push through the normal workflow. Record the rejected gate, exact commit and package, all five verified cases, source-run case/bundle identity, and unchanged repaired serving tuple. Repair the branch through the normal gate before the next full session. |
+| S5 (historical fallback) | Presenter preparation may append a denial case to the four retained reviewed cases and upload the five-case archive privately. Use this only for independent preparation or an outage; it is not the current audience push. Record the exact commit/package, case roster, source-run case/bundle identity, and unchanged repaired serving tuple. |
 
 You may switch from S3 to S4 while S3 is running only after confirming that
 each run owns immutable launch-time inputs and a unique output directory.

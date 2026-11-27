@@ -39,10 +39,11 @@ fields are evaluator context; they are not added to the agent prompt.
 
 S2 first checks the exact structured recommendation, then scores the original
 report with `Builtin.Correctness`. The current route then runs one native
-Strands case on fixed input/tools, uses the identical repaired prompt on one
-new denial, and appends that exact live case before the ordinary push. The
-historical S3/S4/S5 workflow adds a case to retained reviewed cases and can be
-used for independent preparation; keep these identities
+Strands case on fixed input/tools and uses the identical repaired prompt on one
+new denial as behavior evidence only. It registers the original scored case
+and matching case/bundle hashes once before the ordinary push. The historical
+S3/S4/S5 workflow adds a case to retained reviewed cases and can be used for
+independent preparation; keep these identities
 distinct:
 
 - original trace and its report;
@@ -84,9 +85,9 @@ Identify each result by the case and candidate that produced it.
 - A saved trace is evidence of that execution, not proof that a later edit ran.
 - A dataset draft is editable; only a created version is a frozen download.
 - S2 scores the saved original session once. S3 and S4 run fresh candidates.
-- S3 uses the current native case and captured evidence; S4 adds that case to
-  the four retained reviewed cases. Their new traces are not the original
-  trace.
+- S3 uses the current native case and captured evidence; the historical S4
+  fallback adds that case to the four retained reviewed cases. Their new traces
+  are not the original trace.
 - S5 evaluates the exact package being proposed, not a development trace from
   another candidate.
 - A later live row is evidence of a later alarm/run and must not be presented as

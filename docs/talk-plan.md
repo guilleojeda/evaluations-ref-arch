@@ -89,8 +89,9 @@ access by selecting the healthy version identified in the trace.
 | Fast release check | Register the original scored case and matching case/bundle hashes, restore the faulty prompt, show local FAIL, and push normally. | `audience-case-gate` is required; failure/incomplete blocks `evaluate-agent` and publication. |
 
 The IDE run and live endpoint are development evidence; they do not qualify or
-publish a Runtime ZIP. The exact live case is appended only after the new
-denial is observed. The required fast CI failure/incomplete result rejects or
+publish a Runtime ZIP. The original scored case is registered once for the
+fast check; the new hosted denial is behavior evidence only, not a CI input.
+The required fast CI failure/incomplete result rejects or
 blocks the proposed package; the previously qualified serving package remains
 in place while the new one is reviewed.
 
@@ -110,7 +111,7 @@ separate execution identity.
 | 15-22 | S1 | Add the selected trace to a fixed dataset, distinguish draft from published version, and write the reviewed prose and typed recommendation. |
 | 22-28 | S2 | Download `examples[0]` from the published case and show the returned native label, value, and explanation for the original report. |
 | 28-38 | IDE | Convert the audience case to native Strands, show the fixed inputs/tools/evaluator, run FAIL, apply the exact three-sentence rule, and run the same command fresh. |
-| 38-45 | Live | Select the pre-qualified identical prompt, show the new denial recommendation, and append the exact case to the private suite. |
+| 38-45 | Live | Select the pre-qualified identical prompt, show the new denial recommendation as behavior evidence, then register the original scored case and matching case/bundle hashes. |
 | 45-53 | Gate | Restore the original prompt, show local FAIL, say the careless-dev line, and push. Leave the fast gate running. |
 | 53-60 | - | Closing and questions. |
 

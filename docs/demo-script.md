@@ -75,7 +75,7 @@ recorded color.
 | 15-22 | S1 | Select the original trace, create a fixed dataset scenario draft, add the expected response, save it, and create the published version. |
 | 22-28 | S2 | In the Codespace `live-denial` folder, download `examples[0]` from the published dataset and run `score_denial.py`. Read the exact action check and the native verdict. Use slides 16, 18 and 19 to explain judge calibration, then return to the prompt edit. |
 | 28-38 | IDE | Convert the audience case to native Strands, run the faulty prompt to FAIL, apply the exact three-sentence rule, and run the same command fresh. |
-| 38-45 | Live | Use the identical repaired prompt on the pre-qualified endpoint, show one new denial recommendation, and append the exact case. |
+| 38-45 | Live | Use the identical repaired prompt on the pre-qualified endpoint, show one new denial recommendation as behavior evidence, and register the original scored case with matching case/bundle hashes. |
 | 45-53 | Gate | Restore the original prompt, run local FAIL, say the careless-dev line, push, and leave the fast gate running. |
 | 53-60 | - | Closing and questions. |
 

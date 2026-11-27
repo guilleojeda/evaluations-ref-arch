@@ -97,10 +97,12 @@ The bridge writes `case.frozen.json`, `captured-bundle.json`, `suite.json`, and
 `suite.json` to S4. The bridge carries the published prose verbatim as
 evaluator-only diagnosis and the typed recommendation separately; neither is
 copied into the candidate task. S3 uses the current native denial case and its
-same-incident public task projection plus bounded evidence. S4 and CI use that
-case alongside the four retained reviewed gate cases, five cases total, each
-with its bounded evidence. No manual review file or typed version ID is needed
-on this route.
+same-incident public task projection plus bounded evidence. The historical S4
+development suite can use that case alongside the four retained reviewed gate
+cases, five cases total. On the current audience route, the fast
+`audience-case-gate` repeats the original scored case and matching case/bundle
+hashes on pushed source; the new hosted denial is behavior evidence only, not a
+CI input. No manual review file or typed version ID is needed on this route.
 
 ### Active model target
 
@@ -287,8 +289,9 @@ earlier one.
 ## Historical S3/S4 development paths (not the current audience cue)
 
 The current audience route is the one-case IDE → identical live endpoint →
-exact case append → faulty local FAIL → ordinary push → fast gate sequence in
-the section above. The detailed S3/S4 workflow below remains independently
+original scored-case registration → faulty local FAIL → ordinary push → fast
+gate sequence in the section above. The hosted denial is behavior evidence only,
+not a CI input. The detailed S3/S4 workflow below remains independently
 actionable for preparation, recovery, and direct entry; label its results
 prepared or recorded and never imply that the current audience edit ran.
 
@@ -308,10 +311,11 @@ s3_case="$BRIDGE_ROOT/case.frozen.json"
 s3_bundle="$BRIDGE_ROOT/captured-bundle.json"
 ```
 
-The S4 suite uses `"$BRIDGE_ROOT/suite.json"`. S3 consumes the current native
-denial case and its same-incident captured evidence; S4 adds that case to the
-four retained reviewed cases, five cases total, while producing fresh
-candidate execution and trace identities.
+The historical S4 suite uses `"$BRIDGE_ROOT/suite.json"`. S3 consumes the
+current native denial case and its same-incident captured evidence. The current
+audience fast gate instead reuses the original scored case and matching
+case/bundle hashes on pushed source; it does not turn the new hosted denial
+into a CI input.
 
 Follow the [S3 runbook](../agent/README.md#run-score-and-compare-the-repaired-candidate-s3).
 Use `talk_stage.py setup` and `run` to start from the prepared workspace. Then use `evaluate_case.py run`, `score` and `compare`. The edited agent chooses its own queries. Compare it with the S2 baseline when the case, cutoff, model, runtime and tooling sources, evaluator and scoring source match. Each execution has its own scoring attempt. Verify that the selected attempt belongs to that execution. Missing spans, a score from a different session, or changed case inputs leave the comparison incomplete.
@@ -335,7 +339,7 @@ execution. It does not repair or substitute the candidate. A focused `--case`
 run is a development subset.
 
 The native report has one `(case, evaluator)` row for each selected case and
-evaluator. The normal S4 suite has five cases: four retained reviewed cases
+the historical full S4 suite has five cases: four retained reviewed cases
 plus the current native denial case. Each case has one deterministic row with the eight named findings
 and one advisory row with the pinned Opus 5.5 categorical verdict, reason,
 status, scoring attempt and full run, session and trace references. The native
