@@ -1312,10 +1312,72 @@ jobs:
               actual: ($result.actual // null)
             }')"
           echo "AUDIENCE_GATE_ROW=$row"
+          result_field() {
+            jq -r --arg side "$1" --arg field "$2" \
+              'if (.[$side] | type) == "object" then (.[$side][$field] // "unavailable") | tostring else "unavailable" end' \
+              <<<"$result_json"
+          }
+          normalize_action() {
+            case "$1" in
+              'Increase reserved concurrency'|'Increase memory'|'Restore inventory access'|'Other') printf '%s' "$1" ;;
+              *) printf 'unavailable' ;;
+            esac
+          }
+          normalize_target() {
+            case "$1" in
+              checkout|inventory) printf '%s' "$1" ;;
+              *) printf 'unavailable' ;;
+            esac
+          }
+          normalize_value() {
+            case "$1" in
+              '<explanation redacted>'|'<redacted>'|unavailable) printf '%s' "$1" ;;
+              [0-9]*) [[ "$1" =~ ^[0-9]+$ ]] && printf '%s' "$1" || printf 'unavailable' ;;
+              *) printf 'unavailable' ;;
+            esac
+          }
+          normalize_unit() {
+            case "$1" in
+              MB|executions|version) printf '%s' "$1" ;;
+              *) printf 'unavailable' ;;
+            esac
+          }
+          case "$exit_code" in
+            0) verdict=PASS ;;
+            1) verdict=FAIL ;;
+            *) verdict=INCOMPLETE ;;
+          esac
+          expected_action="$(normalize_action "$(result_field expected action)")"
+          actual_action="$(normalize_action "$(result_field actual action)")"
+          expected_target="$(normalize_target "$(result_field expected target)")"
+          actual_target="$(normalize_target "$(result_field actual target)")"
+          expected_value="$(normalize_value "$(result_field expected value)")"
+          actual_value="$(normalize_value "$(result_field actual value)")"
+          expected_unit="$(normalize_unit "$(result_field expected unit)")"
+          actual_unit="$(normalize_unit "$(result_field actual unit)")"
           {
             echo '### Audience case gate'
             echo
-            echo "- Machine-readable row: \`$row\`"
+            echo "Exact recommendation: **$verdict**"
+            echo
+            if [[ "$verdict" == INCOMPLETE ]]; then
+              echo 'Expected vs actual action fields: unavailable (the gate did not complete).'
+            else
+              echo '| Field | Expected | Actual |'
+              echo '| --- | --- | --- |'
+              printf '| action | `%s` | `%s` |\n' "$expected_action" "$actual_action"
+              printf '| target | `%s` | `%s` |\n' "$expected_target" "$actual_target"
+              printf '| value | `%s` | `%s` |\n' "$expected_value" "$actual_value"
+              printf '| unit | `%s` | `%s` |\n' "$expected_unit" "$actual_unit"
+            fi
+            echo
+            echo '<details>'
+            echo '<summary>Binding and machine row</summary>'
+            echo
+            echo '```json'
+            echo "$row"
+            echo '```'
+            echo '</details>'
           } >> "$GITHUB_STEP_SUMMARY"
 
   publish-repaired:

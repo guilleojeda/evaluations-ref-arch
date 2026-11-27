@@ -5,7 +5,9 @@ from __future__ import annotations
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
@@ -235,6 +237,69 @@ class EarlyAudienceGateTests(unittest.TestCase):
         self.assertIn('exit "$status"', workflow)
         self.assertIn("needs: [route, check-agent, audience-case-gate]", workflow)
         self.assertIn("needs.audience-case-gate.result == 'success'", workflow)
+
+    def test_rendered_summary_teaches_failure_without_private_free_text(self) -> None:
+        extract = (
+            'require "yaml"; '
+            'workflow = YAML.load_file(".github/workflows/deploy.yml"); '
+            'step = workflow["jobs"]["audience-case-gate"]["steps"].find '
+            '{ |item| item["name"] == "Show the audience row in the job summary" }; '
+            'print step.fetch("run")'
+        )
+        extracted = subprocess.run(
+            ["ruby", "-e", extract], cwd=ROOT, text=True, capture_output=True, check=True,
+        ).stdout.replace("${{ steps.gate.outputs.status }}", "1")
+        with tempfile.TemporaryDirectory(prefix="audience-summary-") as directory:
+            root = Path(directory)
+            (root / "audience-input.json").write_text(json.dumps({
+                "gateKind": "audience-live",
+                "caseId": "opaque.audience-case",
+                "caseSha256": "a" * 64,
+                "bundleSha256": "b" * 64,
+            }), encoding="utf-8")
+            (root / "audience-row.json").write_text(json.dumps({
+                "status": "fail",
+                "frozenCaseId": "opaque.audience-case",
+                "caseSha256": "a" * 64,
+                "bundleSha256": "b" * 64,
+                "promptSha256": "c" * 64,
+                "exactAction": "FAIL",
+                "expected": {
+                    "action": "Restore inventory access", "target": "inventory",
+                    "value": "75", "unit": "version",
+                },
+                "actual": {
+                    "action": "Other", "target": None,
+                    "value": "<explanation redacted>", "unit": None,
+                },
+                "evaluator": {
+                    "name": "recommended-action", "finding": "action",
+                    "reason": "PRIVATE EVALUATOR PROSE MUST NOT RENDER",
+                },
+            }), encoding="utf-8")
+            summary = root / "summary.md"
+            environment = os.environ.copy()
+            environment.update({
+                "GATE_ROOT": str(root),
+                "GITHUB_SHA": "deadbeef",
+                "GITHUB_RUN_ATTEMPT": "7",
+                "GITHUB_STEP_SUMMARY": str(summary),
+            })
+            completed = subprocess.run(
+                ["bash"], input=extracted, cwd=ROOT, env=environment,
+                text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            rendered = summary.read_text(encoding="utf-8")
+            self.assertTrue(rendered.startswith("### Audience case gate\n\nExact recommendation: **FAIL**"))
+            self.assertIn("| action | `Restore inventory access` | `Other` |", rendered)
+            self.assertIn("| target | `inventory` | `unavailable` |", rendered)
+            self.assertIn("| value | `75` | `<explanation redacted>` |", rendered)
+            self.assertIn("| unit | `version` | `unavailable` |", rendered)
+            self.assertIn("<details>", rendered)
+            self.assertNotIn("PRIVATE EVALUATOR PROSE MUST NOT RENDER", rendered)
+            self.assertNotIn("AUDIENCE_GATE_ROW=", rendered)
+            self.assertIn("AUDIENCE_GATE_ROW=", completed.stdout)
 
 
 if __name__ == "__main__":
