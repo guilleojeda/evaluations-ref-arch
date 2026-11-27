@@ -12,7 +12,7 @@ the repository.
 | 0-8 | S0 | Paper-plane opener, store failure, alarm, and faulty report. |
 | 8-15 | S0 | Show the Inventory denial and the observed denied-version configuration. Explain why a memory increase leaves access unchanged. |
 | 15-22 | S1 | Select the original trace, create a fixed dataset scenario draft, add the expected response, save it, and create the published version. |
-| 22-28 | S2 | In the Codespace `live-denial` folder, download `examples[0]` from the published dataset and run `score_denial.py`. Show the native label, value, and explanation. |
+| 22-28 | S2 | In the Codespace `live-denial` folder, download `examples[0]` from the published dataset and run `score_denial.py`. Read the exact action check and the native verdict. Use slides 16, 18 and 19 to explain judge calibration, then return to the prompt edit. |
 | 28-35 | S3 | Edit only the recommendation rule and start a fresh candidate against the same selected case/evidence. |
 | 35-42 | S4 | Run the native Strands experiment with the current denial case plus the four retained reviewed cases. Show the denial row before the capacity row. |
 | 42-53 | S5 | Show the participant's one commit with the prompt edit and private suite-pointer update, CI qualification for the exact ZIP, and publication decision. |

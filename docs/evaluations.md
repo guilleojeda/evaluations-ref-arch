@@ -386,6 +386,14 @@ human decisions and compare both verdicts and explanations. Review
 disagreements to decide whether the judge is wrong, the rubric is unclear or
 the expectation needs correction.
 
+The native Builtin evaluator remains a supplied service measurement: preserve
+its returned label and explanation, including disagreement across attempts on
+one recorded trace. A calibration sample pairs source evidence with a human
+verdict and reason; for example, a denied Inventory read does not support a
+claim that the service ran out of memory, so the label is **UNSUPPORTED**. The
+separate custom Opus judge is tuned on calibration examples, frozen before
+unseen checks, and given a fresh holdout after later rubric changes.
+
 Holdouts answer a different question. A judge holdout contains human-reviewed
 examples not used to tune the rubric or settings. An agent holdout contains
 cases not used to repair the prompt. Keep related captures and near-duplicate

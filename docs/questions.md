@@ -22,7 +22,14 @@ Both questions need the same report, reference time and source observations. One
 
 ## How do you decide whether to trust the judge?
 
-Have reviewers label reports against their source evidence first. Include a plausible error, such as citing a metric bucket's start as the time its value was observed, alongside a correctly cited report. Compare the judge's reasons as well as its verdicts with those labels. Test the chosen rubric on fresh cases held back from tuning. Recheck that calibration after a model or rubric change. [Evaluation approach](evaluations.md)
+Assign incidents to calibration or holdout before tuning. Have reviewers label
+varied reports against their source evidence, with an expected verdict and
+reason. For example, a denied Inventory read does not support a report claiming
+the service ran out of memory, so the human label is **UNSUPPORTED**. Compare
+the custom Opus judge's reasons as well as verdicts with those labels; inspect
+failures and adjust the custom rubric. Freeze it before unseen examples. If an
+incident or report was seen or changed during tuning, replace it with a fresh
+holdout. [Evaluation approach](evaluations.md)
 
 ## Why keep captured evidence when the live incident is over?
 

@@ -15,7 +15,9 @@ Show the room how to:
 
 1. Turn an observed failure into a reviewed, repeatable case.
 2. Check actions and evidence separately from prose quality.
-3. Use a release gate that protects a known-good candidate when a later prompt
+3. Check a judge against examples that people have labeled, including examples
+   kept out of tuning.
+4. Use a release gate that protects a known-good candidate when a later prompt
    change regresses.
 
 The case uses the original trace, a reviewed expected response, AgentCore's
@@ -42,7 +44,7 @@ access by selecting the healthy version identified in the trace.
 | --- | --- | --- |
 | S0 - Native trace | Observe the alarm, read-only tool calls, source results, and original report. | The original execution and evidence. |
 | S1 - Dataset case | Create a fixed AgentCore dataset scenario draft from the selected trace, add the prose and typed expected recommendation, and publish the version. | Both reviewed fields remain evaluator input, not agent prompt input. |
-| S2 - Original score | Show the exact structured recommendation check, then score the original report with `Builtin.Correctness`. | No agent rerun; both outputs belong to the original trace and scoring attempt. |
+| S2 - Original score | Show the exact structured recommendation check, then score the original report with `Builtin.Correctness` and explain the calibration/holdout boundary. | No agent rerun; both outputs belong to the original trace and scoring attempt. |
 | S3 - Development repair | Edit only the recommendation rule and run a fresh candidate. | Selected case, captured evidence, report shape, and evaluator. |
 | S4 - Native experiment | Run the repaired candidate through Strands with the current native case/evidence bridge plus the four retained reviewed cases. | Five-case suite; case meaning and evaluator remain fixed. |
 | S5 - Release gate | Run CI against the exact Runtime ZIP proposed for release. | Package identity and reviewed case roster. |
@@ -52,7 +54,7 @@ ZIP. A required CI failure rejects the proposed package; the previously
 qualified serving package remains in place while the new one is reviewed.
 
 Use the runnable [native case bridge](../scripts/native_case_bridge.py) with
-the [build command](adapt-evaluations.md#bridge-the-live-case-into-s3-s4)
+the [build command](adapt-evaluations.md#bridge-the-live-case-into-s3s4)
 to connect the downloaded case and `original-trace.json` to the originating
 RunTable row and S3 captures. S3/S4 consume the same incident's normal task
 projection and bounded evidence, while preserving the original trace as a

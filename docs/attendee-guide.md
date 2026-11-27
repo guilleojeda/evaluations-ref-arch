@@ -1,6 +1,6 @@
 # Follow the Inventory denial from trace to CI
 
-[Audience slides (PDF, 19 pages)](slides/audience.pdf) | [Stage checkpoints](checkpoints.md) | [Audience questions](questions.md)
+[Audience slides (PDF, 18 visible pages)](slides/audience.pdf) | [Stage checkpoints](checkpoints.md) | [Audience questions](questions.md)
 
 A customer tries to place an order. Checkout returns HTTP 502. The operations
 agent finds an Inventory `GetItem` denial and recommends increasing memory.
@@ -100,6 +100,12 @@ MB**. A later judge attempt can return a different label for the same trace;
 show the returned explanation and compare the formal recommendation with the
 reviewed expectation. The evaluator is not a replacement for the deterministic
 action check.
+
+Two recorded scoring attempts gave this same report opposite verdicts. To check
+a judge, first have people label representative reports and explain their
+reasons. Use one set to investigate disagreements and refine a custom rubric.
+Check the frozen judge on other incidents kept out of tuning. If those results
+lead to another change, use a fresh holdout. [Calibration and holdouts](evaluations.md#calibration-holdouts-and-repeated-runs)
 
 ## How the case becomes a development and release test
 
