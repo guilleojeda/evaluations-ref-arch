@@ -8,6 +8,9 @@ import json
 from pathlib import Path
 import tarfile
 import tempfile
+from contextlib import redirect_stderr, redirect_stdout
+from types import SimpleNamespace
+from unittest.mock import patch
 import unittest
 
 
@@ -181,6 +184,41 @@ class EarlyAudienceGateTests(unittest.TestCase):
             "value": "<explanation redacted>",
         })
 
+    def test_safe_native_cli_emits_only_the_public_verdict_and_receipt_fields(self) -> None:
+        runner = load_native_runner()
+        identity = {
+            "nativeId": "native.private",
+            "nativeSession": "source-private",
+            "frozenId": "frozen.opaque-case",
+            "caseSha256": "a" * 64,
+            "traceId": "trace-private",
+            "bundleSha256": "b" * 64,
+            "originatingRunId": "run-private",
+            "expected": {"action": "Other", "target": None, "unit": None},
+        }
+        actual = {"action": "Other", "target": None, "unit": None, "value": "private explanation"}
+        with tempfile.TemporaryDirectory(prefix="safe-native-" ) as directory:
+            result = Path(directory) / "audience-row.json"
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with patch.object(
+                runner,
+                "run_experiment",
+                return_value=(identity, "fresh-private", actual, SimpleNamespace(test_pass=True, score=1.0, reason="private evaluator prose")),
+            ), redirect_stdout(stdout), redirect_stderr(stderr):
+                self.assertEqual(
+                    runner.main(["--frozen-only", "--safe-output", "--result", str(result)]),
+                    0,
+                )
+            receipt = json.loads(result.read_text(encoding="utf-8"))
+            self.assertEqual(stdout.getvalue().strip(), "Audience gate result: PASS")
+            self.assertEqual(stderr.getvalue(), "")
+            self.assertEqual(receipt["evaluator"]["name"], "recommended-action")
+            self.assertEqual(receipt["evaluator"]["finding"], "action")
+            self.assertEqual(receipt["actual"]["value"], "<explanation redacted>")
+            self.assertNotIn("nativeScenarioId", receipt)
+            self.assertNotIn("traceId", receipt)
+            self.assertNotIn("private", json.dumps(receipt))
+
     def test_workflow_wires_fast_gate_before_package_qualification(self) -> None:
         workflow = (ROOT / ".github/workflows/deploy.yml").read_text(encoding="utf-8")
         self.assertIn("audience-case-gate:", workflow)
@@ -190,6 +228,10 @@ class EarlyAudienceGateTests(unittest.TestCase):
         self.assertIn("--frozen-only --safe-output", workflow)
         self.assertIn('--pointer "$GITHUB_WORKSPACE/agent/qualification-input.json"', workflow)
         self.assertIn('native-gate.log', workflow)
+        self.assertIn('AUDIENCE_GATE_ROW=', workflow)
+        self.assertIn('GITHUB_SHA', workflow)
+        self.assertIn('GITHUB_RUN_ATTEMPT', workflow)
+        self.assertIn('exitCode: $exitCode', workflow)
         self.assertIn('exit "$status"', workflow)
         self.assertIn("needs: [route, check-agent, audience-case-gate]", workflow)
         self.assertIn("needs.audience-case-gate.result == 'success'", workflow)

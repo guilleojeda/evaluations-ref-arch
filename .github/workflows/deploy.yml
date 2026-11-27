@@ -1282,16 +1282,41 @@ jobs:
           GATE_ROOT: ${{ runner.temp }}/phase20-audience-gate
         run: |
           set -euo pipefail
-          result="$GATE_ROOT/inputs/../audience-row.json"
-          if [[ -s "$result" ]]; then
-            {
-              echo '### Audience case gate'
-              echo
-              echo "- Input binding: **$(jq -r .gateKind \"$GATE_ROOT/inputs/../audience-input.json\")**"
-              jq -r '"- Case: `\(.frozenCaseId)`", "- Evaluator row: `\(.evaluator.name)/\(.evaluator.finding)`", "- Verdict: **\(.exactAction // "INCOMPLETE")**", "- Case SHA-256: `\(.caseSha256)`", "- Bundle SHA-256: `\(.bundleSha256)`", "- Prompt SHA-256: `\(.promptSha256 // "unavailable")`"' "$result"
-              jq -r '"- Expected action fields: `\(.expected | tojson)`", "- Actual action fields: `\(.actual | tojson)`"' "$result"
-            } >> "$GITHUB_STEP_SUMMARY"
-          fi
+          result="$GATE_ROOT/audience-row.json"
+          input="$GATE_ROOT/audience-input.json"
+          exit_code="${{ steps.gate.outputs.status }}"
+          [[ "$exit_code" =~ ^[012]$ ]] || exit_code=2
+          input_json='{}'
+          result_json='{}'
+          [[ -s "$input" ]] && input_json="$(jq -c . "$input")"
+          [[ -s "$result" ]] && result_json="$(jq -c . "$result")"
+          row="$(jq -cn \
+            --arg commit "$GITHUB_SHA" \
+            --arg attempt "$GITHUB_RUN_ATTEMPT" \
+            --argjson exitCode "$exit_code" \
+            --argjson input "$input_json" \
+            --argjson result "$result_json" \
+            '{
+              commit: $commit,
+              attempt: $attempt,
+              exitCode: $exitCode,
+              status: (if $exitCode == 0 then "pass" elif $exitCode == 1 then "fail" else "incomplete" end),
+              gateKind: ($input.gateKind // null),
+              frozenCaseId: ($result.frozenCaseId // $input.caseId // null),
+              caseSha256: ($result.caseSha256 // $input.caseSha256 // null),
+              bundleSha256: ($result.bundleSha256 // $input.bundleSha256 // null),
+              promptSha256: ($result.promptSha256 // null),
+              evaluator: (if ($result.evaluator | type) == "object" then {name: $result.evaluator.name, finding: $result.evaluator.finding} else null end),
+              exactAction: ($result.exactAction // null),
+              expected: ($result.expected // null),
+              actual: ($result.actual // null)
+            }')"
+          echo "AUDIENCE_GATE_ROW=$row"
+          {
+            echo '### Audience case gate'
+            echo
+            echo "- Machine-readable row: \`$row\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   publish-repaired:
     name: Publish repaired agent (protected review)
