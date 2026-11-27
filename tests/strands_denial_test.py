@@ -74,8 +74,8 @@ def write_inputs(root: Path, *, trace_id: str = "trace-1") -> tuple[Path, Path]:
 class NativeStructuredOutputBedrock:
     """ConverseStream double for real Strands structured-output turns."""
 
-    def __init__(self, report: dict[str, object], *, initial_prose: bool):
-        self.report = report
+    def __init__(self, report: dict[str, object] | list[dict[str, object]], *, initial_prose: bool):
+        self.reports = report if isinstance(report, list) else [report]
         self.initial_prose = initial_prose
         self.requests: list[dict[str, object]] = []
         self.region_name = "us-east-1"
@@ -93,7 +93,9 @@ class NativeStructuredOutputBedrock:
         self.requests.append(request)
         if self.initial_prose and len(self.requests) == 1:
             return {"stream": iter(self._text_events("The read phase is complete."))}
-        return {"stream": iter(self._report_events())}
+        report_index = len(self.requests) - (2 if self.initial_prose else 1)
+        report = self.reports[min(report_index, len(self.reports) - 1)]
+        return {"stream": iter(self._report_events(report))}
 
     @staticmethod
     def _metadata() -> dict[str, object]:
@@ -109,11 +111,11 @@ class NativeStructuredOutputBedrock:
             cls._metadata(),
         ]
 
-    def _report_events(self) -> list[dict[str, object]]:
+    def _report_events(self, report: dict[str, object]) -> list[dict[str, object]]:
         return [
             {"messageStart": {"role": "assistant"}},
             {"contentBlockStart": {"contentBlockIndex": 0, "start": {"toolUse": {"toolUseId": "report-1", "name": "InvestigationReport"}}}},
-            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"toolUse": {"toolUseId": "report-1", "input": json.dumps(self.report)}}}},
+            {"contentBlockDelta": {"contentBlockIndex": 0, "delta": {"toolUse": {"toolUseId": "report-1", "input": json.dumps(report)}}}},
             {"contentBlockStop": {"contentBlockIndex": 0}},
             {"messageStop": {"stopReason": "tool_use"}},
             self._metadata(),
@@ -246,6 +248,71 @@ class NativeDenialContractTests(unittest.TestCase):
             self.assertFalse(wrong_row.test_pass)
             self.assertEqual(wrong_invocations, [1])
             self.assertEqual(len(wrong_model.requests), 1)
+
+    def test_schema_correction_is_bounded_and_not_a_quality_rerun(self):
+        with TemporaryDirectory() as directory:
+            scenario, trace = write_inputs(Path(directory))
+            expected = {
+                "action": "Restore inventory access", "target": "inventory",
+                "value": "167", "unit": "version",
+            }
+            base_report = {
+                "assessment": "ongoing",
+                "summary": "Inventory reads remain denied.",
+                "recommendation": expected,
+                "evidence": [{
+                    "source": "captured", "resource": "inventory",
+                    "windowStart": "2026-01-01T00:00:00Z",
+                    "windowEnd": "2026-01-01T00:01:00Z",
+                    "observedAt": "2026-01-01T00:01:00Z",
+                    "finding": "The read remains denied.",
+                }],
+                "uncertainties": [], "alternatives": [],
+            }
+            invalid = {**base_report, "recommendation": {
+                "action": "Increase memory", "target": "inventory", "value": "512", "unit": "MB",
+            }}
+            corrected_wrong = {**base_report, "recommendation": {
+                "action": "Increase memory", "target": "inventory", "value": 512, "unit": "MB",
+            }}
+            real_create_agent = self.runner.create_agent
+            corrected_model = NativeStructuredOutputBedrock([invalid, corrected_wrong], initial_prose=False)
+            corrected_invocations = []
+
+            def create_corrected_agent(provider, **kwargs):
+                agent, bounded = real_create_agent(provider, model_session=corrected_model, **kwargs)
+
+                def invoke(*args, **call_kwargs):
+                    corrected_invocations.append(1)
+                    return agent(*args, **call_kwargs)
+
+                return invoke, bounded
+
+            with patch.object(self.runner, "create_agent", side_effect=create_corrected_agent):
+                _identity, actual, row, exact = self.runner.run_experiment(scenario, trace)
+            self.assertEqual(actual, corrected_wrong["recommendation"])
+            self.assertFalse(row.test_pass)
+            self.assertEqual(exact, "FAIL")
+            self.assertEqual(corrected_invocations, [1])
+            self.assertEqual(len(corrected_model.requests), 2)
+
+            both_invalid_model = NativeStructuredOutputBedrock([invalid, invalid], initial_prose=False)
+            incomplete_invocations = []
+
+            def create_incomplete_agent(provider, **kwargs):
+                agent, bounded = real_create_agent(provider, model_session=both_invalid_model, **kwargs)
+
+                def invoke(*args, **call_kwargs):
+                    incomplete_invocations.append(1)
+                    return agent(*args, **call_kwargs)
+
+                return invoke, bounded
+
+            with patch.object(self.runner, "create_agent", side_effect=create_incomplete_agent):
+                with self.assertRaisesRegex(RuntimeError, "native evaluator output is incomplete"):
+                    self.runner.run_experiment(scenario, trace)
+            self.assertEqual(incomplete_invocations, [1])
+            self.assertEqual(len(both_invalid_model.requests), 2)
 
     def test_cli_distinguishes_pass_fail_and_incomplete(self):
         identity = {
