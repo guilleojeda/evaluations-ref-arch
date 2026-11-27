@@ -1200,12 +1200,12 @@ jobs:
           role-to-assume: ${{ env.PHASE20_EVALUATION_ROLE_ARN }}
           role-session-name: phase20-audience-gate-${{ github.run_id }}
           role-duration-seconds: 1800
-      - name: Retrieve the private carried gate archive
+      - name: Retrieve the private native audience inputs
         id: inputs
         shell: bash
         env:
           INPUT_BUCKET: ${{ env.PHASE20_EVIDENCE_BUCKET }}
-          INPUT_POINTER: ${{ github.workspace }}/agent/qualification-input.json
+          INPUT_POINTER: ${{ github.workspace }}/agent/audience-input.json
         run: |
           set -euo pipefail
           input_root="$RUNNER_TEMP/phase20-audience-inputs"
@@ -1213,19 +1213,30 @@ jobs:
           test -s "$INPUT_POINTER"
           pointer_bucket="$(jq -er '.bucket' "$INPUT_POINTER")"
           [[ "$pointer_bucket" == "$INPUT_BUCKET" ]] || {
-            echo 'qualification pointer bucket is outside the fixed evidence bucket' >&2
+            echo 'audience input pointer bucket is outside the fixed evidence bucket' >&2
             exit 1
           }
           input_key="$(jq -er '.s3Key' "$INPUT_POINTER")"
           input_sha256="$(jq -er '.sha256' "$INPUT_POINTER")"
-          [[ "$input_key" =~ ^agent-evaluation/phase[0-9]+/inputs/[0-9a-f]{64}/staging\.tar\.gz$ ]]
+          scenario_sha256="$(jq -er '.scenarioSha256' "$INPUT_POINTER")"
+          trace_sha256="$(jq -er '.traceSha256' "$INPUT_POINTER")"
+          [[ "$input_key" =~ ^agent-evaluation/phase20/audience-inputs/[0-9a-f]{64}/staging\.tar\.gz$ ]]
           [[ "$input_sha256" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$scenario_sha256" =~ ^[0-9a-f]{64}$ && "$trace_sha256" =~ ^[0-9a-f]{64}$ ]]
           archive="$input_root/staging.tar.gz"
           aws s3api get-object --bucket "$INPUT_BUCKET" --key "$input_key" --checksum-mode ENABLED "$archive" >/dev/null
           printf '%s  %s\n' "$input_sha256" "$archive" | sha256sum -c -
+          PYTHONPATH=agent uv run --offline --project agent --locked \
+            python scripts/prepare_audience_gate.py verify \
+            --archive "$archive" --pointer "$INPUT_POINTER" > "$input_root/verification.json"
+          jq -e --arg scenario "$scenario_sha256" --arg trace "$trace_sha256" \
+            '.scenarioSha256 == $scenario and .traceSha256 == $trace' "$input_root/verification.json" >/dev/null
           echo "archive=$archive" >> "$GITHUB_OUTPUT"
           echo "archive_sha256=$input_sha256" >> "$GITHUB_OUTPUT"
+          echo "scenario_sha256=$scenario_sha256" >> "$GITHUB_OUTPUT"
+          echo "trace_sha256=$trace_sha256" >> "$GITHUB_OUTPUT"
           echo "Retrieved private audience gate archive: sha256=$input_sha256"
+          echo "Pinned native inputs: scenario=$scenario_sha256 trace=$trace_sha256"
       - name: Run the same audience Strands exact-action check
         id: gate
         shell: bash
@@ -1251,22 +1262,14 @@ jobs:
           mkdir -p "$GATE_ROOT"
           gate_log="$GATE_ROOT/native-gate.log"
           set +e
-          PYTHONPATH=agent uv run --offline --project agent --locked \
-            python scripts/early_audience_gate.py \
-            --archive "$ARCHIVE" \
-            --pointer "$GITHUB_WORKSPACE/agent/qualification-input.json" \
-            --output-root "$GATE_ROOT" >"$gate_log" 2>&1
-          prepare_status=$?
-          status=$prepare_status
-          if [[ "$prepare_status" -eq 0 ]]; then
-            PYTHONPATH=agent:examples/live-denial uv run --offline --project agent --locked \
-              opentelemetry-instrument python examples/live-denial/strands_denial.py \
-              --frozen-only --safe-output \
-              --case "$GATE_ROOT/inputs/case.frozen.json" \
-              --bundle "$GATE_ROOT/inputs/captured-bundle.json" \
-              --result "$GATE_ROOT/audience-row.json" >>"$gate_log" 2>&1
-            status=$?
-          fi
+          mkdir -p "$GATE_ROOT/inputs"
+          tar -xzf "$ARCHIVE" -C "$GATE_ROOT/inputs"
+          PYTHONPATH=agent:examples/live-denial uv run --offline --project agent --locked \
+            opentelemetry-instrument python examples/live-denial/strands_denial.py \
+            --scenario "$GATE_ROOT/inputs/staging/denial-case.json" \
+            --trace "$GATE_ROOT/inputs/staging/original-trace.json" \
+            --safe-output --result "$GATE_ROOT/audience-row.json" >>"$gate_log" 2>&1
+          status=$?
           set -e
           if [[ "$status" -eq 0 || "$status" -eq 1 ]]; then
             echo "Audience exact-action gate completed: exit=$status"
@@ -1280,10 +1283,11 @@ jobs:
         shell: bash
         env:
           GATE_ROOT: ${{ runner.temp }}/phase20-audience-gate
+          INPUT_POINTER: ${{ github.workspace }}/agent/audience-input.json
         run: |
           set -euo pipefail
           result="$GATE_ROOT/audience-row.json"
-          input="$GATE_ROOT/audience-input.json"
+          input="$INPUT_POINTER"
           exit_code="${{ steps.gate.outputs.status }}"
           [[ "$exit_code" =~ ^[012]$ ]] || exit_code=2
           input_json='{}'
@@ -1301,12 +1305,12 @@ jobs:
               attempt: $attempt,
               exitCode: $exitCode,
               status: (if $exitCode == 0 then "pass" elif $exitCode == 1 then "fail" else "incomplete" end),
-              gateKind: ($input.gateKind // null),
-              frozenCaseId: ($result.frozenCaseId // $input.caseId // null),
-              caseSha256: ($result.caseSha256 // $input.caseSha256 // null),
-              bundleSha256: ($result.bundleSha256 // $input.bundleSha256 // null),
+              blockedBy: (if $exitCode == 1 then "exact structured action mismatch" elif $exitCode == 2 then "native gate incomplete; diagnostic remains in the private runner log" else null end),
+              gateKind: "native-scenario-trace",
+              scenarioSha256: ($result.scenarioSha256 // $input.scenarioSha256 // null),
+              traceSha256: ($result.traceSha256 // $input.traceSha256 // null),
               promptSha256: ($result.promptSha256 // null),
-              evaluator: (if ($result.evaluator | type) == "object" then {name: $result.evaluator.name, finding: $result.evaluator.finding} else null end),
+              evaluator: (if ($result.nativeEvaluator | type) == "object" then {name: $result.nativeEvaluator.name, score: $result.nativeEvaluator.score, testPass: $result.nativeEvaluator.testPass} elif ($result.evaluator | type) == "object" then {name: $result.evaluator.name, finding: $result.evaluator.finding} else null end),
               exactAction: ($result.exactAction // null),
               expected: ($result.expected // null),
               actual: ($result.actual // null)
@@ -1361,7 +1365,16 @@ jobs:
             echo "Exact recommendation: **$verdict**"
             echo
             if [[ "$verdict" == INCOMPLETE ]]; then
-              echo 'Expected vs actual action fields: unavailable (the gate did not complete).'
+              echo 'Expected vs actual action fields: unavailable (native gate incomplete; diagnostic remains in the private runner log).'
+            elif [[ "$verdict" == FAIL ]]; then
+              echo 'Blocked by: exact structured action mismatch.'
+              echo
+              echo '| Field | Expected | Actual |'
+              echo '| --- | --- | --- |'
+              printf '| action | `%s` | `%s` |\n' "$expected_action" "$actual_action"
+              printf '| target | `%s` | `%s` |\n' "$expected_target" "$actual_target"
+              printf '| value | `%s` | `%s` |\n' "$expected_value" "$actual_value"
+              printf '| unit | `%s` | `%s` |\n' "$expected_unit" "$actual_unit"
             else
               echo '| Field | Expected | Actual |'
               echo '| --- | --- | --- |'

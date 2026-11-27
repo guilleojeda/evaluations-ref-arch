@@ -12,7 +12,7 @@ by a recorded green result.
 
 ## Does Strands always need AgentCore?
 
-No. A native Strands experiment can run a task and a Python evaluator locally. The public example uses a saved report and needs no AWS account. In the full talk workflow the task calls Bedrock, and a Strands evaluator sends the actual session evidence to AgentCore for semantic scoring. [Try the local experiment](adapt-evaluations.md)
+No. In the IDE, Strands Evaluations runs the application agent with your edited prompt. Bedrock generates a fresh report, and the native Strands `Equals` evaluator compares its recommendation with the one you specified. The earlier on-demand AgentCore evaluation scores the original trace. The full release qualification also uses AgentCore for its calibrated advisory judge. [Try the experiment](adapt-evaluations.md)
 
 ## What counts as an action in this example?
 
@@ -24,7 +24,7 @@ In the original trace, the report can explain that a database read was denied an
 
 ## Does creating the dataset run the agent again?
 
-Adding the trace creates a draft from the investigation that already happened. You review the alarm input, write the answer you would accept and publish a version. Scoring the original reads its recorded spans. Editing the prompt and running the new candidate later creates a fresh investigation trace against the captured incident. [Follow the case from the console to the IDE](../examples/live-denial/README.md)
+Creating the dataset saves a scenario from the investigation that already happened. You write the expectation and publish the version. Later, in the IDE, you run the report-writing decision again with the same alarm and the same recorded conversation. Each prompt generates its own answer. The hosted demo then triggers a new alarm to test the full investigation. [Follow the case from the console to the IDE](../examples/live-denial/README.md)
 
 ## Why use one judge call for diagnosis and grounding?
 

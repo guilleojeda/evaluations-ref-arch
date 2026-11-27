@@ -12,19 +12,26 @@ record.
 
 ## Current normal-route rehearsal
 
-Prepare one clean qualified S5 and verify the source file
-the prepared `before/faulty-prompt.py` reference is available. Before the IDE
-cue, copy it into the active `S5/agent/prompt.py`; keep the case input, expected output, fixed captured
-tools, and exact evaluator ready to show. The rehearsal must record the actual
-faulty FAIL, then use this exact rule for the fresh run:
+Prepare one clean qualified S5 and verify the source file and the prepared
+`before/faulty-prompt.py` reference. Before the IDE cue, copy it into the active
+`S5/agent/prompt.py`; open `denial-case.json` beside the matching final chat
+input in `original-trace.json`, select the latest matching `name == "chat"`
+span by `startTimeUnixNano`, and project its span ID and event names. Keep the
+presenter-authored expectation, same read-only history, and exact native
+`Equals` ready to show. Explicitly exclude the old answer, system prompt, and
+signed-thinking/reasoning. The rehearsal must record the actual faulty FAIL,
+then use this exact rule for the fresh run:
 
 ```text
 When Inventory reads are still denied, recommend restoring access. Identify the healthy version at the same memory from the configuration evidence. If access has already recovered, recommend no change.
 ```
 
-Show the pre-qualified endpoint's new denial recommendation as behavior
-evidence only. Register the original scored case and matching case/bundle
-hashes once. Restore the original prompt before the local FAIL and ordinary push.
+Run one dedicated full investigation on the pre-qualified endpoint and match
+its new event/run/trace. Show the recommendation as behavior evidence only.
+Register the presenter-authored original scored case and matching case/trace
+identity once. Prepare the separate `agent/audience-input.json` from the saved
+case and original trace; keep the standing `agent/qualification-input.json`
+unchanged. Restore the original prompt before the local FAIL and ordinary push.
 The fast `audience-case-gate` is required and runs beside ordinary checks; a
 failure/incomplete result blocks/skips `evaluate-agent` and publication. Never
 replace a missing result with a recording or claim a skipped qualification ran.
@@ -504,7 +511,7 @@ ongoing denial use `Restore inventory access` with the healthy version,
 `inventory`, and `version`; for recovered evidence use `Other` with null target
 and unit plus a separate free explanation. Only the published version is
 frozen. From a Codespace terminal in `examples/live-denial`, use the
-maintained [download and score command](../examples/live-denial/README.md#download-the-published-case-in-codespaces)
+maintained [download and score command](../examples/live-denial/README.md#prepare-the-two-inputs)
 to select its single example and score the original report.
 
 The scorer reads the case, fetches the original trace with its session,

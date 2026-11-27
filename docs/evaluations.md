@@ -18,21 +18,29 @@ On stage, the audience sees the faulty agent's trace (S0), reviews the case (S1)
 ### Current onstage handoff
 
 After the calibration slides, the audience case is converted visibly into one
-native Strands case. In clean S5, copy the prepared `before/faulty-prompt.py`
-reference into the active `S5/agent/prompt.py`; show case input, expected output, fixed captured tools,
-and evaluator; run the original prompt to actual FAIL; say the required
-boundary sentence; edit only the active rule to this exact text and run the
-same command for a fresh inference/session and recommendation:
+direct native Strands Case. In clean S5, copy the prepared
+`before/faulty-prompt.py` reference into the active `S5/agent/prompt.py`; show
+`Case.input = denial-case.json.turns[0].input`, the matching final chat input in
+`original-trace.json`, separately built `messages = alarm + history`, the
+presenter-authored expectation, and native `Equals`. Exclude the old answer,
+system prompt, and signed-thinking/reasoning; run the original prompt to actual
+FAIL; say the required boundary sentence; edit only the active rule to this
+exact text and run the same command for a fresh inference/session and
+recommendation. Each prompt gets one fresh agent run and one structured report;
+the SDK may make its normal bounded formatting follow-up inside that run. A
+missing report is **INCOMPLETE**, not a quality **FAIL**:
 
 ```text
 When Inventory reads are still denied, recommend restoring access. Identify the healthy version at the same memory from the configuration evidence. If access has already recovered, recommend no change.
 ```
 
-Use the identical repaired prompt on the pre-qualified endpoint for one new
-denial and show that hosted behavior only. Register the original scored case
-and matching case/bundle hashes once, then restore the original source, run the
-same local case to FAIL, say the
-careless-dev sentence, and push. The required `audience-case-gate` is the fast
+Use the identical repaired prompt on the pre-qualified endpoint for one
+dedicated hosted full investigation for a new denial and show that hosted
+behavior only. Register the presenter-authored original scored case and
+matching case/trace identity once, prepare separate `agent/audience-input.json`
+from the saved case and trace, then restore the original source, run the same
+local Case to FAIL, say the careless-dev sentence, and hand the diff to the
+participant for the push. Keep `agent/qualification-input.json` unchanged. The required `audience-case-gate` is the fast
 native check; failure/incomplete blocks or skips downstream `evaluate-agent`
 exact-package qualification and publication. Do not promise a local exported
 AgentCore trace unless the normal command emits and verifies one.
@@ -61,7 +69,7 @@ for recovered evidence it is `{"action":"Other","target":null,"unit":null}`
 with a separate free explanation. Only the published version is a frozen
 evaluation input.
 
-The Codespace uses the maintained [live-denial download command](../examples/live-denial/README.md#download-the-published-case-in-codespaces)
+The Codespace uses the maintained [live-denial download command](../examples/live-denial/README.md#prepare-the-two-inputs)
 from the `examples/live-denial` directory. It copies the full published
 dataset ID and version and selects `examples[0]` explicitly.
 
@@ -93,16 +101,12 @@ uv run --project agent --locked python scripts/native_case_bridge.py build \
 ```
 
 The bridge writes `case.frozen.json`, `captured-bundle.json`, `suite.json`, and
-`candidate-input.json`; pass the first two as S3 `--case`/`--bundle`, or
-`suite.json` to S4. The bridge carries the published prose verbatim as
-evaluator-only diagnosis and the typed recommendation separately; neither is
-copied into the candidate task. S3 uses the current native denial case and its
-same-incident public task projection plus bounded evidence. The historical S4
-development suite can use that case alongside the four retained reviewed gate
-cases, five cases total. On the current audience route, the fast
-`audience-case-gate` repeats the original scored case and matching case/bundle
-hashes on pushed source; the new hosted denial is behavior evidence only, not a
-CI input. No manual review file or typed version ID is needed on this route.
+`candidate-input.json`; those artifacts are historical S3/S4 preparation only.
+The current audience route instead prepares `agent/audience-input.json` from
+the saved `denial-case.json` and matching `original-trace.json`; the new hosted
+denial is behavior evidence only, not a CI input. The standing
+`agent/qualification-input.json` remains separate. No bridge or hidden transfer
+command is used onstage.
 
 ### Active model target
 
@@ -313,9 +317,9 @@ s3_bundle="$BRIDGE_ROOT/captured-bundle.json"
 
 The historical S4 suite uses `"$BRIDGE_ROOT/suite.json"`. S3 consumes the
 current native denial case and its same-incident captured evidence. The current
-audience fast gate instead reuses the original scored case and matching
-case/bundle hashes on pushed source; it does not turn the new hosted denial
-into a CI input.
+audience fast gate instead reuses the original scored scenario/trace through
+`agent/audience-input.json`; it does not turn the new hosted denial into a CI
+input.
 
 Follow the [S3 runbook](../agent/README.md#run-score-and-compare-the-repaired-candidate-s3).
 Use `talk_stage.py setup` and `run` to start from the prepared workspace. Then use `evaluate_case.py run`, `score` and `compare`. The edited agent chooses its own queries. Compare it with the S2 baseline when the case, cutoff, model, runtime and tooling sources, evaluator and scoring source match. Each execution has its own scoring attempt. Verify that the selected attempt belongs to that execution. Missing spans, a score from a different session, or changed case inputs leave the comparison incomplete.

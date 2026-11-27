@@ -29,8 +29,13 @@ pieces of evidence.
 
 After the original score and calibration, use one clean qualified S5. Copy
 the prepared `before/faulty-prompt.py` reference into the active
-`S5/agent/prompt.py`, show the audience case
-input, expected output, fixed captured tools, and exact evaluator, and run the
+`S5/agent/prompt.py`. Open `denial-case.json` beside the matching final chat
+input in `original-trace.json`. Take the trace ID from the case, select the
+latest `name == "chat"` span by `startTimeUnixNano`, and project only its span
+ID and event names (including `gen_ai.choice` when present); use editor search
+on that span for the final chat input. Show the presenter-authored expectation,
+same read-only history, and native `Equals`. Explicitly exclude the old answer,
+system prompt, and signed-thinking/reasoning from the new task. Run the
 original prompt to its actual FAIL. Say:
 
 > Earlier, we evaluated an already generated output. Now we're using fixed inputs, and letting the agent generate the output again
@@ -43,45 +48,42 @@ When Inventory reads are still denied, recommend restoring access. Identify the 
 ```
 
 Select the pre-qualified endpoint with the identical repaired prompt, verify
-**OK**, induce one new denial, and show the real restoration recommendation as
-behavior evidence only. Register the original scored case and matching
-case/bundle hashes once in the private suite; the new hosted denial is not a CI
-input.
+**OK**, and run one dedicated hosted full investigation for a new denial. Match
+its event/run/trace and show the real restoration recommendation as behavior
+evidence only. Register the presenter-authored original scored case and
+matching case/trace identity once in the private suite; the new hosted denial
+is not a CI input.
 
 Restore the original source into the same S5 file, run the same local case to
 FAIL, and say “assume I'm a careless dev and I didn't run my tests locally
-before merging my changes”. Push normally and leave
+before merging my changes”. Hand the reviewed diff to the participant for the
+ordinary push; the presenter takes over only if unavailable. Leave
 `audience-case-gate` running. Its failure/incomplete status blocks/skips
 downstream `evaluate-agent` exact-package qualification and publication. Reach
 slides 35/36 before the callback, return to actual red/no-publication or
 pending status, and finish on slide 37. The detailed S3/S4 steps below are
 historical fallback only.
 
-In an ordinary repository checkout, open a terminal at the repository root.
-Build the tool snapshot for the opening case before the first inference:
+In an ordinary repository checkout, open a terminal at the repository root and
+change to `examples/live-denial`. Do not run a bridge or freeze/transfer helper
+during delivery. Open `denial-case.json` beside
+the matching final chat input in `original-trace.json` and show the direct
+native `Case`, the presenter-authored expectation, same read-only history, and
+native `Equals`. The old answer, system prompt, and signed-thinking/reasoning
+are explicitly excluded from the new task. From that terminal, run:
 
 ```bash
-cd examples/live-denial
-uv run --project ../../agent --locked python ../../scripts/native_case_bridge.py build \
-  --scenario denial-case.json --trace original-trace.json --output bridge
-```
-
-Match the original trace ID in `denial-case.json` and `bridge/bridge-manifest.json`.
-Show `bridge/candidate-input.json` (the alarm and cutoff), `bridge/captured-bundle.json`
-(the tool observations) and `bridge/case.frozen.json` (the reviewed expectation).
-Open `strands_denial.py` to show the `Case`, `investigate`, `RecommendedAction`,
-and `Experiment.run_evaluations`. From that same terminal, run:
-
-```bash
-PYTHONPATH="$(cd ../../agent && pwd)" uv run --project ../../agent --locked python -u strands_denial.py \
-  --scenario denial-case.json --case bridge/case.frozen.json --bundle bridge/captured-bundle.json
+PYTHONPATH="$(cd ../../agent && pwd)" uv run --project ../../agent --locked python -u strands_denial.py
 ```
 
 After the edit, run that exact command again. The packaged presenter workspace
 uses the same files in **Case and results > live-denial**. Its instructions
-include the corresponding [Codespace commands](../examples/live-denial/README.md#bind-the-case-to-the-captured-evidence-before-native-strands).
+include the corresponding [Codespace commands](../examples/live-denial/README.md#run-the-native-example).
 
-The runner reports the actual recommendation and exact action result. A
+The app's real `investigation.create_agent` starts one fresh agent run per
+prompt and produces one structured report; its normal bounded formatting
+follow-up may occur inside that run. The runner reports the actual
+recommendation and exact `Equals` result. A missing report is INCOMPLETE, not a
 completed wrong action is FAIL, a correct action is PASS, and missing or
 invalid inputs are INCOMPLETE; do not replace any of those outcomes with a
 recorded color.
@@ -94,9 +96,9 @@ recorded color.
 | 8-15 | S0 | Apply the matched memory action only after the completed report readback, wait for **Denied + 512 MB**, then make one visible checkout and explain why memory leaves access unchanged. |
 | 15-22 | S1 | Select the original trace, create a fixed dataset scenario draft, add the expected response, save it, and create the published version. |
 | 22-28 | S2 | In the Codespace `live-denial` folder, download `examples[0]` from the published dataset and run `score_denial.py`. Read the exact action check and the native verdict. Use slides 16, 18 and 19 to explain judge calibration, then return to the prompt edit. |
-| 28-38 | IDE | Convert the audience case to native Strands, run the faulty prompt to FAIL, apply the exact three-sentence rule, and run the same command fresh. |
-| 38-45 | Live | Use the identical repaired prompt on the pre-qualified endpoint, show one new denial recommendation as behavior evidence, and register the original scored case with matching case/bundle hashes. |
-| 45-53 | Gate | Restore the original prompt, run local FAIL, say the careless-dev line, push, and leave the fast gate running. |
+| 28-38 | IDE | Read `denial-case.json` directly into native Strands, show the matching final chat input/history from `original-trace.json`, run the faulty prompt to FAIL, apply the exact three-sentence rule, and run the same command fresh. |
+| 38-45 | Live | Use the identical repaired prompt on the pre-qualified endpoint for one dedicated full investigation, match its event/run/trace, and show the recommendation as behavior evidence. |
+| 45-53 | Gate | Prepare `agent/audience-input.json`, restore the original prompt, run local FAIL, say the careless-dev line, hand the diff to the participant for the push, and leave the fast gate running. |
 | 53-60 | - | Closing and questions. |
 
 Treat the schedule as a handoff plan. A pending result remains pending. A
@@ -125,7 +127,7 @@ recorded fallback is labelled with its case, candidate, and execution identity.
 ## Download and score
 
 Use the public `examples/live-denial` terminal and the maintained [Codespace
-download command](../examples/live-denial/README.md#download-the-published-case-in-codespaces).
+download command](../examples/live-denial/README.md#prepare-the-two-inputs).
 It uses the full published dataset ID and version, selects `examples[0]`, and
 runs the locked scorer.
 
@@ -168,14 +170,12 @@ audience edit or live case ran.
 4. If a result is late, show a matching recorded result with its identity and
    say that it is recorded. Do not relabel a development or live row as CI.
 
-Use the runnable [native case bridge](../scripts/native_case_bridge.py) to make
-that transfer visible. Run the build command in the [adaptation
-walkthrough](adapt-evaluations.md#bridge-the-live-case-into-s3s4). It reads
-the published structured recommendation, originating RunTable row and S3 captures, then writes
-`case.frozen.json` and `captured-bundle.json` for S3 plus `suite.json` for S4.
-The normal task projection and bounded evidence stay tied to the same incident;
-the bridge validates trace/session/run joins and keeps native
-`expected_response` prose separate from reviewed fields.
+Do not run a bridge or freeze/transfer helper during delivery. The current gate
+uses the separate `agent/audience-input.json` prepared from the saved
+`denial-case.json` and matching `original-trace.json`; it does not append the
+case to the standing qualification suite. Historical S3/S4 preparation keeps
+its own inputs and identities. For an independent adaptation, use [the direct
+Case walkthrough](adapt-evaluations.md#generate-a-new-answer-from-the-same-inputs).
 
 ## Capacity comparison
 

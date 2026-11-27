@@ -45,7 +45,7 @@ trace to a fixed dataset, edit `turns[0].expected_response` and the typed
 `metadata.expected_recommendation` in the scenario draft, save it, and create
 a version. Only the published version is a frozen input.
 
-Use the maintained [live-denial Codespace command](../examples/live-denial/README.md#download-the-published-case-in-codespaces)
+Use the maintained [live-denial Codespace command](../examples/live-denial/README.md#prepare-the-two-inputs)
 from a terminal whose working directory is `examples/live-denial`. It copies
 the full published dataset ID and version into `DATASET_ID` and
 `DATASET_VERSION`, selects `examples[0]`, and runs the locked `uv` scorer.
@@ -238,14 +238,9 @@ reports as controls and retain recorded identities for genuine results.
 
 ## Run the native Strands development experiment (S4)
 
-The experiment uses native `strands_evals` `Case` and `Evaluator` objects and
-`Experiment.run_evaluations`. Each case task calls the existing captured
-execution function. It writes the native `EvaluationReport`, runs cases
-sequentially, and may overlap the deterministic and advisory evaluators for a
-completed case. The current native denial case uses the same case/evidence
-bridge as S3; the normal S4/CI suite carries that case alongside the four
-retained reviewed gate cases, for five cases total. It does not silently switch
-to another case or live source.
+For the opening incident, use the [native prompt comparison](../examples/live-denial/README.md#run-the-native-example). It generates a fresh recommendation using the application's constructor. The same published scenario and original trace are used locally and in the first CI job.
+
+The commands below run the independent prepared S4 experiment. It uses native Strands cases, custom evaluators and the captured execution runner to evaluate the reviewed suite. Each selected case can exercise a full investigation using captured evidence.
 
 Direct prepared entry does not require an S3 run prerequisite. The prepared
 suite keeps case and bundle paths plus evaluator metadata outside
@@ -283,10 +278,7 @@ The run snapshots the candidate, evaluator and experiment code, lock, suite,
 selected cases and bundles before the first case. Repeating a selection creates
 a new experiment and fresh execution, session, and trace identities. Bounded
 task and evaluator retries record an error once and allow later selected cases
-to continue. The native report has one row per `(case, evaluator)`, so the
-normal five-case suite produces ten rows with two custom evaluators. A
-standalone one-case Codespace run is only the public live-denial example; it is
-not the full gate roster.
+to continue. The native report has one row per case and evaluator. With four reviewed cases and two evaluators, the full run produces eight rows.
 
 The deterministic row contains the eight named findings. The advisory row
 contains the pinned AgentCore Opus 5.5 `semantic_quality` categorical verdict,
@@ -321,17 +313,12 @@ otherwise exits 2. `compare` never authorizes a release.
 
 S4 is development feedback. It does not publish or qualify a Runtime ZIP. The
 editable prompt snapshot is separate from the prompt bytes in a serving ZIP.
-Presenter preparation supplies a private five-case archive: the four retained
-reviewed cases plus the current native denial case. The later protected release
-workflow downloads and verifies all five and applies policy against the exact
-Linux ARM64 ZIP. Keep that CI qualification row separate from any later live
-alarm/run row; the participant's one prompt-plus-private-suite-pointer commit
-only selects the prepared archive.
+The participant's push selects the opening incident with `agent/audience-input.json`. Its CI job runs the same one-case prompt comparison used in the IDE. The checked Runtime ZIP must also qualify against the four cases in `agent/qualification-input.json` and pass protected review. A later hosted alarm has its own investigation and trace. [CI steps](../docs/adapt-evaluations.md#run-the-same-test-on-the-next-push)
 
 ## Run and score the captured baseline (S2)
 
 For the public live-denial walkthrough, S2 is the published dataset download
-and original-trace score. Use the maintained [live-denial Codespace command](../examples/live-denial/README.md#download-the-published-case-in-codespaces)
+and original-trace score. Use the maintained [live-denial Codespace command](../examples/live-denial/README.md#prepare-the-two-inputs)
 from the `examples/live-denial` directory; it selects `examples[0]` and runs
 the locked `uv` scorer.
 
@@ -343,35 +330,11 @@ scenario. It does not rerun the investigating agent. First show the exact struct
 reviewed expectation. Then show the separate native label, value, and
 explanation; keep both outputs tied to the original trace and scoring attempt.
 
-### Bridge the live case into S3/S4
+### Generate a new recommendation from the opening case
 
-The public native scenario and the normal captured-evidence runner use
-different input shapes. Use the runnable [native case bridge](../scripts/native_case_bridge.py)
-to bind the downloaded case and the `original-trace.json` written by
-`score_denial.py`. The bridge reads the originating RunTable row and bounded S3
-captures itself.
+Use the two files already in the IDE. The published alarm is `Case.input` and the presenter's expected recommendation is `Case.expected_output`. The example reads the public conversation before the final response from the matching trace. It passes the alarm and that conversation to the agent created by `investigation.create_agent`. A fresh structured recommendation becomes the output graded by native `Equals()`. Edit `agent/prompt.py`, save, and rerun the same command. [Runnable example and command](../examples/live-denial/README.md#run-the-native-example)
 
-```sh
-set -euo pipefail
-cd ../..
-export AWS_PROFILE="${AWS_PROFILE:?set the authorized AWS profile}"
-export AWS_DEFAULT_REGION="${AWS_DEFAULT_REGION:?set the evaluation Region}"
-bridge_root="$(mktemp -d "${TMPDIR:-/tmp}/native-case-bridge.XXXXXX")"
-uv run --project agent --locked python scripts/native_case_bridge.py build \
-  --scenario examples/live-denial/denial-case.json \
-  --trace examples/live-denial/original-trace.json \
-  --profile "$AWS_PROFILE" --region "$AWS_DEFAULT_REGION" \
-  --output "$bridge_root"
-```
-
-The bridge verifies trace/session/run joins and writes `case.frozen.json`,
-`captured-bundle.json`, `suite.json`, and `candidate-input.json`. Pass the
-first two as S3 `--case`/`--bundle`, or `suite.json` as the S4 `--suite`. S3
-and S4 then use the same incident's normal task projection and bounded
-captured evidence, while creating fresh candidate executions and traces. The
-bridge derives its structured expectations from the native metadata in the
-published scenario; no manually typed restore version or extra review file is
-needed. This is not a new trace or a standalone known-reference example.
+### Inspect or score a prepared S2 execution
 
 Open the prepared S2 execution from private evidence and inspect its retained
 report and deterministic findings:
