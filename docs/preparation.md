@@ -519,11 +519,12 @@ prepared stage route; they are not the public dataset download.
 Use the prepared workspaces for the rehearsal. Label every recorded fallback
 with its input and execution identity:
 
-- [ ] Rehearse the opening denial. Trigger a genuine new alarm transition,
-  match the faulty investigation and wrong memory recommendation, switch to
-  higher memory while preserving denial, send separate fresh failed requests,
-  then restore access and recover. A configuration readback alone does not
-  prove a business outcome.
+- [ ] Rehearse the opening denial. Load the signed-in storefront and wait for
+  the catalog/product view before triggering a genuine new alarm transition.
+  Wait for the completed faulty report, read **target `INVENTORY`** and
+  **value `512 MB`**, and only then apply the higher-memory action while
+  preserving denial. Wait for **Denied + 512 MB** before making one visible
+  checkout. A configuration readback alone does not prove a business outcome.
 - [ ] Rehearse selecting repaired with endpoint, version, and artifact
   readback. Then trigger a new incident after native alarm **OK**. Match the
   new event and run. Do not relabel an old report or clear deduplication

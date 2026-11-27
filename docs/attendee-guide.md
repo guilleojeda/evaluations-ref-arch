@@ -11,6 +11,21 @@ whether the formal recommendation fixes the failure mechanism.
 > When the evidence shows an ongoing Inventory read denial, recommend restoring
 > access by selecting the healthy Inventory version at the current memory.
 
+## The opening sequence
+
+The presenter loads the signed-in storefront and waits for the catalog/product
+view before triggering the denial. This teaches the normal customer path: a
+shopper is ready to place a quantity-one order, but the checkout is not clicked
+yet.
+
+After the fresh denial, the presenter waits for the faulty investigation to
+finish. The report is read before any configuration action and must show
+**target `INVENTORY`** and **value `512 MB`** for **Increase memory**. A partial
+or incomplete report stays pending. Only after that readback does the presenter
+apply the memory action, wait for **Denied + 512 MB**, and make one visible
+checkout. The resulting 502/request ID or pending state is application
+evidence separate from the report and configuration readback.
+
 ## The current IDE-to-CI route
 
 After the fixed-case score and calibration, the presenter uses one clean S5
@@ -165,11 +180,23 @@ The [synthetic local case](../README.md#run-one-evaluation-locally) remains a
 fully offline example. It uses versions 74 and 75, has no AWS dependency, and
 is intentionally separate from the live trace and published dataset above.
 
-## Historical rejected-push exhibit (not the current callback)
+## Verified audience gate exhibit
 
-The participant changed the prompt and the pointer in one commit. Open those two files in the GitHub diff, then open the qualification job for that commit. Its suite includes the case created from the denial observed in the rehearsal. The reports and original trace stay in private storage. [Participant diff](https://github.com/guilleojeda/evaluations-ref-arch/commit/54873b6bdb6dfbed0bc6372a5ac2b09b7efe5dc7) and [qualification run](https://github.com/guilleojeda/evaluations-ref-arch/actions/runs/45913405212)
+The verified pushed-source row is [run 45943122055, job
+140321719185](https://github.com/guilleojeda/evaluations-ref-arch/actions/runs/45943122055#summary-140321719185).
+It ran the ordinary push from commit
+`7965dbc2a1ec6e57a86d6bb9f496d3bc106e8955` against opening case
+`native.inventory.40dc1c65ab64dba3579d`. The exact action check returned
+**FAIL (1)**: expected **Restore inventory access** on healthy Inventory
+**v167**, while the actual report recommended **Increase memory** for
+Inventory at **512 MB**. The row matched the original case and captured-bundle
+hashes and the restored original prompt.
 
-In this run, the audience case expected restoration of Inventory access at the original memory setting. The regressed agent recommended increasing memory to 512 MB. Its required action check failed. The overall gate rejected the package and skipped publication. The capacity control also failed and appears first in the aggregate gate message. Open the audience case row to see the denial's result.
+The fast row is the release guard, not the full qualification. Its downstream
+qualification and publication jobs are skipped/blocked when this required
+check fails or is incomplete; do not claim a skipped job ran. Keep the actual
+red/no-publication or pending status visible in the workflow. The new hosted
+denial remains behavior evidence only, not a CI input.
 
 To reproduce the deterministic failure without AWS, use the saved report in the
 [synthetic case](../README.md#try-a-regression). The live score and the

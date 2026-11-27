@@ -100,7 +100,7 @@ To try the same case with Strands, follow the walkthrough. It shows where to plu
 | --- | --- |
 | Inspect the code shown on stage | [Six frozen checkpoints in the talk/v5 series](docs/checkpoints.md) |
 | Understand the code checks, model judge, and release decision | [Evaluation approach](docs/evaluations.md) and [audience questions](docs/questions.md) |
-| See a rejected release pattern | [Historical denial result](docs/attendee-guide.md#historical-rejected-push-exhibit-not-the-current-callback) |
+| See the current gate exhibit | [Temporary verified-CI reference](docs/attendee-guide.md#current-gate-exhibit-temporary-pending-verified-ci-reference) |
 | Find the services that produced the incident | [Checkout application](docs/components/application.md), [failure controller](docs/components/failure-controller.md), and [read-only operations agent](docs/components/operations-agent.md) |
 | Build and check the components locally or adapt the AWS setup | [Development and deployment](docs/deployment.md) |
 
