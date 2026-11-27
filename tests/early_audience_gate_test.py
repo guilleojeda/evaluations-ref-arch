@@ -142,7 +142,7 @@ class EarlyAudienceGateTests(unittest.TestCase):
 
     def test_pointer_roster_must_match_the_archive_manifest(self) -> None:
         pointer = self.root / "qualification-input.json"
-        pointer.write_text(json.dumps({"caseIds": ["not-the-archive-roster"]}), encoding="utf-8")
+        pointer.write_text(json.dumps({"caseIds": ["not-the-archive-roster"], "suiteSha256": "a" * 64}), encoding="utf-8")
         with self.assertRaisesRegex(self.gate.AudienceGateError, "pointer caseIds"):
             self.gate.select_audience_case(
                 self.fixture.archive,
@@ -154,7 +154,7 @@ class EarlyAudienceGateTests(unittest.TestCase):
         members = self.gate._archive_members(self.fixture.archive)
         manifest_ids = [row["caseId"] for row in json.loads(members["staging/manifest.json"])["cases"]]
         pointer = self.root / "short-qualification-input.json"
-        pointer.write_text(json.dumps({"caseIds": manifest_ids}), encoding="utf-8")
+        pointer.write_text(json.dumps({"caseIds": manifest_ids, "suiteSha256": "a" * 64}), encoding="utf-8")
         with self.assertRaisesRegex(self.gate.AudienceGateError, "four baseline cases plus one audience"):
             self.gate.select_audience_case(self.fixture.archive, self.root / "short-pointer", pointer)
 
@@ -197,7 +197,7 @@ class EarlyAudienceGateTests(unittest.TestCase):
             "expected": {"action": "Other", "target": None, "unit": None},
         }
         actual = {"action": "Other", "target": None, "unit": None, "value": "private explanation"}
-        with tempfile.TemporaryDirectory(prefix="safe-native-" ) as directory:
+        with tempfile.TemporaryDirectory(prefix="safe-native-") as directory:
             result = Path(directory) / "audience-row.json"
             stdout, stderr = io.StringIO(), io.StringIO()
             with patch.object(

@@ -28,6 +28,7 @@ from reviewed_cases import load_frozen_case
 ROOT = Path(__file__).resolve().parents[1]
 MAP_MEMBER = "staging/live-case-map.json"
 MANIFEST_MEMBER = "staging/manifest.json"
+SUITE_MEMBER = "staging/suite.json"
 
 
 class AudienceGateError(ValueError):
@@ -102,6 +103,42 @@ def _pointer_case_ids(pointer_path: str | Path | None) -> list[str] | None:
     return case_ids
 
 
+def _pointer_suite_sha(pointer_path: str | Path | None) -> str | None:
+    if pointer_path is None:
+        return None
+    path = Path(pointer_path)
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise AudienceGateError("qualification pointer is not valid UTF-8 JSON") from exc
+    suite_sha = value.get("suiteSha256") if isinstance(value, Mapping) else None
+    if not isinstance(suite_sha, str) or len(suite_sha) != 64 or any(char not in "0123456789abcdef" for char in suite_sha):
+        raise AudienceGateError("qualification pointer suiteSha256 is missing or malformed")
+    return suite_sha
+
+
+def _suite_case_rows(members: Mapping[str, bytes]) -> list[tuple[str, str, str]]:
+    suite = _json_member(members, SUITE_MEMBER, "suite")
+    entries = suite.get("cases")
+    if suite.get("schemaVersion") != 1 or not isinstance(entries, list) or not entries:
+        raise AudienceGateError("archive suite is not a non-empty schemaVersion 1 case list")
+    case_rows: list[tuple[str, str, str]] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise AudienceGateError("archive suite contains a malformed case row")
+        case_member = _member_name(entry.get("case"), "suite case member")
+        bundle_member = _member_name(entry.get("bundle"), "suite bundle member")
+        envelope = _json_member(members, "staging/" + case_member, "suite frozen case")
+        if "staging/" + bundle_member not in members:
+            raise AudienceGateError("archive suite points to a missing bundle")
+        case = envelope.get("case")
+        case_id = case.get("caseId") if isinstance(case, Mapping) else None
+        if not isinstance(case_id, str) or not case_id.strip() or any(row[0] == case_id for row in case_rows):
+            raise AudienceGateError("archive suite case IDs are malformed or duplicated")
+        case_rows.append((case_id, case_member, bundle_member))
+    return case_rows
+
+
 def select_audience_case(archive_path: str | Path, output_root: str | Path, pointer_path: str | Path | None = None) -> dict[str, Any]:
     """Copy and authenticate the mapped audience case/bundle for one run."""
 
@@ -111,15 +148,39 @@ def select_audience_case(archive_path: str | Path, output_root: str | Path, poin
     if not isinstance(rows, list):
         raise AudienceGateError("archive manifest has no case rows")
     pointer_ids = _pointer_case_ids(pointer_path)
+    pointer_suite_sha = _pointer_suite_sha(pointer_path)
     manifest_ids = [item.get("caseId") for item in rows if isinstance(item, Mapping)]
     if any(not isinstance(item, str) or not item.strip() for item in manifest_ids):
         raise AudienceGateError("archive manifest case IDs are malformed")
     if pointer_ids is not None and pointer_ids != manifest_ids:
         raise AudienceGateError("qualification pointer caseIds do not match the archive manifest")
     mapping_raw = archive_members.get(MAP_MEMBER)
+    if pointer_ids is not None:
+        expected_count = 5 if mapping_raw is not None else 4
+        if len(pointer_ids) != expected_count:
+            raise AudienceGateError(
+                "audience qualification pointer must name four baseline cases plus one audience case"
+                if mapping_raw is not None
+                else "unaugmented qualification pointer must name exactly four baseline cases"
+            )
+    if pointer_ids is not None:
+        suite_raw = archive_members.get(SUITE_MEMBER)
+        if suite_raw is None or pointer_suite_sha is None:
+            raise AudienceGateError("archive is missing the pointer-bound suite")
+        if _sha(suite_raw) != pointer_suite_sha:
+            raise AudienceGateError("qualification pointer suiteSha256 does not match archive bytes")
+        manifest_rows = [
+            (
+                item["caseId"],
+                _member_name(item.get("case"), "manifest case member"),
+                _member_name(item.get("bundle"), "manifest bundle member"),
+            )
+            for item in rows
+            if isinstance(item, Mapping)
+        ]
+        if _suite_case_rows(archive_members) != manifest_rows:
+            raise AudienceGateError("archive suite case roster does not match the manifest")
     if mapping_raw is None:
-        if pointer_ids is not None and len(pointer_ids) != 4:
-            raise AudienceGateError("unaugmented qualification pointer must name exactly four baseline cases")
         # A carried baseline predates the audience case. Prove that it has no
         # session-derived live row before using its retained denial row as the
         # quick regression witness. If a live row exists, a missing map is a
@@ -155,8 +216,6 @@ def select_audience_case(archive_path: str | Path, output_root: str | Path, poin
         case_id = row.get("caseId")
         map_kind = "baseline-denial"
     else:
-        if pointer_ids is not None and len(pointer_ids) != 5:
-            raise AudienceGateError("audience qualification pointer must name four baseline cases plus one audience case")
         mapping = _json_member(archive_members, MAP_MEMBER, "live-case member map")
         if mapping.get("schemaVersion") != 1 or mapping.get("kind") != "live-case-kit-member-map":
             raise AudienceGateError("live-case member map is not schemaVersion 1")
