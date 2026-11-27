@@ -69,7 +69,7 @@ for recovered evidence it is `{"action":"Other","target":null,"unit":null}`
 with a separate free explanation. Only the published version is a frozen
 evaluation input.
 
-The Codespace uses the maintained [live-denial download command](../examples/live-denial/README.md#download-the-published-case-in-codespaces)
+The Codespace uses the maintained [live-denial download command](../examples/live-denial/README.md#prepare-the-two-inputs)
 from the `examples/live-denial` directory. It copies the full published
 dataset ID and version and selects `examples[0]` explicitly.
 

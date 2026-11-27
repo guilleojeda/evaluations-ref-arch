@@ -511,7 +511,7 @@ ongoing denial use `Restore inventory access` with the healthy version,
 `inventory`, and `version`; for recovered evidence use `Other` with null target
 and unit plus a separate free explanation. Only the published version is
 frozen. From a Codespace terminal in `examples/live-denial`, use the
-maintained [download and score command](../examples/live-denial/README.md#download-the-published-case-in-codespaces)
+maintained [download and score command](../examples/live-denial/README.md#prepare-the-two-inputs)
 to select its single example and score the original report.
 
 The scorer reads the case, fetches the original trace with its session,

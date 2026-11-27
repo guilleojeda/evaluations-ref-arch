@@ -115,9 +115,10 @@ The code intentionally uses the application constructor:
    whose `tools()` returns `[]`. The read phase is already in the trace, so the
    replay cannot make fresh application reads.
 4. `Experiment.run_evaluations` makes one report-generation invocation with
-   native `Equals`. Its bounded `turns: 2` allowance lets Strands perform its
-   normal in-invocation structured-output follow-up when the first model turn
-   ends in prose; a completed structured report is not rerun.
+   native `Equals`. Its bounded `turns: 3` and
+   `structured_output_attempts: 2` allowance lets Strands perform at most one
+   prose-format follow-up and one schema correction inside that invocation; a
+   completed structured report is not rerun.
 5. The separate exact-action check compares action, target, value and unit.
 
 For a reviewed `Other` case, native `Equals` compares the canonical action,

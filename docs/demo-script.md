@@ -78,7 +78,7 @@ PYTHONPATH="$(cd ../../agent && pwd)" uv run --project ../../agent --locked pyth
 
 After the edit, run that exact command again. The packaged presenter workspace
 uses the same files in **Case and results > live-denial**. Its instructions
-include the corresponding [Codespace commands](../examples/live-denial/README.md#bind-the-case-to-the-captured-evidence-before-native-strands).
+include the corresponding [Codespace commands](../examples/live-denial/README.md#run-the-native-example).
 
 The app's real `investigation.create_agent` starts one fresh agent run per
 prompt and produces one structured report; its normal bounded formatting
@@ -127,7 +127,7 @@ recorded fallback is labelled with its case, candidate, and execution identity.
 ## Download and score
 
 Use the public `examples/live-denial` terminal and the maintained [Codespace
-download command](../examples/live-denial/README.md#download-the-published-case-in-codespaces).
+download command](../examples/live-denial/README.md#prepare-the-two-inputs).
 It uses the full published dataset ID and version, selects `examples[0]`, and
 runs the locked scorer.
 

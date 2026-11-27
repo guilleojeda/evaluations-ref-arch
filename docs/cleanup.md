@@ -148,11 +148,7 @@ git -C "$s5_root" status --short
 git -C "$s5_root" log --oneline -8
 ```
 
-Preserve the recorded regression SHA. Inspect the commit and confirm that its
-two intended changes are the prompt and private suite pointer. Revert that
-exact commit in the S5 worktree so both files return together. Do not reset, rebase,
-amend, force-push, move a frozen tag, or replace newer source with an old
-checkpoint.
+Inspect the recorded regression commit. It changes `agent/prompt.py` and, when this performance selected a new incident, `agent/audience-input.json`. For a repeat on the already-selected case, the prompt can be the only changed file. Match the committed pointer's two digests to the scenario and trace used by the IDE and CI. Revert the recorded commit in S5 and push the revert to `demo-deploy`.
 
 ```sh
 s5_root="${PHASE22_S5_ROOT:?path to the only demo-deploy worktree}"

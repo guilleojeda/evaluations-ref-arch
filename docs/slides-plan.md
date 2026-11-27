@@ -66,7 +66,7 @@ the published version. Make clear that a draft is not yet the frozen download.
 
 ### Dataset to Codespace
 
-In the `live-denial` folder, use the maintained [download and score command](../examples/live-denial/README.md#download-the-published-case-in-codespaces)
+In the `live-denial` folder, use the maintained [download and score command](../examples/live-denial/README.md#prepare-the-two-inputs)
 with the full dataset ID and published version. It selects `examples[0]` and
 uses the locked scorer.
 
