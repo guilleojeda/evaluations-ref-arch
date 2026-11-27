@@ -5,6 +5,67 @@ The public cue sheet describes what to show, not private account setup. Keep
 credentials, console locators, trace IDs, and presenter-only runbooks outside
 the repository.
 
+## Current normal cue
+
+After the original score and calibration, use one clean qualified S5. Copy
+the prepared `before/faulty-prompt.py` reference into the active
+`S5/agent/prompt.py`, show the audience case
+input, expected output, fixed captured tools, and exact evaluator, and run the
+original prompt to its actual FAIL. Say:
+
+> Earlier, we evaluated an already generated output. Now we're using fixed inputs, and letting the agent generate the output again
+
+Replace only the active rule with this exact text; run the same command for a
+fresh inference/session and actual recommendation:
+
+```text
+When Inventory reads are still denied, recommend restoring access. Identify the healthy version at the same memory from the configuration evidence. If access has already recovered, recommend no change.
+```
+
+Select the pre-qualified endpoint with the identical repaired prompt, verify
+**OK**, induce one new denial, and show the real restoration recommendation as
+behavior evidence only. Register the original scored case and matching
+case/bundle hashes once in the private suite; the new hosted denial is not a CI
+input.
+
+Restore the original source into the same S5 file, run the same local case to
+FAIL, and say “assume I'm a careless dev and I didn't run my tests locally
+before merging my changes”. Push normally and leave
+`audience-case-gate` running. Its failure/incomplete status blocks/skips
+downstream `evaluate-agent` exact-package qualification and publication. Reach
+slides 35/36 before the callback, return to actual red/no-publication or
+pending status, and finish on slide 37. The detailed S3/S4 steps below are
+historical fallback only.
+
+In an ordinary repository checkout, open a terminal at the repository root.
+Build the tool snapshot for the opening case before the first inference:
+
+```bash
+cd examples/live-denial
+uv run --project ../../agent --locked python ../../scripts/native_case_bridge.py build \
+  --scenario denial-case.json --trace original-trace.json --output bridge
+```
+
+Match the original trace ID in `denial-case.json` and `bridge/bridge-manifest.json`.
+Show `bridge/candidate-input.json` (the alarm and cutoff), `bridge/captured-bundle.json`
+(the tool observations) and `bridge/case.frozen.json` (the reviewed expectation).
+Open `strands_denial.py` to show the `Case`, `investigate`, `RecommendedAction`,
+and `Experiment.run_evaluations`. From that same terminal, run:
+
+```bash
+PYTHONPATH="$(cd ../../agent && pwd)" uv run --project ../../agent --locked python -u strands_denial.py \
+  --scenario denial-case.json --case bridge/case.frozen.json --bundle bridge/captured-bundle.json
+```
+
+After the edit, run that exact command again. The packaged presenter workspace
+uses the same files in **Case and results > live-denial**. Its instructions
+include the corresponding [Codespace commands](../examples/live-denial/README.md#bind-the-case-to-the-captured-evidence-before-native-strands).
+
+The runner reports the actual recommendation and exact action result. A
+completed wrong action is FAIL, a correct action is PASS, and missing or
+invalid inputs are INCOMPLETE; do not replace any of those outcomes with a
+recorded color.
+
 ## Working run of show
 
 | Minutes | Stage | Cue |
@@ -13,9 +74,9 @@ the repository.
 | 8-15 | S0 | Show the Inventory denial and the observed denied-version configuration. Explain why a memory increase leaves access unchanged. |
 | 15-22 | S1 | Select the original trace, create a fixed dataset scenario draft, add the expected response, save it, and create the published version. |
 | 22-28 | S2 | In the Codespace `live-denial` folder, download `examples[0]` from the published dataset and run `score_denial.py`. Read the exact action check and the native verdict. Use slides 16, 18 and 19 to explain judge calibration, then return to the prompt edit. |
-| 28-35 | S3 | Edit only the recommendation rule and start a fresh candidate against the same selected case/evidence. |
-| 35-42 | S4 | Run the native Strands experiment with the current denial case plus the four retained reviewed cases. Show the denial row before the capacity row. |
-| 42-53 | S5 | Show the participant's one commit with the prompt edit and private suite-pointer update, CI qualification for the exact ZIP, and publication decision. |
+| 28-38 | IDE | Convert the audience case to native Strands, run the faulty prompt to FAIL, apply the exact three-sentence rule, and run the same command fresh. |
+| 38-45 | Live | Use the identical repaired prompt on the pre-qualified endpoint, show one new denial recommendation, and append the exact case. |
+| 45-53 | Gate | Restore the original prompt, run local FAIL, say the careless-dev line, push, and leave the fast gate running. |
 | 53-60 | - | Closing and questions. |
 
 Treat the schedule as a handoff plan. A pending result remains pending. A
@@ -63,7 +124,12 @@ case compare the formal recommendation with the reviewed expected response:
 the summary's correct diagnosis does not make `Increase memory` the correct
 action.
 
-## Development and release
+## Historical prepared-stage development and release (not the current cue)
+
+The normal audience cue is the current one-case IDE route above. The S3/S4/S5
+steps below remain useful for independent preparation and outage recovery only;
+label their results prepared or recorded and never imply that the current
+audience edit or live case ran.
 
 1. S3 edits only the recommendation rule. Run a fresh candidate with the same
    selected dataset case and captured evidence. Its new trace is not the S2
@@ -84,7 +150,7 @@ action.
 
 Use the runnable [native case bridge](../scripts/native_case_bridge.py) to make
 that transfer visible. Run the build command in the [adaptation
-walkthrough](adapt-evaluations.md#bridge-the-live-case-into-s3-s4). It reads
+walkthrough](adapt-evaluations.md#bridge-the-live-case-into-s3s4). It reads
 the published structured recommendation, originating RunTable row and S3 captures, then writes
 `case.frozen.json` and `captured-bundle.json` for S3 plus `suite.json` for S4.
 The normal task projection and bounded evidence stay tied to the same incident;

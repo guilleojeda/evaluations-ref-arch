@@ -10,6 +10,25 @@ publishing credentials, trace exports, account-specific role names, or private
 session locators. Keep those values in the maintainer's separate session
 record.
 
+## Current normal-route rehearsal
+
+Prepare one clean qualified S5 and verify the source file
+the prepared `before/faulty-prompt.py` reference is available. Before the IDE
+cue, copy it into the active `S5/agent/prompt.py`; keep the case input, expected output, fixed captured
+tools, and exact evaluator ready to show. The rehearsal must record the actual
+faulty FAIL, then use this exact rule for the fresh run:
+
+```text
+When Inventory reads are still denied, recommend restoring access. Identify the healthy version at the same memory from the configuration evidence. If access has already recovered, recommend no change.
+```
+
+Show the pre-qualified endpoint's new denial recommendation as behavior
+evidence only. Register the original scored case and matching case/bundle
+hashes once. Restore the original prompt before the local FAIL and ordinary push.
+The fast `audience-case-gate` is required and runs beside ordinary checks; a
+failure/incomplete result blocks/skips `evaluate-agent` and publication. Never
+replace a missing result with a recording or claim a skipped qualification ran.
+
 To run just the public example, start in the [README](../README.md#run-one-evaluation-locally). You can do that without presenter access.
 
 The stage-workspace setup opens one or all six editable workspaces. That setup
@@ -521,7 +540,7 @@ with its input and execution identity:
   Compare actual starts, skips, native arrivals,
   caller outcomes, metric windows, and checkout effects. Preserve app code,
   memory, aliases, access, `productVersion`, and prior data across the pair.
-  Use the [capacity cue](demo-script.md#capacity-overload-and-separate-remedy-observation)
+  Use the [capacity cue](demo-script.md#capacity-comparison)
   for acceptance evidence and fallback.
 - [ ] Verify recovered and stale-alert examples have a later reference time and
   captured post-recovery evidence. Do not judge a pre-recovery report by later
@@ -541,7 +560,13 @@ with its input and execution identity:
   screen switches and approved closing. After the final rehearsal, execute
   cleanup before establishing the delivery baseline.
 
-### Run a stage from its prepared workspace
+### Historical stage-entry map (fallback only)
+
+The current normal rehearsal is the short route in section 3: one clean S5,
+one native IDE case, one identical live endpoint, exact case append, restored
+local FAIL, ordinary push, and the fast gate. Use the stage map below only for
+independent entry, preparation, or an actual outage; label its results
+prepared/recorded and do not imply that the current audience edit ran.
 
 Open the requested stage directory and use its private input paths. At launch,
 each run must snapshot its candidate, tooling, lockfile, case or bundle,

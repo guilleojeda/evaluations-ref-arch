@@ -9,6 +9,41 @@ The [demo cue sheet](demo-script.md) has the stage order, the [slides plan](slid
 has the projected story, and the [attendee guide](attendee-guide.md) has the
 public case walkthrough.
 
+## Current audience route
+
+After the opening trace, fixed case, original score, and calibration (physical
+16 is **Two types of checks**, followed by 18 and 19), use one visible IDE
+loop. Start from a clean qualified S5 and copy
+the prepared `before/faulty-prompt.py` reference into the active
+`S5/agent/prompt.py`. Show the audience case
+input, expected output, fixed captured tools, and exact evaluator; run the
+original prompt to the actual FAIL. Say:
+
+> Earlier, we evaluated an already generated output. Now we're using fixed inputs, and letting the agent generate the output again
+
+Replace only the active rule with this exact text and run the same command for a
+fresh inference/session and actual recommendation:
+
+```text
+When Inventory reads are still denied, recommend restoring access. Identify the healthy version at the same memory from the configuration evidence. If access has already recovered, recommend no change.
+```
+
+Use the identical repaired prompt on the pre-qualified endpoint, induce one new
+denial after verifying **OK**, and show the real restoration recommendation as
+behavior evidence only. Register the original scored case and matching
+case/bundle hashes once in the private suite; the new hosted denial is not a CI
+input.
+
+Restore the original source into the same S5 file, run the same local case to
+FAIL, and say “assume I'm a careless dev and I didn't run my tests locally
+before merging my changes”. Push normally. The required fast
+`audience-case-gate` runs in parallel with ordinary checks; failure or
+incomplete status blocks/skips downstream `evaluate-agent` exact-package
+qualification and publication. Leave it running through slides 35 and 36,
+return to the actual red/no-publication or pending state, then finish on 37.
+The older S3/S4 table below is retained as a prepared-stage fallback, not the
+normal audience cue.
+
 ## Audience and intended outcome
 
 Show the room how to:
@@ -32,6 +67,10 @@ the live alias on the denied version at the observed baseline memory, while a
 healthy version uses the normal role at that same memory. A memory change
 therefore leaves the denial in place and a fresh checkout still fails. Read the
 exact version values from the trace and configuration during each performance.
+The controller's automatic verification probe supplies the initial failure
+evidence; keep the storefront untouched until the selected memory action is
+complete and **Denied + 512 MB** is read back. Then make the one visible
+storefront checkout and show its real 502/request ID or pending state.
 
 Ask: **"Did the agent miss the clue, or did it see the clue and still recommend
 the wrong fix?"** The trace answers the first part. The reviewed expectation
@@ -45,13 +84,15 @@ access by selecting the healthy version identified in the trace.
 | S0 - Native trace | Observe the alarm, read-only tool calls, source results, and original report. | The original execution and evidence. |
 | S1 - Dataset case | Create a fixed AgentCore dataset scenario draft from the selected trace, add the prose and typed expected recommendation, and publish the version. | Both reviewed fields remain evaluator input, not agent prompt input. |
 | S2 - Original score | Show the exact structured recommendation check, then score the original report with `Builtin.Correctness` and explain the calibration/holdout boundary. | No agent rerun; both outputs belong to the original trace and scoring attempt. |
-| S3 - Development repair | Edit only the recommendation rule and run a fresh candidate. | Selected case, captured evidence, report shape, and evaluator. |
-| S4 - Native experiment | Run the repaired candidate through Strands with the current native case/evidence bridge plus the four retained reviewed cases. | Five-case suite; case meaning and evaluator remain fixed. |
-| S5 - Release gate | Run CI against the exact Runtime ZIP proposed for release. | Package identity and reviewed case roster. |
+| IDE repair | Convert the audience case to a native Strands case, show input/expected/fixed tools/evaluator, run original FAIL, edit the exact rule, and run the same command. | Fixed case and captured tools; fresh session and prompt digest. |
+| Live repaired endpoint | Use the identical repaired prompt on the pre-qualified endpoint and show one new denial recommendation. | A real new event/run, not a prepared result; it is not the CI input. |
+| Fast release check | Register the original scored case and matching case/bundle hashes, restore the faulty prompt, show local FAIL, and push normally. | `audience-case-gate` is required; failure/incomplete blocks `evaluate-agent` and publication. |
 
-S3 and S4 are development feedback. They do not qualify or publish a Runtime
-ZIP. A required CI failure rejects the proposed package; the previously
-qualified serving package remains in place while the new one is reviewed.
+The IDE run and live endpoint are development evidence; they do not qualify or
+publish a Runtime ZIP. The exact live case is appended only after the new
+denial is observed. The required fast CI failure/incomplete result rejects or
+blocks the proposed package; the previously qualified serving package remains
+in place while the new one is reviewed.
 
 Use the runnable [native case bridge](../scripts/native_case_bridge.py) with
 the [build command](adapt-evaluations.md#bridge-the-live-case-into-s3s4)
@@ -68,9 +109,9 @@ separate execution identity.
 | 8-15 | S0 | Show the denied read and configuration; establish why memory is not the fix. |
 | 15-22 | S1 | Add the selected trace to a fixed dataset, distinguish draft from published version, and write the reviewed prose and typed recommendation. |
 | 22-28 | S2 | Download `examples[0]` from the published case and show the returned native label, value, and explanation for the original report. |
-| 28-35 | S3 | Edit the recommendation rule and start a fresh candidate against the same case/evidence. |
-| 35-42 | S4 | Run the native Strands experiment; show the current denial case alongside the four retained reviewed cases. |
-| 42-53 | S5 | Show the participant's prompt edit plus private suite-pointer update, CI qualification for the exact ZIP, and publication decision. |
+| 28-38 | IDE | Convert the audience case to native Strands, show the fixed inputs/tools/evaluator, run FAIL, apply the exact three-sentence rule, and run the same command fresh. |
+| 38-45 | Live | Select the pre-qualified identical prompt, show the new denial recommendation, and append the exact case to the private suite. |
+| 45-53 | Gate | Restore the original prompt, show local FAIL, say the careless-dev line, and push. Leave the fast gate running. |
 | 53-60 | - | Closing and questions. |
 
 Treat the timeline as a handoff schedule. A pending or recorded result remains
@@ -83,19 +124,19 @@ Use three bounded interactions:
 - Ask what an acceptable response should recommend after the trace is visible.
 - Ask whether the written diagnosis supports the formal action before revealing
   the `Builtin.Correctness` result.
-- Have the participant edit only the recommendation rule and predict the CI
-  result.
+- Have the participant, when available, or the presenter edit only the
+  recommendation rule and predict the CI result. The ordinary push is the same
+  either way; do not add a second prompt path.
 
 Audience wording is normalized into the reviewed expected response. It is not
 inserted into the agent prompt or evaluator instructions during the talk.
 
-Presenter preparation appends the current denial case to the four retained
-reviewed gate cases and uploads the resulting five-case archive privately. S5
-then has one participant commit containing only the prompt edit and private
-suite pointer. CI downloads and verifies all five cases against the exact
-package, then compares the source run's case/bundle identity with the
-candidate's CI result. The pointer and source records stay private. This does
-not guarantee a pass or publication.
+The current route appends the exact live denial to the private suite after the
+pre-qualified endpoint handles it. The ordinary push then starts
+`audience-case-gate` in parallel with ordinary checks; a failure/incomplete
+status blocks or skips downstream `evaluate-agent` exact-package qualification
+and publication. The older five-case package workflow remains documented as a
+prepared-stage fallback and is not a normal audience cue.
 
 ## Public and private boundaries
 

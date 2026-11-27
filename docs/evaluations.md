@@ -13,7 +13,29 @@ Inventory tried to read its DynamoDB table, and the policy on its active executi
 | AgentCore judge | Reads the investigation and reviewed references. It gives one advisory verdict with a reason about the diagnosis and the evidence cited for it. |
 | Release gate | A required failure rejects the ZIP. Missing required evidence blocks publication. If the checks pass and advisory scoring completes, a reviewer compares the reports with their sources before approving that ZIP. |
 
-On stage, the audience sees the faulty agent's trace (S0), reviews the case (S1), scores the saved run (S2), edits the prompt (S3), and tries the change across cases in Strands (S4). In S5, CI evaluates the ZIP the participant has proposed for release. [Stage guide](components/operations-agent.md#software-stages) and [demo sequence](demo-progression.md)
+On stage, the audience sees the faulty agent's trace (S0), reviews the case (S1), scores the saved run (S2), then uses one native Strands IDE loop, one pre-qualified live endpoint, and the fast release check described below. [Stage guide](components/operations-agent.md#software-stages) and [demo sequence](demo-progression.md)
+
+### Current onstage handoff
+
+After the calibration slides, the audience case is converted visibly into one
+native Strands case. In clean S5, copy the prepared `before/faulty-prompt.py`
+reference into the active `S5/agent/prompt.py`; show case input, expected output, fixed captured tools,
+and evaluator; run the original prompt to actual FAIL; say the required
+boundary sentence; edit only the active rule to this exact text and run the
+same command for a fresh inference/session and recommendation:
+
+```text
+When Inventory reads are still denied, recommend restoring access. Identify the healthy version at the same memory from the configuration evidence. If access has already recovered, recommend no change.
+```
+
+Use the identical repaired prompt on the pre-qualified endpoint for one new
+denial and show that hosted behavior only. Register the original scored case
+and matching case/bundle hashes once, then restore the original source, run the
+same local case to FAIL, say the
+careless-dev sentence, and push. The required `audience-case-gate` is the fast
+native check; failure/incomplete blocks or skips downstream `evaluate-agent`
+exact-package qualification and publication. Do not promise a local exported
+AgentCore trace unless the normal command emits and verifies one.
 
 ## Public and prepared routes
 
@@ -52,7 +74,8 @@ and explanation: a later scoring attempt can disagree with an earlier
 attempt. The formal action must still be compared with the structured
 recommendation, and deterministic action checks remain the release authority.
 
-To continue from the native score into the normal S3/S4 path, use the runnable
+For an independent prepared-stage or outage fallback, use the historical S3/S4
+path below; it is not the normal audience cue. Use the runnable
 [native case bridge](../scripts/native_case_bridge.py). It joins the downloaded
 scenario and the `original-trace.json` written by `score_denial.py`, then reads
 the originating RunTable row and bounded S3 captures itself.
@@ -158,7 +181,8 @@ available under the tooling identity that produced it.
 
 ## S1: Author, validate, freeze, and hand off
 
-Start with the [verified portable assets](preparation.md#run-a-stage-from-its-prepared-workspace).
+Start with the [verified portable assets](preparation.md#historical-stage-entry-map-fallback-only)
+for an independent prepared-stage run.
 Follow the [S1 commands](../agent/README.md#review-and-freeze-a-case-s1) to
 copy the audience draft into a private workspace, edit the expected remedy and
 run `validate`, `freeze` and `candidate-input` offline. Direct prepared entry
@@ -260,7 +284,15 @@ explanation, and evaluator identity as one scoring attempt. If the service
 returns a later result, retain both attempts rather than relabelling the
 earlier one.
 
-## S3: Fresh candidate before deployment
+## Historical S3/S4 development paths (not the current audience cue)
+
+The current audience route is the one-case IDE → identical live endpoint →
+exact case append → faulty local FAIL → ordinary push → fast gate sequence in
+the section above. The detailed S3/S4 workflow below remains independently
+actionable for preparation, recovery, and direct entry; label its results
+prepared or recorded and never imply that the current audience edit ran.
+
+### S3: Fresh candidate before deployment
 
 The S3 runner snapshots the editable candidate, source, lockfile, selected
 case, and captured evidence before importing the candidate. The prepared repair

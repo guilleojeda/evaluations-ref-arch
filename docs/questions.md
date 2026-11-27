@@ -1,5 +1,14 @@
 # Audience questions
 
+## Why does the talk run the same case twice?
+
+The original score judged an already generated report. After calibration, the
+same reviewed case is supplied as fixed input to a fresh native Strands
+inference, so the audience can see what the edited agent generates. The exact
+live denial is then added to the private CI suite. A required fast check can
+block downstream qualification and publication; it cannot be replaced by a
+recorded green result.
+
 ## Does Strands always need AgentCore?
 
 No. A native Strands experiment can run a task and a Python evaluator locally. The public example uses a saved report and needs no AWS account. In the full talk workflow the task calls Bedrock, and a Strands evaluator sends the actual session evidence to AgentCore for semantic scoring. [Try the local experiment](adapt-evaluations.md)
