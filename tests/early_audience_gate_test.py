@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import io
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tarfile
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
@@ -18,8 +20,9 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 TESTS = ROOT / "tests"
-if str(TESTS) not in __import__("sys").path:
-    __import__("sys").path.insert(0, str(TESTS))
+for import_root in (TESTS, ROOT / "examples" / "live-denial"):
+    if str(import_root) not in sys.path:
+        sys.path.insert(0, str(import_root))
 
 from phase14_reviewed_cases_test import make_case, write_bundle  # noqa: E402
 from reviewed_cases import freeze_case  # noqa: E402
@@ -175,6 +178,55 @@ class EarlyAudienceGateTests(unittest.TestCase):
                 output.addfile(info, io.BytesIO(raw))
         selected = self.gate.select_audience_case(baseline, self.root / "baseline-inputs")
         self.assertEqual(selected["gateKind"], "baseline-denial")
+
+    def test_carried_four_case_archive_selects_authenticated_appended_audience_row(self) -> None:
+        original = self.gate._archive_members(self.fixture.archive)
+        manifest_rows = []
+        suite_rows = []
+        members = {}
+        for index in range(3):
+            case_id = f"baseline.case-{index}"
+            case_member = f"cases/{case_id}.frozen.json"
+            bundle_member = f"bundles/{case_id}.json"
+            case_raw = json.dumps({"case": {"caseId": case_id}}).encode()
+            bundle_raw = f"bundle-{index}".encode()
+            members[f"staging/{case_member}"] = case_raw
+            members[f"staging/{bundle_member}"] = bundle_raw
+            manifest_rows.append({
+                "caseId": case_id,
+                "case": case_member,
+                "bundle": bundle_member,
+                "caseSha256": "0" * 64,
+                "bundleSha256": hashlib.sha256(bundle_raw).hexdigest(),
+            })
+            suite_rows.append({"case": case_member, "bundle": bundle_member})
+        manifest = json.loads(original["staging/manifest.json"])
+        audience_row = manifest["cases"][1]
+        audience_case_member = audience_row["case"]
+        audience_bundle_member = audience_row["bundle"]
+        audience_row["provenance"] = "Phase 22 audience-style review from the exact captured denial"
+        members["staging/" + audience_case_member] = original["staging/cases/audience.frozen.json"]
+        members["staging/" + audience_bundle_member] = original["staging/bundles/audience.json"]
+        manifest_rows.append(audience_row)
+        suite_rows.append({"case": audience_case_member, "bundle": audience_bundle_member})
+        members["staging/manifest.json"] = json.dumps({"schemaVersion": 1, "cases": manifest_rows}).encode()
+        suite_raw = json.dumps({"schemaVersion": 1, "cases": suite_rows}).encode()
+        members["staging/suite.json"] = suite_raw
+        archive = self.root / "carried-audience.tar.gz"
+        with tarfile.open(archive, "w:gz") as output:
+            for name, raw in members.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(raw)
+                output.addfile(info, io.BytesIO(raw))
+        pointer = self.root / "carried-pointer.json"
+        pointer.write_text(json.dumps({
+            "caseIds": [row["caseId"] for row in manifest_rows],
+            "suiteSha256": hashlib.sha256(suite_raw).hexdigest(),
+        }), encoding="utf-8")
+        with patch.object(self.gate, "CARRIED_BASELINE_SUITE_SHA256", hashlib.sha256(suite_raw).hexdigest()):
+            selected = self.gate.select_audience_case(archive, self.root / "carried-inputs", pointer)
+        self.assertEqual(selected["gateKind"], "audience-carried")
+        self.assertEqual(selected["caseId"], self.fixture.case_id)
 
     def test_safe_native_receipt_redacts_free_form_other_explanation(self) -> None:
         runner = load_native_runner()

@@ -211,11 +211,12 @@ summary, bound to `GITHUB_SHA` and `GITHUB_RUN_ATTEMPT` with its 0/1/2 exit
 code. The local presenter command remains verbose because it runs on the
 presenter-owned screen.
 
-An authentic carried suite from before the audience case has no live-case map;
-the helper proves that no session-derived row is present and labels the
-retained denial check `baseline-denial`. If a manifest does contain a
-session-derived row but the map is missing, preparation fails closed instead of
-silently selecting another case.
+The demo also has an existing, qualified four-case suite. It predates the
+per-performance map. The gate recognizes that exact suite by digest and can
+run its retained denial as a baseline check. When the presenter adds the
+opening incident as the fifth case, the archive must carry an explicit map to
+that case and its captured bundle. A missing or inconsistent map blocks the
+run before inference.
 
 This is the precise common invariant between the local walkthrough and CI: the
 same `strands_denial.py`, same frozen case task, same captured-bundle bytes,

@@ -29,6 +29,9 @@ ROOT = Path(__file__).resolve().parents[1]
 MAP_MEMBER = "staging/live-case-map.json"
 MANIFEST_MEMBER = "staging/manifest.json"
 SUITE_MEMBER = "staging/suite.json"
+# The mapless carried archive is the already qualified four-case baseline. Its
+# suite digest is a release input, not a caller-selected audience identity.
+CARRIED_BASELINE_SUITE_SHA256 = "4617201adf7d4c8c3df80b52892312cbe516d2064783545762b6297c5a55b178"
 
 
 class AudienceGateError(ValueError):
@@ -139,6 +142,20 @@ def _suite_case_rows(members: Mapping[str, bytes]) -> list[tuple[str, str, str]]
     return case_rows
 
 
+def _carried_audience_row(
+    rows: Sequence[Mapping[str, Any]], pointer_ids: Sequence[str] | None, mapping_raw: bytes | None,
+) -> Mapping[str, Any] | None:
+    """Select the appended audience row in a carried archive without a map."""
+
+    if mapping_raw is not None or pointer_ids is None or len(pointer_ids) != 4:
+        return None
+    row = next((item for item in rows if item.get("caseId") == pointer_ids[-1]), None)
+    provenance = row.get("provenance") if isinstance(row, Mapping) else None
+    if not isinstance(provenance, str) or "audience" not in provenance.casefold():
+        return None
+    return row
+
+
 def select_audience_case(archive_path: str | Path, output_root: str | Path, pointer_path: str | Path | None = None) -> dict[str, Any]:
     """Copy and authenticate the mapped audience case/bundle for one run."""
 
@@ -155,6 +172,8 @@ def select_audience_case(archive_path: str | Path, output_root: str | Path, poin
     if pointer_ids is not None and pointer_ids != manifest_ids:
         raise AudienceGateError("qualification pointer caseIds do not match the archive manifest")
     mapping_raw = archive_members.get(MAP_MEMBER)
+    if pointer_ids is not None and mapping_raw is None and pointer_suite_sha != CARRIED_BASELINE_SUITE_SHA256:
+        raise AudienceGateError("mapless carried archive is not the approved qualified suite")
     if pointer_ids is not None:
         expected_count = 5 if mapping_raw is not None else 4
         if len(pointer_ids) != expected_count:
@@ -181,40 +200,56 @@ def select_audience_case(archive_path: str | Path, output_root: str | Path, poin
         if _suite_case_rows(archive_members) != manifest_rows:
             raise AudienceGateError("archive suite case roster does not match the manifest")
     if mapping_raw is None:
-        # A carried baseline predates the audience case. Prove that it has no
-        # session-derived live row before using its retained denial row as the
-        # quick regression witness. If a live row exists, a missing map is a
-        # malformed handoff and must fail closed.
-        live_rows = [
-            item for item in rows
-            if isinstance(item, Mapping) and isinstance(item.get("provenance"), str) and item.get("provenance").strip()
-        ]
-        if live_rows:
-            raise AudienceGateError("archive contains a live case but no live-case member map")
-        candidates: list[tuple[Mapping[str, Any], str, str, bytes, bytes]] = []
-        for item in rows:
-            if not isinstance(item, Mapping):
-                continue
-            try:
-                case_member = _member_name(item.get("case"), "baseline case member")
-                bundle_member = _member_name(item.get("bundle"), "baseline bundle member")
-                case_raw = archive_members.get("staging/" + case_member)
-                bundle_raw = archive_members.get("staging/" + bundle_member)
-                if case_raw is None or bundle_raw is None:
+        carried = _carried_audience_row(rows, pointer_ids, mapping_raw)
+        if carried is not None:
+            # The current carried four-case archive appends the audience review
+            # row directly and has no live-case map. The pointer and suite
+            # roster already authenticate its identity; provenance is required
+            # so an ordinary baseline row cannot be mistaken for this case.
+            row = carried
+            ci = row
+            case_id = row.get("caseId")
+            case_member = _member_name(row.get("case"), "carried audience case member")
+            bundle_member = _member_name(row.get("bundle"), "carried audience bundle member")
+            case_raw = archive_members.get("staging/" + case_member)
+            bundle_raw = archive_members.get("staging/" + bundle_member)
+            if case_raw is None or bundle_raw is None:
+                raise AudienceGateError("carried audience row points to missing case or bundle bytes")
+            map_kind = "audience-carried"
+        else:
+            # A carried baseline predates the audience case. Prove that it has
+            # no session-derived live row before selecting its denial witness.
+            # If a live row exists, a missing map must fail closed.
+            live_rows = [
+                item for item in rows
+                if isinstance(item, Mapping) and isinstance(item.get("provenance"), str) and item.get("provenance").strip()
+            ]
+            if live_rows:
+                raise AudienceGateError("archive contains a live case but no live-case member map")
+            candidates: list[tuple[Mapping[str, Any], str, str, bytes, bytes]] = []
+            for item in rows:
+                if not isinstance(item, Mapping):
                     continue
-                case_envelope = _json_member(archive_members, "staging/" + case_member, "baseline frozen case")
-                case_body = case_envelope.get("case")
-                recs = case_body.get("expectations", {}).get("admissibleRecommendations", []) if isinstance(case_body, Mapping) else []
-                if isinstance(recs, list) and recs and isinstance(recs[0], Mapping) and recs[0].get("action") == "Restore inventory access":
-                    candidates.append((item, case_member, bundle_member, case_raw, bundle_raw))
-            except AudienceGateError:
-                continue
-        if not candidates:
-            raise AudienceGateError("baseline archive has no retained denial row for the quick gate")
-        row, case_member, bundle_member, case_raw, bundle_raw = candidates[0]
-        ci = row
-        case_id = row.get("caseId")
-        map_kind = "baseline-denial"
+                try:
+                    case_member = _member_name(item.get("case"), "baseline case member")
+                    bundle_member = _member_name(item.get("bundle"), "baseline bundle member")
+                    case_raw = archive_members.get("staging/" + case_member)
+                    bundle_raw = archive_members.get("staging/" + bundle_member)
+                    if case_raw is None or bundle_raw is None:
+                        continue
+                    case_envelope = _json_member(archive_members, "staging/" + case_member, "baseline frozen case")
+                    case_body = case_envelope.get("case")
+                    recs = case_body.get("expectations", {}).get("admissibleRecommendations", []) if isinstance(case_body, Mapping) else []
+                    if isinstance(recs, list) and recs and isinstance(recs[0], Mapping) and recs[0].get("action") == "Restore inventory access":
+                        candidates.append((item, case_member, bundle_member, case_raw, bundle_raw))
+                except AudienceGateError:
+                    continue
+            if not candidates:
+                raise AudienceGateError("baseline archive has no retained denial row for the quick gate")
+            row, case_member, bundle_member, case_raw, bundle_raw = candidates[0]
+            ci = row
+            case_id = row.get("caseId")
+            map_kind = "baseline-denial"
     else:
         mapping = _json_member(archive_members, MAP_MEMBER, "live-case member map")
         if mapping.get("schemaVersion") != 1 or mapping.get("kind") != "live-case-kit-member-map":
