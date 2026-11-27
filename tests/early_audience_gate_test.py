@@ -147,6 +147,14 @@ class EarlyAudienceGateTests(unittest.TestCase):
                 pointer,
             )
 
+    def test_mapped_archive_requires_four_baseline_cases_plus_audience(self) -> None:
+        members = self.gate._archive_members(self.fixture.archive)
+        manifest_ids = [row["caseId"] for row in json.loads(members["staging/manifest.json"])["cases"]]
+        pointer = self.root / "short-qualification-input.json"
+        pointer.write_text(json.dumps({"caseIds": manifest_ids}), encoding="utf-8")
+        with self.assertRaisesRegex(self.gate.AudienceGateError, "four baseline cases plus one audience"):
+            self.gate.select_audience_case(self.fixture.archive, self.root / "short-pointer", pointer)
+
     def test_unaugmented_archive_labels_retained_denial_as_baseline(self) -> None:
         members = self.gate._archive_members(self.fixture.archive)
         members.pop("staging/live-case-map.json")

@@ -118,6 +118,8 @@ def select_audience_case(archive_path: str | Path, output_root: str | Path, poin
         raise AudienceGateError("qualification pointer caseIds do not match the archive manifest")
     mapping_raw = archive_members.get(MAP_MEMBER)
     if mapping_raw is None:
+        if pointer_ids is not None and len(pointer_ids) != 4:
+            raise AudienceGateError("unaugmented qualification pointer must name exactly four baseline cases")
         # A carried baseline predates the audience case. Prove that it has no
         # session-derived live row before using its retained denial row as the
         # quick regression witness. If a live row exists, a missing map is a
@@ -153,6 +155,8 @@ def select_audience_case(archive_path: str | Path, output_root: str | Path, poin
         case_id = row.get("caseId")
         map_kind = "baseline-denial"
     else:
+        if pointer_ids is not None and len(pointer_ids) != 5:
+            raise AudienceGateError("audience qualification pointer must name four baseline cases plus one audience case")
         mapping = _json_member(archive_members, MAP_MEMBER, "live-case member map")
         if mapping.get("schemaVersion") != 1 or mapping.get("kind") != "live-case-kit-member-map":
             raise AudienceGateError("live-case member map is not schemaVersion 1")
@@ -165,6 +169,8 @@ def select_audience_case(archive_path: str | Path, output_root: str | Path, poin
         case_id = ci.get("caseId")
         if not isinstance(case_id, str) or not case_id.strip():
             raise AudienceGateError("live-case CI row has no case ID")
+        if pointer_ids is not None and case_id != pointer_ids[-1]:
+            raise AudienceGateError("live-case CI row is not the appended audience case in the qualification pointer")
         case_member = _member_name(map_members.get("case"), "case member")
         bundle_member = _member_name(map_members.get("bundle"), "bundle member")
         case_raw = archive_members.get("staging/" + case_member)

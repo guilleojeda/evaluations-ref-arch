@@ -102,6 +102,13 @@ def package_version(name: str) -> str:
 
 
 def _safe_recommendation(value: Any) -> dict[str, Any]:
+    allowed_actions = {
+        "Increase reserved concurrency",
+        "Increase memory",
+        "Restore inventory access",
+        "Other",
+    }
+    allowed_units = {"MB", "executions", "version"}
     if not isinstance(value, Mapping):
         return {"action": "<unavailable>", "target": None, "value": "<redacted>", "unit": None}
     raw = value.get("value")
@@ -114,10 +121,10 @@ def _safe_recommendation(value: Any) -> dict[str, Any]:
     else:
         safe_value = "<redacted>"
     return {
-        "action": value.get("action") if isinstance(value.get("action"), str) else "<unavailable>",
+        "action": value.get("action") if value.get("action") in allowed_actions else "<unavailable>",
         "target": value.get("target") if value.get("target") in {"checkout", "inventory"} else None,
         "value": safe_value,
-        "unit": value.get("unit") if isinstance(value.get("unit"), str) else None,
+        "unit": value.get("unit") if value.get("unit") in allowed_units else None,
     }
 
 
