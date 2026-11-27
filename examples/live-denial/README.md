@@ -84,6 +84,71 @@ uv run --project ../../agent --locked python -u score_denial.py | tee evaluation
 
 Read **Expected action**, **Actual**, and **Exact action**. Then show the separate **AgentCore** label, score and explanation. An agent can diagnose IAM correctly in its prose and still tell an operator to increase memory. The exact field comparison catches that wrong action even if the judge credits the diagnosis. Both checks grade the existing report. `FAIL` or `Incorrect 0.0` is a completed check; a missing action reference prints `INCOMPLETE` and exits with status 2 after the native score.
 
+## Run the same case through native Strands
+
+The public [strands_denial.py](strands_denial.py) is the small audience-facing native experiment. It creates one `Case`, one exact-action `Evaluator`, one `Experiment`, and calls `Experiment.run_evaluations` with an authentic live Strands agent. The agent receives only the frozen task and reads the matching captured evidence bundle through the four read-only tools. The expected action is attached to the native case for the evaluator; it is never put in the task sent to the model.
+
+`Case.name` is always the canonical frozen case ID. When `denial-case.json` is
+present, its authored `metadata.expected_recommendation` is checked against
+the frozen recommendation before it becomes local `case.expected_output`;
+`Other` must have null target/unit and no hidden value. In frozen-only CI mode,
+the reviewed frozen recommendation is the canonical source and no native ID or
+source session is invented.
+
+This is deliberately one terminal and one working directory. The editable prompt and runtime modules come from the stage workspace you choose; the public experiment file is the only example code copied into this folder. There is no prompt copy in this directory.
+
+```bash
+# Run these from examples/live-denial.
+export S5_AGENT=/absolute/path/to/S5/agent
+export PATH="$S5_AGENT/.venv/bin:$PATH"
+export PYTHONPATH="$PWD:$S5_AGENT"
+python -u strands_denial.py
+```
+
+The command reads these files from the current directory:
+
+| File | Role |
+| --- | --- |
+| `denial-case.json` | Native AgentCore scenario: native scenario ID, source trace/session and reviewed typed expectation. |
+| `case.frozen.json` | Authenticated reviewed-case envelope used to derive the candidate task and exact evidence identity. |
+| `captured-bundle.json` | The four bounded read-only evidence sources at the frozen cutoff. |
+| `strands_denial.py` | This public native `Case`/`Evaluator`/`Experiment` example. |
+| `strands_denial_io.py` | Small companion for frozen-input validation, CLI status handling, and receipts; keep it beside the main file. |
+
+`S5_AGENT` supplies `prompt.py`, `investigation.py`, `captured_evidence.py`, and `reviewed_cases.py`. The program prints the resolved prompt and investigation source paths, the prompt digest, the native scenario ID, the frozen case ID, the source trace ID and the bundle digest. This makes the stage source and the public file visible on the same screen. The currently rehearsed short prompt has digest `fe5efb01c858278dc2b893d136485d0c9be22ed5f1d1af1e29bea7b5ac8396c2`; the original memory-first prompt has digest `161aa4357b908cffe9691349d01da284411cd5d4689235717525d79e1073fffc`.
+
+The stage environment may use a different Strands package patch than an S4 archive. That does not change the inputs: both paths must use the same frozen case, the same bundle SHA-256, the same case cutoff and the same expected recommendation. The printed package versions and identity fields are part of the run readback. Only the bounded model inference is live; the evidence tools do not mutate AWS.
+
+Run the same command after editing the single rule in the actual stage `agent/prompt.py` from the original memory-first text to the short repair. A completed wrong action returns status 1 and prints `Exact action: FAIL`; the repaired action returns status 0 and prints `Exact action: PASS`. Missing, invalid or incomplete input, model failure, missing native evaluator output or an identity mismatch returns status 2 and prints `INCOMPLETE`. A small `strands-result.json` readback is written beside the command and is ignored by Git. It contains only run identities, prompt digest, expected/actual structured action, exact verdict and the native evaluator row.
+
+For a private one-case gate with a native scenario, keep this same command and
+code path but pass the downloaded files explicitly:
+
+```bash
+python -u strands_denial.py \
+  --scenario "$NATIVE_SCENARIO" \
+  --case "$FROZEN_CASE" \
+  --bundle "$CAPTURED_BUNDLE" \
+  --result "$RUN_DIR/strands-result.json"
+```
+
+For an archive that intentionally carries only the frozen case and bundle, opt
+into that boundary explicitly:
+
+```bash
+python -u strands_denial.py --frozen-only \
+  --case "$FROZEN_CASE" --bundle "$CAPTURED_BUNDLE" \
+  --result "$RUN_DIR/strands-result.json"
+```
+
+Without `--frozen-only`, a missing or misspelled `denial-case.json` is
+incomplete and returns status 2. In either mode the native `Case.name` is the
+canonical frozen case ID; a native scenario ID and source session are optional
+provenance fields, never invented identifiers. The fresh session ID printed by
+the run belongs to the new model execution and is distinct from the source
+trace/session. A full S5 suite still requires the normal qualification runner;
+this one-case command is an early, inspectable regression witness.
+
 ## Give the edited agent the incident it must investigate
 
 Stay in the **live-denial** terminal. The dataset contains the original alarm and your answer. A new execution also needs data for its tools to read. Open the bridge script to see how it matches the trace to the originating investigation and reads that investigation's saved logs, metrics, configuration and change history.
