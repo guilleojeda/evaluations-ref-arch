@@ -323,6 +323,40 @@ def _window(rows: Sequence[Mapping[str, Any]], label: str) -> dict[str, str]:
     return {"start": _iso(min(starts)), "end": _iso(max(ends))}
 
 
+def _merge_metric_query(values: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
+    queries = [
+        row.get("query")
+        for row in values
+        if isinstance(row.get("query"), Mapping)
+        and isinstance(row["query"].get("metrics"), list)
+    ]
+    if not queries:
+        return None
+    periods = [query.get("periodSeconds") for query in queries if query.get("periodSeconds") is not None]
+    if periods and any(period != periods[0] for period in periods[1:]):
+        raise BridgeError("captured metric query periods disagree")
+    entries: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for query in queries:
+        for entry in query["metrics"]:
+            if not isinstance(entry, Mapping):
+                continue
+            entry_id = entry.get("Id")
+            key = (
+                "id",
+                entry_id,
+            ) if isinstance(entry_id, str) and entry_id else ("digest", _sha(_json_bytes(entry)))
+            if key in seen:
+                continue
+            seen.add(key)
+            entries.append(copy.deepcopy(dict(entry)))
+    merged = copy.deepcopy(dict(queries[-1]))
+    merged["metrics"] = entries
+    if periods:
+        merged["periodSeconds"] = periods[0]
+    return merged
+
+
 def _merge_sources(baseline: Mapping[str, Any], query: Mapping[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     rows = _source_rows(baseline, query)
     merged: dict[str, dict[str, Any]] = {}
@@ -350,6 +384,10 @@ def _merge_sources(baseline: Mapping[str, Any], query: Mapping[str, Any]) -> tup
                     seen.add(digest)
                     observations.append(dict(item))
         source["observations"] = observations
+        if name == "metrics":
+            metric_query = _merge_metric_query(values)
+            if metric_query is not None:
+                source["query"] = metric_query
         if name == "logs":
             observations.sort(
                 key=lambda item: (

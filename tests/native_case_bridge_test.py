@@ -10,6 +10,8 @@ import unittest
 from unittest.mock import patch
 
 from scripts import native_case_bridge as bridge
+from captured_evidence import CapturedEvidenceTools, write_bundle
+from evidence import INVENTORY_FUNCTION
 from scripts.native_case_bridge import (
     BridgeError,
     _merge_sources,
@@ -154,6 +156,102 @@ class NativeCaseBridgeTest(unittest.TestCase):
             {"history-narrow"},
         )
         self.assertEqual(_resource(sources["logs"], "inventory"), "inventory")
+
+    def test_narrow_metric_capture_keeps_earlier_metric_metadata_for_replay(self) -> None:
+        def metric_entry(name: str, query_id: str) -> dict[str, object]:
+            return {
+                "Id": query_id,
+                "MetricStat": {
+                    "Metric": {
+                        "Namespace": "AWS/Lambda",
+                        "MetricName": name,
+                        "Dimensions": [{"Name": "FunctionName", "Value": INVENTORY_FUNCTION}],
+                    },
+                    "Period": 60,
+                    "Stat": "Sum",
+                },
+                "ReturnData": True,
+            }
+
+        metric_query = {
+            "metrics": [metric_entry("Throttles", "inv0"), metric_entry("Errors", "inv1")],
+            "periodSeconds": 60,
+        }
+        baseline_metrics = {
+            "scope": ["inventory"],
+            "window": {"start": "2026-11-26T11:00:00Z", "end": "2026-11-26T11:05:00Z"},
+            "observedAt": "2026-11-26T11:05:00Z",
+            "completeness": "complete",
+            "observations": [
+                {
+                    "Id": "inv0",
+                    "Label": "Throttles",
+                    "StatusCode": "Complete",
+                    "Timestamps": ["2026-11-26 11:01:00+00:00"],
+                    "Values": [0],
+                },
+                {
+                    "Id": "inv1",
+                    "Label": "Errors",
+                    "StatusCode": "Complete",
+                    "Timestamps": ["2026-11-26 11:01:00+00:00"],
+                    "Values": [1],
+                },
+            ],
+            "query": metric_query,
+        }
+        narrow_metrics = {
+            **baseline_metrics,
+            "query": {"metrics": [metric_entry("Throttles", "inv0")], "periodSeconds": 60},
+            "observations": [baseline_metrics["observations"][0]],
+        }
+        common = {
+            "scope": ["inventory"],
+            "window": {"start": "2026-11-26T11:00:00Z", "end": "2026-11-26T11:05:00Z"},
+            "observedAt": "2026-11-26T11:05:00Z",
+            "completeness": "complete",
+            "observations": [],
+        }
+        baseline = {
+            "runId": "synthetic-run",
+            "alarmArn": "arn:aws:cloudwatch:us-east-1:000000000000:alarm:Synthetic",
+            "transitionAt": "2026-11-26T11:05:00Z",
+            "observations": {
+                "logs": {
+                    **common,
+                    "observations": [{
+                        "resource": "inventory",
+                        "timestamp": "2026-11-26T11:04:00Z",
+                        "fields": {"requestId": "req", "error": "AccessDenied"},
+                    }],
+                },
+                "metrics": baseline_metrics,
+                "configuration": common,
+                "changeHistory": common,
+            },
+        }
+        query = {
+            "runId": baseline["runId"],
+            "alarmArn": baseline["alarmArn"],
+            "transitionAt": baseline["transitionAt"],
+            "results": [{"tool": "read_metrics", "result": narrow_metrics}],
+        }
+        origin, sources = _merge_sources(baseline, query)
+        bundle_path = Path(self.temp.name) / "metric-capture.json"
+        write_bundle(bundle_path, origin=origin, sources=sources)
+        tools = CapturedEvidenceTools.load(
+            bundle_path,
+            reference_time="2026-11-26T11:05:00Z",
+        )
+        earlier = tools.read_metrics(
+            resource="inventory",
+            start="2026-11-26T11:00:00Z",
+            end="2026-11-26T11:05:00Z",
+            metric="Errors",
+            period_seconds=60,
+        )
+        self.assertEqual(earlier["query"]["metrics"][0]["Id"], "inv1")
+        self.assertEqual(earlier["observations"][0]["Values"], [1])
 
     def test_run_record_must_match_trace_session_and_transition(self) -> None:
         trace_meta = {
