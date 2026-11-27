@@ -56,6 +56,9 @@ const componentScripts = new Map([
   ['scripts/publish-repaired.py', 'agent'],
   ['scripts/release_gate.py', 'agent'],
   ['scripts/qualify-repaired.py', 'agent'],
+  ['scripts/early_audience_gate.py', 'agent'],
+  ['examples/live-denial/strands_denial.py', 'agent'],
+  ['examples/live-denial/score_denial.py', 'agent'],
 ]);
 
 for (const path of changed) {
