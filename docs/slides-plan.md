@@ -43,7 +43,7 @@ package proposed for release.
 
 | Block | Audience message | Screen evidence |
 | --- | --- | --- |
-| Opening | An agent can find the right diagnosis and still choose the wrong action. | Store failure, alarm, and original report. |
+| Opening | An agent can find the right diagnosis and still choose the wrong action. | Loaded storefront and normal order path, then the alarm and completed faulty report with **target `INVENTORY`** and **value `512 MB`** before the memory action. |
 | Trace | The agent actually saw the denied read and the two version configurations. | Native trace and configuration evidence. |
 | Case | Expected behavior is reviewed separately from the prompt. | Fixed dataset scenario draft, expected response, and published version. |
 | Original score | The exact structured recommendation is checked, then the evaluator scores the formal response against the written expectation. | Codespace `denial-case.json`, `score_denial.py`, and returned `Builtin.Correctness` label/value/explanation. |

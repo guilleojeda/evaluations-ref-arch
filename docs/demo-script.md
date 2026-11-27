@@ -5,6 +5,26 @@ The public cue sheet describes what to show, not private account setup. Keep
 credentials, console locators, trace IDs, and presenter-only runbooks outside
 the repository.
 
+## Opening: load the store before the denial
+
+Before triggering the incident, open the signed-in storefront and wait until
+the catalog/product view is loaded. Teach the normal customer path - a shopper
+is ready to place a quantity-one order - and keep that page visible. Do not
+click **Place order** yet.
+
+Trigger one fresh denial and wait for the new faulty investigation to reach a
+completed report. Read the structured recommendation before taking any
+configuration action: the faulty report must show **target `INVENTORY`** and
+**value `512 MB`** for **Increase memory**. If the report is incomplete or the
+target/value is not readable, leave the step pending; do not adjust memory from
+a partial report.
+
+Only after that completed report readback, apply the staged memory action and
+wait for the configuration readback **Denied + 512 MB**. Then make one visible
+storefront checkout and show its real 502/request ID or pending state. This
+order keeps the report, configuration change, and checkout outcome as separate
+pieces of evidence.
+
 ## Current normal cue
 
 After the original score and calibration, use one clean qualified S5. Copy
@@ -70,8 +90,8 @@ recorded color.
 
 | Minutes | Stage | Cue |
 | --- | --- | --- |
-| 0-8 | S0 | Paper-plane opener, store failure, alarm, and faulty report. |
-| 8-15 | S0 | Show the Inventory denial and the observed denied-version configuration. Explain why a memory increase leaves access unchanged. |
+| 0-8 | S0 | Paper-plane opener; load the storefront and teach the normal order path, trigger the denial, and wait for the completed faulty report. Read **target `INVENTORY`** and **value `512 MB`** before any adjustment. |
+| 8-15 | S0 | Apply the matched memory action only after the completed report readback, wait for **Denied + 512 MB**, then make one visible checkout and explain why memory leaves access unchanged. |
 | 15-22 | S1 | Select the original trace, create a fixed dataset scenario draft, add the expected response, save it, and create the published version. |
 | 22-28 | S2 | In the Codespace `live-denial` folder, download `examples[0]` from the published dataset and run `score_denial.py`. Read the exact action check and the native verdict. Use slides 16, 18 and 19 to explain judge calibration, then return to the prompt edit. |
 | 28-38 | IDE | Convert the audience case to native Strands, run the faulty prompt to FAIL, apply the exact three-sentence rule, and run the same command fresh. |

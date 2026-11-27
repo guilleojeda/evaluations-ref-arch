@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 import { resolve } from 'node:path';
 import {
@@ -399,3 +399,15 @@ test('Phase 21 authenticated AgentCore candidate selection is a verified, fail-c
   if (failures.length) assert.fail(failures.join('\n\n'));
 });
 
+// This suite runs with plain Node; the fixture-backed TypeScript runtime check
+// lives in verify-talk-publication.test.mjs, which CI runs through tsx.
+test('Phase 21 keeps hosted and standalone publication read deadlines explicit', () => {
+  const readiness = readFileSync(new URL('../controller/src/agent-readiness.ts', import.meta.url), 'utf8');
+  const verifier = readFileSync(new URL('../scripts/verify-talk-publication.ts', import.meta.url), 'utf8');
+  assert.match(readiness, /const defaultTimeoutMs = 4_000;/);
+  assert.match(readiness, /options: AgentPublicationVerificationOptions/);
+  assert.match(readiness, /timeoutMs = validTimeout\(options\.timeoutMs \?\? defaultTimeoutMs\)/);
+  assert.match(verifier, /const standaloneReadTimeoutMs = 30_000;/);
+  assert.match(verifier, /verifyAgentPublication\("repaired", \{ timeoutMs: standaloneReadTimeoutMs \}\)/);
+  assert.equal((verifier.match(/AbortSignal\.timeout\(standaloneReadTimeoutMs\)/g) ?? []).length, 2);
+});

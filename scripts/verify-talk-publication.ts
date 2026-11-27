@@ -19,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { GetObjectCommand, ListObjectsV2Command, S3Client } from "@aws-sdk/client-s3";
 import type { AgentSelection } from "../controller/src/types.js";
 
+const standaloneReadTimeoutMs = 30_000;
 const COMMIT_RE = /^[0-9a-f]{40}$/i;
 const SHA256_RE = /^[0-9a-f]{64}$/i;
 const DEFAULT_REGION = "us-east-1";
@@ -532,7 +533,7 @@ async function bodyBytes(body: unknown): Promise<Uint8Array> {
 }
 
 async function getObject(client: S3Client, bucket: string, key: string): Promise<{ bytes: Uint8Array; versionId?: string }> {
-  const response = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: AbortSignal.timeout(15_000) });
+  const response = await client.send(new GetObjectCommand({ Bucket: bucket, Key: key }), { abortSignal: AbortSignal.timeout(standaloneReadTimeoutMs) });
   return { bytes: await bodyBytes(response.Body), ...(response.VersionId ? { versionId: response.VersionId } : {}) };
 }
 
@@ -540,7 +541,7 @@ async function listObjects(client: S3Client, bucket: string, prefix: string): Pr
   const keys: string[] = [];
   let token: string | undefined;
   do {
-    const response = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, ...(token ? { ContinuationToken: token } : {}) }), { abortSignal: AbortSignal.timeout(15_000) });
+    const response = await client.send(new ListObjectsV2Command({ Bucket: bucket, Prefix: prefix, ...(token ? { ContinuationToken: token } : {}) }), { abortSignal: AbortSignal.timeout(standaloneReadTimeoutMs) });
     for (const item of response.Contents ?? []) if (item.Key) keys.push(item.Key);
     token = response.IsTruncated ? response.NextContinuationToken : undefined;
   } while (token);
@@ -687,7 +688,7 @@ async function verify(args: ParsedArgs): Promise<SessionBinding> {
   process.env.CONTROLLER_RUN_TABLE = args.table;
   process.env.CONTROLLER_AGENT_RUNTIME_ARN = args.runtimeArn;
   const { verifyAgentPublication } = await import("../controller/src/agent-readiness.js");
-  const publication = await verifyAgentPublication("repaired");
+  const publication = await verifyAgentPublication("repaired", { timeoutMs: standaloneReadTimeoutMs });
   const sourceRevision = commit(publication.sourceRevision, "published sourceRevision");
   const gitTip = commit(run("git", ["ls-remote", "--heads", args.remote, `refs/heads/${args.branch}`], `Git read failed for ${args.remote}/${args.branch}`).split(/\s+/)[0], "remote demo-deploy tip");
   const repository = args.repo ?? parseRemoteRepository(run("git", ["remote", "get-url", args.remote], `Git remote ${args.remote} is unavailable`));

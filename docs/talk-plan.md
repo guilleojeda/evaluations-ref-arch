@@ -61,16 +61,22 @@ qualification for the exact package proposed for release.
 
 ## Incident story
 
-Open with an Inventory access denial. The faulty report identifies the IAM
-problem in its summary but formally recommends more memory. Configuration shows
-the live alias on the denied version at the observed baseline memory, while a
-healthy version uses the normal role at that same memory. A memory change
-therefore leaves the denial in place and a fresh checkout still fails. Read the
-exact version values from the trace and configuration during each performance.
-The controller's automatic verification probe supplies the initial failure
-evidence; keep the storefront untouched until the selected memory action is
-complete and **Denied + 512 MB** is read back. Then make the one visible
-storefront checkout and show its real 502/request ID or pending state.
+Open the signed-in storefront before the incident and wait for its catalog and
+product view to load. Teach the normal customer path - a shopper is ready to
+place a quantity-one order - and keep that page visible without clicking
+**Place order**. Then trigger one fresh Inventory access denial and wait for the
+new faulty investigation to reach a completed report. Read its structured
+recommendation before any configuration action: the faulty report must show
+**target `INVENTORY`** and **value `512 MB`** for **Increase memory**. If either
+field is missing or the report is incomplete, leave the step pending.
+
+Only then apply the staged memory action and wait for the configuration
+readback **Denied + 512 MB**. Make one visible storefront checkout and show its
+real 502/request ID or pending state. Configuration shows the live alias on the
+denied version at the observed baseline memory, while a healthy version uses
+the normal role at that same memory. A memory change therefore leaves the
+denial in place. Read the exact version values from the trace and configuration
+during each performance.
 
 Ask: **"Did the agent miss the clue, or did it see the clue and still recommend
 the wrong fix?"** The trace answers the first part. The reviewed expectation
@@ -106,8 +112,8 @@ separate execution identity.
 
 | Minutes | Stage | Audience-facing work |
 | --- | --- | --- |
-| 0-8 | S0 | Paper-plane opener, store failure, alarm, and faulty report. |
-| 8-15 | S0 | Show the denied read and configuration; establish why memory is not the fix. |
+| 0-8 | S0 | Load the storefront and teach the normal order path, trigger the denial, and await the completed faulty report. Read **target `INVENTORY`** and **value `512 MB`** before any adjustment. |
+| 8-15 | S0 | Apply the matched memory action, await **Denied + 512 MB**, then make one visible checkout and establish why memory is not the fix. |
 | 15-22 | S1 | Add the selected trace to a fixed dataset, distinguish draft from published version, and write the reviewed prose and typed recommendation. |
 | 22-28 | S2 | Download `examples[0]` from the published case and show the returned native label, value, and explanation for the original report. |
 | 28-38 | IDE | Convert the audience case to native Strands, show the fixed inputs/tools/evaluator, run FAIL, apply the exact three-sentence rule, and run the same command fresh. |
