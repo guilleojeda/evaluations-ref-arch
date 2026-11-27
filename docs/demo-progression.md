@@ -1,7 +1,7 @@
 # Demo progression
 
 Follow one Inventory failure through six stages, from the original native
-trace to a prompt regression that CI rejects. The [talk plan](talk-plan.md)
+trace to a prompt change that CI evaluates. The [talk plan](talk-plan.md)
 gives the timing and the [cue sheet](demo-script.md) gives the screen order.
 Attendees can [follow the public case](attendee-guide.md).
 
@@ -14,8 +14,8 @@ active `S5/agent/prompt.py`. Open `denial-case.json` beside the matching final
 chat input in `original-trace.json`. Show `Case.input = denial-case.json.turns[0].input`
 (the original alarm), separately built `messages = alarm + history`, the
 presenter-authored expectation, and native `Equals`; exclude the old answer,
-system prompt, and signed-thinking/reasoning. Run the original prompt to FAIL,
-say the required boundary sentence, edit the active rule to:
+system prompt, and signed-thinking/reasoning. Run the original prompt and read
+the actual result, say the required boundary sentence, edit the active rule to:
 
 ```text
 When Inventory reads are still denied, recommend restoring access. Identify the healthy version at the same memory from the configuration evidence. If access has already recovered, recommend no change.
@@ -25,14 +25,17 @@ Run the same command for a fresh recommendation. Use the identical repaired
 prompt for one dedicated hosted full investigation for a new denial; match its
 event/run/trace and show behavior only. Register the presenter-authored
 original scored case and matching case/trace identity once, prepare the separate
-`agent/audience-input.json`, restore the original prompt, run local FAIL, say
+`agent/audience-input.json`, restore the original prompt, record the local
+result, say
 “assume I'm a careless dev and I didn't run my tests locally before merging my
 changes”, and hand the diff to the participant for the push. Keep the standing
 `agent/qualification-input.json` unchanged. The
 `audience-case-gate` fast check runs in parallel with ordinary checks; failure
 or incomplete status blocks/skips downstream `evaluate-agent` qualification
-and publication. Reach slides 35/36 before the actual red/no-publication or
-pending callback, then 37. The S3/S4 rows below are fallback/preparation only.
+and publication. Reach slides 35/36 before the actual callback, read the
+current pass/fail/pending state, then 37. If it passes or remains pending, show
+the earlier verified CI rejection as earlier evidence, not as the current run.
+The S3/S4 rows below are fallback/preparation only.
 
 ## Case and package boundaries
 
@@ -70,9 +73,9 @@ versions 74 and 75 and remains an independent local check.
 | S0 - Native trace | Show the denied read, configuration, source results, and original memory recommendation. | Evidence of one actual agent execution; no score yet. |
 | S1 - Dataset case | Add the trace to a fixed dataset, edit the prose response and typed recommendation in the scenario draft, save it, and create the published version. | The published version freezes the reviewed input. |
 | S2 - Original score | Download `examples[0]` from the full dataset ID, show the exact structured recommendation check, and score the original report. | Show the returned `Builtin.Correctness` label, value, and explanation; compare the formal action with the expected response. No agent rerun. |
-| IDE repair | Read `denial-case.json` directly into native Strands, show the matching final chat input from `original-trace.json`, exclude old answer/system/signed-thinking fields, show native `Equals`, run the original prompt to FAIL, edit the exact rule, and run the same command. | Fresh session/recommendation on `Case.input = turns[0].input`; history is supplied separately. |
+| IDE repair | Read `denial-case.json` directly into native Strands, show the matching final chat input from `original-trace.json`, exclude old answer/system/signed-thinking fields, show native `Equals`, run the original prompt and read the actual result, edit the exact rule, and run the same command. | Fresh session/recommendation on `Case.input = turns[0].input`; history is supplied separately. |
 | Live repaired endpoint | Use the identical repaired prompt for one dedicated full investigation for a new denial and show the recommendation. | Real event/run/trace, not a prepared result or CI input. |
-| Fast release gate | Prepare `agent/audience-input.json` from the original case/trace, restore the original prompt, show local FAIL, say the careless-dev line, and let the participant push. | `audience-case-gate` uses the same saved Case/trace; failure/incomplete blocks/skips `evaluate-agent` and publication. |
+| Fast release gate | Prepare `agent/audience-input.json` from the original case/trace, restore the original prompt, record the local result, say the careless-dev line, and let the participant push. | `audience-case-gate` uses the same saved Case/trace; read its current pass/fail/pending state; failure/incomplete blocks/skips `evaluate-agent` and publication. |
 
 The delivery path does not run a bridge, freeze a second case, or transfer a
 hidden bundle. `denial-case.json` supplies the direct Case input and

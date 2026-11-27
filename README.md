@@ -86,9 +86,16 @@ provenance, not candidate output. The application's real
 normal bounded formatting follow-up remains inside that run. Native
 `Equals` compares action, target, value, and unit.
 
-Run the faulty prompt in your IDE, show the actual **FAIL**, edit the
+Run the original prompt in your IDE and record the actual result, then edit the
 recommendation rule in `agent/prompt.py`, save, and run the same Case again.
-Both versions use the same case/history and each generates a fresh report. [Step-by-step example](examples/live-denial/README.md)
+Both versions use the same case/history and each generates a fresh report. The
+recorded opening trace and earlier local/CI runs showed the faulty 512 MB
+recommendation and an exact-action FAIL, while a later fresh named Codespace
+run with the unchanged prompt returned the reviewed version and PASS. Treat
+each fresh result as observed evidence; a single pair that passes on both
+prompts does not establish improvement. The three-sentence repair below passed
+all observed contexts, but still needs the same case and broader evidence for a
+release claim. [Step-by-step example](examples/live-denial/README.md)
 
 The hosted endpoint then runs one dedicated full investigation for a new
 denial. The release workflow runs the same saved case and matching trace

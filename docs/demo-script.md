@@ -12,18 +12,19 @@ the catalog/product view is loaded. Teach the normal customer path - a shopper
 is ready to place a quantity-one order - and keep that page visible. Do not
 click **Place order** yet.
 
-Trigger one fresh denial and wait for the new faulty investigation to reach a
+Trigger one fresh denial and wait for the new investigation to reach a
 completed report. Read the structured recommendation before taking any
-configuration action: the faulty report must show **target `INVENTORY`** and
-**value `512 MB`** for **Increase memory**. If the report is incomplete or the
-target/value is not readable, leave the step pending; do not adjust memory from
-a partial report.
+configuration action. The recorded opening trace and earlier local/CI runs
+showed **target `INVENTORY`**, **value `512 MB`**, and **Increase memory**; a
+later fresh named Codespace run with the unchanged prompt returned the reviewed
+version and **PASS**. If the current report is incomplete or its target/value
+is not readable, leave the step pending; do not adjust memory from a partial
+report.
 
-Only after that completed report readback, apply the staged memory action and
-wait for the configuration readback **Denied + 512 MB**. Then make one visible
-storefront checkout and show its real 502/request ID or pending state. This
-order keeps the report, configuration change, and checkout outcome as separate
-pieces of evidence.
+Only after a readable completed report decide whether a staged memory action is
+supported by the current evidence, then read the actual configuration and
+checkout result. This order keeps the report, configuration change, and
+checkout outcome as separate pieces of evidence.
 
 ## Current normal cue
 
@@ -35,8 +36,11 @@ latest `name == "chat"` span by `startTimeUnixNano`, and project only its span
 ID and event names (including `gen_ai.choice` when present); use editor search
 on that span for the final chat input. Show the presenter-authored expectation,
 same read-only history, and native `Equals`. Explicitly exclude the old answer,
-system prompt, and signed-thinking/reasoning from the new task. Run the
-original prompt to its actual FAIL. Say:
+system prompt, and signed-thinking/reasoning from the new task. Run the original
+prompt and read the actual result. The recorded opening trace and earlier
+local/CI runs showed the 512 MB recommendation and exact-action FAIL, while a
+later fresh named Codespace run with the unchanged prompt returned the reviewed
+version and PASS. Do not promise the direction of a fresh model run. Say:
 
 > Earlier, we evaluated an already generated output. Now we're using fixed inputs, and letting the agent generate the output again
 
@@ -54,15 +58,17 @@ evidence only. Register the presenter-authored original scored case and
 matching case/trace identity once in the private suite; the new hosted denial
 is not a CI input.
 
-Restore the original source into the same S5 file, run the same local case to
-FAIL, and say “assume I'm a careless dev and I didn't run my tests locally
-before merging my changes”. Hand the reviewed diff to the participant for the
-ordinary push; the presenter takes over only if unavailable. Leave
+Restore the original source into the same S5 file, run the same local case and
+record its actual result, and say “assume I'm a careless dev and I didn't run
+my tests locally before merging my changes”. Hand the reviewed diff to the
+participant for the ordinary push; the presenter takes over only if
+unavailable. Leave
 `audience-case-gate` running. Its failure/incomplete status blocks/skips
 downstream `evaluate-agent` exact-package qualification and publication. Reach
-slides 35/36 before the callback, return to actual red/no-publication or
-pending status, and finish on slide 37. The detailed S3/S4 steps below are
-historical fallback only.
+slides 35/36 before the callback, read the current pass/fail/pending status,
+and finish on slide 37. If it passes or remains pending, show the earlier
+verified CI rejection as earlier evidence, not as the current run. The detailed
+S3/S4 steps below are historical fallback only.
 
 In an ordinary repository checkout, open a terminal at the repository root and
 change to `examples/live-denial`. Do not run a bridge or freeze/transfer helper
@@ -92,13 +98,13 @@ recorded color.
 
 | Minutes | Stage | Cue |
 | --- | --- | --- |
-| 0-8 | S0 | Paper-plane opener; load the storefront and teach the normal order path, trigger the denial, and wait for the completed faulty report. Read **target `INVENTORY`** and **value `512 MB`** before any adjustment. |
-| 8-15 | S0 | Apply the matched memory action only after the completed report readback, wait for **Denied + 512 MB**, then make one visible checkout and explain why memory leaves access unchanged. |
+| 0-8 | S0 | Paper-plane opener; load the storefront and teach the normal order path, trigger the denial, and wait for the completed report. Read the actual recommendation before any adjustment; the recorded opening trace and earlier local/CI evidence showed **target `INVENTORY`** and **value `512 MB`**, while a later fresh named Codespace run passed. |
+| 8-15 | S0 | If the completed report and configuration readback support the staged memory action, apply it, await the actual readback, then make one visible checkout and explain why memory leaves access unchanged. |
 | 15-22 | S1 | Select the original trace, create a fixed dataset scenario draft, add the expected response, save it, and create the published version. |
 | 22-28 | S2 | In the Codespace `live-denial` folder, download `examples[0]` from the published dataset and run `score_denial.py`. Read the exact action check and the native verdict. Use slides 16, 18 and 19 to explain judge calibration, then return to the prompt edit. |
-| 28-38 | IDE | Read `denial-case.json` directly into native Strands, show the matching final chat input/history from `original-trace.json`, run the faulty prompt to FAIL, apply the exact three-sentence rule, and run the same command fresh. |
+| 28-38 | IDE | Read `denial-case.json` directly into native Strands, show the matching final chat input/history from `original-trace.json`, run the original prompt and read the actual result, apply the exact three-sentence rule, and run the same command fresh. |
 | 38-45 | Live | Use the identical repaired prompt on the pre-qualified endpoint for one dedicated full investigation, match its event/run/trace, and show the recommendation as behavior evidence. |
-| 45-53 | Gate | Prepare `agent/audience-input.json`, restore the original prompt, run local FAIL, say the careless-dev line, hand the diff to the participant for the push, and leave the fast gate running. |
+| 45-53 | Gate | Prepare `agent/audience-input.json`, restore the original prompt, record the local result, say the careless-dev line, hand the diff to the participant for the push, and leave the fast gate running. |
 | 53-60 | - | Closing and questions. |
 
 Treat the schedule as a handoff plan. A pending result remains pending. A

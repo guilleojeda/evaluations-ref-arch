@@ -19,8 +19,10 @@ input in `original-trace.json`, select the latest matching `name == "chat"`
 span by `startTimeUnixNano`, and project its span ID and event names. Keep the
 presenter-authored expectation, same read-only history, and exact native
 `Equals` ready to show. Explicitly exclude the old answer, system prompt, and
-signed-thinking/reasoning. The rehearsal must record the actual faulty FAIL,
-then use this exact rule for the fresh run:
+signed-thinking/reasoning. The rehearsal must record the actual result of the
+original prompt; earlier recorded local/CI runs showed the faulty 512 MB/FAIL
+case, while a later fresh named Codespace run with the unchanged prompt passed.
+Do not promise a fresh result. Then use this exact rule for the fresh run:
 
 ```text
 When Inventory reads are still denied, recommend restoring access. Identify the healthy version at the same memory from the configuration evidence. If access has already recovered, recommend no change.
@@ -31,7 +33,8 @@ its new event/run/trace. Show the recommendation as behavior evidence only.
 Register the presenter-authored original scored case and matching case/trace
 identity once. Prepare the separate `agent/audience-input.json` from the saved
 case and original trace; keep the standing `agent/qualification-input.json`
-unchanged. Restore the original prompt before the local FAIL and ordinary push.
+unchanged. Restore the original prompt before the local run and ordinary push,
+and record its actual result.
 The fast `audience-case-gate` is required and runs beside ordinary checks; a
 failure/incomplete result blocks/skips `evaluate-agent` and publication. Never
 replace a missing result with a recording or claim a skipped qualification ran.
@@ -528,10 +531,13 @@ with its input and execution identity:
 
 - [ ] Rehearse the opening denial. Load the signed-in storefront and wait for
   the catalog/product view before triggering a genuine new alarm transition.
-  Wait for the completed faulty report, read **target `INVENTORY`** and
-  **value `512 MB`**, and only then apply the higher-memory action while
-  preserving denial. Wait for **Denied + 512 MB** before making one visible
-  checkout. A configuration readback alone does not prove a business outcome.
+  Wait for the completed report and read its actual recommendation before any
+  configuration action. The recorded opening trace and earlier local/CI
+  evidence showed **target `INVENTORY`**, **value `512 MB`**, and **Denied +
+  512 MB**; a later fresh named Codespace run with the unchanged prompt
+  returned the reviewed version and **PASS**. Record the actual checkout result
+  or pending state; a configuration readback alone does not prove a business
+  outcome.
 - [ ] Rehearse selecting repaired with endpoint, version, and artifact
   readback. Then trigger a new incident after native alarm **OK**. Match the
   new event and run. Do not relabel an old report or clear deduplication
@@ -572,7 +578,7 @@ with its input and execution identity:
 
 The current normal rehearsal is the short route in section 3: one clean S5,
 one native IDE case, one identical live endpoint, original scored case
-registration, restored local FAIL, ordinary push, and the fast gate. The hosted
+registration, restored local run, ordinary push, and the fast gate. The hosted
 denial is behavior evidence only, not a CI input. Use the stage map below only for
 independent entry, preparation, or an actual outage; label its results
 prepared/recorded and do not imply that the current audience edit ran.

@@ -23,8 +23,8 @@ direct native Strands Case. In clean S5, copy the prepared
 `Case.input = denial-case.json.turns[0].input`, the matching final chat input in
 `original-trace.json`, separately built `messages = alarm + history`, the
 presenter-authored expectation, and native `Equals`. Exclude the old answer,
-system prompt, and signed-thinking/reasoning; run the original prompt to actual
-FAIL; say the required boundary sentence; edit only the active rule to this
+system prompt, and signed-thinking/reasoning; run the original prompt and read
+the actual result; say the required boundary sentence; edit only the active rule to this
 exact text and run the same command for a fresh inference/session and
 recommendation. Each prompt gets one fresh agent run and one structured report;
 the SDK may make its normal bounded formatting follow-up inside that run. A
@@ -39,7 +39,7 @@ dedicated hosted full investigation for a new denial and show that hosted
 behavior only. Register the presenter-authored original scored case and
 matching case/trace identity once, prepare separate `agent/audience-input.json`
 from the saved case and trace, then restore the original source, run the same
-local Case to FAIL, say the careless-dev sentence, and hand the diff to the
+local Case and record its actual result, say the careless-dev sentence, and hand the diff to the
 participant for the push. Keep `agent/qualification-input.json` unchanged. The required `audience-case-gate` is the fast
 native check; failure/incomplete blocks or skips downstream `evaluate-agent`
 exact-package qualification and publication. Do not promise a local exported
@@ -293,7 +293,7 @@ earlier one.
 ## Historical S3/S4 development paths (not the current audience cue)
 
 The current audience route is the one-case IDE → identical live endpoint →
-original scored-case registration → faulty local FAIL → ordinary push → fast
+original scored-case registration → faulty local run and recorded result → ordinary push → fast
 gate sequence in the section above. The hosted denial is behavior evidence only,
 not a CI input. The detailed S3/S4 workflow below remains independently
 actionable for preparation, recovery, and direct entry; label its results

@@ -14,8 +14,9 @@ contrast typed `expected_recommendation` with `Builtin.Correctness`; do not
 look for a printed same-report pair. Then use one visible IDE loop: clean S5,
 copy the prepared `before/faulty-prompt.py` reference into the active
 `S5/agent/prompt.py`, show case
-input/expected/fixed captured tools/evaluator, run the faulty prompt to actual
-FAIL, say the required boundary sentence, and edit the active rule to:
+input/expected/fixed captured tools/evaluator, run the original prompt and read
+the actual result, say the required boundary sentence, and edit the active
+rule to:
 
 ```text
 When Inventory reads are still denied, recommend restoring access. Identify the healthy version at the same memory from the configuration evidence. If access has already recovered, recommend no change.
@@ -24,12 +25,14 @@ When Inventory reads are still denied, recommend restoring access. Identify the 
 Run the same command for a fresh result. Use the identical repaired prompt on
 the pre-qualified endpoint for one real new denial and show that hosted behavior
 only. Register the original scored case and matching case/bundle hashes once,
-restore the original prompt, run local FAIL, say “assume I'm a careless dev and
-I didn't run my tests locally before merging my changes”, and push. Leave the
-required
+restore the original prompt, record the local result, say “assume I'm a
+careless dev and I didn't run my tests locally before merging my changes”, and
+push. Leave the required
 `audience-case-gate` running; its failure/incomplete status blocks/skips
 `evaluate-agent` qualification and publication. Slides 35 and 36 precede the
-actual callback; return to the red/no-publication or pending state, then 37.
+actual callback; read the current pass/fail/pending state, then 37. If it
+passes or remains pending, show the earlier verified CI rejection as earlier
+evidence, not as the current run.
 
 ## What the talk should achieve
 
@@ -43,13 +46,13 @@ package proposed for release.
 
 | Block | Audience message | Screen evidence |
 | --- | --- | --- |
-| Opening | An agent can find the right diagnosis and still choose the wrong action. | Loaded storefront and normal order path, then the alarm and completed faulty report with **target `INVENTORY`** and **value `512 MB`** before the memory action. |
+| Opening | An agent can find the right diagnosis and still choose the wrong action. | Loaded storefront and normal order path, then the alarm and completed report; read the actual recommendation before any memory action. The recorded opening trace and earlier local/CI evidence showed **target `INVENTORY`** and **value `512 MB`**, while a later fresh named Codespace run passed. |
 | Trace | The agent actually saw the denied read and the two version configurations. | Native trace and configuration evidence. |
 | Case | Expected behavior is reviewed separately from the prompt. | Fixed dataset scenario draft, expected response, and published version. |
 | Original score | The exact structured recommendation is checked, then the evaluator scores the formal response against the written expectation. | Codespace `denial-case.json`, `score_denial.py`, and returned `Builtin.Correctness` label/value/explanation. |
 | Calibration | Contrast the typed action check with the native judge, then explain human labels and holdouts without projecting a score pair. | Physical 16, 18, and 19; the current returned native result and one illustrative human-labeled sample. |
-| Development | The reviewed case is converted to one native Strands case and the exact rule is tested on fixed input/tools. | IDE case input, expected output, captured bundle, evaluator, faulty FAIL, and fresh result. |
-| Release | The original scored case is registered for the fast pushed-source check; the new hosted denial remains behavior evidence only. | `audience-case-gate` source/workflow row, downstream skip/block, and actual red/no-publication or pending state. |
+| Development | The reviewed case is converted to one native Strands case and the exact rule is tested on fixed input/tools. | IDE case input, expected output, captured bundle, evaluator, actual original result, and fresh result. |
+| Release | The original scored case is registered for the fast pushed-source check; the new hosted denial remains behavior evidence only. | `audience-case-gate` source/workflow row, downstream skip/block, and current pass/fail/pending state. |
 | Close | Evidence supports a bounded release decision, not a claim of universal accuracy. | Case, candidate, evaluator, package, and publication identities. |
 
 ## Screen and transition notes
@@ -98,8 +101,10 @@ guide the separate custom Opus rubric on calibration examples; freeze it before
 checking the holdout against its human labels. If that check leads to a
 revision, use a fresh holdout. The built-in judge can be tested as supplied.
 Do not edit during this slide. Return to the native IDE handoff after the
-calibration explanation, then show the fixed case, captured tools, and faulty
-FAIL before applying the exact rule.
+calibration explanation, then show the fixed case, captured tools, and the
+actual original result before applying the exact rule. Earlier local/CI runs
+recorded a faulty FAIL; a later fresh named Codespace run with the unchanged
+prompt passed.
 
 ### Historical S3 and S4 fallback
 
@@ -129,15 +134,17 @@ and original-trace public pre-report history → `messages`. Then show
 ### Current fast release gate
 
 After the original scored case and matching case/bundle hashes are registered,
-restore the original prompt, show the same local case FAIL, and push normally.
+restore the original prompt, run the same local case, record its actual result,
+and push normally.
 The new hosted denial is not a CI input. `audience-case-gate` runs the native
 exact-action check on the pushed source in parallel with ordinary checks. A
 fast FAIL or incomplete result blocks/skips downstream `evaluate-agent`
 exact-package qualification and publication; do not claim that skipped
 qualification ran. A fast PASS only permits downstream qualification to start.
-Return to the actual red/no-publication or pending state after slides 35 and
-36. The older participant/five-case package workflow remains a prepared-stage
-fallback.
+Read the current pass/fail/pending state after slides 35 and 36. If it passes
+or remains pending, show the earlier verified CI rejection as earlier evidence,
+not as the current run. The older participant/five-case package workflow
+remains a prepared-stage fallback.
 
 ## Appendix guidance
 

@@ -31,7 +31,7 @@ cd examples/live-denial
 PYTHONPATH="$(cd ../../agent && pwd)" uv run --project ../../agent --locked python -u strands_denial.py
 ```
 
-Read the expected action and the fresh actual action. Edit the recommendation rule in `agent/prompt.py`, save, and run the identical command again. Strands' native `Equals()` compares the resulting action dictionary, including the target version. A completed wrong recommendation returns exit 1. A missing input or missing report is incomplete and returns exit 2.
+Read the expected action and the fresh actual action. Edit the recommendation rule in `agent/prompt.py`, save, and run the identical command again. Strands' native `Equals()` compares the resulting action dictionary, including the target version. A completed wrong recommendation returns exit 1; a correct action returns exit 0; a missing input or missing report is incomplete and returns exit 2. Fresh model runs are observations, not guaranteed outcomes: the recorded opening trace and earlier local/CI runs showed 512 MB/FAIL, while a later fresh named Codespace run with the unchanged prompt returned the reviewed version/PASS. The three-sentence repair passed all observed contexts, but one pair that passes on both prompts does not establish improvement.
 
 In the talk the presenter makes that edit. The later hosted demonstration triggers a new alarm, so you can see the deployed agent conduct a whole investigation after testing the prompt change in the IDE.
 
@@ -67,7 +67,7 @@ cp "$gate_dir/audience-input.json" agent/audience-input.json
 git diff -- agent/prompt.py agent/audience-input.json
 ```
 
-In the demo, the participant pushes the prompt regression and the selected pointer to `demo-deploy`. Open the **Gate audience case (fast exact action)** job for that commit. It downloads and verifies the private archive, runs the same Python example on the checked-out agent, and shows the fresh expected/actual row. A wrong action or an incomplete run blocks publication. A passing result allows the checked Runtime ZIP to proceed through its standing four-case qualification and protected review. [Deployment workflow](../.github/workflows/deploy.yml)
+In the demo, the participant pushes the prompt regression and the selected pointer to `demo-deploy`. Open the **Gate audience case (fast exact action)** job for that commit. It downloads and verifies the private archive, runs the same Python example on the checked-out agent, and shows the fresh expected/actual row. A wrong action or an incomplete run blocks publication; a passing result allows the checked Runtime ZIP to proceed through its standing four-case qualification and protected review. Read the participant run as it actually resolves. If it passes or remains pending, show the earlier verified CI rejection as earlier evidence, not as the current run. [Deployment workflow](../.github/workflows/deploy.yml)
 
 ## Try an example without AWS access
 

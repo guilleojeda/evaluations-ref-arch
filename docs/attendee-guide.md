@@ -18,13 +18,15 @@ view before triggering the denial. This teaches the normal customer path: a
 shopper is ready to place a quantity-one order, but the checkout is not clicked
 yet.
 
-After the fresh denial, the presenter waits for the faulty investigation to
-finish. The report is read before any configuration action and must show
-**target `INVENTORY`** and **value `512 MB`** for **Increase memory**. A partial
-or incomplete report stays pending. Only after that readback does the presenter
-apply the memory action, wait for **Denied + 512 MB**, and make one visible
-checkout. The resulting 502/request ID or pending state is application
-evidence separate from the report and configuration readback.
+After the fresh denial, the presenter waits for the investigation to finish.
+The report is read before any configuration action. The recorded opening trace
+and earlier local/CI runs showed **target `INVENTORY`**, **value `512 MB`**, and
+**Increase memory**; a later fresh named Codespace run with the unchanged prompt
+returned the reviewed version and **PASS**. A partial or incomplete report
+stays pending. Only after a readable completed report does the presenter decide
+whether a staged memory action is supported by the current evidence, then read
+the actual configuration and checkout result. The resulting 502/request ID or
+pending state is application evidence separate from the report and readback.
 
 ## The current IDE-to-CI route
 
@@ -34,8 +36,12 @@ workspace. The audience sees `denial-case.json` with
 matching final chat input in `original-trace.json`, the presenter-authored
 expected output, separately built `messages = alarm + history`, same read-only
 history, and native `Equals`; the old answer, system prompt, and
-signed-thinking/reasoning are excluded from the new task. The faulty prompt runs
-to FAIL. The presenter then
+signed-thinking/reasoning are excluded from the new task. Run the original
+prompt and read the actual result. The recorded opening trace and earlier
+local/CI runs showed the 512 MB recommendation and exact-action FAIL, while a
+later fresh named Codespace run with the unchanged prompt returned the reviewed
+version and PASS. Do not promise the direction of a fresh model run. The
+presenter then
 says:
 
 > Earlier, we evaluated an already generated output. Now we're using fixed inputs, and letting the agent generate the output again
@@ -51,11 +57,14 @@ The repaired prompt is then exercised once on the pre-qualified endpoint with
 a dedicated full investigation for a new denial. Match its event/run/trace and
 show the real recommendation as behavior evidence only. Register the
 presenter-authored original scored case and matching case/trace identity once
-in the private suite. The original prompt is restored, the same local case is run
-to FAIL, the careless-dev line is spoken, and an ordinary push starts the
-required `audience-case-gate`. A failure/incomplete fast result blocks/skips
-downstream qualification and publication; the presenter returns to the actual
-red/no-publication or pending state after slides 35 and 36, then 37.
+in the private suite. The original prompt is restored, the same local case is
+run and its actual result is recorded, the careless-dev line is spoken, and an
+ordinary push starts the required `audience-case-gate`. The gate may pass, fail,
+or remain pending; read its current Expected/Actual row and downstream state.
+If it passes or remains pending, show the earlier verified CI rejection as
+earlier evidence, not as the current run. A failure/incomplete fast result
+blocks/skips downstream qualification and publication; return to the actual
+state after slides 35 and 36, then 37.
 
 ## From the native trace to a reviewed case
 
@@ -162,9 +171,9 @@ lead to another change, use a fresh holdout. [Calibration and holdouts](evaluati
 | S0 | Observe the alarm, trace, failed read, configuration, and original report. | The original execution and its evidence. |
 | S1 | Review the trace and publish the fixed AgentCore dataset version. | The input and both reviewed fields are separate from the agent prompt. |
 | S2 | Show the original report's exact structured recommendation check, then the separate `Builtin.Correctness` result. | No agent rerun; both outputs belong to the original trace. |
-| IDE repair | Read `denial-case.json` directly into native Strands, show the matching final chat input from `original-trace.json`, exclude old answer/system/signed-thinking fields, show native `Equals`, run the original prompt to FAIL, edit the exact rule, and run the same command. | Presenter-authored expectation/history; fresh session and prompt digest. |
+| IDE repair | Read `denial-case.json` directly into native Strands, show the matching final chat input from `original-trace.json`, exclude old answer/system/signed-thinking fields, show native `Equals`, run the original prompt and read the actual result, edit the exact rule, and run the same command. | Presenter-authored expectation/history; fresh session and prompt digest. |
 | Live repaired endpoint | Use the identical repaired prompt for one dedicated full investigation for a new denial. | A real new event/run/trace, not a prepared result. |
-| Fast release check | Register the original scored case with matching case/trace identity, restore the faulty prompt, show local FAIL, and make the ordinary push. | The hosted denial is behavior evidence only; `audience-case-gate` uses the same saved Case/trace in parallel. Failure/incomplete blocks/skips `evaluate-agent` and publication. |
+| Fast release check | Register the original scored case with matching case/trace identity, restore the faulty prompt, record the local result, and make the ordinary push. | The hosted denial is behavior evidence only; `audience-case-gate` uses the same saved Case/trace in parallel. Read the current pass/fail/pending state; failure/incomplete blocks/skips `evaluate-agent` and publication. |
 
 Follow the prompt edit into the real call: `create_agent` imports
 `SYSTEM_PROMPT` from `agent/prompt.py` and passes it to `Agent(system_prompt=...)`.
@@ -179,8 +188,9 @@ pre-qualified endpoint. That hosted denial is behavior evidence only. Register
 the presenter-authored original scored case and matching case/trace identity
 for the private CI check. Prepare the separate `agent/audience-input.json`
 from the saved case and original trace; keep the standing
-`agent/qualification-input.json` unchanged. Restoring the original prompt and showing local FAIL makes the ordinary
-push intentionally unsafe; the required `audience-case-gate` then runs beside
+`agent/qualification-input.json` unchanged. Restoring the original prompt and
+recording the local result makes the ordinary push a real gate; the required
+`audience-case-gate` then runs beside
 ordinary checks on the same saved Case/trace identity. Its failure/incomplete status blocks/skips downstream
 `evaluate-agent` exact-package qualification and publication. A previously
 qualified serving package remains in place while the actual callback is
@@ -192,9 +202,15 @@ is intentionally separate from the live trace and published dataset above.
 
 ## Verified audience gate exhibit
 
-The opening case required restoring Inventory access to version 167. On the regressed prompt, GitHub Actions invoked the application agent on the same alarm and pre-report history used in the IDE. Its fresh recommendation was to increase Inventory memory to 512 MB. Strands `Equals` returned 0 and the job exited 1. Open the **Expected** and **Actual** row to see exactly what prevented publication. [Verified regression on the opening case](https://github.com/guilleojeda/evaluations-ref-arch/actions/runs/46020216978/job/140577710151)
+The opening case required restoring Inventory access to version 167. In an
+earlier verified CI run, GitHub Actions invoked the application agent on the
+same alarm and pre-report history used in the IDE. Its recommendation was to
+increase Inventory memory to 512 MB; Strands `Equals` returned 0 and the job
+exited 1. Open the **Expected** and **Actual** row to see exactly what
+prevented publication. This is recorded earlier evidence, not a promise about
+every fresh model run. [Earlier verified regression on the opening case](https://github.com/guilleojeda/evaluations-ref-arch/actions/runs/46020216978/job/140577710151)
 
-You can match the two input files across runs. The published scenario digest begins with `aa756098` and the saved trace digest with `72ca97e7`. The repaired prompt recommended restoring version 167 on that pair. [Passing CI comparison](https://github.com/guilleojeda/evaluations-ref-arch/actions/runs/46020463920/job/140578533381)
+You can match the two input files across runs. The published scenario digest begins with `aa756098` and the saved trace digest with `72ca97e7`. An earlier passing comparison with the repaired prompt recommended restoring version 167 on that pair. If both prompts pass in one pair, that single pair does not establish improvement. [Earlier passing CI comparison](https://github.com/guilleojeda/evaluations-ref-arch/actions/runs/46020463920/job/140578533381)
 
 To reproduce the deterministic failure without AWS, use the saved report in the
 [synthetic case](../README.md#try-a-regression). The live score and the
