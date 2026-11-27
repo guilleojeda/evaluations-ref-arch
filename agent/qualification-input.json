@@ -4,13 +4,12 @@
     "phase22.inventory-capacity-overload.5e82d802-8661-4963-a170-d98c5f57c79f.43987d04c302",
     "phase14.denied-inventory-read.prepared",
     "phase14.recovery-with-old-alert.prepared",
-    "phase14.denied-inventory-read.session-draft",
-    "native.inventory.40dc1c65ab64dba3579d"
+    "phase14.denied-inventory-read.session-draft"
   ],
   "evaluatorSha256": "de0be6c2d9a9a5ccca438f4f2a576919f4abe08dc4ef55d46785e855eeabd1e1",
   "purpose": "Phase 22 approved private evaluation input handoff",
-  "s3Key": "agent-evaluation/phase18/inputs/ddb4d67535c7c3013585f52c7abd11b9f6c8714de5beb150ef4b220ff32471c1/staging.tar.gz",
+  "s3Key": "agent-evaluation/phase18/inputs/dfdd73ad03ea87d83cc431d3fb0616b1cc50ea96149027707a4ab7413a9cc0e9/staging.tar.gz",
   "schemaVersion": 1,
-  "sha256": "ddb4d67535c7c3013585f52c7abd11b9f6c8714de5beb150ef4b220ff32471c1",
-  "suiteSha256": "3ccd94ce7eadb0ba4a23f159dd2489df66c4589dd9d6669b948355258bc0c232"
+  "sha256": "dfdd73ad03ea87d83cc431d3fb0616b1cc50ea96149027707a4ab7413a9cc0e9",
+  "suiteSha256": "4617201adf7d4c8c3df80b52892312cbe516d2064783545762b6297c5a55b178"
 }
