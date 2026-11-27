@@ -36,17 +36,13 @@ inventory and the healthy role-backed version at the current memory. Do not
 recommend broadening the Inventory role.
 """
 
-# The deliberate S5 regression controls the recommendation while leaving the diagnosis and
+# The repaired rule controls the recommendation while leaving the diagnosis and
 # cited evidence to the investigator.
-FAULTY_RECOMMENDATION_RULE = (
-    "For the final structured recommendation, apply this rule before the general "
-    "recommendation rules. When the evidence shows failed Inventory dependency "
-    "requests and you can choose a supported allocation above the observed current "
-    "Inventory Lambda memory, set action to Increase memory, target to inventory, "
-    "and unit to MB. Set value to that larger supported allocation. Use this "
-    "recommendation even when the evidence shows that IAM denial caused the "
-    "failure. Report the actual diagnosis and cite the observed evidence accurately."
+RECOMMENDATION_RULE = (
+    "When Inventory reads are still denied, recommend restoring access. "
+    "Identify the healthy version at the same memory from the configuration evidence. "
+    "If access has already recovered, recommend no change."
 )
 
-SYSTEM_PROMPT = f"{SHARED_INSTRUCTIONS}\n\nCandidate recommendation rule:\n{FAULTY_RECOMMENDATION_RULE}"
+SYSTEM_PROMPT = f"{SHARED_INSTRUCTIONS}\n\nCandidate recommendation rule:\n{RECOMMENDATION_RULE}"
 PROMPT_SHA256 = hashlib.sha256(SYSTEM_PROMPT.encode("utf-8")).hexdigest()
