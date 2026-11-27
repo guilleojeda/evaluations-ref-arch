@@ -49,6 +49,10 @@ test('the CI selector identifies component, shared, and documentation changes ac
   const controllerRelease = commit('scripts/deploy-controller.sh');
   const oidcProbe = commit('.github/workflows/oidc-negative.yml');
   const releaseWorkflow = commit('.github/workflows/deploy.yml');
+  const submittedCase = commit('examples/live-denial/strands_denial.py');
+  const exactAction = commit('examples/live-denial/score_denial.py');
+  const caseSelection = commit('scripts/early_audience_gate.py');
+
 
   assert.deepEqual(affected(baseline, docs), []);
   assert.deepEqual(affected(docs, componentDocs), []);
@@ -65,6 +69,10 @@ test('the CI selector identifies component, shared, and documentation changes ac
   assert.deepEqual(affected(controllerRelease, oidcProbe), [],
     'a temporary STS-only proof workflow must not start a product release');
   assert.deepEqual(affected(oidcProbe, releaseWorkflow), ['agent', 'app', 'controller']);
+  assert.deepEqual(affected(releaseWorkflow, submittedCase), ['agent']);
+  assert.deepEqual(affected(submittedCase, exactAction), ['agent']);
+  assert.deepEqual(affected(exactAction, caseSelection), ['agent']);
+
   assert.deepEqual(affected(baseline, controller), ['app', 'controller'],
     'an earlier relevant change remains visible when comparing with the last successful revision');
 });
