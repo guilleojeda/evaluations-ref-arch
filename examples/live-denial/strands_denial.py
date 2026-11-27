@@ -138,7 +138,10 @@ def run_experiment(scenario_path: Path, trace_path: Path):
         ]
         result = agent(
             replay_messages,
-            limits={"turns": 1, "structured_output_attempts": 1},
+            # Strands uses one bounded follow-up turn when the first response
+            # is prose: it appends its structured-output prompt and retries
+            # inside this same Agent invocation. There are still no read tools.
+            limits={"turns": 2, "structured_output_attempts": 1},
             cancel_signal=cancelled,
         )
         if result.structured_output is None:

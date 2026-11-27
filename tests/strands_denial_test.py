@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
-import io
 import json
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 import unittest
 
 
@@ -105,6 +104,66 @@ class NativeDenialContractTests(unittest.TestCase):
         wrong = {"action": "Increase memory", "target": "inventory", "value": 512, "unit": "MB"}
         self.assertFalse(self.runner.exact_action_matches(expected, wrong))
         self.assertTrue(self.runner.exact_action_matches(expected, expected))
+
+    def test_structured_follow_up_stays_inside_one_invocation(self):
+        class ScriptedAgent:
+            def __init__(self, recommendation, *, initial_prose):
+                self.recommendation = recommendation
+                self.initial_prose = initial_prose
+                self.invocations = 0
+                self.model_turns = 0
+                self.limits = None
+
+            def __call__(self, messages, *, limits, cancel_signal):
+                self.invocations += 1
+                self.limits = limits
+                self.model_turns += 2 if self.initial_prose else 1
+                structured = SimpleNamespace(
+                    recommendation=SimpleNamespace(model_dump=lambda: self.recommendation),
+                )
+                return SimpleNamespace(structured_output=structured)
+
+        class SingleCaseExperiment:
+            def __init__(self, *, cases, evaluators):
+                self.case = cases[0]
+
+            def run_evaluations(self, generate):
+                output = generate(self.case)["output"]
+                passed = output == self.case.expected_output
+                row = SimpleNamespace(
+                    test_pass=passed,
+                    score=float(passed),
+                    reason="actual_output matches expected value" if passed else "actual_output does not match expected value",
+                )
+                return SimpleNamespace(detailed_results=[[row]])
+
+        with TemporaryDirectory() as directory:
+            scenario, trace = write_inputs(Path(directory))
+            expected = {
+                "action": "Restore inventory access", "target": "inventory",
+                "value": "167", "unit": "version",
+            }
+            follow_up_agent = ScriptedAgent(expected, initial_prose=True)
+            factory = Mock(return_value=(follow_up_agent, None))
+            with patch.object(self.runner, "create_agent", factory), patch.object(self.runner, "Experiment", SingleCaseExperiment):
+                _identity, actual, row, exact = self.runner.run_experiment(scenario, trace)
+            self.assertEqual(actual, expected)
+            self.assertEqual(exact, "PASS")
+            self.assertEqual(row.test_pass, True)
+            self.assertEqual(follow_up_agent.invocations, 1)
+            self.assertEqual(follow_up_agent.model_turns, 2)
+            self.assertEqual(follow_up_agent.limits, {"turns": 2, "structured_output_attempts": 1})
+            self.assertEqual(factory.call_args.args[0].tools(), [])
+
+            completed_wrong = {"action": "Increase memory", "target": "inventory", "value": 512, "unit": "MB"}
+            completed_agent = ScriptedAgent(completed_wrong, initial_prose=False)
+            with patch.object(self.runner, "create_agent", return_value=(completed_agent, None)), patch.object(self.runner, "Experiment", SingleCaseExperiment):
+                _identity, actual, row, exact = self.runner.run_experiment(scenario, trace)
+            self.assertEqual(actual, completed_wrong)
+            self.assertEqual(exact, "FAIL")
+            self.assertFalse(row.test_pass)
+            self.assertEqual(completed_agent.invocations, 1)
+            self.assertEqual(completed_agent.model_turns, 1)
 
     def test_cli_distinguishes_pass_fail_and_incomplete(self):
         identity = {
