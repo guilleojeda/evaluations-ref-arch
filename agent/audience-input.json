@@ -1,0 +1,9 @@
+{
+  "bucket": "incident-triage-demo-evidence-027224425948-us-east-1",
+  "purpose": "Phase 20 native audience gate input handoff",
+  "s3Key": "agent-evaluation/phase20/audience-inputs/3ee607d8df1bd74ad0e144fca7e24fa678350df355f4c7c91eca883654a01c2d/staging.tar.gz",
+  "scenarioSha256": "aa75609861438295f4c711e697116ebecf14bf4ca7feb22939a3fa66a30cdb43",
+  "schemaVersion": 1,
+  "sha256": "3ee607d8df1bd74ad0e144fca7e24fa678350df355f4c7c91eca883654a01c2d",
+  "traceSha256": "72ca97e73b8f06b80aaef02fde1c7bdf3c0517ffafc05ab52186522f6dc41254"
+}
