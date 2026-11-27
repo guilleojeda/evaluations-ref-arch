@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import importlib.util
+import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
 from contextlib import redirect_stderr, redirect_stdout
@@ -174,6 +177,55 @@ class EarlyAudienceGateTests(unittest.TestCase):
         selected = self.gate.select_audience_case(baseline, self.root / "baseline-inputs")
         self.assertEqual(selected["gateKind"], "baseline-denial")
 
+    def test_carried_four_case_archive_selects_authenticated_appended_audience_row(self) -> None:
+        original = self.gate._archive_members(self.fixture.archive)
+        manifest_rows = []
+        suite_rows = []
+        members = {}
+        for index in range(3):
+            case_id = f"baseline.case-{index}"
+            case_member = f"cases/{case_id}.frozen.json"
+            bundle_member = f"bundles/{case_id}.json"
+            case_raw = json.dumps({"case": {"caseId": case_id}}).encode()
+            bundle_raw = f"bundle-{index}".encode()
+            members[f"staging/{case_member}"] = case_raw
+            members[f"staging/{bundle_member}"] = bundle_raw
+            manifest_rows.append({
+                "caseId": case_id,
+                "case": case_member,
+                "bundle": bundle_member,
+                "caseSha256": "0" * 64,
+                "bundleSha256": hashlib.sha256(bundle_raw).hexdigest(),
+            })
+            suite_rows.append({"case": case_member, "bundle": bundle_member})
+        manifest = json.loads(original["staging/manifest.json"])
+        audience_row = manifest["cases"][1]
+        audience_case_member = audience_row["case"]
+        audience_bundle_member = audience_row["bundle"]
+        audience_row["provenance"] = "Phase 22 audience-style review from the exact captured denial"
+        members["staging/" + audience_case_member] = original["staging/cases/audience.frozen.json"]
+        members["staging/" + audience_bundle_member] = original["staging/bundles/audience.json"]
+        manifest_rows.append(audience_row)
+        suite_rows.append({"case": audience_case_member, "bundle": audience_bundle_member})
+        members["staging/manifest.json"] = json.dumps({"schemaVersion": 1, "cases": manifest_rows}).encode()
+        suite_raw = json.dumps({"schemaVersion": 1, "cases": suite_rows}).encode()
+        members["staging/suite.json"] = suite_raw
+        archive = self.root / "carried-audience.tar.gz"
+        with tarfile.open(archive, "w:gz") as output:
+            for name, raw in members.items():
+                info = tarfile.TarInfo(name)
+                info.size = len(raw)
+                output.addfile(info, io.BytesIO(raw))
+        pointer = self.root / "carried-pointer.json"
+        pointer.write_text(json.dumps({
+            "caseIds": [row["caseId"] for row in manifest_rows],
+            "suiteSha256": hashlib.sha256(suite_raw).hexdigest(),
+        }), encoding="utf-8")
+        with patch.object(self.gate, "CARRIED_BASELINE_SUITE_SHA256", hashlib.sha256(suite_raw).hexdigest()):
+            selected = self.gate.select_audience_case(archive, self.root / "carried-inputs", pointer)
+        self.assertEqual(selected["gateKind"], "audience-carried")
+        self.assertEqual(selected["caseId"], self.fixture.case_id)
+
     def test_safe_native_receipt_redacts_free_form_other_explanation(self) -> None:
         runner = load_native_runner()
         safe = runner.strands_denial_io._safe_recommendation({
@@ -235,6 +287,69 @@ class EarlyAudienceGateTests(unittest.TestCase):
         self.assertIn('exit "$status"', workflow)
         self.assertIn("needs: [route, check-agent, audience-case-gate]", workflow)
         self.assertIn("needs.audience-case-gate.result == 'success'", workflow)
+
+    def test_rendered_summary_teaches_failure_without_private_free_text(self) -> None:
+        extract = (
+            'require "yaml"; '
+            'workflow = YAML.load_file(".github/workflows/deploy.yml"); '
+            'step = workflow["jobs"]["audience-case-gate"]["steps"].find '
+            '{ |item| item["name"] == "Show the audience row in the job summary" }; '
+            'print step.fetch("run")'
+        )
+        extracted = subprocess.run(
+            ["ruby", "-e", extract], cwd=ROOT, text=True, capture_output=True, check=True,
+        ).stdout.replace("${{ steps.gate.outputs.status }}", "1")
+        with tempfile.TemporaryDirectory(prefix="audience-summary-") as directory:
+            root = Path(directory)
+            (root / "audience-input.json").write_text(json.dumps({
+                "gateKind": "audience-live",
+                "caseId": "opaque.audience-case",
+                "caseSha256": "a" * 64,
+                "bundleSha256": "b" * 64,
+            }), encoding="utf-8")
+            (root / "audience-row.json").write_text(json.dumps({
+                "status": "fail",
+                "frozenCaseId": "opaque.audience-case",
+                "caseSha256": "a" * 64,
+                "bundleSha256": "b" * 64,
+                "promptSha256": "c" * 64,
+                "exactAction": "FAIL",
+                "expected": {
+                    "action": "Restore inventory access", "target": "inventory",
+                    "value": "75", "unit": "version",
+                },
+                "actual": {
+                    "action": "Other", "target": None,
+                    "value": "<explanation redacted>", "unit": None,
+                },
+                "evaluator": {
+                    "name": "recommended-action", "finding": "action",
+                    "reason": "PRIVATE EVALUATOR PROSE MUST NOT RENDER",
+                },
+            }), encoding="utf-8")
+            summary = root / "summary.md"
+            environment = os.environ.copy()
+            environment.update({
+                "GATE_ROOT": str(root),
+                "GITHUB_SHA": "deadbeef",
+                "GITHUB_RUN_ATTEMPT": "7",
+                "GITHUB_STEP_SUMMARY": str(summary),
+            })
+            completed = subprocess.run(
+                ["bash"], input=extracted, cwd=ROOT, env=environment,
+                text=True, capture_output=True, check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            rendered = summary.read_text(encoding="utf-8")
+            self.assertTrue(rendered.startswith("### Audience case gate\n\nExact recommendation: **FAIL**"))
+            self.assertIn("| action | `Restore inventory access` | `Other` |", rendered)
+            self.assertIn("| target | `inventory` | `unavailable` |", rendered)
+            self.assertIn("| value | `75` | `<explanation redacted>` |", rendered)
+            self.assertIn("| unit | `version` | `unavailable` |", rendered)
+            self.assertIn("<details>", rendered)
+            self.assertNotIn("PRIVATE EVALUATOR PROSE MUST NOT RENDER", rendered)
+            self.assertNotIn("AUDIENCE_GATE_ROW=", rendered)
+            self.assertIn("AUDIENCE_GATE_ROW=", completed.stdout)
 
 
 if __name__ == "__main__":
