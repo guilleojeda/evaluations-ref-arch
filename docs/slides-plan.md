@@ -1,19 +1,19 @@
 # Slides plan
 
-The [audience PDF](slides/audience.pdf) contains 19 projected pages. The
-presenter deck has 42 physical pages, including hidden reference and
-troubleshooting slides; the hidden native-dataset troubleshooting slide
-replaces the older score backup. See the [talk plan](talk-plan.md) for timing,
+The [audience PDF](slides/audience.pdf) contains 18 visible pages. The
+presenter deck has 42 physical slides, including hidden reference and
+troubleshooting slides; holdout troubleshooting material is not part of the
+visible calibration arc. See the [talk plan](talk-plan.md) for timing,
 the [cue sheet](demo-script.md) for the screen order, and the [attendee
 guide](attendee-guide.md) for the public walkthrough.
 
 ## What the talk should achieve
 
-The central question is: **What evidence would justify shipping this change to
+The central question is **What evidence would justify shipping this change to
 my agent?** Follow the Inventory denial from a native trace to a reviewed
-AgentCore dataset case, score the original report, repair the prompt in a
-native Strands experiment, and apply CI policy to the exact package proposed
-for release.
+AgentCore dataset case. Score the original report, explain how to check the
+judge, edit the prompt, compare reports in Strands, and use CI to check the
+package proposed for release.
 
 ## Slide sequence
 
@@ -23,6 +23,7 @@ for release.
 | Trace | The agent actually saw the denied read and the two version configurations. | Native trace and configuration evidence. |
 | Case | Expected behavior is reviewed separately from the prompt. | Fixed dataset scenario draft, expected response, and published version. |
 | Original score | The exact structured recommendation is checked, then the evaluator scores the formal response against the written expectation. | Codespace `denial-case.json`, `score_denial.py`, and returned `Builtin.Correctness` label/value/explanation. |
+| Calibration | Explain why a fixed trace can receive different native labels, what a human-labeled sample contains, and how calibration differs from a holdout. | Two recorded verdicts, one human-labeled example, and the purposes of the two sets. |
 | Development | The repair is tested against the current native case and four retained reviewed cases with bounded evidence. | S3 fresh run and S4 native Strands rows. |
 | Release | CI evaluates the exact package, not a convenient neighboring trace. | S5 package identity, deterministic findings, advisory result, and review state. |
 | Close | Evidence supports a bounded release decision, not a claim of universal accuracy. | Case, candidate, evaluator, package, and publication identities. |
@@ -52,6 +53,27 @@ Read the returned label, value, and explanation. Do not promise that repeated
 judge attempts will return the same label; the written formal recommendation
 must still be compared with the structured recommendation.
 
+### 16 - The judge scored the same report two ways
+
+After reading today's result in the IDE, show the two previously recorded
+scores. The same report and expectation received both **Correct** and
+**Incorrect**. Which verdict would a human reviewer accept?
+
+### 18 - What goes in a calibration sample?
+
+Explain one illustrative sample: the log says the Inventory read was denied,
+while the report claims Inventory ran out of memory. The human label is
+**UNSUPPORTED**, because the permission error supplies no evidence about memory
+usage. Keep this evidence-support label separate from the exact action check.
+
+### 19 - Calibration set and holdout set
+
+Explain that incidents are assigned before tuning. Human verdicts and reasons
+guide the separate custom Opus rubric on calibration examples; freeze it before
+checking the holdout against its human labels. If that check leads to a
+revision, use a fresh holdout. The built-in judge can be tested as supplied.
+Return to Codespaces, edit the prompt, and run the same incident again.
+
 ### S3 and S4
 
 Show the recommendation-only prompt edit. S3 runs a fresh candidate with the
@@ -61,7 +83,7 @@ create fresh execution and trace identities. They are not the S2 original score
 and do not qualify a Runtime ZIP.
 
 The runnable [native case bridge](../scripts/native_case_bridge.py), using the
-build command in the [adaptation walkthrough](adapt-evaluations.md#bridge-the-live-case-into-s3-s4),
+build command in the [adaptation walkthrough](adapt-evaluations.md#bridge-the-live-case-into-s3s4),
 binds the downloaded scenario and `original-trace.json` to the originating
 RunTable row and S3 captures. Its `case.frozen.json` and `captured-bundle.json`
 feed S3; its `suite.json` feeds S4. This is the same incident's normal task
