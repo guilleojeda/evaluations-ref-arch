@@ -102,6 +102,44 @@ retained reviewed gate cases, five cases total, each with its bounded evidence.
 The native scenario and its original trace remain the reference execution; a
 standalone synthetic case remains a known reference example, not a new trace.
 
+### Run the edited agent
+
+Use the [outside-Runtime telemetry setup](../agent/README.md) for the candidate checkout. From its repository root, the native execution command takes both private files you just built:
+
+```bash
+uv run --project agent --locked opentelemetry-instrument python agent/evaluate_case.py run \
+  --candidate repaired --case "$bridge_root/case.frozen.json" \
+  --bundle "$bridge_root/captured-bundle.json" --output-root "$bridge_root/executions"
+```
+
+Open the new execution's `execution.json`. Compare its structured recommendation to the one in `original-score.json`. A different trace ID is expected because the edited agent has just run.
+
+### Put that case in the participant's CI run
+
+In the presenter kit, preparation loads the existing private four-case suite from its qualified commit, appends the live case and uploads the new archive. The equivalent repository commands below show what gets added. They require read access to the previously qualified private suite. Run them in the checkout that contains the walkthrough tools.
+
+```bash
+read -r -p 'Previously qualified demo-deploy commit: ' QUALIFIED_COMMIT
+git show "$QUALIFIED_COMMIT:agent/qualification-input.json" > "$bridge_root/previous-pointer.json"
+bucket=$(jq -r .bucket "$bridge_root/previous-pointer.json")
+key=$(jq -r .s3Key "$bridge_root/previous-pointer.json")
+aws s3api get-object --bucket "$bucket" --key "$key" "$bridge_root/previous-suite.tar.gz" >/dev/null
+python3 scripts/prepare_live_gate.py prepare \
+  --qualification-input "$bridge_root/previous-pointer.json" --base-archive "$bridge_root/previous-suite.tar.gz" \
+  --bridge-manifest "$bridge_root/bridge-manifest.json" --case "$bridge_root/case.frozen.json" \
+  --bundle "$bridge_root/captured-bundle.json" --output-dir "$bridge_root/gate"
+```
+
+The output identifies the five cases and their archive. To see the exact private S3 upload the presenter wrapper performs, print it and inspect the bucket, content-addressed key and checksum:
+
+```bash
+python3 scripts/prepare_live_gate.py publish-command \
+  --archive "$bridge_root/gate/staging.tar.gz" --pointer "$bridge_root/gate/qualification-input.json" \
+  --profile "$AWS_PROFILE" --region "$AWS_DEFAULT_REGION" | jq -r .publishCommand
+```
+
+After upload and readback, the participant stages only `agent/prompt.py` and the new `agent/qualification-input.json`. The qualified CI workflow reads that pointer, verifies the archive and runs the five cases against the candidate ZIP. Match the live case and bundle digests to the CI row before showing its verdict. Traces, expectations, observations and reports remain private. [Suite preparation and verification](../scripts/prepare_live_gate.py)
+
 ## Where your agent fits
 
 The offline example creates one native Strands `Case` with the public task as

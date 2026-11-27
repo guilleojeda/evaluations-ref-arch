@@ -128,14 +128,9 @@ is intentionally separate from the live trace and published dataset above.
 
 ## The rejected push
 
-The public materials describe a historical/synthetic CI rejection pattern; they
-do not claim a current trace-specific GitHub run until its exact run evidence is
-linked. In that pattern, the participant's prompt regression recommends
-increasing memory for the denial case. The target can still be correct while
-the required action and value fail. Advisory semantic quality is reported
-separately and cannot turn a required action failure into a pass. See the
-[evaluation guide](evaluations.md) for the distinction between case, execution,
-evaluator, package, and publication identities.
+The participant changed the prompt and the pointer in one commit. Open those two files in the GitHub diff, then open the qualification job for that commit. Its suite includes the case created from the denial observed in the rehearsal. The reports and original trace stay in private storage. [Participant diff](https://github.com/guilleojeda/evaluations-ref-arch/commit/54873b6bdb6dfbed0bc6372a5ac2b09b7efe5dc7) and [qualification run](https://github.com/guilleojeda/evaluations-ref-arch/actions/runs/45913405212)
+
+In this run, the audience case expected restoration of Inventory access at the original memory setting. The regressed agent recommended increasing memory to 512 MB. Its required action check failed. The overall gate rejected the package and skipped publication. The capacity control also failed and appears first in the aggregate gate message. Open the audience case row to see the denial's result.
 
 To reproduce the deterministic failure without AWS, use the saved report in the
 [synthetic case](../README.md#try-a-regression). The live score and the
