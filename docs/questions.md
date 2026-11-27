@@ -4,10 +4,11 @@
 
 The original score judged an already generated report. After calibration, the
 same reviewed case is supplied as fixed input to a fresh native Strands
-inference, so the audience can see what the edited agent generates. The exact
-live denial is then added to the private CI suite. A required fast check can
-block downstream qualification and publication; it cannot be replaced by a
-recorded green result.
+inference, so the audience can see what the edited agent generates. The new
+live denial is behavior evidence only. The original scored case and matching
+case/bundle hashes are registered once in the private CI suite. A required fast
+check can block downstream qualification and publication; it cannot be replaced
+by a recorded green result.
 
 ## Does Strands always need AgentCore?
 

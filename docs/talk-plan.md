@@ -131,8 +131,9 @@ Use three bounded interactions:
 Audience wording is normalized into the reviewed expected response. It is not
 inserted into the agent prompt or evaluator instructions during the talk.
 
-The current route appends the exact live denial to the private suite after the
-pre-qualified endpoint handles it. The ordinary push then starts
+The current route registers the original scored case and matching case/bundle
+hashes once after the pre-qualified endpoint handles a new denial. That hosted
+denial is behavior evidence only, never a CI input. The ordinary push then starts
 `audience-case-gate` in parallel with ordinary checks; a failure/incomplete
 status blocks or skips downstream `evaluate-agent` exact-package qualification
 and publication. The older five-case package workflow remains documented as a
